@@ -1,4 +1,4 @@
-# Sofos - AI-Powered CLI Coding Assistant
+# Sofos Code - AI-Powered CLI Coding Assistant
 
 An interactive AI coding assistant powered by Claude that can write code, edit files, and search the web - all from your terminal.
 
@@ -100,6 +100,6 @@ Built with Rust and powered by Anthropic's Claude. Inspired by Aider and similar
 
 ---
 
-**Disclaimer:** Sofos may make mistakes. Always review generated code before use.
+**Disclaimer:** Sofos Code may make mistakes. Always review generated code before use.
 
 [![forthebadge](https://forthebadge.com/images/badges/made-with-rust.svg)](https://forthebadge.com)
