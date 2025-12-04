@@ -43,7 +43,7 @@ sofos --prompt "Create a hello world Python script"
 ```
 --api-key <KEY>     API key (overrides env var)
 -p, --prompt <TEXT> One-shot mode
---model <MODEL>     Claude model (default: claude-3-5-sonnet-20241022)
+--model <MODEL>     Claude model (default: claude-sonnet-4-5)
 --max-tokens <N>    Max response tokens (default: 4096)
 -v, --verbose       Verbose logging
 ```
