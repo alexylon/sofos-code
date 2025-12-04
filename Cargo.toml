@@ -1,0 +1,44 @@
+[package]
+name = "sofos"
+version = "0.1.0"
+edition = "2021"
+authors = ["Alexander Alexandrov"]
+description = "An interactive AI coding assistant powered by Claude"
+license = "MIT"
+repository = "https://github.com/alexylon/sofos-code"
+keywords = ["cli", "ai", "coding-assistant", "repl"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "sofos"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+tokio = { version = "1.41", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+rustyline = "14.0"
+colored = "2.1"
+syntect = "5.2"
+
+# Utilities
+futures = "0.3"
+pathdiff = "0.2"
+urlencoding = "2.1"
+html-escape = "0.2"
+
+# Logging (optional but helpful)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3.13"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
