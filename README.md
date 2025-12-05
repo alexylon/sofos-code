@@ -2,6 +2,8 @@
 
 An interactive AI coding assistant powered by Claude that can write code, edit files, and search the web - all from your terminal.
 
+<div align="center"><img align="center" src="/assets/sofos_code.png" width="700" alt="Ferrocrypt"></div>
+
 ## Features
 
 - **Interactive REPL** - Multi-turn conversations with Claude
