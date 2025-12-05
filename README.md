@@ -1,6 +1,6 @@
 # Sofos Code
 
-https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg
+![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg)
 
 A blazingly fast, interactive AI coding assistant powered by Claude, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
