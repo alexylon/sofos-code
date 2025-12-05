@@ -1,7 +1,7 @@
-use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest};
+use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest, MorphClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
-use crate::tools::{get_tools, ToolExecutor};
+use crate::tools::{add_code_search_tool, get_tools, get_tools_with_morph, ToolExecutor};
 use colored::Colorize;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -14,6 +14,7 @@ pub struct Repl {
     editor: DefaultEditor,
     model: String,
     max_tokens: u32,
+    recursion_depth: u32,
 }
 
 impl Repl {
@@ -22,10 +23,15 @@ impl Repl {
         model: String,
         max_tokens: u32,
         workspace: PathBuf,
+        morph_client: Option<MorphClient>,
     ) -> Result<Self> {
         let client = AnthropicClient::new(api_key)?;
-        let conversation = ConversationHistory::new();
-        let tool_executor = ToolExecutor::new(workspace)?;
+        let tool_executor = ToolExecutor::new(workspace, morph_client)?;
+        
+        let has_morph = tool_executor.has_morph();
+        let has_code_search = tool_executor.has_code_search();
+        let conversation = ConversationHistory::with_features(has_morph, has_code_search);
+        
         let editor = DefaultEditor::new()
             .map_err(|e| SofosError::Config(format!("Failed to create editor: {}", e)))?;
 
@@ -36,6 +42,7 @@ impl Repl {
             editor,
             model,
             max_tokens,
+            recursion_depth: 0,
         })
     }
 
@@ -94,6 +101,20 @@ impl Repl {
         Ok(())
     }
 
+    fn get_available_tools(&self) -> Vec<crate::api::Tool> {
+        let mut tools = if self.tool_executor.has_morph() {
+            get_tools_with_morph()
+        } else {
+            get_tools()
+        };
+
+        if self.tool_executor.has_code_search() {
+            add_code_search_tool(&mut tools);
+        }
+
+        tools
+    }
+
     fn process_message(&mut self, user_input: &str) -> Result<()> {
         self.conversation.add_user_message(user_input.to_string());
 
@@ -102,7 +123,7 @@ impl Repl {
             max_tokens: self.max_tokens,
             messages: self.conversation.messages().to_vec(),
             system: Some(self.conversation.system_prompt().to_string()),
-            tools: Some(get_tools()),
+            tools: Some(self.get_available_tools()),
             stream: None,
         };
 
@@ -111,6 +132,7 @@ impl Repl {
 
         let response = runtime.block_on(self.client.create_message(request))?;
 
+        self.recursion_depth = 0;
         self.handle_response(response.content, &runtime)?;
 
         Ok(())
@@ -121,6 +143,16 @@ impl Repl {
         content_blocks: Vec<ContentBlock>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<()> {
+        const MAX_RECURSION_DEPTH: u32 = 10;
+
+        if self.recursion_depth >= MAX_RECURSION_DEPTH {
+            eprintln!(
+                "{} Maximum recursion depth reached. Stopping to prevent infinite loop.",
+                "Warning:".bright_yellow().bold()
+            );
+            return Ok(());
+        }
+
         let mut text_output = Vec::new();
         let mut tool_uses = Vec::new();
 
@@ -142,6 +174,9 @@ impl Repl {
             }
             println!();
         }
+
+        // Always add assistant content to conversation history FIRST
+        self.conversation.add_assistant_content(&content_blocks);
 
         if !tool_uses.is_empty() {
             for (_tool_id, tool_name, tool_input) in &tool_uses {
@@ -174,17 +209,16 @@ impl Repl {
                 max_tokens: self.max_tokens,
                 messages: self.conversation.messages().to_vec(),
                 system: Some(self.conversation.system_prompt().to_string()),
-                tools: Some(get_tools()),
+                tools: Some(self.get_available_tools()),
                 stream: None,
             };
 
             let response = runtime.block_on(self.client.create_message(request))?;
 
-            // Recursively handle the new response
+            // Increment recursion depth before recursive call
+            self.recursion_depth += 1;
             return self.handle_response(response.content, runtime);
         }
-
-        self.conversation.add_assistant_content(&content_blocks);
 
         Ok(())
     }

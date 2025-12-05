@@ -8,27 +8,49 @@ pub struct ConversationHistory {
 
 impl ConversationHistory {
     pub fn new() -> Self {
-        let system_prompt = r#"You are Sofos, an AI coding assistant. You have access to tools that allow you to:
-1. Read files in the current project directory
-2. Write/create files in the current project directory
-3. List directory contents
-4. Create directories
-5. Search the web for information
+        Self::with_features(false, false)
+    }
+
+    pub fn with_features(has_morph: bool, has_code_search: bool) -> Self {
+        let mut features = vec![
+            "1. Read files in the current project directory",
+            "2. Write/create files in the current project directory",
+            "3. List directory contents",
+            "4. Create directories",
+            "5. Search the web for information",
+        ];
+
+        if has_code_search {
+            features.push("6. Search code using ripgrep");
+        }
+
+        let edit_instruction = if has_morph {
+            "- When creating new files, use the write_file tool\n- When editing existing files, ALWAYS use the edit_file_fast tool (ultra-fast, 10,500+ tokens/sec)"
+        } else {
+            "- When creating or editing code, use the write_file tool"
+        };
+
+        let system_prompt = format!(
+            r#"You are Sofos, an AI coding assistant. You have access to tools that allow you to:
+{}
 
 IMPORTANT: All file operations are restricted to the current working directory for security. You cannot access files outside this directory.
 
 When helping users:
 - Be concise and practical
 - Use your tools to read files before suggesting changes
-- When creating or editing code, use the write_file tool
+{}
 - Search the web when you need current information or documentation
 - Explain your reasoning when using tools
 
-Your goal is to help users with coding tasks efficiently and accurately."#;
+Your goal is to help users with coding tasks efficiently and accurately."#,
+            features.join("\n"),
+            edit_instruction
+        );
 
         Self {
             messages: Vec::new(),
-            system_prompt: system_prompt.to_string(),
+            system_prompt,
         }
     }
 

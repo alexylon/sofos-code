@@ -11,12 +11,18 @@ pub struct Cli {
     #[arg(long, env = "ANTHROPIC_API_KEY")]
     pub api_key: Option<String>,
 
+    #[arg(long, env = "MORPH_API_KEY")]
+    pub morph_api_key: Option<String>,
+
     /// Initial prompt to send (if not provided, starts interactive REPL)
     #[arg(short, long)]
     pub prompt: Option<String>,
 
     #[arg(long, default_value = "claude-sonnet-4-5")]
     pub model: String,
+
+    #[arg(long, default_value = "morph-v3-fast")]
+    pub morph_model: String,
 
     #[arg(long, default_value = "4096")]
     pub max_tokens: u32,

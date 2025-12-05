@@ -5,6 +5,7 @@ mod error;
 mod repl;
 mod tools;
 
+use api::MorphClient;
 use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
@@ -43,9 +44,23 @@ fn main() -> Result<()> {
         "Workspace:".bright_cyan(),
         workspace.display().to_string().dimmed()
     );
+
+    let morph_client = cli.morph_api_key.as_ref().and_then(|key| {
+        match MorphClient::new(key.clone(), Some(cli.morph_model.clone())) {
+            Ok(client) => {
+                println!("{}", "Morph Fast Apply: Enabled".bright_green());
+                Some(client)
+            }
+            Err(e) => {
+                eprintln!("{} Failed to initialize Morph client: {}", "Warning:".bright_yellow(), e);
+                None
+            }
+        }
+    });
+
     println!();
 
-    let mut repl = Repl::new(api_key, cli.model, cli.max_tokens, workspace)?;
+    let mut repl = Repl::new(api_key, cli.model, cli.max_tokens, workspace, morph_client)?;
 
     if let Some(prompt) = cli.prompt {
         repl.process_single_prompt(&prompt)?;

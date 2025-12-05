@@ -235,4 +235,24 @@ mod tests {
         let entries = fs_tool.list_directory("subdir").unwrap();
         assert_eq!(entries, vec!["file.txt"]);
     }
+
+    #[test]
+    fn test_list_nested_subdirectories() {
+        let temp = TempDir::new().unwrap();
+        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+
+        // Create nested structure
+        fs_tool.create_directory("parent/child").unwrap();
+        fs_tool.write_file("parent/file1.txt", "test1").unwrap();
+        fs_tool.write_file("parent/child/file2.txt", "test2").unwrap();
+
+        // Test listing parent
+        let parent_entries = fs_tool.list_directory("parent").unwrap();
+        assert!(parent_entries.contains(&"child/".to_string()));
+        assert!(parent_entries.contains(&"file1.txt".to_string()));
+
+        // Test listing child
+        let child_entries = fs_tool.list_directory("parent/child").unwrap();
+        assert_eq!(child_entries, vec!["file2.txt"]);
+    }
 }
