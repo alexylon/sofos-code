@@ -1,6 +1,8 @@
-# Sofos Code - AI-Powered CLI Coding Assistant
+# Sofos Code
 
-An interactive AI coding assistant powered by Claude that can write code, edit files, and search the web - all from your terminal.
+https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg
+
+A blazingly fast, interactive AI coding assistant powered by Claude, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
 <div align="center"><img align="center" src="/assets/sofos_code.png" width="700" alt="Ferrocrypt"></div>
 
@@ -9,7 +11,7 @@ An interactive AI coding assistant powered by Claude that can write code, edit f
 - **Interactive REPL** - Multi-turn conversations with Claude
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
-- **Code Search** - Fast regex-based code search using ripgrep (optional)
+- **Code Search** - Fast regex-based code search using `ripgrep` (optional)
 - **Web Search** - Real-time information via DuckDuckGo
 - **Secure** - All file operations restricted to workspace, prevents directory traversal
 
@@ -126,7 +128,7 @@ RUST_LOG=debug sofos
 
 MIT License
 
-## Morph Integration Status
+## Morph Integration
 
 Sofos integrates with Morph's APIs for enhanced performance:
 
