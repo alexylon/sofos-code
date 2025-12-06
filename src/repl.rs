@@ -148,7 +148,7 @@ impl Repl {
         content_blocks: Vec<ContentBlock>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<()> {
-        const MAX_RECURSION_DEPTH: u32 = 15;
+        const MAX_RECURSION_DEPTH: u32 = 50;
 
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== handle_response: recursion_depth={}, blocks={} ===", 
