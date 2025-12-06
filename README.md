@@ -18,15 +18,15 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 
 ## Installation
 
-**Requirements:** 
+### Requirements
 
-- Rust 1.70+
+- Rust 1.70+ ([install guide](https://rust-lang.org/tools/install/))
 - Anthropic API key ([get one](https://console.anthropic.com/))
 
-**Optional:** 
+### Optional (but strongly recommended)
 
 - `ripgrep` for code search ([install guide](https://github.com/BurntSushi/ripgrep#installation))
-- Morph API key ([get one](https://morphllm.com/))
+- Morph API key for ultra-fast editing ([get one](https://morphllm.com/))
 
 ```bash
 git clone https://github.com/alexylon/sofos-code.git
@@ -104,10 +104,10 @@ Claude can automatically use these tools:
 
 All file operations are sandboxed to your current working directory:
 
-- ✅ Can access files in current directory and subdirectories
+- ✅ Can access files in the current directory and subdirectories
 - ❌ Cannot access parent directories (`../`)
 - ❌ Cannot access absolute paths (`/etc/passwd`)
-- ❌ Cannot follow symlinks outside workspace
+- ❌ Cannot follow symlinks outside the workspace
 
 Bash command execution is restricted to read-only operations:
 
