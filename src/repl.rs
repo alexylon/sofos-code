@@ -6,6 +6,11 @@ use colored::Colorize;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+use std::io::{self, Write};
 
 pub struct Repl {
     client: AnthropicClient,
@@ -299,8 +304,26 @@ impl Repl {
             }
 
             // After executing tools, get another response from Claude
-            println!("{}", "Generating response...".dimmed());
+            // Start thinking animation
+            let thinking = Arc::new(AtomicBool::new(true));
+            let thinking_clone = Arc::clone(&thinking);
             
+            let animation_handle = thread::spawn(move || {
+                let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let mut frame_idx = 0;
+                
+                while thinking_clone.load(Ordering::Relaxed) {
+                    print!("\r{} {}", frames[frame_idx].bright_cyan(), "Thinking...".bright_cyan());
+                    let _ = io::stdout().flush();
+                    frame_idx = (frame_idx + 1) % frames.len();
+                    thread::sleep(Duration::from_millis(80));
+                }
+                
+                // Clear the line
+                print!("\r{}\r", " ".repeat(20));
+                let _ = io::stdout().flush();
+            });
+
             // Debug: show conversation history
             if std::env::var("SOFOS_DEBUG").is_ok() {
                 eprintln!("\n=== DEBUG: Conversation before API call ===");
@@ -324,8 +347,16 @@ impl Repl {
             };
 
             let response = match runtime.block_on(self.client.create_message(request)) {
-                Ok(resp) => resp,
+                Ok(resp) => {
+                    // Stop animation
+                    thinking.store(false, Ordering::Relaxed);
+                    let _ = animation_handle.join();
+                    resp
+                },
                 Err(e) => {
+                    // Stop animation on error
+                    thinking.store(false, Ordering::Relaxed);
+                    let _ = animation_handle.join();
                     eprintln!("{} Failed to get response after tool execution: {}", "Error:".bright_red().bold(), e);
                     return Err(e);
                 }
