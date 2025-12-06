@@ -179,6 +179,8 @@ impl Repl {
         self.conversation.add_assistant_content(&content_blocks);
 
         if !tool_uses.is_empty() {
+            let mut user_cancelled = false;
+            
             for (_tool_id, tool_name, tool_input) in &tool_uses {
                 if tool_name == "execute_bash" {
                     if let Some(command) = tool_input.get("command").and_then(|v| v.as_str()) {
@@ -203,6 +205,12 @@ impl Repl {
                         println!("{}", output.dimmed());
                         println!();
                         self.conversation.add_tool_result(tool_name, &output);
+                        
+                        // If deletion was cancelled, stop executing remaining tools
+                        if output.contains("cancelled by user") {
+                            user_cancelled = true;
+                            break;
+                        }
                     }
                     Err(e) => {
                         let error_msg = format!("Tool execution failed: {}", e);
@@ -211,6 +219,11 @@ impl Repl {
                         self.conversation.add_tool_result(tool_name, &error_msg);
                     }
                 }
+            }
+
+            // If user cancelled deletion, don't make another API request - let them respond
+            if user_cancelled {
+                return Ok(());
             }
 
             // After executing tools, get another response from Claude

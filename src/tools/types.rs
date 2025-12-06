@@ -121,7 +121,7 @@ fn execute_bash_tool() -> Tool {
 fn delete_file_tool() -> Tool {
     Tool {
         name: "delete_file".to_string(),
-        description: "Delete a file in the current workspace. IMPORTANT: Always ask the user for confirmation before deleting files. Use this only after explicit user approval.".to_string(),
+        description: "Delete a file in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -138,7 +138,7 @@ fn delete_file_tool() -> Tool {
 fn delete_directory_tool() -> Tool {
     Tool {
         name: "delete_directory".to_string(),
-        description: "Delete a directory and all its contents in the current workspace. IMPORTANT: Always ask the user for confirmation before deleting directories. Use this only after explicit user approval.".to_string(),
+        description: "Delete a directory and all its contents in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {

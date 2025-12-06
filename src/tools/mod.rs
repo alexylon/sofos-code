@@ -11,8 +11,20 @@ use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
 use search::WebSearchTool;
 use serde_json::Value;
+use std::io::{self, Write};
 
 pub use types::{add_code_search_tool, get_tools, get_tools_with_morph};
+
+fn confirm_action(prompt: &str) -> Result<bool> {
+    print!("{} (y/n): ", prompt);
+    io::stdout().flush()?;
+    
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    
+    let answer = input.trim().to_lowercase();
+    Ok(answer == "y" || answer == "yes")
+}
 
 /// ToolExecutor handles execution of tool calls from Claude
 pub struct ToolExecutor {
@@ -57,8 +69,23 @@ impl ToolExecutor {
                     .as_str()
                     .ok_or_else(|| SofosError::ToolExecution("Missing 'path' parameter".to_string()))?;
 
-                let content = self.fs_tool.read_file(path)?;
-                Ok(format!("File content of '{}':\n\n{}", path, content))
+                match self.fs_tool.read_file(path) {
+                    Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
+                    Err(e) => {
+                        if matches!(e, SofosError::FileNotFound(_)) {
+                            let parent_dir = std::path::Path::new(path)
+                                .parent()
+                                .and_then(|p| p.to_str())
+                                .unwrap_or(".");
+                            Err(SofosError::ToolExecution(format!(
+                                "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
+                                path, parent_dir
+                            )))
+                        } else {
+                            Err(e)
+                        }
+                    }
+                }
             }
             "write_file" => {
                 let path = input["path"]
@@ -155,6 +182,15 @@ impl ToolExecutor {
                     .as_str()
                     .ok_or_else(|| SofosError::ToolExecution("Missing 'path' parameter".to_string()))?;
 
+                let confirmed = confirm_action(&format!("Delete file '{}'?", path))?;
+                
+                if !confirmed {
+                    return Ok(format!(
+                        "File deletion cancelled by user. The file '{}' was not deleted.",
+                        path
+                    ));
+                }
+
                 self.fs_tool.delete_file(path)?;
                 Ok(format!("Successfully deleted file '{}'", path))
             }
@@ -162,6 +198,15 @@ impl ToolExecutor {
                 let path = input["path"]
                     .as_str()
                     .ok_or_else(|| SofosError::ToolExecution("Missing 'path' parameter".to_string()))?;
+
+                let confirmed = confirm_action(&format!("Delete directory '{}' and all its contents?", path))?;
+                
+                if !confirmed {
+                    return Ok(format!(
+                        "Directory deletion cancelled by user. The directory '{}' and its contents were not deleted. What would you like to do instead?",
+                        path
+                    ));
+                }
 
                 self.fs_tool.delete_directory(path)?;
                 Ok(format!("Successfully deleted directory '{}'", path))
