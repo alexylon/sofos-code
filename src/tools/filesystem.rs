@@ -339,9 +339,40 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, SofosError::InvalidPath(_)));
         
+        // Verify error message mentions file size
         if let SofosError::InvalidPath(msg) = err {
             assert!(msg.contains("too large"));
             assert!(msg.contains("50 MB"));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)] // Symlinks work differently on Windows
+    fn test_symlink_escape_blocked() {
+        use std::os::unix::fs::symlink;
+        
+        let temp_workspace = tempfile::tempdir().unwrap();
+        let temp_outside = tempfile::tempdir().unwrap();
+        
+        let fs_tool = FileSystemTool::new(temp_workspace.path().to_path_buf()).unwrap();
+        
+        // Create a file outside the workspace
+        let outside_file = temp_outside.path().join("secret.txt");
+        fs::write(&outside_file, "secret data").unwrap();
+        
+        // Try to create a symlink inside workspace pointing outside
+        let symlink_path = temp_workspace.path().join("escape_link");
+        symlink(&outside_file, &symlink_path).unwrap();
+        
+        // Attempt to read via symlink should fail with path violation
+        let result = fs_tool.read_file("escape_link");
+        assert!(result.is_err());
+        
+        let err = result.unwrap_err();
+        assert!(matches!(err, SofosError::PathViolation(_)));
+        
+        if let SofosError::PathViolation(msg) = err {
+            assert!(msg.contains("outside the workspace"));
         }
     }
 }
