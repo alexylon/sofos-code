@@ -323,4 +323,25 @@ mod tests {
         let child_entries = fs_tool.list_directory("parent/child").unwrap();
         assert_eq!(child_entries, vec!["file2.txt"]);
     }
+
+    #[test]
+    fn test_file_size_limit() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs_tool = FileSystemTool::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Create a file larger than 50MB (51MB)
+        let large_data = vec![0u8; 51 * 1024 * 1024];
+        fs_tool.write_file("large_file.bin", &String::from_utf8_lossy(&large_data)).unwrap();
+
+        let result = fs_tool.read_file("large_file.bin");
+        assert!(result.is_err());
+        
+        let err = result.unwrap_err();
+        assert!(matches!(err, SofosError::InvalidPath(_)));
+        
+        if let SofosError::InvalidPath(msg) = err {
+            assert!(msg.contains("too large"));
+            assert!(msg.contains("50 MB"));
+        }
+    }
 }
