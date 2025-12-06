@@ -2,7 +2,7 @@ use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest, MorphClien
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::tools::{add_code_search_tool, get_tools, get_tools_with_morph, ToolExecutor};
-use colored::Colorize;
+use colored::{Colorize};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::path::PathBuf;
@@ -313,7 +313,7 @@ impl Repl {
                 let mut frame_idx = 0;
                 
                 while thinking_clone.load(Ordering::Relaxed) {
-                    print!("\r{} {}", frames[frame_idx].bright_cyan(), "Thinking...".bright_cyan());
+                    print!("\r{} {}", frames[frame_idx].truecolor(0xFF, 0x99, 0x33), "Thinking...".truecolor(0xFF, 0x99, 0x33));
                     let _ = io::stdout().flush();
                     frame_idx = (frame_idx + 1) % frames.len();
                     thread::sleep(Duration::from_millis(80));
@@ -350,13 +350,17 @@ impl Repl {
                 Ok(resp) => {
                     // Stop animation
                     thinking.store(false, Ordering::Relaxed);
-                    let _ = animation_handle.join();
+                    if let Err(e) = animation_handle.join() {
+                        eprintln!("{} Animation thread panicked: {:?}", "Warning:".bright_yellow().bold(), e);
+                    }
                     resp
                 },
                 Err(e) => {
                     // Stop animation on error
                     thinking.store(false, Ordering::Relaxed);
-                    let _ = animation_handle.join();
+                    if let Err(panic_err) = animation_handle.join() {
+                        eprintln!("{} Animation thread panicked: {:?}", "Warning:".bright_yellow().bold(), panic_err);
+                    }
                     eprintln!("{} Failed to get response after tool execution: {}", "Error:".bright_red().bold(), e);
                     return Err(e);
                 }

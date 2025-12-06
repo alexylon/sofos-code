@@ -3,13 +3,14 @@ use super::types::*;
 use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use std::pin::Pin;
+use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct AnthropicClient {
     client: reqwest::Client,
-    _api_key: String,
 }
 
 impl AnthropicClient {
@@ -28,10 +29,11 @@ impl AnthropicClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
-        Ok(Self { client, _api_key: api_key })
+        Ok(Self { client })
     }
 
     pub async fn create_message(

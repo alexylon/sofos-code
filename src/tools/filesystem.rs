@@ -2,6 +2,8 @@ use crate::error::{Result, SofosError};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
+
 /// FileSystemTool provides secure file operations sandboxed to a workspace directory
 pub struct FileSystemTool {
     workspace: PathBuf,
@@ -79,6 +81,17 @@ impl FileSystemTool {
             return Err(SofosError::InvalidPath(format!(
                 "'{}' is not a file",
                 path
+            )));
+        }
+
+        // Check file size before reading to prevent OOM
+        let metadata = fs::metadata(&full_path).map_err(SofosError::Io)?;
+        if metadata.len() > MAX_FILE_SIZE {
+            return Err(SofosError::InvalidPath(format!(
+                "File '{}' is too large ({} bytes). Maximum size is {} MB",
+                path,
+                metadata.len(),
+                MAX_FILE_SIZE / (1024 * 1024)
             )));
         }
 

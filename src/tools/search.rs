@@ -130,12 +130,6 @@ impl WebSearchTool {
     }
 }
 
-impl Default for WebSearchTool {
-    fn default() -> Self {
-        Self::new().expect("Failed to create WebSearchTool")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
