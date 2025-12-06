@@ -180,11 +180,21 @@ impl Repl {
 
         if !tool_uses.is_empty() {
             for (_tool_id, tool_name, tool_input) in &tool_uses {
-                println!(
-                    "{} {}",
-                    "Using tool:".bright_yellow().bold(),
-                    tool_name.bright_yellow()
-                );
+                if tool_name == "execute_bash" {
+                    if let Some(command) = tool_input.get("command").and_then(|v| v.as_str()) {
+                        println!(
+                            "{} {}",
+                            "Executing:".bright_green().bold(),
+                            command.bright_cyan()
+                        );
+                    }
+                } else {
+                    println!(
+                        "{} {}",
+                        "Using tool:".bright_yellow().bold(),
+                        tool_name.bright_yellow()
+                    );
+                }
 
                 let result = runtime.block_on(self.tool_executor.execute(tool_name, tool_input));
 

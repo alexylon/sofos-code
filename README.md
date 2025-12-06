@@ -101,6 +101,16 @@ All file operations are sandboxed to your current working directory:
 - ❌ Cannot access absolute paths (`/etc/passwd`)
 - ❌ Cannot follow symlinks outside workspace
 
+Bash command execution is restricted to read-only operations:
+
+- ✅ Can run tests and build commands (`cargo test`, `cargo build`)
+- ✅ Can read files and list directories (`cat`, `ls`, `grep`)
+- ❌ Cannot use `sudo` or privilege escalation
+- ❌ Cannot modify files (`rm`, `mv`, `cp`, `chmod`, `mkdir`, `touch`)
+- ❌ Cannot access absolute paths or parent directories
+- ❌ Cannot change directories (`cd`, `pushd`, `popd`)
+- ❌ Cannot use output redirection (`>`, `>>`)
+
 **Best Practice:** Run `sofos` from your project directory, use git to track changes.
 
 ## Development

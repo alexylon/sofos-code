@@ -19,14 +19,12 @@ impl FileSystemTool {
     /// Validate and resolve a path relative to the workspace
     /// Returns an error if the path attempts to escape the workspace
     fn validate_path(&self, path: &str) -> Result<PathBuf> {
-        // Reject absolute paths
         if Path::new(path).is_absolute() {
             return Err(SofosError::PathViolation(
                 "Absolute paths are not allowed".to_string(),
             ));
         }
 
-        // Reject paths with parent directory traversal
         if path.contains("..") {
             return Err(SofosError::PathViolation(
                 "Parent directory traversal (..) is not allowed".to_string(),
@@ -60,7 +58,6 @@ impl FileSystemTool {
             }
         };
 
-        // Ensure the canonical path is within the workspace
         if !canonical.starts_with(&self.workspace) {
             return Err(SofosError::PathViolation(format!(
                 "Path '{}' is outside the workspace",
@@ -238,20 +235,17 @@ mod tests {
 
     #[test]
     fn test_list_nested_subdirectories() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fs_tool = FileSystemTool::new(temp_dir.path().to_path_buf()).unwrap();
 
-        // Create nested structure
         fs_tool.create_directory("parent/child").unwrap();
         fs_tool.write_file("parent/file1.txt", "test1").unwrap();
         fs_tool.write_file("parent/child/file2.txt", "test2").unwrap();
 
-        // Test listing parent
         let parent_entries = fs_tool.list_directory("parent").unwrap();
         assert!(parent_entries.contains(&"child/".to_string()));
         assert!(parent_entries.contains(&"file1.txt".to_string()));
 
-        // Test listing child
         let child_entries = fs_tool.list_directory("parent/child").unwrap();
         assert_eq!(child_entries, vec!["file2.txt"]);
     }

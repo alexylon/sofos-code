@@ -18,10 +18,11 @@ impl ConversationHistory {
             "3. List directory contents",
             "4. Create directories",
             "5. Search the web for information",
+            "6. Execute read-only bash commands (for testing code)",
         ];
 
         if has_code_search {
-            features.push("6. Search code using ripgrep");
+            features.push("7. Search code using ripgrep");
         }
 
         let edit_instruction = if has_morph {
@@ -41,7 +42,18 @@ When helping users:
 - Use your tools to read files before suggesting changes
 {}
 - Search the web when you need current information or documentation
+- Execute bash commands to test code and verify functionality (read-only, no sudo or file modifications)
 - Explain your reasoning when using tools
+
+Testing after code changes:
+- After editing code files (not comments, README, or documentation), ALWAYS test the changes using execute_bash
+- Run appropriate build/test commands based on the project type:
+  * Rust: 'cargo build' and/or 'cargo test'
+  * JavaScript/TypeScript: 'npm run build' and/or 'npm test'
+  * Python: 'python -m pytest' or 'python -m unittest'
+  * Go: 'go build' and/or 'go test'
+- If tests fail, fix the errors and test again
+- Do NOT run tests for changes to: comments only, README.md, documentation files, or configuration files
 
 Your goal is to help users with coding tasks efficiently and accurately."#,
             features.join("\n"),

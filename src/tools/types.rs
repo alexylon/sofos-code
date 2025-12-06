@@ -1,176 +1,125 @@
 use crate::api::Tool;
 use serde_json::json;
 
-/// Get all available tools for Claude API
-pub fn get_tools() -> Vec<Tool> {
-    vec![
-        Tool {
-            name: "read_file".to_string(),
-            description: "Read the contents of a file in the current workspace. Only works for files within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "write_file".to_string(),
-            description: "Create a new file or overwrite an existing file with the given content. Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write to the file"
-                    }
-                },
-                "required": ["path", "content"]
-            }),
-        },
-        Tool {
-            name: "list_directory".to_string(),
-            description: "List all files and directories in a given path. Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the directory (e.g., 'src' or '.')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "create_directory".to_string(),
-            description: "Create a new directory (and parent directories if needed). Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the directory (e.g., 'src/utils')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "web_search".to_string(),
-            description: "Search the web for information using DuckDuckGo. Use this when you need current information, documentation, or want to research something.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)",
-                        "default": 5
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-    ]
+fn read_file_tool() -> Tool {
+    Tool {
+        name: "read_file".to_string(),
+        description: "Read the contents of a file in the current workspace. Only works for files within the current project directory.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
 }
 
-/// Get all available tools including Morph-powered fast editing
-pub fn get_tools_with_morph() -> Vec<Tool> {
-    let mut tools = vec![
-        Tool {
-            name: "read_file".to_string(),
-            description: "Read the contents of a file in the current workspace. Only works for files within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
-                    }
+fn write_file_tool(has_morph: bool) -> Tool {
+    let description = if has_morph {
+        "Create a new file with the given content. For editing existing files, use edit_file_fast instead. Only works within the current project directory."
+    } else {
+        "Create a new file or overwrite an existing file with the given content. Only works within the current project directory."
+    };
+
+    Tool {
+        name: "write_file".to_string(),
+        description: description.to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
                 },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "write_file".to_string(),
-            description: "Create a new file with the given content. For editing existing files, use edit_file_fast instead. Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write to the file"
-                    }
+                "content": {
+                    "type": "string",
+                    "description": "The content to write to the file"
+                }
+            },
+            "required": ["path", "content"]
+        }),
+    }
+}
+
+fn list_directory_tool() -> Tool {
+    Tool {
+        name: "list_directory".to_string(),
+        description: "List all files and directories in a given path. Only works within the current project directory.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the directory (e.g., 'src' or '.')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+fn create_directory_tool() -> Tool {
+    Tool {
+        name: "create_directory".to_string(),
+        description: "Create a new directory (and parent directories if needed). Only works within the current project directory.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the directory (e.g., 'src/utils')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+fn web_search_tool() -> Tool {
+    Tool {
+        name: "web_search".to_string(),
+        description: "Search the web for information using DuckDuckGo. Use this when you need current information, documentation, or want to research something.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query"
                 },
-                "required": ["path", "content"]
-            }),
-        },
-        Tool {
-            name: "list_directory".to_string(),
-            description: "List all files and directories in a given path. Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the directory (e.g., 'src' or '.')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "create_directory".to_string(),
-            description: "Create a new directory (and parent directories if needed). Only works within the current project directory.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "The relative path to the directory (e.g., 'src/utils')"
-                    }
-                },
-                "required": ["path"]
-            }),
-        },
-        Tool {
-            name: "web_search".to_string(),
-            description: "Search the web for information using DuckDuckGo. Use this when you need current information, documentation, or want to research something.".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The search query"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (default: 5)",
-                        "default": 5
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-    ];
-    
-    tools.push(Tool {
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default: 5)",
+                    "default": 5
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
+fn execute_bash_tool() -> Tool {
+    Tool {
+        name: "execute_bash".to_string(),
+        description: "Execute read-only bash commands for testing code. Commands are sandboxed to the current directory. Forbidden: sudo, file modification commands (rm, mv, cp, chmod, etc.), and output redirection. Use this to run tests, check program output, or verify code behavior.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute (e.g., 'cargo test', 'ls -la', 'cat file.txt')"
+                }
+            },
+            "required": ["command"]
+        }),
+    }
+}
+
+fn edit_file_fast_tool() -> Tool {
+    Tool {
         name: "edit_file_fast".to_string(),
         description: "**PREFERRED FOR EDITING FILES** - Ultra-fast file editing using Morph Apply API (10,500+ tokens/sec, 96-98% accuracy). Use this for ALL modifications to existing files. Provide the instruction, original code, and your proposed changes with '// ... existing code ...' markers for unchanged sections. Much more efficient than write_file.".to_string(),
         input_schema: json!({
@@ -191,8 +140,32 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
             },
             "required": ["path", "instruction", "code_edit"]
         }),
-    });
-    tools
+    }
+}
+
+/// Get all available tools for Claude API
+pub fn get_tools() -> Vec<Tool> {
+    vec![
+        read_file_tool(),
+        write_file_tool(false),
+        list_directory_tool(),
+        create_directory_tool(),
+        web_search_tool(),
+        execute_bash_tool(),
+    ]
+}
+
+/// Get all available tools including Morph-powered fast editing
+pub fn get_tools_with_morph() -> Vec<Tool> {
+    vec![
+        read_file_tool(),
+        write_file_tool(true),
+        list_directory_tool(),
+        create_directory_tool(),
+        web_search_tool(),
+        execute_bash_tool(),
+        edit_file_fast_tool(),
+    ]
 }
 
 /// Add code search tool to an existing tool list

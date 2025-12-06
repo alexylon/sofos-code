@@ -1,3 +1,4 @@
+pub mod bashexec;
 pub mod codesearch;
 pub mod filesystem;
 pub mod search;
@@ -5,6 +6,7 @@ pub mod types;
 
 use crate::api::MorphClient;
 use crate::error::{Result, SofosError};
+use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
 use search::WebSearchTool;
@@ -17,6 +19,7 @@ pub struct ToolExecutor {
     fs_tool: FileSystemTool,
     search_tool: WebSearchTool,
     code_search_tool: Option<CodeSearchTool>,
+    bash_executor: BashExecutor,
     morph_client: Option<MorphClient>,
 }
 
@@ -31,9 +34,10 @@ impl ToolExecutor {
         };
 
         Ok(Self {
-            fs_tool: FileSystemTool::new(workspace)?,
+            fs_tool: FileSystemTool::new(workspace.clone())?,
             search_tool: WebSearchTool::new()?,
             code_search_tool,
+            bash_executor: BashExecutor::new(workspace)?,
             morph_client,
         })
     }
@@ -145,6 +149,14 @@ impl ToolExecutor {
 
                 self.fs_tool.write_file(path, &merged_code)?;
                 Ok(format!("Successfully applied fast edit to '{}'", path))
+            }
+            "execute_bash" => {
+                let command = input["command"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'command' parameter".to_string()))?;
+
+                let result = self.bash_executor.execute(command)?;
+                Ok(result)
             }
             _ => Err(SofosError::ToolExecution(format!(
                 "Unknown tool: {}",

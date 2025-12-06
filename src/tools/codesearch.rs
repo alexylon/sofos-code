@@ -25,7 +25,6 @@ impl CodeSearchTool {
     ) -> Result<String> {
         let mut cmd = Command::new("rg");
 
-        // Basic options
         cmd.arg("--heading")
             .arg("--line-number")
             .arg("--color=never")
