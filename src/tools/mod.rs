@@ -150,6 +150,44 @@ impl ToolExecutor {
                 self.fs_tool.write_file(path, &merged_code)?;
                 Ok(format!("Successfully applied Morph edit to '{}'", path))
             }
+            "delete_file" => {
+                let path = input["path"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'path' parameter".to_string()))?;
+
+                self.fs_tool.delete_file(path)?;
+                Ok(format!("Successfully deleted file '{}'", path))
+            }
+            "delete_directory" => {
+                let path = input["path"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'path' parameter".to_string()))?;
+
+                self.fs_tool.delete_directory(path)?;
+                Ok(format!("Successfully deleted directory '{}'", path))
+            }
+            "move_file" => {
+                let source = input["source"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'source' parameter".to_string()))?;
+                let destination = input["destination"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'destination' parameter".to_string()))?;
+
+                self.fs_tool.move_file(source, destination)?;
+                Ok(format!("Successfully moved '{}' to '{}'", source, destination))
+            }
+            "copy_file" => {
+                let source = input["source"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'source' parameter".to_string()))?;
+                let destination = input["destination"]
+                    .as_str()
+                    .ok_or_else(|| SofosError::ToolExecution("Missing 'destination' parameter".to_string()))?;
+
+                self.fs_tool.copy_file(source, destination)?;
+                Ok(format!("Successfully copied '{}' to '{}'", source, destination))
+            }
             "execute_bash" => {
                 let command = input["command"]
                     .as_str()

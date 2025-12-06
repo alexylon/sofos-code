@@ -157,7 +157,7 @@ impl FileSystemTool {
         Ok(full_path.exists())
     }
 
-    pub fn _delete_file(&self, path: &str) -> Result<()> {
+    pub fn delete_file(&self, path: &str) -> Result<()> {
         let full_path = self.validate_path(path)?;
 
         if !full_path.exists() {
@@ -172,6 +172,67 @@ impl FileSystemTool {
         }
 
         fs::remove_file(&full_path)?;
+        Ok(())
+    }
+
+    pub fn delete_directory(&self, path: &str) -> Result<()> {
+        let full_path = self.validate_path(path)?;
+
+        if !full_path.exists() {
+            return Err(SofosError::FileNotFound(path.to_string()));
+        }
+
+        if !full_path.is_dir() {
+            return Err(SofosError::InvalidPath(format!(
+                "'{}' is not a directory",
+                path
+            )));
+        }
+
+        fs::remove_dir_all(&full_path)?;
+        Ok(())
+    }
+
+    pub fn move_file(&self, source: &str, destination: &str) -> Result<()> {
+        let source_path = self.validate_path(source)?;
+        let dest_path = self.validate_path(destination)?;
+
+        if !source_path.exists() {
+            return Err(SofosError::FileNotFound(source.to_string()));
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        fs::rename(&source_path, &dest_path)?;
+        Ok(())
+    }
+
+    pub fn copy_file(&self, source: &str, destination: &str) -> Result<()> {
+        let source_path = self.validate_path(source)?;
+        let dest_path = self.validate_path(destination)?;
+
+        if !source_path.exists() {
+            return Err(SofosError::FileNotFound(source.to_string()));
+        }
+
+        if !source_path.is_file() {
+            return Err(SofosError::InvalidPath(format!(
+                "'{}' is not a file",
+                source
+            )));
+        }
+
+        if let Some(parent) = dest_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)?;
+            }
+        }
+
+        fs::copy(&source_path, &dest_path)?;
         Ok(())
     }
 

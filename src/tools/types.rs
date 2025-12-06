@@ -118,6 +118,82 @@ fn execute_bash_tool() -> Tool {
     }
 }
 
+fn delete_file_tool() -> Tool {
+    Tool {
+        name: "delete_file".to_string(),
+        description: "Delete a file in the current workspace. IMPORTANT: Always ask the user for confirmation before deleting files. Use this only after explicit user approval.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the file to delete (e.g., 'src/old_file.rs')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+fn delete_directory_tool() -> Tool {
+    Tool {
+        name: "delete_directory".to_string(),
+        description: "Delete a directory and all its contents in the current workspace. IMPORTANT: Always ask the user for confirmation before deleting directories. Use this only after explicit user approval.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the directory to delete (e.g., 'src/old_module')"
+                }
+            },
+            "required": ["path"]
+        }),
+    }
+}
+
+fn move_file_tool() -> Tool {
+    Tool {
+        name: "move_file".to_string(),
+        description: "Move or rename a file or directory within the workspace. Creates parent directories if needed.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The relative path to the source file/directory (e.g., 'src/old_name.rs')"
+                },
+                "destination": {
+                    "type": "string",
+                    "description": "The relative path to the destination (e.g., 'src/new_name.rs' or 'new_folder/file.rs')"
+                }
+            },
+            "required": ["source", "destination"]
+        }),
+    }
+}
+
+fn copy_file_tool() -> Tool {
+    Tool {
+        name: "copy_file".to_string(),
+        description: "Copy a file to a new location within the workspace. Creates parent directories if needed.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The relative path to the source file (e.g., 'src/template.rs')"
+                },
+                "destination": {
+                    "type": "string",
+                    "description": "The relative path to the destination (e.g., 'src/new_file.rs')"
+                }
+            },
+            "required": ["source", "destination"]
+        }),
+    }
+}
+
 fn morph_edit_file_tool() -> Tool {
     Tool {
         name: "morph_edit_file".to_string(),
@@ -150,6 +226,10 @@ pub fn get_tools() -> Vec<Tool> {
         write_file_tool(false),
         list_directory_tool(),
         create_directory_tool(),
+        delete_file_tool(),
+        delete_directory_tool(),
+        move_file_tool(),
+        copy_file_tool(),
         web_search_tool(),
         execute_bash_tool(),
     ]
@@ -162,6 +242,10 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
         write_file_tool(true),
         list_directory_tool(),
         create_directory_tool(),
+        delete_file_tool(),
+        delete_directory_tool(),
+        move_file_tool(),
+        copy_file_tool(),
         web_search_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),

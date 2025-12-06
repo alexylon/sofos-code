@@ -90,6 +90,10 @@ Claude can automatically use these tools:
 - `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
 - `list_directory` - List directory contents
 - `create_directory` - Create directories
+- `delete_file` - Delete files (asks for confirmation)
+- `delete_directory` - Delete directories recursively (asks for confirmation)
+- `move_file` - Move or rename files/directories
+- `copy_file` - Copy files
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
