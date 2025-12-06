@@ -1,7 +1,6 @@
 pub mod bashexec;
 pub mod codesearch;
 pub mod filesystem;
-pub mod search;
 pub mod types;
 
 use crate::api::MorphClient;
@@ -9,7 +8,6 @@ use crate::error::{Result, SofosError};
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
-use search::WebSearchTool;
 use serde_json::Value;
 use std::io::{self, Write};
 
@@ -29,7 +27,6 @@ fn confirm_action(prompt: &str) -> Result<bool> {
 /// ToolExecutor handles execution of tool calls from Claude
 pub struct ToolExecutor {
     fs_tool: FileSystemTool,
-    search_tool: WebSearchTool,
     code_search_tool: Option<CodeSearchTool>,
     bash_executor: BashExecutor,
     morph_client: Option<MorphClient>,
@@ -47,7 +44,6 @@ impl ToolExecutor {
 
         Ok(Self {
             fs_tool: FileSystemTool::new(workspace.clone())?,
-            search_tool: WebSearchTool::new()?,
             code_search_tool,
             bash_executor: BashExecutor::new(workspace)?,
             morph_client,
@@ -113,34 +109,6 @@ impl ToolExecutor {
 
                 self.fs_tool.create_directory(path)?;
                 Ok(format!("Successfully created directory '{}'", path))
-            }
-            "web_search" => {
-                let query = input["query"].as_str().ok_or_else(|| {
-                    SofosError::ToolExecution("Missing 'query' parameter".to_string())
-                })?;
-                let max_results = input["max_results"].as_u64().unwrap_or(5) as usize;
-
-                let results = self.search_tool.search(query, max_results).await?;
-
-                if results.is_empty() {
-                    Ok(format!("No search results found for '{}'", query))
-                } else {
-                    let formatted = results
-                        .iter()
-                        .enumerate()
-                        .map(|(i, r)| {
-                            format!(
-                                "{}. {}\n   URL: {}\n   {}",
-                                i + 1,
-                                r.title,
-                                r.url,
-                                r.snippet
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n\n");
-                    Ok(format!("Search results for '{}':\n\n{}", query, formatted))
-                }
             }
             "search_code" => {
                 let code_search = self.code_search_tool.as_ref()
@@ -258,6 +226,7 @@ impl ToolExecutor {
                 let result = self.bash_executor.execute(command)?;
                 Ok(result)
             }
+            // web_search is now handled server-side by Claude API, not by ToolExecutor
             _ => Err(SofosError::ToolExecution(format!(
                 "Unknown tool: {}",
                 tool_name

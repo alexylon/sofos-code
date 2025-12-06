@@ -2,7 +2,7 @@ use crate::api::Tool;
 use serde_json::json;
 
 fn read_file_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "read_file".to_string(),
         description: "Read the contents of a file in the current workspace. Only works for files within the current project directory.".to_string(),
         input_schema: json!({
@@ -25,7 +25,7 @@ fn write_file_tool(has_morph: bool) -> Tool {
         "Create a new file or overwrite an existing file with the given content. Only works within the current project directory."
     };
 
-    Tool {
+    Tool::Regular {
         name: "write_file".to_string(),
         description: description.to_string(),
         input_schema: json!({
@@ -46,7 +46,7 @@ fn write_file_tool(has_morph: bool) -> Tool {
 }
 
 fn list_directory_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "list_directory".to_string(),
         description: "List all files and directories in a given path. Only works within the current project directory.".to_string(),
         input_schema: json!({
@@ -63,7 +63,7 @@ fn list_directory_tool() -> Tool {
 }
 
 fn create_directory_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "create_directory".to_string(),
         description: "Create a new directory (and parent directories if needed). Only works within the current project directory.".to_string(),
         input_schema: json!({
@@ -80,29 +80,17 @@ fn create_directory_tool() -> Tool {
 }
 
 fn web_search_tool() -> Tool {
-    Tool {
+    Tool::WebSearch {
+        tool_type: "web_search_20250305".to_string(),
         name: "web_search".to_string(),
-        description: "Search the web for information using DuckDuckGo. Use this when you need current information, documentation, or want to research something.".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query"
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return (default: 5)",
-                    "default": 5
-                }
-            },
-            "required": ["query"]
-        }),
+        max_uses: Some(5),
+        allowed_domains: None,
+        blocked_domains: None,
     }
 }
 
 fn execute_bash_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "execute_bash".to_string(),
         description: "Execute read-only bash commands for testing code. Commands are sandboxed to the current directory. Forbidden: sudo, file modification commands (rm, mv, cp, chmod, etc.), and output redirection. Use this to run tests, check program output, or verify code behavior.".to_string(),
         input_schema: json!({
@@ -119,7 +107,7 @@ fn execute_bash_tool() -> Tool {
 }
 
 fn delete_file_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "delete_file".to_string(),
         description: "Delete a file in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
         input_schema: json!({
@@ -136,7 +124,7 @@ fn delete_file_tool() -> Tool {
 }
 
 fn delete_directory_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "delete_directory".to_string(),
         description: "Delete a directory and all its contents in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
         input_schema: json!({
@@ -153,7 +141,7 @@ fn delete_directory_tool() -> Tool {
 }
 
 fn move_file_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "move_file".to_string(),
         description: "Move or rename a file or directory within the workspace. Creates parent directories if needed.".to_string(),
         input_schema: json!({
@@ -174,7 +162,7 @@ fn move_file_tool() -> Tool {
 }
 
 fn copy_file_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "copy_file".to_string(),
         description: "Copy a file to a new location within the workspace. Creates parent directories if needed.".to_string(),
         input_schema: json!({
@@ -195,7 +183,7 @@ fn copy_file_tool() -> Tool {
 }
 
 fn morph_edit_file_tool() -> Tool {
-    Tool {
+    Tool::Regular {
         name: "morph_edit_file".to_string(),
         description: "**PREFERRED FOR EDITING FILES** - Ultra-fast file editing using Morph Apply API (10,500+ tokens/sec, 96-98% accuracy). Use this for ALL modifications to existing files. Provide the instruction, original code, and your proposed changes with '// ... existing code ...' markers for unchanged sections. Much more efficient than write_file.".to_string(),
         input_schema: json!({
@@ -254,7 +242,7 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
 
 /// Add code search tool to an existing tool list
 pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
-    tools.push(Tool {
+    tools.push(Tool::Regular {
         name: "search_code".to_string(),
         description: "Search for patterns in code using ripgrep. Supports regex patterns and file type filtering. Fast search across the entire codebase.".to_string(),
         input_schema: json!({
@@ -276,4 +264,37 @@ pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
             "required": ["pattern"]
         }),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_web_search_tool_serialization() {
+        let tool = web_search_tool();
+        let serialized = serde_json::to_value(&tool).expect("Failed to serialize web search tool");
+        
+        // Verify the correct structure for Claude's server-side web search
+        assert_eq!(serialized["type"], "web_search_20250305");
+        assert_eq!(serialized["name"], "web_search");
+        assert_eq!(serialized["max_uses"], 5);
+        
+        // Ensure it has the correct type identifier
+        assert!(serialized.get("type").is_some());
+    }
+    
+    #[test]
+    fn test_regular_tool_serialization() {
+        let tool = read_file_tool();
+        let serialized = serde_json::to_value(&tool).expect("Failed to serialize regular tool");
+        
+        // Regular tools should have name, description, and input_schema
+        assert_eq!(serialized["name"], "read_file");
+        assert!(serialized.get("description").is_some());
+        assert!(serialized.get("input_schema").is_some());
+        
+        // Regular tools should NOT have a type field at the root
+        assert!(serialized.get("type").is_none());
+    }
 }

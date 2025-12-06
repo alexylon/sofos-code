@@ -27,8 +27,6 @@ syntect = "5.2"
 # Utilities
 futures = "0.3"
 pathdiff = "0.2"
-urlencoding = "2.1"
-html-escape = "0.2"
 
 # Logging (optional but helpful)
 tracing = "0.1"

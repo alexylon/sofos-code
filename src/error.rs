@@ -23,9 +23,6 @@ pub enum SofosError {
     #[error("File not found: {0}")]
     FileNotFound(String),
 
-    #[error("Search error: {0}")]
-    Search(String),
-
     #[error("Configuration error: {0}")]
     Config(String),
 

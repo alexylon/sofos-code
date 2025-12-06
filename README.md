@@ -12,7 +12,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
-- **Web Search** - Real-time information via DuckDuckGo
+- **Web Search** - Real-time web information via Claude's native search tool
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
@@ -97,7 +97,7 @@ Claude can automatically use these tools:
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
-- `web_search` - Search the internet
+- `web_search` - Search the web for current information (Claude's server-side tool)
 - `execute_bash` - Run tests and build commands (read-only, sandboxed)
 
 ## Security

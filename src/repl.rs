@@ -181,6 +181,17 @@ impl Repl {
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_uses.push((id.clone(), name.clone(), input.clone()));
                 }
+                ContentBlock::ServerToolUse { name, input, .. } => {
+                    // Server-side tools (like web_search) are executed by Claude API
+                    if std::env::var("SOFOS_DEBUG").is_ok() {
+                        eprintln!("Server tool use: {} with input: {:?}", name, input);
+                    }
+                }
+                ContentBlock::WebSearchToolResult { content, .. } => {
+                    if !content.is_empty() {
+                        text_output.push(format!("\n[Web search returned {} results]", content.len()));
+                    }
+                }
             }
         }
 
@@ -418,6 +429,12 @@ impl Repl {
                         }
                         ContentBlock::ToolUse { name, .. } => {
                             eprintln!("  Block {}: ToolUse({})", i, name)
+                        }
+                        ContentBlock::ServerToolUse { name, .. } => {
+                            eprintln!("  Block {}: ServerToolUse({})", i, name)
+                        }
+                        ContentBlock::WebSearchToolResult { content, .. } => {
+                            eprintln!("  Block {}: WebSearchToolResult({} results)", i, content.len())
                         }
                     }
                 }

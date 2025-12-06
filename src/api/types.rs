@@ -55,10 +55,24 @@ pub struct CreateMessageRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
+#[serde(untagged)]
+pub enum Tool {
+    Regular {
+        name: String,
+        description: String,
+        input_schema: serde_json::Value,
+    },
+    WebSearch {
+        #[serde(rename = "type")]
+        tool_type: String,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allowed_domains: Option<Vec<String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        blocked_domains: Option<Vec<String>>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +103,27 @@ pub enum ContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: Vec<WebSearchResult>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSearchResult {
+    #[serde(rename = "type")]
+    pub result_type: String,
+    pub url: String,
+    pub title: String,
+    pub encrypted_content: String,
+    pub page_age: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +142,17 @@ pub enum MessageContentBlock {
         tool_use_id: String,
         content: String,
     },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "web_search_tool_result")]
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: Vec<WebSearchResult>,
+    },
 }
 
 impl MessageContentBlock {
@@ -118,8 +164,28 @@ impl MessageContentBlock {
                 name: name.clone(),
                 input: input.clone(),
             },
+            ContentBlock::ServerToolUse { id, name, input } => MessageContentBlock::ServerToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            ContentBlock::WebSearchToolResult { tool_use_id, content } => {
+                MessageContentBlock::WebSearchToolResult {
+                    tool_use_id: tool_use_id.clone(),
+                    content: content.clone(),
+                }
+            }
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum _ContentDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,13 +225,4 @@ pub enum _StreamEventType {
     MessageStop,
     #[serde(rename = "ping")]
     Ping,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type")]
-pub enum _ContentDelta {
-    #[serde(rename = "text_delta")]
-    TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
 }
