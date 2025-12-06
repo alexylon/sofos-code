@@ -1,5 +1,7 @@
 use crate::api::Message;
 
+const MAX_MESSAGES: usize = 50;
+
 /// Manages conversation history for the REPL
 pub struct ConversationHistory {
     messages: Vec<Message>,
@@ -67,16 +69,26 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
         }
     }
 
+    fn trim_if_needed(&mut self) {
+        if self.messages.len() > MAX_MESSAGES {
+            let remove_count = self.messages.len() - MAX_MESSAGES;
+            self.messages.drain(0..remove_count);
+        }
+    }
+
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(Message::user(content));
+        self.trim_if_needed();
     }
 
     pub fn add_assistant_with_blocks(&mut self, blocks: Vec<crate::api::MessageContentBlock>) {
         self.messages.push(Message::assistant_with_blocks(blocks));
+        self.trim_if_needed();
     }
 
     pub fn add_tool_results(&mut self, results: Vec<crate::api::MessageContentBlock>) {
         self.messages.push(Message::user_with_tool_results(results));
+        self.trim_if_needed();
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -103,5 +115,51 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
 impl Default for ConversationHistory {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::MessageContentBlock;
+
+    #[test]
+    fn test_message_limit_trimming() {
+        let mut history = ConversationHistory::new();
+        
+        for i in 0..60 {
+            history.add_user_message(format!("Message {}", i));
+        }
+        
+        assert_eq!(history.messages().len(), 50);
+        
+        if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
+            assert_eq!(content, "Message 10");
+        }
+    }
+
+    #[test]
+    fn test_message_limit_with_blocks() {
+        let mut history = ConversationHistory::new();
+        
+        for i in 0..30 {
+            history.add_user_message(format!("User {}", i));
+            history.add_assistant_with_blocks(vec![
+                MessageContentBlock::Text { text: format!("Assistant {}", i) }
+            ]);
+        }
+        
+        assert_eq!(history.messages().len(), 50);
+    }
+
+    #[test]
+    fn test_no_trimming_below_limit() {
+        let mut history = ConversationHistory::new();
+        
+        for i in 0..20 {
+            history.add_user_message(format!("Message {}", i));
+        }
+        
+        assert_eq!(history.messages().len(), 20);
     }
 }
