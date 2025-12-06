@@ -127,10 +127,10 @@ impl ToolExecutor {
                 let results = code_search.search(pattern, file_type, max_results)?;
                 Ok(format!("Code search results:\n\n{}", results))
             }
-            "edit_file_fast" => {
+            "morph_edit_file" => {
                 let morph = self.morph_client.as_ref()
                     .ok_or_else(|| SofosError::ToolExecution(
-                        "Morph client not available. Set MORPH_API_KEY to use edit_file_fast".to_string()
+                        "Morph client not available. Set MORPH_API_KEY to use morph_edit_file".to_string()
                     ))?;
 
                 let path = input["path"]
@@ -148,7 +148,7 @@ impl ToolExecutor {
                 let merged_code = morph.apply_edit(instruction, &original_code, code_edit).await?;
 
                 self.fs_tool.write_file(path, &merged_code)?;
-                Ok(format!("Successfully applied fast edit to '{}'", path))
+                Ok(format!("Successfully applied Morph edit to '{}'", path))
             }
             "execute_bash" => {
                 let command = input["command"]

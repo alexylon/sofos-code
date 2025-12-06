@@ -26,7 +26,7 @@ impl ConversationHistory {
         }
 
         let edit_instruction = if has_morph {
-            "- When creating new files, use the write_file tool\n- When editing existing files, ALWAYS use the edit_file_fast tool (ultra-fast, 10,500+ tokens/sec)"
+            "- When creating new files, use the write_file tool\n- When editing existing files, ALWAYS use the morph_edit_file tool (ultra-fast, 10,500+ tokens/sec)"
         } else {
             "- When creating or editing code, use the write_file tool"
         };

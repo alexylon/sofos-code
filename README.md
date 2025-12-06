@@ -13,7 +13,8 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
 - **Web Search** - Real-time information via DuckDuckGo
-- **Secure** - All file operations restricted to workspace, prevents directory traversal
+- **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
+- **Secure** - All operations restricted to workspace, prevents directory traversal
 
 ## Installation
 
@@ -41,7 +42,9 @@ cargo install --path .
 export ANTHROPIC_API_KEY='your-api-key'
 ```
 
-### Enable Ultra-Fast Editing (Optional). When enabled, Claude can use the `edit_file_fast` tool for lightning-fast, accurate code modifications.
+### Enable Ultra-Fast Editing (Optional)
+
+When enabled, Claude can use the `morph_edit_file` tool for lightning-fast, accurate code modifications.
 
 ```bash
 export MORPH_API_KEY='your-morph-key'
@@ -84,13 +87,14 @@ Claude can automatically use these tools:
 **File Operations:**
 - `read_file` - Read file contents
 - `write_file` - Create or overwrite files
-- `edit_file_fast` - Ultra-fast code editing (requires MORPH_API_KEY)
+- `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
 - `list_directory` - List directory contents
 - `create_directory` - Create directories
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
 - `web_search` - Search the internet
+- `execute_bash` - Run tests and build commands (read-only, sandboxed)
 
 ## Security
 
@@ -140,12 +144,14 @@ MIT License
 
 ## Morph Integration
 
-Sofos integrates with Morph's APIs for enhanced performance:
+Sofos integrates with Morph's Apply API for ultra-fast code editing:
 
-✅ **Morph Apply** - Ultra-fast code editing (10,500+ tokens/sec, 96-98% accuracy)
-- Direct REST API integration
-- Works with `edit_file_fast` tool
-- Optional - enable with `MORPH_API_KEY`
+- **10,500+ tokens/sec** - Lightning-fast edits
+- **96-98% accuracy** - Reliable code modifications
+- **Direct REST API** - No additional dependencies
+- **Optional** - Enable with `MORPH_API_KEY`
+
+Uses the `morph_edit_file` tool when available.
 
 ## Acknowledgments
 

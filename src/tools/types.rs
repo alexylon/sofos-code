@@ -20,7 +20,7 @@ fn read_file_tool() -> Tool {
 
 fn write_file_tool(has_morph: bool) -> Tool {
     let description = if has_morph {
-        "Create a new file with the given content. For editing existing files, use edit_file_fast instead. Only works within the current project directory."
+        "Create a new file with the given content. For editing existing files, use morph_edit_file instead. Only works within the current project directory."
     } else {
         "Create a new file or overwrite an existing file with the given content. Only works within the current project directory."
     };
@@ -118,9 +118,9 @@ fn execute_bash_tool() -> Tool {
     }
 }
 
-fn edit_file_fast_tool() -> Tool {
+fn morph_edit_file_tool() -> Tool {
     Tool {
-        name: "edit_file_fast".to_string(),
+        name: "morph_edit_file".to_string(),
         description: "**PREFERRED FOR EDITING FILES** - Ultra-fast file editing using Morph Apply API (10,500+ tokens/sec, 96-98% accuracy). Use this for ALL modifications to existing files. Provide the instruction, original code, and your proposed changes with '// ... existing code ...' markers for unchanged sections. Much more efficient than write_file.".to_string(),
         input_schema: json!({
             "type": "object",
@@ -164,7 +164,7 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
         create_directory_tool(),
         web_search_tool(),
         execute_bash_tool(),
-        edit_file_fast_tool(),
+        morph_edit_file_tool(),
     ]
 }
 
