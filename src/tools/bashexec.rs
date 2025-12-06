@@ -62,7 +62,7 @@ impl BashExecutor {
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
-                result.push_str("\n");
+                result.push('\n');
             }
             result.push_str("STDERR:\n");
             result.push_str(&stderr);
@@ -86,9 +86,10 @@ impl BashExecutor {
             return false;
         }
 
-        let directory_commands = ["cd ", "cd\t", "cd;", "cd&", "cd|",
-                                  "pushd ", "pushd\t", "pushd;", "pushd&", "pushd|",
-                                  "popd ", "popd\t", "popd;", "popd&", "popd|"];
+        let directory_commands = [
+            "cd ", "cd\t", "cd;", "cd&", "cd|", "pushd ", "pushd\t", "pushd;", "pushd&", "pushd|",
+            "popd ", "popd\t", "popd;", "popd&", "popd|",
+        ];
         for cmd in &directory_commands {
             if command_lower.starts_with(cmd.trim_end())
                 || command_lower.contains(&format!(" {}", cmd.trim_end()))
@@ -111,19 +112,48 @@ impl BashExecutor {
         }
 
         // Check absolute paths after pipes, semicolons, and logical operators
-        if command.contains("|/") || command.contains(";/") 
-            || command.contains("&&/") || command.contains("||/") {
+        if command.contains("|/")
+            || command.contains(";/")
+            || command.contains("&&/")
+            || command.contains("||/")
+        {
             return false;
         }
 
         let forbidden_commands = [
-            "rm", "mv", "cp", "chmod", "chown", "chgrp",
-            "mkdir", "rmdir", "touch", "ln", "dd",
-            "mkfs", "mount", "umount", "kill", "killall",
-            "pkill", "shutdown", "reboot", "halt", "poweroff",
-            "useradd", "userdel", "groupadd", "groupdel",
-            "passwd", "systemctl", "service", "fdisk",
-            "parted", "mkswap", "swapon", "swapoff",
+            "rm",
+            "mv",
+            "cp",
+            "chmod",
+            "chown",
+            "chgrp",
+            "mkdir",
+            "rmdir",
+            "touch",
+            "ln",
+            "dd",
+            "mkfs",
+            "mount",
+            "umount",
+            "kill",
+            "killall",
+            "pkill",
+            "shutdown",
+            "reboot",
+            "halt",
+            "poweroff",
+            "useradd",
+            "userdel",
+            "groupadd",
+            "groupdel",
+            "passwd",
+            "systemctl",
+            "service",
+            "fdisk",
+            "parted",
+            "mkswap",
+            "swapon",
+            "swapoff",
         ];
 
         for forbidden in &forbidden_commands {
@@ -229,12 +259,12 @@ mod tests {
     #[test]
     fn test_output_size_limit() {
         use tempfile;
-        
+
         let temp_dir = tempfile::tempdir().unwrap();
         let executor = BashExecutor::new(temp_dir.path().to_path_buf()).unwrap();
 
         let result = executor.execute("seq 1 2000000");
-        
+
         assert!(result.is_err());
         if let Err(SofosError::ToolExecution(msg)) = result {
             assert!(msg.contains("too large"));

@@ -36,29 +36,28 @@ impl FileSystemTool {
         let full_path = self.workspace.join(path);
 
         // Canonicalize if it exists, otherwise just check the parent
-        let canonical = if full_path.exists() {
-            full_path.canonicalize().map_err(|e| {
-                SofosError::InvalidPath(format!("Failed to canonicalize path: {}", e))
-            })?
-        } else {
-            // For non-existent paths, validate that the parent is within workspace
-            if let Some(parent) = full_path.parent() {
-                if parent.exists() {
-                    let canonical_parent = parent.canonicalize().map_err(|e| {
-                        SofosError::InvalidPath(format!("Failed to canonicalize parent: {}", e))
-                    })?;
-                    canonical_parent.join(
+        let canonical =
+            if full_path.exists() {
+                full_path.canonicalize().map_err(|e| {
+                    SofosError::InvalidPath(format!("Failed to canonicalize path: {}", e))
+                })?
+            } else {
+                // For non-existent paths, validate that the parent is within workspace
+                if let Some(parent) = full_path.parent() {
+                    if parent.exists() {
+                        let canonical_parent = parent.canonicalize().map_err(|e| {
+                            SofosError::InvalidPath(format!("Failed to canonicalize parent: {}", e))
+                        })?;
+                        canonical_parent.join(full_path.file_name().ok_or_else(|| {
+                            SofosError::InvalidPath("Invalid filename".to_string())
+                        })?)
+                    } else {
                         full_path
-                            .file_name()
-                            .ok_or_else(|| SofosError::InvalidPath("Invalid filename".to_string()))?,
-                    )
+                    }
                 } else {
                     full_path
                 }
-            } else {
-                full_path
-            }
-        };
+            };
 
         if !canonical.starts_with(&self.workspace) {
             return Err(SofosError::PathViolation(format!(
@@ -78,10 +77,7 @@ impl FileSystemTool {
         }
 
         if !full_path.is_file() {
-            return Err(SofosError::InvalidPath(format!(
-                "'{}' is not a file",
-                path
-            )));
+            return Err(SofosError::InvalidPath(format!("'{}' is not a file", path)));
         }
 
         // Check file size before reading to prevent OOM
@@ -95,9 +91,7 @@ impl FileSystemTool {
             )));
         }
 
-        fs::read_to_string(&full_path).map_err(|e| {
-            SofosError::Io(e)
-        })
+        fs::read_to_string(&full_path).map_err(SofosError::Io)
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {
@@ -149,16 +143,9 @@ impl FileSystemTool {
         let mut entries = Vec::new();
         for entry in fs::read_dir(&full_path)? {
             let entry = entry?;
-            let name = entry
-                .file_name()
-                .to_string_lossy()
-                .to_string();
+            let name = entry.file_name().to_string_lossy().to_string();
             let is_dir = entry.file_type()?.is_dir();
-            entries.push(if is_dir {
-                format!("{}/", name)
-            } else {
-                name
-            });
+            entries.push(if is_dir { format!("{}/", name) } else { name });
         }
 
         entries.sort();
@@ -178,10 +165,7 @@ impl FileSystemTool {
         }
 
         if !full_path.is_file() {
-            return Err(SofosError::InvalidPath(format!(
-                "'{}' is not a file",
-                path
-            )));
+            return Err(SofosError::InvalidPath(format!("'{}' is not a file", path)));
         }
 
         fs::remove_file(&full_path)?;
@@ -314,7 +298,9 @@ mod tests {
 
         fs_tool.create_directory("parent/child").unwrap();
         fs_tool.write_file("parent/file1.txt", "test1").unwrap();
-        fs_tool.write_file("parent/child/file2.txt", "test2").unwrap();
+        fs_tool
+            .write_file("parent/child/file2.txt", "test2")
+            .unwrap();
 
         let parent_entries = fs_tool.list_directory("parent").unwrap();
         assert!(parent_entries.contains(&"child/".to_string()));
@@ -331,14 +317,16 @@ mod tests {
 
         // Create a file larger than 50MB (51MB)
         let large_data = vec![0u8; 51 * 1024 * 1024];
-        fs_tool.write_file("large_file.bin", &String::from_utf8_lossy(&large_data)).unwrap();
+        fs_tool
+            .write_file("large_file.bin", &String::from_utf8_lossy(&large_data))
+            .unwrap();
 
         let result = fs_tool.read_file("large_file.bin");
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         assert!(matches!(err, SofosError::InvalidPath(_)));
-        
+
         // Verify error message mentions file size
         if let SofosError::InvalidPath(msg) = err {
             assert!(msg.contains("too large"));
@@ -350,27 +338,27 @@ mod tests {
     #[cfg(unix)] // Symlinks work differently on Windows
     fn test_symlink_escape_blocked() {
         use std::os::unix::fs::symlink;
-        
+
         let temp_workspace = tempfile::tempdir().unwrap();
         let temp_outside = tempfile::tempdir().unwrap();
-        
+
         let fs_tool = FileSystemTool::new(temp_workspace.path().to_path_buf()).unwrap();
-        
+
         // Create a file outside the workspace
         let outside_file = temp_outside.path().join("secret.txt");
         fs::write(&outside_file, "secret data").unwrap();
-        
+
         // Try to create a symlink inside workspace pointing outside
         let symlink_path = temp_workspace.path().join("escape_link");
         symlink(&outside_file, &symlink_path).unwrap();
-        
+
         // Attempt to read via symlink should fail with path violation
         let result = fs_tool.read_file("escape_link");
         assert!(result.is_err());
-        
+
         let err = result.unwrap_err();
         assert!(matches!(err, SofosError::PathViolation(_)));
-        
+
         if let SofosError::PathViolation(msg) = err {
             assert!(msg.contains("outside the workspace"));
         }

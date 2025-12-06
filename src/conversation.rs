@@ -126,13 +126,13 @@ mod tests {
     #[test]
     fn test_message_limit_trimming() {
         let mut history = ConversationHistory::new();
-        
+
         for i in 0..60 {
             history.add_user_message(format!("Message {}", i));
         }
-        
+
         assert_eq!(history.messages().len(), 50);
-        
+
         if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
             assert_eq!(content, "Message 10");
         }
@@ -141,25 +141,25 @@ mod tests {
     #[test]
     fn test_message_limit_with_blocks() {
         let mut history = ConversationHistory::new();
-        
+
         for i in 0..30 {
             history.add_user_message(format!("User {}", i));
-            history.add_assistant_with_blocks(vec![
-                MessageContentBlock::Text { text: format!("Assistant {}", i) }
-            ]);
+            history.add_assistant_with_blocks(vec![MessageContentBlock::Text {
+                text: format!("Assistant {}", i),
+            }]);
         }
-        
+
         assert_eq!(history.messages().len(), 50);
     }
 
     #[test]
     fn test_no_trimming_below_limit() {
         let mut history = ConversationHistory::new();
-        
+
         for i in 0..20 {
             history.add_user_message(format!("Message {}", i));
         }
-        
+
         assert_eq!(history.messages().len(), 20);
     }
 }

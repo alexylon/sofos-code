@@ -44,9 +44,9 @@ impl CodeSearchTool {
         cmd.arg(pattern);
         cmd.current_dir(&self.workspace);
 
-        let output = cmd.output().map_err(|e| {
-            SofosError::ToolExecution(format!("Failed to execute ripgrep: {}", e))
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| SofosError::ToolExecution(format!("Failed to execute ripgrep: {}", e)))?;
 
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -88,8 +88,8 @@ impl CodeSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_code_search_creation() {

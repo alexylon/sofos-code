@@ -1,5 +1,5 @@
-use crate::error::{Result, SofosError};
 use super::types::*;
+use crate::error::{Result, SofosError};
 use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use std::pin::Pin;
@@ -21,10 +21,7 @@ impl AnthropicClient {
             HeaderValue::from_str(&api_key)
                 .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
         );
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static(API_VERSION),
-        );
+        headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()
@@ -42,12 +39,7 @@ impl AnthropicClient {
     ) -> Result<CreateMessageResponse> {
         let url = format!("{}/messages", API_BASE);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -69,12 +61,7 @@ impl AnthropicClient {
         request.stream = Some(true);
         let url = format!("{}/messages", API_BASE);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -88,12 +75,10 @@ impl AnthropicClient {
         let stream = response
             .bytes_stream()
             .map(|result| {
-                result
-                    .map_err(SofosError::from)
-                    .and_then(|bytes| {
-                        let text = String::from_utf8_lossy(&bytes);
-                        _parse_sse_events(&text)
-                    })
+                result.map_err(SofosError::from).and_then(|bytes| {
+                    let text = String::from_utf8_lossy(&bytes);
+                    _parse_sse_events(&text)
+                })
             })
             .flat_map(|result| {
                 futures::stream::iter(match result {
@@ -110,8 +95,7 @@ fn _parse_sse_events(text: &str) -> Result<Vec<_StreamEvent>> {
     let mut events = Vec::new();
 
     for line in text.lines() {
-        if line.starts_with("data: ") {
-            let json_str = &line[6..]; // Skip "data: "
+        if let Some(json_str) = line.strip_prefix("data: ") {
             if json_str.trim() == "[DONE]" {
                 break;
             }

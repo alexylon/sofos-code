@@ -84,12 +84,7 @@ impl MorphClient {
 
         let url = format!("{}/chat/completions", MORPH_BASE_URL);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request)
-            .send()
-            .await?;
+        let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -102,11 +97,11 @@ impl MorphClient {
 
         let result: MorphResponse = response.json().await?;
 
-        Ok(result
+        result
             .choices
             .first()
             .map(|c| c.message.content.clone())
-            .ok_or_else(|| SofosError::Api("No response from Morph API".to_string()))?)
+            .ok_or_else(|| SofosError::Api("No response from Morph API".to_string()))
     }
 }
 

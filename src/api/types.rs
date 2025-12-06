@@ -36,9 +36,7 @@ impl Message {
     pub fn user_with_tool_results(results: Vec<MessageContentBlock>) -> Self {
         Self {
             role: "user".to_string(),
-            content: MessageContent::Blocks {
-                content: results,
-            },
+            content: MessageContent::Blocks { content: results },
         }
     }
 }
@@ -114,9 +112,7 @@ pub enum MessageContentBlock {
 impl MessageContentBlock {
     pub fn from_content_block(block: &ContentBlock) -> Self {
         match block {
-            ContentBlock::Text { text } => MessageContentBlock::Text {
-                text: text.clone(),
-            },
+            ContentBlock::Text { text } => MessageContentBlock::Text { text: text.clone() },
             ContentBlock::ToolUse { id, name, input } => MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
@@ -154,10 +150,7 @@ pub enum _StreamEventType {
         content_block: ContentBlock,
     },
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta {
-        index: usize,
-        delta: _ContentDelta,
-    },
+    ContentBlockDelta { index: usize, delta: _ContentDelta },
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: usize },
     #[serde(rename = "message_delta")]

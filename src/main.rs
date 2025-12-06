@@ -36,8 +36,9 @@ fn main() -> Result<()> {
         }
     };
 
-    let workspace = env::current_dir()
-        .map_err(|e| error::SofosError::Config(format!("Failed to get current directory: {}", e)))?;
+    let workspace = env::current_dir().map_err(|e| {
+        error::SofosError::Config(format!("Failed to get current directory: {}", e))
+    })?;
 
     println!(
         "{} {}",
@@ -52,7 +53,11 @@ fn main() -> Result<()> {
                 Some(client)
             }
             Err(e) => {
-                eprintln!("{} Failed to initialize Morph client: {}", "Warning:".bright_yellow(), e);
+                eprintln!(
+                    "{} Failed to initialize Morph client: {}",
+                    "Warning:".bright_yellow(),
+                    e
+                );
                 None
             }
         }

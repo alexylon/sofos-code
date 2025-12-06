@@ -24,7 +24,10 @@ impl WebSearchTool {
 
     /// Search the web using DuckDuckGo
     pub async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
-        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding::encode(query));
+        let url = format!(
+            "https://html.duckduckgo.com/html/?q={}",
+            urlencoding::encode(query)
+        );
 
         let response = self
             .client
@@ -104,7 +107,7 @@ impl WebSearchTool {
                     let content_start = snippet_start + content_start + 1;
                     if let Some(content_end) = part[content_start..].find("</") {
                         html_escape::decode_html_entities(
-                            &part[content_start..content_start + content_end]
+                            &part[content_start..content_start + content_end],
                         )
                         .to_string()
                     } else {
