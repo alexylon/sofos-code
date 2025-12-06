@@ -143,13 +143,20 @@ impl Repl {
         content_blocks: Vec<ContentBlock>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<()> {
-        const MAX_RECURSION_DEPTH: u32 = 10;
+        const MAX_RECURSION_DEPTH: u32 = 15;
+
+        if std::env::var("SOFOS_DEBUG").is_ok() {
+            eprintln!("\n=== handle_response: recursion_depth={}, blocks={} ===", 
+                self.recursion_depth, content_blocks.len());
+        }
 
         if self.recursion_depth >= MAX_RECURSION_DEPTH {
             eprintln!(
-                "{} Maximum recursion depth reached. Stopping to prevent infinite loop.",
+                "\n{} Maximum recursion depth reached. Stopping to prevent infinite loop.",
                 "Warning:".bright_yellow().bold()
             );
+            println!("{}", "The assistant has made the maximum number of tool calls. Please rephrase your request or break it into smaller tasks.".bright_yellow());
+            println!();
             return Ok(());
         }
 
@@ -159,7 +166,9 @@ impl Repl {
         for block in &content_blocks {
             match block {
                 ContentBlock::Text { text } => {
-                    text_output.push(text.clone());
+                    if !text.trim().is_empty() {
+                        text_output.push(text.clone());
+                    }
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_uses.push((id.clone(), name.clone(), input.clone()));
@@ -175,13 +184,29 @@ impl Repl {
             println!();
         }
 
-        // Always add assistant content to conversation history FIRST
-        self.conversation.add_assistant_content(&content_blocks);
+        // Store the full assistant response with content blocks
+        // This includes both text and tool_use blocks so the API can match tool_results
+        if !content_blocks.is_empty() {
+            let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
+                .iter()
+                .map(|block| crate::api::MessageContentBlock::from_content_block(block))
+                .collect();
+            self.conversation.add_assistant_with_blocks(message_blocks);
+        }
 
         if !tool_uses.is_empty() {
             let mut user_cancelled = false;
+            let mut tool_results = Vec::new();
             
-            for (_tool_id, tool_name, tool_input) in &tool_uses {
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("\n=== Executing {} tools ===", tool_uses.len());
+            }
+            
+            for (i, (tool_id, tool_name, tool_input)) in tool_uses.iter().enumerate() {
+                if std::env::var("SOFOS_DEBUG").is_ok() {
+                    eprintln!("=== Tool {}/{}: {} (id: {}) ===", i + 1, tool_uses.len(), tool_name, &tool_id[..20]);
+                }
+                
                 if tool_name == "execute_bash" {
                     if let Some(command) = tool_input.get("command").and_then(|v| v.as_str()) {
                         println!(
@@ -202,31 +227,93 @@ impl Repl {
 
                 match result {
                     Ok(output) => {
+                        if std::env::var("SOFOS_DEBUG").is_ok() {
+                            eprintln!("=== Tool {} succeeded, output length: {} ===", i + 1, output.len());
+                        }
+                        
                         println!("{}", output.dimmed());
                         println!();
-                        self.conversation.add_tool_result(tool_name, &output);
-                        
+
+                        // Collect tool result instead of adding immediately
+                        tool_results.push(crate::api::MessageContentBlock::ToolResult {
+                            tool_use_id: tool_id.clone(),
+                            content: output.clone(),
+                        });
+
                         // If deletion was cancelled, stop executing remaining tools
-                        if output.contains("cancelled by user") {
+                        // Check for the specific cancellation messages, not just substring
+                        if output.starts_with("File deletion cancelled by user") 
+                            || output.starts_with("Directory deletion cancelled by user") {
                             user_cancelled = true;
                             break;
                         }
                     }
                     Err(e) => {
+                        if std::env::var("SOFOS_DEBUG").is_ok() {
+                            eprintln!("=== Tool {} failed: {} ===", i + 1, e);
+                        }
+                        
                         let error_msg = format!("Tool execution failed: {}", e);
                         eprintln!("{} {}", "Error:".bright_red().bold(), error_msg);
                         println!();
-                        self.conversation.add_tool_result(tool_name, &error_msg);
+
+                        // Collect error as tool result
+                        tool_results.push(crate::api::MessageContentBlock::ToolResult {
+                            tool_use_id: tool_id.clone(),
+                            content: error_msg,
+                        });
                     }
                 }
             }
 
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("=== All {} tools executed, collected {} results ===", tool_uses.len(), tool_results.len());
+            }
+
+            // Add all tool results together in one user message
+            if !tool_results.is_empty() {
+                if std::env::var("SOFOS_DEBUG").is_ok() {
+                    eprintln!("=== Adding {} tool results to conversation ===", tool_results.len());
+                }
+                self.conversation.add_tool_results(tool_results);
+            } else {
+                if std::env::var("SOFOS_DEBUG").is_ok() {
+                    eprintln!("=== WARNING: No tool results to add! ===");
+                }
+            }
+
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("=== user_cancelled={} ===", user_cancelled);
+            }
+
             // If user cancelled deletion, don't make another API request - let them respond
             if user_cancelled {
+                if std::env::var("SOFOS_DEBUG").is_ok() {
+                    eprintln!("=== Returning early due to user cancellation ===");
+                }
                 return Ok(());
             }
 
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("=== About to generate response ===");
+            }
+
             // After executing tools, get another response from Claude
+            println!("{}", "Generating response...".dimmed());
+            
+            // Debug: show conversation history
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("\n=== DEBUG: Conversation before API call ===");
+                for (i, msg) in self.conversation.messages().iter().enumerate() {
+                    let content_desc = match &msg.content {
+                        crate::api::MessageContent::Text { content } => format!("text({})", content.len()),
+                        crate::api::MessageContent::Blocks { content } => format!("blocks({})", content.len()),
+                    };
+                    eprintln!("Message {}: role={}, content={}", i, msg.role, content_desc);
+                }
+                eprintln!("===========================================\n");
+            }
+            
             let request = CreateMessageRequest {
                 model: self.model.clone(),
                 max_tokens: self.max_tokens,
@@ -236,11 +323,63 @@ impl Repl {
                 stream: None,
             };
 
-            let response = runtime.block_on(self.client.create_message(request))?;
+            let response = match runtime.block_on(self.client.create_message(request)) {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("{} Failed to get response after tool execution: {}", "Error:".bright_red().bold(), e);
+                    return Err(e);
+                }
+            };
+
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("\n=== Response received: stop_reason={:?}, content_blocks={} ===", 
+                    response.stop_reason, response.content.len());
+                for (i, block) in response.content.iter().enumerate() {
+                    match block {
+                        ContentBlock::Text { text } => eprintln!("  Block {}: Text({})", i, text.len()),
+                        ContentBlock::ToolUse { name, .. } => eprintln!("  Block {}: ToolUse({})", i, name),
+                    }
+                }
+            }
+
+            // Handle different stop reasons
+            if let Some(ref stop_reason) = response.stop_reason {
+                if stop_reason == "max_tokens" {
+                    eprintln!("\n{} Response was cut off due to token limit.", "Warning:".bright_yellow().bold());
+                    eprintln!("Consider using --max-tokens with a higher value (current: {})", self.max_tokens);
+                    
+                    // If we got some text before hitting the limit, show it
+                    if !response.content.is_empty() {
+                        let has_text = response.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+                        if has_text {
+                            eprintln!("Showing partial response:\n");
+                        }
+                    }
+                }
+            }
+
+            // Check if response is empty
+            if response.content.is_empty() {
+                println!("{}", "Assistant:".bright_blue().bold());
+                println!("{}", "I've completed the tool operations but didn't generate a response. Please let me know if you need any clarification.".dimmed());
+                println!();
+                return Ok(());
+            }
 
             // Increment recursion depth before recursive call
             self.recursion_depth += 1;
-            return self.handle_response(response.content, runtime);
+            
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("=== Making recursive call to handle_response with depth={} ===", self.recursion_depth);
+            }
+            
+            let result = self.handle_response(response.content, runtime);
+            
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!("=== Returned from recursive call, depth was {} ===", self.recursion_depth);
+            }
+            
+            return result;
         }
 
         Ok(())

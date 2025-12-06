@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, default_value = "morph-v3-fast")]
     pub morph_model: String,
 
-    #[arg(long, default_value = "4096")]
+    #[arg(long, default_value = "8192")]
     pub max_tokens: u32,
 
     #[arg(short, long)]

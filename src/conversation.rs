@@ -1,4 +1,4 @@
-use crate::api::{ContentBlock, Message};
+use crate::api::Message;
 
 /// Manages conversation history for the REPL
 pub struct ConversationHistory {
@@ -71,39 +71,12 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
         self.messages.push(Message::user(content));
     }
 
-    pub fn add_assistant_message(&mut self, content: String) {
-        self.messages.push(Message::assistant(content));
+    pub fn add_assistant_with_blocks(&mut self, blocks: Vec<crate::api::MessageContentBlock>) {
+        self.messages.push(Message::assistant_with_blocks(blocks));
     }
 
-    /// Add assistant content blocks (including tool uses)
-    pub fn add_assistant_content(&mut self, content_blocks: &[ContentBlock]) {
-        let mut content_parts = Vec::new();
-
-        for block in content_blocks {
-            match block {
-                ContentBlock::Text { text } => {
-                    content_parts.push(text.clone());
-                }
-                ContentBlock::ToolUse { name, input, .. } => {
-                    content_parts.push(format!(
-                        "[Used tool: {} with input: {}]",
-                        name,
-                        serde_json::to_string_pretty(input).unwrap_or_default()
-                    ));
-                }
-            }
-        }
-
-        if !content_parts.is_empty() {
-            self.add_assistant_message(content_parts.join("\n\n"));
-        }
-    }
-
-    pub fn add_tool_result(&mut self, tool_name: &str, result: &str) {
-        self.messages.push(Message::user(format!(
-            "[Tool result for {}]\n{}",
-            tool_name, result
-        )));
+    pub fn add_tool_results(&mut self, results: Vec<crate::api::MessageContentBlock>) {
+        self.messages.push(Message::user_with_tool_results(results));
     }
 
     pub fn messages(&self) -> &[Message] {

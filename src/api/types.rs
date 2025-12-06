@@ -3,21 +3,42 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    #[serde(flatten)]
+    pub content: MessageContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text { content: String },
+    Blocks { content: Vec<MessageContentBlock> },
 }
 
 impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
-            content: content.into(),
+            content: MessageContent::Text {
+                content: content.into(),
+            },
         }
     }
 
-    pub fn assistant(content: impl Into<String>) -> Self {
+    pub fn assistant_with_blocks(content_blocks: Vec<MessageContentBlock>) -> Self {
         Self {
             role: "assistant".to_string(),
-            content: content.into(),
+            content: MessageContent::Blocks {
+                content: content_blocks,
+            },
+        }
+    }
+
+    pub fn user_with_tool_results(results: Vec<MessageContentBlock>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::Blocks {
+                content: results,
+            },
         }
     }
 }
@@ -54,7 +75,7 @@ pub struct CreateMessageResponse {
     #[serde(rename = "model")]
     pub _model: String,
     #[serde(rename = "stop_reason")]
-    pub _stop_reason: Option<String>,
+    pub stop_reason: Option<String>,
     #[serde(rename = "usage")]
     pub _usage: Usage,
 }
@@ -70,6 +91,39 @@ pub enum ContentBlock {
         name: String,
         input: serde_json::Value,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MessageContentBlock {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
+}
+
+impl MessageContentBlock {
+    pub fn from_content_block(block: &ContentBlock) -> Self {
+        match block {
+            ContentBlock::Text { text } => MessageContentBlock::Text {
+                text: text.clone(),
+            },
+            ContentBlock::ToolUse { id, name, input } => MessageContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

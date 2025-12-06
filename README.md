@@ -4,7 +4,7 @@
 
 A blazingly fast, interactive AI coding assistant powered by Claude, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
-<div style="text-align: center;"><img src="/assets/sofos_code.png" style="width: 700px;" alt="Ferrocrypt"></div>
+<div align="center"><img src="/assets/sofos_code.png" style="width: 700px;" alt="Ferrocrypt"></div>
 
 ## Features
 
@@ -76,7 +76,7 @@ sofos --prompt "Create a hello world Rust program"
 -p, --prompt <TEXT>     One-shot mode
 --model <MODEL>         Claude model (default: claude-sonnet-4-5)
 --morph-model <MODEL>   Morph model (default: morph-v3-fast)
---max-tokens <N>        Max response tokens (default: 4096)
+--max-tokens <N>        Max response tokens (default: 8192)
 -v, --verbose           Verbose logging
 ```
 
