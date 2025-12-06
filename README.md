@@ -4,7 +4,7 @@
 
 A blazingly fast, interactive AI coding assistant powered by Claude, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
-<div align="center"><img align="center" src="/assets/sofos_code.png" width="700" alt="Ferrocrypt"></div>
+<div style="text-align: center;"><img src="/assets/sofos_code.png" style="width: 700px;" alt="Ferrocrypt"></div>
 
 ## Features
 
