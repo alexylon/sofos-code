@@ -2,6 +2,8 @@ use crate::error::{Result, SofosError};
 use std::path::PathBuf;
 use std::process::Command;
 
+const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
+
 pub struct BashExecutor {
     workspace: PathBuf,
 }
@@ -24,6 +26,22 @@ impl BashExecutor {
             .current_dir(&self.workspace)
             .output()
             .map_err(|e| SofosError::ToolExecution(format!("Failed to execute command: {}", e)))?;
+
+        if output.stdout.len() > MAX_OUTPUT_SIZE {
+            return Err(SofosError::ToolExecution(format!(
+                "Command output too large ({} bytes). Maximum size is {} MB",
+                output.stdout.len(),
+                MAX_OUTPUT_SIZE / (1024 * 1024)
+            )));
+        }
+
+        if output.stderr.len() > MAX_OUTPUT_SIZE {
+            return Err(SofosError::ToolExecution(format!(
+                "Command error output too large ({} bytes). Maximum size is {} MB",
+                output.stderr.len(),
+                MAX_OUTPUT_SIZE / (1024 * 1024)
+            )));
+        }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -206,5 +224,23 @@ mod tests {
         assert!(!executor.is_safe_command("pushd /tmp"));
         assert!(!executor.is_safe_command("popd"));
         assert!(!executor.is_safe_command("ls && pushd .."));
+    }
+
+    #[test]
+    fn test_output_size_limit() {
+        use tempfile;
+        
+        let temp_dir = tempfile::tempdir().unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let result = executor.execute("seq 1 2000000");
+        
+        assert!(result.is_err());
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("too large"));
+            assert!(msg.contains("10 MB"));
+        } else {
+            panic!("Expected ToolExecution error");
+        }
     }
 }
