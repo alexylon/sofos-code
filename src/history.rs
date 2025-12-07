@@ -9,6 +9,8 @@ const SOFOS_DIR: &str = ".sofos";
 const SESSIONS_DIR: &str = "sessions";
 const INDEX_FILE: &str = "index.json";
 const MAX_PREVIEW_LENGTH: usize = 120;
+const WORKSPACE_INSTRUCTIONS_FILE: &str = "instructions.md";
+const PROJECT_INSTRUCTIONS_FILE: &str = ".sofosrc";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DisplayMessage {
@@ -38,7 +40,6 @@ pub struct SessionMetadata {
 pub struct Session {
     pub id: String,
     /// Messages in API format (for continuing the conversation with Claude)
-    #[serde(default, rename = "messages", alias = "api_messages")]
     pub api_messages: Vec<Message>,
     /// Messages in display format (for reconstructing the original UI)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -217,6 +218,34 @@ impl HistoryManager {
         let session: Session = serde_json::from_str(&content)?;
 
         Ok(session)
+    }
+
+    pub fn load_custom_instructions(&self) -> Result<Option<String>> {
+        let mut instructions = Vec::new();
+        
+        // Load project-level instructions (version controlled)
+        let project_instructions = self.workspace.join(PROJECT_INSTRUCTIONS_FILE);
+        if project_instructions.exists() {
+            let content = fs::read_to_string(&project_instructions)?;
+            if !content.trim().is_empty() {
+                instructions.push(format!("# Project Instructions\n\n{}", content.trim()));
+            }
+        }
+        
+        // Load workspace-level instructions (personal, gitignored)
+        let workspace_instructions = self.workspace.join(SOFOS_DIR).join(WORKSPACE_INSTRUCTIONS_FILE);
+        if workspace_instructions.exists() {
+            let content = fs::read_to_string(&workspace_instructions)?;
+            if !content.trim().is_empty() {
+                instructions.push(format!("# Personal Instructions\n\n{}", content.trim()));
+            }
+        }
+        
+        if instructions.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(instructions.join("\n\n")))
+        }
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {

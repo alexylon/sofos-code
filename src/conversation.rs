@@ -10,10 +10,10 @@ pub struct ConversationHistory {
 
 impl ConversationHistory {
     pub fn new() -> Self {
-        Self::with_features(false, false)
+        Self::with_features(false, false, None)
     }
 
-    pub fn with_features(has_morph: bool, has_code_search: bool) -> Self {
+    pub fn with_features(has_morph: bool, has_code_search: bool, custom_instructions: Option<String>) -> Self {
         let mut features = vec![
             "1. Read files in the current project directory",
             "2. Write/create files in the current project directory",
@@ -33,7 +33,7 @@ impl ConversationHistory {
             "- When creating or editing code, use the write_file tool"
         };
 
-        let system_prompt = format!(
+        let mut system_prompt = format!(
             r#"You are Sofos, an AI coding assistant. You have access to tools that allow you to:
 {}
 
@@ -68,6 +68,12 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
             features.join("\n"),
             edit_instruction
         );
+        
+        // Append custom instructions if provided
+        if let Some(instructions) = custom_instructions {
+            system_prompt.push_str("\n\n");
+            system_prompt.push_str(&instructions);
+        }
 
         Self {
             messages: Vec::new(),

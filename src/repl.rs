@@ -41,9 +41,18 @@ impl Repl {
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
-        let conversation = ConversationHistory::with_features(has_morph, has_code_search);
-
+        
         let history_manager = HistoryManager::new(workspace.clone())?;
+        
+        // Load custom instructions
+        let custom_instructions = history_manager.load_custom_instructions()?;
+        
+        // Show message if custom instructions are loaded
+        if custom_instructions.is_some() {
+            eprintln!("{}", "Loaded custom instructions".bright_green());
+        }
+        
+        let conversation = ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
 
         let editor = DefaultEditor::new()
             .map_err(|e| SofosError::Config(format!("Failed to create editor: {}", e)))?;
@@ -625,7 +634,7 @@ impl Repl {
     
     fn display_session(&self, session: &crate::history::Session) {
         if session.display_messages.is_empty() {
-            println!("{}", "Note: This is a legacy session without display history. Only API messages are available.".dimmed());
+            println!("{}", "Note: No display history available for this session.".dimmed());
             println!();
             return;
         }

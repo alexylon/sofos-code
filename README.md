@@ -10,6 +10,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 
 - **Interactive REPL** - Multi-turn conversations with Claude
 - **Session History** - Automatic session saving and resume previous conversations
+- **Custom Instructions** - Project and personal instruction files for context-aware assistance
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
@@ -35,59 +36,72 @@ cd sofos-code
 cargo install --path .
 ```
 
+### Important: Gitignore Setup
+
+**Add `.sofos/` to your `.gitignore`** to avoid committing session history and personal settings:
+
+```bash
+# Add to your .gitignore
+.sofos/
+```
+
+This directory contains sensitive data like conversation transcripts and personal instructions that shouldn't be shared.
+
+**Note:** The `.sofosrc` file *should* be committed, as it contains team-wide project instructions.
+
 ## Usage
 
-### Set API key
+### Quick Start
 
 ```bash
+# Set your API key
 export ANTHROPIC_API_KEY='your-api-key'
-```
 
-### Enable Ultra-Fast Editing (Optional)
-
-When enabled, Claude can use the `morph_edit_file` tool for lightning-fast, accurate code modifications.
-
-```bash
+# Optional: Enable ultra-fast editing
 export MORPH_API_KEY='your-morph-key'
-```
 
-### Start interactive mode
-
-```bash
+# Start Sofos
 sofos
-```
-
-### One-shot mode
-
-```bash
-sofos --prompt "Create a hello world Rust program"
 ```
 
 ### Commands
 
-- `clear` - Clear conversation history
-- `exit` or `quit` - Exit
-- `Ctrl+D` - Exit
 - `resume` - Resume previous session
+- `clear` - Clear conversation history
+- `exit`, `quit`, or `Ctrl+D` - Exit
 
 ### Options
 
 ```
---api-key <KEY>         Anthropic API key (overrides ANTHROPIC_API_KEY)
---morph-api-key <KEY>   Morph API key (overrides MORPH_API_KEY)
 -p, --prompt <TEXT>     One-shot mode
--r, --resume            Resume a previous conversation session
+-r, --resume            Resume a previous session
+--api-key <KEY>         Anthropic API key (overrides env var)
+--morph-api-key <KEY>   Morph API key (overrides env var)
 --model <MODEL>         Claude model (default: claude-sonnet-4-5)
 --morph-model <MODEL>   Morph model (default: morph-v3-fast)
 --max-tokens <N>        Max response tokens (default: 8192)
 -v, --verbose           Verbose logging
 ```
 
+## Custom Instructions
+
+Provide project context to Sofos using instruction files:
+
+**`.sofosrc`** (project root, version controlled)
+- Shared with entire team
+- Contains project conventions, architecture, coding standards
+- See `.sofosrc` of this project's root for example
+
+**`.sofos/instructions.md`** (gitignored, personal)
+- Private to your workspace
+- Your personal preferences and notes
+
+Both files are loaded automatically at startup and appended to the system prompt.
+
 ## Session History
 
-All conversations are automatically saved to `.sofos/sessions/` in your project directory. 
-Resume previous sessions with `sofos --resume` or type `resume` in the REPL. 
-Sessions show a preview of the first message, last updated time, and message count.
+All conversations are automatically saved to `.sofos/sessions/` with both API messages (for continuing conversations) and display messages (for showing the original UI). 
+Resume with `sofos --resume` or type `resume` in the REPL.
 
 ## Available Tools
 
@@ -99,36 +113,32 @@ Claude can automatically use these tools:
 - `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
 - `list_directory` - List directory contents
 - `create_directory` - Create directories
-- `delete_file` - Delete files (automatic confirmation prompt)
-- `delete_directory` - Delete directories recursively (automatic confirmation prompt)
-- `move_file` - Move or rename files/directories
-- `copy_file` - Copy files
+- `delete_file` / `delete_directory` - Delete files/directories (with confirmation)
+- `move_file` / `copy_file` - Move or copy files
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
-- `web_search` - Search the web for current information (Claude's server-side tool)
+- `web_search` - Search the web for current information
 - `execute_bash` - Run tests and build commands (read-only, sandboxed)
 
 ## Security
 
 All file operations are sandboxed to your current working directory:
 
-- ✅ Can access files in the current directory and subdirectories
+- ✅ Can access files in current directory and subdirectories
 - ❌ Cannot access parent directories (`../`)
 - ❌ Cannot access absolute paths (`/etc/passwd`)
-- ❌ Cannot follow symlinks outside the workspace
+- ❌ Cannot follow symlinks outside workspace
 
-Bash command execution is restricted to read-only operations:
+Bash execution is restricted to read-only operations:
 
-- ✅ Can run tests and build commands (`cargo test`, `cargo build`)
+- ✅ Can run tests and build commands (`cargo test`, `npm test`, etc.)
 - ✅ Can read files and list directories (`cat`, `ls`, `grep`)
 - ❌ Cannot use `sudo` or privilege escalation
 - ❌ Cannot modify files (`rm`, `mv`, `cp`, `chmod`, `mkdir`, `touch`)
-- ❌ Cannot access absolute paths or parent directories
-- ❌ Cannot change directories (`cd`, `pushd`, `popd`)
-- ❌ Cannot use output redirection (`>`, `>>`)
+- ❌ Cannot change directories or use output redirection
 
-**Best Practice:** Run `sofos` from your project directory, use git to track changes.
+**Best Practice:** Run `sofos` from your project directory and use git to track changes.
 
 ## Development
 
@@ -143,28 +153,34 @@ cargo build --release
 RUST_LOG=debug sofos
 ```
 
+**Project Structure:**
+- `src/api/` - Anthropic API client and types
+- `src/tools/` - Tool implementations (filesystem, bash, code search)
+- `src/conversation.rs` - Conversation history management
+- `src/history.rs` - Session persistence and custom instructions
+- `src/repl.rs` - Main REPL loop and display logic
+- `src/syntax.rs` - Syntax highlighting
+
+See `.sofosrc` for detailed project conventions.
+
 ## Troubleshooting
 
-**API errors:** Check internet connection and API key
-
-**Path errors:** Use relative paths only, no `..` or absolute paths
-
-**Build errors:** Run `rustup update && cargo clean && cargo build`
-
-## License
-
-MIT License
+- **API errors:** Check internet connection and API key
+- **Path errors:** Use relative paths only, no `..` or absolute paths
+- **Build errors:** Run `rustup update && cargo clean && cargo build`
 
 ## Morph Integration
 
-Sofos integrates with Morph's Apply API for ultra-fast code editing:
+Optional integration with Morph's Apply API for ultra-fast code editing:
 
 - **10,500+ tokens/sec** - Lightning-fast edits
 - **96-98% accuracy** - Reliable code modifications
 - **Direct REST API** - No additional dependencies
 - **Optional** - Enable with `MORPH_API_KEY`
 
-Uses the `morph_edit_file` tool when available.
+## License
+
+MIT License
 
 ## Acknowledgments
 

@@ -1,0 +1,343 @@
+# Sofos - AI Coding Assistant Project Context
+
+## Project Overview
+
+Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API. It's built in Rust for maximum performance and security. The assistant can read/write files, search code, execute bash commands, and search the web - all within a sandboxed environment.
+
+**Core Philosophy:**
+- Security first: All operations are sandboxed to the workspace directory
+- Fast and efficient: Native Rust implementation with optional ultra-fast editing via Morph API
+- Developer-friendly: Interactive REPL with session persistence and custom instructions
+- Transparent: All tool executions are visible to the user
+
+## Architecture
+
+### Key Design Decisions
+
+1. **Dual Session Storage Format** (src/history.rs)
+   - `api_messages`: Anthropic API format for continuing conversations
+   - `display_messages`: UI-friendly format for showing conversation history
+   - This separation ensures Claude sees proper API format while users see original UI
+
+2. **Tool Calling Pattern** (src/repl.rs)
+   - Assistant returns content blocks (text + tool_use)
+   - REPL executes tools and collects results
+   - Results sent back as user message with tool_result blocks
+   - Recursive handling allows Claude to use multiple tools in sequence
+
+3. **Two-Level Instructions** (src/history.rs)
+   - `.sofosrc`: Project-level, version controlled
+   - `.sofos/instructions.md`: Personal, gitignored
+   - Both appended to system prompt at startup
+
+4. **Sandboxing Strategy** (src/tools/filesystem.rs, src/tools/bashexec.rs)
+   - All paths validated before operations
+   - Parent directory traversal blocked (`..`)
+   - Absolute paths rejected
+   - Symlinks checked to prevent escape
+   - Bash commands filtered through blocklist
+
+## Code Organization
+
+### Directory Structure
+
+```
+src/
+├── api/                    # Anthropic API integration
+│   ├── client.rs          # HTTP client for Claude API
+│   ├── morph.rs           # Morph Apply API client (optional)
+│   ├── types.rs           # Message types and serialization
+│   └── mod.rs
+├── tools/                  # Tool implementations
+│   ├── filesystem.rs      # File operations (read, write, list, etc)
+│   ├── bashexec.rs        # Sandboxed bash execution
+│   ├── codesearch.rs      # Ripgrep integration
+│   ├── types.rs           # Tool definitions for API
+│   └── mod.rs
+├── conversation.rs         # Message history management
+├── history.rs              # Session persistence + custom instructions
+├── repl.rs                 # Main REPL loop and display logic
+├── syntax.rs               # Markdown/code syntax highlighting
+├── cli.rs                  # Command-line argument parsing
+├── error.rs                # Error types
+├── session_selector.rs     # TUI for session selection
+└── main.rs                 # Entry point
+```
+
+### Key Files
+
+**src/api/types.rs**
+- Defines Message, ContentBlock, and MessageContentBlock enums
+- Handles serialization/deserialization for Anthropic API
+- Supports both regular and server-side tools (like web_search)
+
+**src/history.rs**
+- SessionMetadata: Preview and timestamps for session list
+- Session: Dual storage (api_messages + display_messages)
+- DisplayMessage: Enum for user messages, assistant responses, and tool executions
+
+**src/repl.rs**
+- Main event loop (run method)
+- handle_response: Recursively processes assistant responses and tool calls
+- display_session: Reconstructs conversation UI when resuming
+- Max recursion depth: 50 (prevents infinite loops)
+
+**src/conversation.rs**
+- Manages in-memory message history
+- Trims to MAX_MESSAGES (500) to prevent token overflow
+- Builds system prompt with features list and custom instructions
+
+**src/tools/filesystem.rs**
+- validate_path: Security-critical path validation
+- All operations check sandboxing before execution
+- File size limit: 10MB to prevent memory issues
+- User confirmation required for deletions
+
+**src/tools/bashexec.rs**
+- COMMAND_BLOCKLIST: Dangerous commands that are always rejected
+- Output size limit: 50MB
+- No sudo, no file modifications, no directory changes
+- Read-only operations only
+
+## Code Conventions
+
+### Rust Style
+- Follow standard Rust idioms and conventions
+- Use meaningful variable names (no single-letter except in loops)
+- Prefer `Result<T>` over `panic!` for error handling
+- Use `?` operator for error propagation
+- Keep functions focused and under ~100 lines
+
+### Error Handling
+- Custom `SofosError` enum in src/error.rs
+- Always provide context in error messages
+- Use `map_err` to add context when propagating errors
+- Display user-friendly error messages in REPL
+
+### Testing
+- Unit tests in the same file under `#[cfg(test)]`
+- Use `tempfile::TempDir` for filesystem tests
+- Mock API calls in tests (don't require real API keys)
+- Test security features thoroughly (path validation, sandboxing)
+
+### Documentation
+- Add doc comments (`///`) for public APIs
+- Explain "why" not just "what" in complex sections
+- Keep comments up-to-date with code changes
+- README.md is the primary user documentation
+
+## Security Considerations
+
+**Critical Security Features:**
+
+1. **Path Validation** (filesystem.rs:validate_path)
+   - Canonicalize paths to resolve symlinks
+   - Check that canonical path starts with workspace
+   - Reject parent traversal (`..`)
+   - Reject absolute paths
+   - This is the first line of defense - NEVER bypass!
+
+2. **Bash Command Filtering** (bashexec.rs)
+   - Blocklist of dangerous commands (`rm`, `sudo`, `chmod`, etc)
+   - No output redirection (`>`, `>>`, `|`, `&`)
+   - No directory changes (`cd`, `pushd`, `popd`)
+   - No background execution (`&`)
+   - Read-only operations only
+
+3. **File Size Limits**
+   - Read operations: 10MB limit
+   - Bash output: 50MB limit
+   - Prevents memory exhaustion attacks
+
+4. **User Confirmations**
+   - Delete operations require interactive confirmation
+   - Shows what will be deleted before execution
+   - User can cancel by declining
+
+**When Adding New Features:**
+- Always consider security implications first
+- Add path validation for any new file operations
+- Update blocklist if adding bash command capabilities
+- Test with malicious inputs (path traversal attempts, etc)
+
+## Important Implementation Details
+
+### Session Persistence
+
+**Session File Location:**
+- Stored in `.sofos/sessions/{session_id}.json`
+- Index file: `.sofos/sessions/index.json`
+- Entire `.sofos/` directory is gitignored
+
+### Message Flow
+
+**User sends message:**
+1. REPL adds to conversation history as user message
+2. Creates API request with all messages + system prompt
+3. Sends to Claude API
+
+**Claude responds with tools:**
+1. Response contains text + tool_use blocks
+2. REPL adds full response (with both text and tool_use) to history as assistant message
+3. Executes each tool sequentially
+4. Collects all tool results
+5. Adds all results as single user message
+6. Makes new API request (recursive call to handle_response)
+
+**Important:** Tool results must be in a user message, with tool_use_id matching the original tool_use id.
+
+### Custom Instructions Loading
+
+**Load order (history.rs:load_custom_instructions):**
+1. Load `.sofosrc` from project root (if exists)
+2. Load `.sofos/instructions.md` from workspace (if exists)
+3. Combine with headers ("# Project Instructions", "# Personal Instructions")
+4. Append to system prompt
+
+**Display:**
+- If either file exists, show "Loaded custom instructions" in green
+- Silent if neither exists
+
+### Recursion Depth Limiting
+
+**Problem:** Claude can make infinite tool calls if it gets stuck in a loop
+
+**Solution:** (repl.rs:handle_response)
+- Track recursion depth in REPL struct
+- MAX_RECURSION_DEPTH = 50
+- If exceeded, show warning and stop
+- Reset to 0 at start of new user message
+
+### Thinking Animation
+
+When waiting for Claude's response after tool execution:
+- Show animated spinner ("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+- Orange color (0xFF, 0x99, 0x33)
+- "Thinking..." text
+- Clears when response arrives
+
+## Dependencies
+
+### Core Dependencies
+- `tokio`: Async runtime for HTTP requests
+- `reqwest`: HTTP client for API calls
+- `serde`, `serde_json`: Serialization/deserialization
+- `colored`: Terminal colors and formatting
+- `rustyline`: REPL with readline support
+- `clap`: Command-line argument parsing
+
+### Optional Dependencies
+- `ripgrep`: Code search functionality (runtime check)
+- Morph API: Ultra-fast code editing (via MORPH_API_KEY)
+
+### Why These Choices?
+- `tokio` + `reqwest`: Industry standard for async HTTP in Rust
+- `rustyline`: Best readline implementation for Rust CLIs
+- `colored`: Simple, cross-platform terminal colors
+- Native dependencies minimal (only ripgrep, which is optional)
+
+## Testing Strategy
+
+### What to Test
+- Path validation with various malicious inputs
+- Bash command blocklist effectiveness
+- Session save/load with different formats
+- Message trimming behavior
+- Tool execution and result collection
+
+### What Not to Test
+- Actual Claude API responses (too expensive, non-deterministic)
+- Actual file I/O in most cases (use TempDir)
+- Network requests (mock when possible)
+
+### Running Tests
+```bash
+cargo test                    # All tests
+cargo test filesystem         # Just filesystem tests
+cargo test -- --nocapture     # Show println output
+```
+
+## Common Tasks
+
+### Adding a New Tool
+
+1. Define tool in `src/tools/types.rs` (get_tools or get_tools_with_morph)
+2. Implement execution in appropriate file (filesystem.rs, bashexec.rs, etc)
+3. Add match arm in `src/tools/mod.rs` (ToolExecutor::execute)
+4. Test the new tool thoroughly
+5. Update README.md with tool description
+
+### Adding a New API Field
+
+1. Update types in `src/api/types.rs`
+2. Add serde attributes for proper serialization
+3. Handle in response processing (repl.rs:handle_response)
+4. Test with actual API if possible
+
+### Debugging Tool Execution
+
+Set `SOFOS_DEBUG=1` environment variable:
+```bash
+SOFOS_DEBUG=1 cargo run
+```
+
+This prints:
+- Recursion depth at each step
+- Number of tools being executed
+- Tool success/failure and output length
+- Conversation state before API calls
+
+## Version Compatibility
+
+### Anthropic API
+- Uses Claude Messages API (not legacy Completions)
+- Model: claude-sonnet-4-5 (default)
+- Supports tool calling and server-side tools (web_search)
+- API version: 2023-06-01
+
+### Morph API
+- Uses Morph Apply REST API
+- Model: morph-v3-fast (default)
+- Optional integration via MORPH_API_KEY
+- Provides `morph_edit_file` tool when available
+
+## Future Considerations
+
+**Potential Improvements:**
+- Streaming responses for faster perceived performance
+- Multiple parallel tool executions (currently sequential)
+- Richer TUI with panels and split views
+- Plugin system for custom tools
+- Configuration file for default settings
+
+**Constraints:**
+- Keep binary size small (currently ~5MB)
+- Maintain zero-setup experience (except API keys)
+- Keep security as top priority
+
+## When Working on This Codebase
+
+**Always:**
+- Test security features when making changes to filesystem or bash tools
+- Update both README.md and this .sofosrc when adding features
+- Run `cargo test` before committing
+- Add helpful error messages for user-facing errors
+
+**Never:**
+- Skip path validation in file operations
+- Add commands to bash without security review
+- Panic in user-facing code (use Result and show errors gracefully)
+- Break the tool calling protocol (tool_use -> tool_result matching)
+- Commit API keys or sensitive data
+
+**Code Review Checklist:**
+- [ ] Security: Path validation present and correct?
+- [ ] Security: New bash commands in blocklist if needed?
+- [ ] Error handling: All Results properly handled?
+- [ ] Tests: Added tests for new functionality?
+- [ ] Docs: Updated README if user-visible change?
+- [ ] UX: Error messages clear and actionable?
+
+---
+
+This file is loaded by Sofos and appended to the system prompt, providing deep project context for AI-assisted development.
