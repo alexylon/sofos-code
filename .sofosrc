@@ -127,6 +127,8 @@ src/
 - Explain "why" not just "what" in complex sections
 - Keep comments up-to-date with code changes
 - README.md is the primary user documentation
+- **Avoid self-explanatory comments** - only comment what is non-obvious or explains important "why"
+- **Keep README clean and simple** - focus on essential user-facing information
 
 ## Security Considerations
 
