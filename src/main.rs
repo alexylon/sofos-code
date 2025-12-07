@@ -5,6 +5,7 @@ mod error;
 mod history;
 mod repl;
 mod session_selector;
+mod syntax;
 mod tools;
 
 use api::MorphClient;

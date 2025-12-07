@@ -2,6 +2,7 @@ use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest, MorphClien
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::HistoryManager;
+use crate::syntax::SyntaxHighlighter;
 use crate::tools::{add_code_search_tool, get_tools, get_tools_with_morph, ToolExecutor};
 use colored::Colorize;
 use rustyline::error::ReadlineError;
@@ -18,6 +19,7 @@ pub struct Repl {
     conversation: ConversationHistory,
     tool_executor: ToolExecutor,
     history_manager: HistoryManager,
+    highlighter: SyntaxHighlighter,
     editor: DefaultEditor,
     model: String,
     max_tokens: u32,
@@ -47,11 +49,14 @@ impl Repl {
 
         let session_id = HistoryManager::generate_session_id();
 
+        let highlighter = SyntaxHighlighter::new();
+
         Ok(Self {
             client,
             conversation,
             tool_executor,
             history_manager,
+            highlighter,
             editor,
             model,
             max_tokens,
@@ -221,7 +226,8 @@ impl Repl {
         if !text_output.is_empty() {
             println!("{}", "Assistant:".bright_blue().bold());
             for text in &text_output {
-                println!("{}", text);
+                let highlighted = self.highlighter.highlight_text(text);
+                println!("{}", highlighted);
             }
             println!();
         }

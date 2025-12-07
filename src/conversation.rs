@@ -105,6 +105,7 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
 
     pub fn restore_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
+        self.trim_if_needed();
     }
 
     pub fn _len(&self) -> usize {
@@ -131,11 +132,11 @@ mod tests {
     fn test_message_limit_trimming() {
         let mut history = ConversationHistory::new();
 
-        for i in 0..60 {
+        for i in 0..510 {
             history.add_user_message(format!("Message {}", i));
         }
 
-        assert_eq!(history.messages().len(), 50);
+        assert_eq!(history.messages().len(), 500);
 
         if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
             assert_eq!(content, "Message 10");
@@ -146,14 +147,14 @@ mod tests {
     fn test_message_limit_with_blocks() {
         let mut history = ConversationHistory::new();
 
-        for i in 0..30 {
+        for i in 0..260 {
             history.add_user_message(format!("User {}", i));
             history.add_assistant_with_blocks(vec![MessageContentBlock::Text {
                 text: format!("Assistant {}", i),
             }]);
         }
 
-        assert_eq!(history.messages().len(), 50);
+        assert_eq!(history.messages().len(), 500);
     }
 
     #[test]
