@@ -55,6 +55,7 @@ src/
 │   ├── types.rs           # Tool definitions for API
 │   └── mod.rs
 ├── conversation.rs         # Message history management
+├── diff.rs                 # Contextual diff generation and display
 ├── history.rs              # Session persistence + custom instructions
 ├── repl.rs                 # Main REPL loop and display logic
 ├── syntax.rs               # Markdown/code syntax highlighting
@@ -70,6 +71,13 @@ src/
 - Defines Message, ContentBlock, and MessageContentBlock enums
 - Handles serialization/deserialization for Anthropic API
 - Supports both regular and server-side tools (like web_search)
+
+**src/diff.rs**
+- Generate contextual diffs showing only changed code blocks
+- Uses `similar` crate for accurate line-by-line diffing
+- Formats output with colored backgrounds (red for deletions, blue for additions)
+- Context lines (default: 2) show unchanged code around changes
+- Used by morph_edit_file tool to display what changed
 
 **src/history.rs**
 - SessionMetadata: Preview and timestamps for session list
@@ -231,6 +239,7 @@ When waiting for Claude's response after tool execution:
 - `colored`: Terminal colors and formatting
 - `rustyline`: REPL with readline support
 - `clap`: Command-line argument parsing
+- `similar`: Text diffing for visual change display
 
 ### Optional Dependencies
 - `ripgrep`: Code search functionality (runtime check)

@@ -4,6 +4,7 @@ pub mod filesystem;
 pub mod types;
 
 use crate::api::MorphClient;
+use crate::diff;
 use crate::error::{Result, SofosError};
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
@@ -91,8 +92,21 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'content' parameter".to_string())
                 })?;
 
+                // Check if file exists and read original content for diff
+                let original_content = self.fs_tool.read_file(path).ok();
+                
                 self.fs_tool.write_file(path, content)?;
-                Ok(format!("Successfully wrote to file '{}'", path))
+                
+                // If file existed before, show diff
+                if let Some(original) = original_content {
+                    let diff_output = diff::generate_compact_diff(&original, content);
+                    Ok(format!(
+                        "Successfully wrote to file '{}'\n\nChanges:\n{}",
+                        path, diff_output
+                    ))
+                } else {
+                    Ok(format!("Successfully created file '{}'", path))
+                }
             }
             "list_directory" => {
                 let path = input["path"].as_str().ok_or_else(|| {
@@ -151,7 +165,14 @@ impl ToolExecutor {
                     .await?;
 
                 self.fs_tool.write_file(path, &merged_code)?;
-                Ok(format!("Successfully applied Morph edit to '{}'", path))
+                
+                // Generate diff for display
+                let diff_output = diff::generate_compact_diff(&original_code, &merged_code);
+                
+                Ok(format!(
+                    "Successfully applied Morph edit to '{}'\n\nChanges:\n{}",
+                    path, diff_output
+                ))
             }
             "delete_file" => {
                 let path = input["path"].as_str().ok_or_else(|| {

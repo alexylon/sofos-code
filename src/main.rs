@@ -1,6 +1,7 @@
 mod api;
 mod cli;
 mod conversation;
+mod diff;
 mod error;
 mod history;
 mod repl;

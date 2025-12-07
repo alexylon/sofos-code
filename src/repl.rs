@@ -744,6 +744,10 @@ impl Repl {
                     format!("Found {} items in {}", item_count, path.bright_cyan())
                 }
             }
+            "morph_edit_file" => {
+                // For morph edits, show the full output including the diff
+                output.to_string()
+            }
             _ => {
                 // For all other tools, return the full output
                 output.to_string()
