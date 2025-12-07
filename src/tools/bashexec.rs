@@ -16,7 +16,7 @@ impl BashExecutor {
     pub fn execute(&self, command: &str) -> Result<String> {
         if !self.is_safe_command(command) {
             return Err(SofosError::ToolExecution(
-                "Command is not allowed. Only read-only commands are permitted.".to_string(),
+                self.get_rejection_reason(command)
             ));
         }
 
@@ -259,6 +259,194 @@ impl BashExecutor {
         // git remote -v (view only), git config --list, git ls-files, etc.
         true
     }
+
+    fn get_rejection_reason(&self, command: &str) -> String {
+        let command_lower = command.to_lowercase();
+
+        // Sudo check
+        if command_lower.starts_with("sudo") || command_lower.contains(" sudo ") {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains 'sudo' which requires privilege escalation.\nSofos only allows read-only operations for security.",
+                command
+            );
+        }
+
+        // Parent directory traversal
+        if command.contains("..") {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains '..' (parent directory traversal).\nAll operations must stay within the current workspace directory.",
+                command
+            );
+        }
+
+        // Directory change commands
+        let directory_commands = ["cd", "pushd", "popd"];
+        for cmd in &directory_commands {
+            if command_lower.starts_with(cmd)
+                || command_lower.contains(&format!(" {}", cmd))
+                || command_lower.contains(&format!(";{}", cmd))
+                || command_lower.contains(&format!("&&{}", cmd))
+                || command_lower.contains(&format!("||{}", cmd))
+                || command_lower.contains(&format!("|{}", cmd))
+            {
+                return format!(
+                    "Command blocked: '{}'\nReason: Contains '{}' which changes the working directory.\nDirectory changes are not allowed for security. Use absolute paths from the workspace root instead.",
+                    command, cmd
+                );
+            }
+        }
+
+        // Absolute paths
+        if command.starts_with('/') || command.contains(" /") 
+            || command.contains("|/") || command.contains(";/")
+            || command.contains("&&/") || command.contains("||/")
+        {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains absolute paths (starting with '/').\nOnly relative paths within the workspace are allowed.",
+                command
+            );
+        }
+
+        // Git-specific blocking
+        if !self.is_safe_git_command(&command_lower) {
+            return self.get_git_rejection_reason(command);
+        }
+
+        // Output redirection
+        if command.contains('>') || command.contains(">>") {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains output redirection ('>' or '>>').\nUse the write_file tool to create or modify files instead.",
+                command
+            );
+        }
+
+        // Here-doc
+        if command.contains("<<") {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains here-doc ('<<').\nUse the write_file tool to create files instead.",
+                command
+            );
+        }
+
+        // Forbidden commands
+        let forbidden_commands = [
+            ("rm", "delete files", "Use the delete_file tool"),
+            ("mv", "move/rename files", "Use the move_file tool"),
+            ("cp", "copy files", "Use the copy_file tool"),
+            ("chmod", "change permissions", "File permissions cannot be modified"),
+            ("mkdir", "create directories", "Use the create_directory tool"),
+            ("rmdir", "remove directories", "Use the delete_directory tool"),
+            ("touch", "create/modify files", "Use the write_file tool"),
+        ];
+
+        for (cmd, action, alternative) in &forbidden_commands {
+            if command_lower.starts_with(cmd)
+                || command_lower.starts_with(&format!("{} ", cmd))
+                || command_lower.contains(&format!(" {}", cmd))
+                || command_lower.contains(&format!("|{}", cmd))
+                || command_lower.contains(&format!(";{}", cmd))
+                || command_lower.contains(&format!("&&{}", cmd))
+                || command_lower.contains(&format!("||{}", cmd))
+            {
+                return format!(
+                    "Command blocked: '{}'\nReason: Contains '{}' which would {} (modification operation).\n{}.",
+                    command, cmd, action, alternative
+                );
+            }
+        }
+
+        // Catch-all for other dangerous commands
+        format!(
+            "Command blocked: '{}'\nReason: Command contains potentially unsafe operations.\nSofos only allows read-only commands for security.",
+            command
+        )
+    }
+
+    fn get_git_rejection_reason(&self, command: &str) -> String {
+        let command_lower = command.to_lowercase();
+
+        // Check for specific dangerous git operations and provide helpful feedback
+        if command_lower.contains("git push") {
+            return format!(
+                "Command blocked: '{}'\nReason: 'git push' sends data to remote repositories (network operation).\nAllowed: Use 'git status', 'git log', 'git diff' to view changes.",
+                command
+            );
+        }
+
+        if command_lower.contains("git pull") || command_lower.contains("git fetch") {
+            return format!(
+                "Command blocked: '{}'\nReason: '{}' fetches data from remote repositories (network operation).\nAllowed: Use 'git status', 'git log', 'git diff' to view local changes.",
+                command,
+                if command_lower.contains("git pull") { "git pull" } else { "git fetch" }
+            );
+        }
+
+        if command_lower.contains("git clone") {
+            return format!(
+                "Command blocked: '{}'\nReason: 'git clone' downloads repositories (network operation and creates directories).\nClone repositories manually outside of Sofos.",
+                command
+            );
+        }
+
+        if command_lower.contains("git commit") || command_lower.contains("git add") {
+            return format!(
+                "Command blocked: '{}'\nReason: '{}' modifies the git repository.\nAllowed: Use 'git status', 'git diff' to view changes. Create commits manually.",
+                command,
+                if command_lower.contains("git commit") { "git commit" } else { "git add" }
+            );
+        }
+
+        if command_lower.contains("git reset") || command_lower.contains("git clean") {
+            return format!(
+                "Command blocked: '{}'\nReason: '{}' is a destructive operation that discards changes.\nAllowed: Use 'git status', 'git log', 'git diff' to view repository state.",
+                command,
+                if command_lower.contains("git reset") { "git reset" } else { "git clean" }
+            );
+        }
+
+        if command_lower.contains("git checkout") || command_lower.contains("git switch") {
+            return format!(
+                "Command blocked: '{}'\nReason: '{}' changes branches or modifies working directory.\nAllowed: Use 'git branch' to list branches, 'git status' to see current branch.",
+                command,
+                if command_lower.contains("git checkout") { "git checkout" } else { "git switch" }
+            );
+        }
+
+        if command_lower.contains("git merge") || command_lower.contains("git rebase") {
+            return format!(
+                "Command blocked: '{}'\nReason: '{}' modifies git history and repository state.\nPerform merges/rebases manually outside of Sofos.",
+                command,
+                if command_lower.contains("git merge") { "git merge" } else { "git rebase" }
+            );
+        }
+
+        if command_lower.contains("git stash") && !command_lower.contains("git stash list") && !command_lower.contains("git stash show") {
+            return format!(
+                "Command blocked: '{}'\nReason: 'git stash' (without list/show) modifies repository state.\nAllowed: Use 'git stash list' or 'git stash show' to view stashed changes.",
+                command
+            );
+        }
+
+        if command_lower.contains("git remote add") || command_lower.contains("git remote set-url") {
+            return format!(
+                "Command blocked: '{}'\nReason: Modifying git remotes could redirect pushes to unauthorized servers.\nAllowed: Use 'git remote -v' to view configured remotes.",
+                command
+            );
+        }
+
+        if command_lower.contains("git submodule") {
+            return format!(
+                "Command blocked: '{}'\nReason: 'git submodule' can fetch from remote repositories (network operation).\nManage submodules manually outside of Sofos.",
+                command
+            );
+        }
+
+        // Generic git rejection
+        format!(
+            "Command blocked: '{}'\nReason: Contains git operation that modifies repository or accesses network.\nAllowed git commands: status, log, diff, show, branch, remote -v, grep, blame, stash list/show",
+            command
+        )
+    }
 }
 
 #[cfg(test)]
@@ -451,5 +639,36 @@ mod tests {
         assert!(!executor.is_safe_command("git log | git commit -m 'test'"));
         assert!(!executor.is_safe_command("echo test; git add ."));
         assert!(!executor.is_safe_command("git status || git pull"));
+    }
+
+    #[test]
+    fn test_error_messages_are_informative() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        // Test git push error message
+        let result = executor.execute("git push origin main");
+        assert!(result.is_err());
+        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("git push origin main"));
+            assert!(msg.contains("network operation"));
+            assert!(msg.contains("git status"));
+        }
+
+        // Test rm error message  
+        let result = executor.execute("rm file.txt");
+        assert!(result.is_err());
+        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("rm file.txt"));
+            assert!(msg.contains("delete files"));
+            assert!(msg.contains("delete_file tool"));
+        }
+
+        // Test cd error message
+        let result = executor.execute("cd /tmp");
+        assert!(result.is_err());
+        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("cd /tmp"));
+            assert!(msg.contains("changes the working directory"));
+        }
     }
 }
