@@ -120,6 +120,10 @@ impl BashExecutor {
             return false;
         }
 
+        if !self.is_safe_git_command(&command_lower) {
+            return false;
+        }
+
         let forbidden_commands = [
             "rm",
             "mv",
@@ -181,6 +185,78 @@ impl BashExecutor {
             return false;
         }
 
+        true
+    }
+
+    fn is_safe_git_command(&self, command: &str) -> bool {
+        if !command.starts_with("git ") && !command.contains(" git ") && !command.contains(";git ")
+            && !command.contains("&&git ") && !command.contains("||git ") && !command.contains("|git ") {
+            return true;
+        }
+
+        // Allow safe git stash read-only operations
+        if command.contains("git stash list") || command.contains("git stash show") {
+            return true;
+        }
+
+        // Dangerous git operations that are completely blocked
+        let dangerous_git_ops = [
+            "git push",
+            "git pull",
+            "git fetch",
+            "git clone",
+            "git clean",
+            "git reset --hard",
+            "git reset --mixed",
+            "git checkout -f",
+            "git checkout -b",
+            "git checkout --",
+            "git branch -d",
+            "git branch -D",
+            "git branch -m",
+            "git branch -M",
+            "git remote add",
+            "git remote set-url",
+            "git remote remove",
+            "git remote rm",
+            "git submodule",
+            "git filter-branch",
+            "git gc",
+            "git prune",
+            "git update-ref",
+            "git send-email",
+            "git apply",
+            "git am",
+            "git cherry-pick",
+            "git revert",
+            "git commit",
+            "git merge",
+            "git rebase",
+            "git tag -d",
+            "git stash",  // Blocks all stash operations except list/show (checked above)
+            "git init",
+            "git add",
+            "git rm",
+            "git mv",
+            "git restore",
+            "git switch",
+        ];
+
+        for dangerous_op in &dangerous_git_ops {
+            if command.starts_with(dangerous_op)
+                || command.contains(&format!(" {}", dangerous_op))
+                || command.contains(&format!(";{}", dangerous_op))
+                || command.contains(&format!("&&{}", dangerous_op))
+                || command.contains(&format!("||{}", dangerous_op))
+                || command.contains(&format!("|{}", dangerous_op))
+            {
+                return false;
+            }
+        }
+
+        // Allow safe read-only git commands:
+        // git status, git log, git diff, git show, git branch (list only),
+        // git remote -v (view only), git config --list, git ls-files, etc.
         true
     }
 }
@@ -272,5 +348,108 @@ mod tests {
         } else {
             panic!("Expected ToolExecution error");
         }
+    }
+
+    #[test]
+    fn test_safe_git_commands() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        // Safe read-only git commands
+        assert!(executor.is_safe_command("git status"));
+        assert!(executor.is_safe_command("git log"));
+        assert!(executor.is_safe_command("git log --oneline"));
+        assert!(executor.is_safe_command("git diff"));
+        assert!(executor.is_safe_command("git diff HEAD~1"));
+        assert!(executor.is_safe_command("git show"));
+        assert!(executor.is_safe_command("git show HEAD"));
+        assert!(executor.is_safe_command("git branch"));
+        assert!(executor.is_safe_command("git branch -v"));
+        assert!(executor.is_safe_command("git branch --list"));
+        assert!(executor.is_safe_command("git remote -v"));
+        assert!(executor.is_safe_command("git config --list"));
+        assert!(executor.is_safe_command("git ls-files"));
+        assert!(executor.is_safe_command("git ls-tree HEAD"));
+        assert!(executor.is_safe_command("git blame file.txt"));
+        assert!(executor.is_safe_command("git grep pattern"));
+        assert!(executor.is_safe_command("git rev-parse HEAD"));
+        assert!(executor.is_safe_command("git describe --tags"));
+        assert!(executor.is_safe_command("git stash list"));
+        assert!(executor.is_safe_command("git stash show"));
+        assert!(executor.is_safe_command("git stash show stash@{0}"));
+    }
+
+    #[test]
+    fn test_dangerous_git_commands() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        // Remote operations (data leakage risk)
+        assert!(!executor.is_safe_command("git push"));
+        assert!(!executor.is_safe_command("git push origin main"));
+        assert!(!executor.is_safe_command("git push --force"));
+        assert!(!executor.is_safe_command("git pull"));
+        assert!(!executor.is_safe_command("git pull origin main"));
+        assert!(!executor.is_safe_command("git fetch"));
+        assert!(!executor.is_safe_command("git fetch origin"));
+        assert!(!executor.is_safe_command("git clone https://example.com/repo.git"));
+
+        // Destructive local operations
+        assert!(!executor.is_safe_command("git clean -fd"));
+        assert!(!executor.is_safe_command("git reset --hard"));
+        assert!(!executor.is_safe_command("git reset --hard HEAD~1"));
+        assert!(!executor.is_safe_command("git checkout -f"));
+        assert!(!executor.is_safe_command("git checkout -b newbranch"));
+        assert!(!executor.is_safe_command("git branch -D branch-name"));
+        assert!(!executor.is_safe_command("git branch -d branch-name"));
+        assert!(!executor.is_safe_command("git filter-branch"));
+        
+        // Modifications
+        assert!(!executor.is_safe_command("git add ."));
+        assert!(!executor.is_safe_command("git add file.txt"));
+        assert!(!executor.is_safe_command("git commit -m 'message'"));
+        assert!(!executor.is_safe_command("git commit --amend"));
+        assert!(!executor.is_safe_command("git rm file.txt"));
+        assert!(!executor.is_safe_command("git mv old.txt new.txt"));
+        assert!(!executor.is_safe_command("git merge branch"));
+        assert!(!executor.is_safe_command("git rebase main"));
+        assert!(!executor.is_safe_command("git cherry-pick abc123"));
+        assert!(!executor.is_safe_command("git revert abc123"));
+        assert!(!executor.is_safe_command("git restore file.txt"));
+        assert!(!executor.is_safe_command("git switch main"));
+
+        // Remote configuration changes
+        assert!(!executor.is_safe_command("git remote add origin https://evil.com/repo.git"));
+        assert!(!executor.is_safe_command("git remote set-url origin https://evil.com/repo.git"));
+        assert!(!executor.is_safe_command("git remote remove origin"));
+
+        // Submodules (can fetch from remote)
+        assert!(!executor.is_safe_command("git submodule update"));
+        assert!(!executor.is_safe_command("git submodule init"));
+
+        // Stash operations (modify state)
+        assert!(!executor.is_safe_command("git stash"));
+        assert!(!executor.is_safe_command("git stash pop"));
+        assert!(!executor.is_safe_command("git stash apply"));
+        assert!(!executor.is_safe_command("git stash drop"));
+        assert!(!executor.is_safe_command("git stash clear"));
+
+        // Init (creates repository)
+        assert!(!executor.is_safe_command("git init"));
+        assert!(!executor.is_safe_command("git init new-repo"));
+    }
+
+    #[test]
+    fn test_git_commands_in_chains() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        // Safe commands in chains
+        assert!(executor.is_safe_command("git status && git log"));
+        assert!(executor.is_safe_command("git diff | grep pattern"));
+        assert!(executor.is_safe_command("echo test; git status"));
+
+        // Dangerous commands in chains
+        assert!(!executor.is_safe_command("git status && git push"));
+        assert!(!executor.is_safe_command("git log | git commit -m 'test'"));
+        assert!(!executor.is_safe_command("echo test; git add ."));
+        assert!(!executor.is_safe_command("git status || git pull"));
     }
 }

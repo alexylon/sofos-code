@@ -98,6 +98,8 @@ src/
 - Output size limit: 50MB
 - No sudo, no file modifications, no directory changes
 - Read-only operations only
+- Git operations restricted: blocks push/pull/fetch/clone and all modifications
+- Allows safe git commands: status, log, diff, show, branch, remote -v, grep, blame
 
 ## Code Conventions
 
@@ -143,6 +145,8 @@ src/
    - No directory changes (`cd`, `pushd`, `popd`)
    - No background execution (`&`)
    - Read-only operations only
+   - Git command restrictions: blocks push, pull, fetch, clone, commit, add, and all modifications
+   - Allows safe git operations: status, log, diff, show, branch (list), remote -v, grep, blame, stash list/show
 
 3. **File Size Limits**
    - Read operations: 10MB limit

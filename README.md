@@ -138,6 +138,16 @@ Bash execution is restricted to read-only operations:
 - ❌ Cannot modify files (`rm`, `mv`, `cp`, `chmod`, `mkdir`, `touch`)
 - ❌ Cannot change directories or use output redirection
 
+Git commands are restricted to read-only operations:
+
+- ✅ Can view history and status (`git status`, `git log`, `git diff`, `git show`)
+- ✅ Can list branches and remotes (`git branch`, `git remote -v`)
+- ✅ Can search and blame (`git grep`, `git blame`)
+- ❌ Cannot push, pull, fetch, or clone (network operations)
+- ❌ Cannot commit, add, or modify files (`git commit`, `git add`, `git reset --hard`)
+- ❌ Cannot change branches or stash (`git checkout -b`, `git stash`, `git switch`)
+- ❌ Cannot configure remotes (`git remote add`, `git remote set-url`)
+
 **Best Practice:** Run `sofos` from your project directory and use git to track changes.
 
 ## Development
