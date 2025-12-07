@@ -99,14 +99,14 @@ impl Repl {
                     match line.to_lowercase().as_str() {
                         "exit" | "quit" => {
                             self.save_current_session()?;
-                            println!("{}", "Goodbye!".bright_cyan());
+                            println!("\n{}", "Goodbye!".bright_cyan());
                             break;
                         }
                         "clear" => {
                             self.conversation.clear();
                             self.display_messages.clear();
                             self.session_id = HistoryManager::generate_session_id();
-                            println!("{}", "Conversation history cleared.".bright_yellow());
+                            println!("\n{}\n", "Conversation history cleared.".bright_yellow());
                             continue;
                         }
                         "resume" => {
@@ -193,7 +193,7 @@ impl Repl {
         content_blocks: Vec<ContentBlock>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<()> {
-        const MAX_RECURSION_DEPTH: u32 = 50;
+        const MAX_RECURSION_DEPTH: u32 = 500;
 
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!(
@@ -414,6 +414,10 @@ impl Repl {
                 let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                 let mut frame_idx = 0;
 
+                // Hide cursor
+                print!("\x1B[?25l");
+                let _ = io::stdout().flush();
+
                 while thinking_clone.load(Ordering::Relaxed) {
                     print!(
                         "\r{} {}",
@@ -425,8 +429,9 @@ impl Repl {
                     thread::sleep(Duration::from_millis(80));
                 }
 
-                // Clear the line
+                // Clear the line and show cursor
                 print!("\r{}\r", " ".repeat(20));
+                print!("\x1B[?25h");
                 let _ = io::stdout().flush();
             });
 
