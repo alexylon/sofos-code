@@ -312,17 +312,23 @@ impl Repl {
                             );
                         }
 
-                        println!("{}", output.dimmed());
-                        println!();
+                        // Create display message based on tool type
+                        let display_output = self.create_tool_display_message(tool_name, tool_input, &output);
                         
-                        // Track tool execution in display_messages
+                        // Only print if there's a display message
+                        if !display_output.is_empty() {
+                            println!("{}", display_output.dimmed());
+                            println!();
+                        }
+                        
+                        // Track tool execution in display_messages with summary for quiet tools
                         self.display_messages.push(crate::history::DisplayMessage::ToolExecution {
                             tool_name: tool_name.clone(),
                             tool_input: tool_input.clone(),
-                            tool_output: output.clone(),
+                            tool_output: display_output.clone(),
                         });
 
-                        // Collect tool result instead of adding immediately
+                        // Collect tool result (full output for Claude)
                         tool_results.push(crate::api::MessageContentBlock::ToolResult {
                             tool_use_id: tool_id.clone(),
                             content: output.clone(),
@@ -684,5 +690,64 @@ impl Repl {
         
         println!("{}", "═".repeat(80).bright_cyan());
         println!();
+    }
+
+    fn create_tool_display_message(
+        &self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+        output: &str,
+    ) -> String {
+        match tool_name {
+            "read_file" => {
+                let file_path = tool_input.get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                
+                let offset = tool_input.get("offset")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+                
+                // Count actual lines in output
+                let line_count = output.lines().count() as u64;
+                
+                if line_count == 0 {
+                    if file_path.is_empty() {
+                        format!("Read file (empty or not found)")
+                    } else {
+                        format!("Read file from {} - empty or not found", file_path.bright_cyan())
+                    }
+                } else {
+                    let end_line = offset + line_count - 1;
+                    if file_path.is_empty() {
+                        format!("Read lines {}-{}", offset, end_line)
+                    } else {
+                        format!("Read lines {}-{} from {}", offset, end_line, file_path.bright_cyan())
+                    }
+                }
+            }
+            "list_directory" => {
+                let path = tool_input.get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".");
+                
+                // Count number of items listed
+                let item_count = output.lines()
+                    .filter(|line| !line.trim().is_empty() && !line.starts_with("Contents of"))
+                    .count();
+                
+                if item_count == 0 {
+                    format!("Found 0 items in {}", path.bright_cyan())
+                } else if item_count == 1 {
+                    format!("Found 1 item in {}", path.bright_cyan())
+                } else {
+                    format!("Found {} items in {}", item_count, path.bright_cyan())
+                }
+            }
+            _ => {
+                // For all other tools, return the full output
+                output.to_string()
+            }
+        }
     }
 }
