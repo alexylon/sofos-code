@@ -25,6 +25,7 @@ pub struct Repl {
     max_tokens: u32,
     recursion_depth: u32,
     session_id: String,
+    display_messages: Vec<crate::history::DisplayMessage>,
 }
 
 impl Repl {
@@ -62,6 +63,7 @@ impl Repl {
             max_tokens,
             recursion_depth: 0,
             session_id,
+            display_messages: Vec::new(),
         })
     }
 
@@ -93,6 +95,7 @@ impl Repl {
                         }
                         "clear" => {
                             self.conversation.clear();
+                            self.display_messages.clear();
                             self.session_id = HistoryManager::generate_session_id();
                             println!("{}", "Conversation history cleared.".bright_yellow());
                             continue;
@@ -150,6 +153,11 @@ impl Repl {
 
     fn process_message(&mut self, user_input: &str) -> Result<()> {
         self.conversation.add_user_message(user_input.to_string());
+        
+        // Track display message
+        self.display_messages.push(crate::history::DisplayMessage::UserMessage {
+            content: user_input.to_string(),
+        });
 
         let request = CreateMessageRequest {
             model: self.model.clone(),
@@ -230,6 +238,12 @@ impl Repl {
                 println!("{}", highlighted);
             }
             println!();
+            
+            // Track assistant display message
+            let combined_text = text_output.join("\n");
+            self.display_messages.push(crate::history::DisplayMessage::AssistantMessage {
+                content: combined_text,
+            });
         }
 
         // Store the full assistant response with content blocks
@@ -291,6 +305,13 @@ impl Repl {
 
                         println!("{}", output.dimmed());
                         println!();
+                        
+                        // Track tool execution in display_messages
+                        self.display_messages.push(crate::history::DisplayMessage::ToolExecution {
+                            tool_name: tool_name.clone(),
+                            tool_input: tool_input.clone(),
+                            tool_output: output.clone(),
+                        });
 
                         // Collect tool result instead of adding immediately
                         tool_results.push(crate::api::MessageContentBlock::ToolResult {
@@ -315,6 +336,13 @@ impl Repl {
                         let error_msg = format!("Tool execution failed: {}", e);
                         eprintln!("{} {}", "Error:".bright_red().bold(), error_msg);
                         println!();
+                        
+                        // Track tool execution error in display_messages
+                        self.display_messages.push(crate::history::DisplayMessage::ToolExecution {
+                            tool_name: tool_name.clone(),
+                            tool_input: tool_input.clone(),
+                            tool_output: error_msg.clone(),
+                        });
 
                         // Collect error as tool result
                         tool_results.push(crate::api::MessageContentBlock::ToolResult {
@@ -543,6 +571,7 @@ impl Repl {
         self.history_manager.save_session(
             &self.session_id,
             self.conversation.messages(),
+            &self.display_messages,
             self.conversation.system_prompt(),
         )?;
 
@@ -577,15 +606,74 @@ impl Repl {
 
         self.session_id = session.id.clone();
         self.conversation.clear();
-        self.conversation.restore_messages(session.messages.clone());
+        self.conversation.restore_messages(session.api_messages.clone());
+        self.display_messages = session.display_messages.clone();
 
         println!(
             "{} {} ({} messages)",
             "Loaded session:".bright_green(),
             session.id,
-            session.messages.len()
+            session.api_messages.len()
         );
+        println!();
+        
+        // Display the original conversation
+        self.display_session(&session);
 
         Ok(())
+    }
+    
+    fn display_session(&self, session: &crate::history::Session) {
+        if session.display_messages.is_empty() {
+            println!("{}", "Note: This is a legacy session without display history. Only API messages are available.".dimmed());
+            println!();
+            return;
+        }
+        
+        println!("{}", "═".repeat(80).bright_cyan());
+        println!("{}", "Previous Conversation:".bright_cyan().bold());
+        println!("{}", "═".repeat(80).bright_cyan());
+        println!();
+        
+        for display_msg in &session.display_messages {
+            match display_msg {
+                crate::history::DisplayMessage::UserMessage { content } => {
+                    println!("{} {}", ">>>".bright_green(), content);
+                    println!();
+                }
+                crate::history::DisplayMessage::AssistantMessage { content } => {
+                    println!("{}", "Assistant:".bright_blue().bold());
+                    let highlighted = self.highlighter.highlight_text(content);
+                    println!("{}", highlighted);
+                    println!();
+                }
+                crate::history::DisplayMessage::ToolExecution { tool_name, tool_input: _, tool_output } => {
+                    if tool_name == "execute_bash" {
+                        if let Ok(input_val) = serde_json::from_value::<serde_json::Value>(
+                            serde_json::to_value(&tool_output).unwrap_or_default()
+                        ) {
+                            if let Some(command) = input_val.get("command").and_then(|v| v.as_str()) {
+                                println!(
+                                    "{} {}",
+                                    "Executing:".bright_green().bold(),
+                                    command.bright_cyan()
+                                );
+                            }
+                        }
+                    } else {
+                        println!(
+                            "{} {}",
+                            "Using tool:".bright_yellow().bold(),
+                            tool_name.bright_yellow()
+                        );
+                    }
+                    println!("{}", tool_output.dimmed());
+                    println!();
+                }
+            }
+        }
+        
+        println!("{}", "═".repeat(80).bright_cyan());
+        println!();
     }
 }

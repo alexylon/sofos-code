@@ -11,6 +11,21 @@ const INDEX_FILE: &str = "index.json";
 const MAX_PREVIEW_LENGTH: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DisplayMessage {
+    UserMessage {
+        content: String,
+    },
+    AssistantMessage {
+        content: String,
+    },
+    ToolExecution {
+        tool_name: String,
+        tool_input: serde_json::Value,
+        tool_output: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub id: String,
     pub preview: String,
@@ -22,7 +37,12 @@ pub struct SessionMetadata {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
-    pub messages: Vec<Message>,
+    /// Messages in API format (for continuing the conversation with Claude)
+    #[serde(default, rename = "messages", alias = "api_messages")]
+    pub api_messages: Vec<Message>,
+    /// Messages in display format (for reconstructing the original UI)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub display_messages: Vec<DisplayMessage>,
     pub system_prompt: String,
     pub created_at: u64,
     pub updated_at: u64,
@@ -118,6 +138,7 @@ impl HistoryManager {
         &self,
         session_id: &str,
         messages: &[Message],
+        display_messages: &[DisplayMessage],
         system_prompt: &str,
     ) -> Result<()> {
         let now = SystemTime::now()
@@ -129,7 +150,8 @@ impl HistoryManager {
 
         let session = Session {
             id: session_id.to_string(),
-            messages: messages.to_vec(),
+            api_messages: messages.to_vec(),
+            display_messages: display_messages.to_vec(),
             system_prompt: system_prompt.to_string(),
             created_at: if session_path.exists() {
                 let existing: Session = serde_json::from_str(&fs::read_to_string(&session_path)?)?;
@@ -158,13 +180,13 @@ impl HistoryManager {
             }
         };
 
-        let preview = Self::extract_preview(&session.messages);
+        let preview = Self::extract_preview(&session.api_messages);
         let metadata = SessionMetadata {
             id: session.id.clone(),
             preview,
             created_at: session.created_at,
             updated_at: session.updated_at,
-            message_count: session.messages.len(),
+            message_count: session.api_messages.len(),
         };
 
         if let Some(pos) = index.sessions.iter().position(|s| s.id == session.id) {
@@ -256,12 +278,12 @@ mod tests {
         let system_prompt = "Test system prompt";
 
         manager
-            .save_session(&session_id, &messages, system_prompt)
+            .save_session(&session_id, &messages, &[], system_prompt)
             .unwrap();
 
         let loaded = manager.load_session(&session_id).unwrap();
         assert_eq!(loaded.id, session_id);
-        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.api_messages.len(), 1);
         assert_eq!(loaded.system_prompt, system_prompt);
     }
 
@@ -272,14 +294,14 @@ mod tests {
 
         let session_id1 = HistoryManager::generate_session_id();
         manager
-            .save_session(&session_id1, &[Message::user("First session")], "System")
+            .save_session(&session_id1, &[Message::user("First session")], &[], "System")
             .unwrap();
 
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         let session_id2 = HistoryManager::generate_session_id();
         manager
-            .save_session(&session_id2, &[Message::user("Second session")], "System")
+            .save_session(&session_id2, &[Message::user("Second session")], &[], "System")
             .unwrap();
 
         let sessions = manager.list_sessions().unwrap();
