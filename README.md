@@ -16,7 +16,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
 - **Web Search** - Real-time web information via Claude's native search tool
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
-- **Visual diff display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
+- **Visual Diff Display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
 ## Benchmark
