@@ -27,6 +27,7 @@ syntect = "5.2"
 # Utilities
 futures = "0.3"
 pathdiff = "0.2"
+chrono = "0.4"
 
 # Logging (optional but helpful)
 tracing = "0.1"

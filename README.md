@@ -9,6 +9,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 ## Features
 
 - **Interactive REPL** - Multi-turn conversations with Claude
+- **Session History** - Automatic session saving and resume previous conversations
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
@@ -67,6 +68,7 @@ sofos --prompt "Create a hello world Rust program"
 - `clear` - Clear conversation history
 - `exit` or `quit` - Exit
 - `Ctrl+D` - Exit
+- `resume` - Resume previous session
 
 ### Options
 
@@ -74,11 +76,18 @@ sofos --prompt "Create a hello world Rust program"
 --api-key <KEY>         Anthropic API key (overrides ANTHROPIC_API_KEY)
 --morph-api-key <KEY>   Morph API key (overrides MORPH_API_KEY)
 -p, --prompt <TEXT>     One-shot mode
+-r, --resume            Resume a previous conversation session
 --model <MODEL>         Claude model (default: claude-sonnet-4-5)
 --morph-model <MODEL>   Morph model (default: morph-v3-fast)
 --max-tokens <N>        Max response tokens (default: 8192)
 -v, --verbose           Verbose logging
 ```
+
+## Session History
+
+All conversations are automatically saved to `.sofos/sessions/` in your project directory. 
+Resume previous sessions with `sofos --resume` or type `resume` in the REPL. 
+Sessions show a preview of the first message, last updated time, and message count.
 
 ## Available Tools
 

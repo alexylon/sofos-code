@@ -1,6 +1,7 @@
 use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest, MorphClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
+use crate::history::HistoryManager;
 use crate::tools::{add_code_search_tool, get_tools, get_tools_with_morph, ToolExecutor};
 use colored::Colorize;
 use rustyline::error::ReadlineError;
@@ -16,10 +17,12 @@ pub struct Repl {
     client: AnthropicClient,
     conversation: ConversationHistory,
     tool_executor: ToolExecutor,
+    history_manager: HistoryManager,
     editor: DefaultEditor,
     model: String,
     max_tokens: u32,
     recursion_depth: u32,
+    session_id: String,
 }
 
 impl Repl {
@@ -31,23 +34,29 @@ impl Repl {
         morph_client: Option<MorphClient>,
     ) -> Result<Self> {
         let client = AnthropicClient::new(api_key)?;
-        let tool_executor = ToolExecutor::new(workspace, morph_client)?;
+        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client)?;
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
         let conversation = ConversationHistory::with_features(has_morph, has_code_search);
 
+        let history_manager = HistoryManager::new(workspace.clone())?;
+
         let editor = DefaultEditor::new()
             .map_err(|e| SofosError::Config(format!("Failed to create editor: {}", e)))?;
+
+        let session_id = HistoryManager::generate_session_id();
 
         Ok(Self {
             client,
             conversation,
             tool_executor,
+            history_manager,
             editor,
             model,
             max_tokens,
             recursion_depth: 0,
+            session_id,
         })
     }
 
@@ -55,6 +64,7 @@ impl Repl {
         println!("{}", "Sofos - AI Coding Assistant".bright_cyan().bold());
         println!("{}", "Type your message or 'exit' to quit.".dimmed());
         println!("{}", "Type 'clear' to clear conversation history.".dimmed());
+        println!("{}", "Type 'resume' to load a previous session.".dimmed());
         println!();
 
         loop {
@@ -72,12 +82,20 @@ impl Repl {
 
                     match line.to_lowercase().as_str() {
                         "exit" | "quit" => {
+                            self.save_current_session()?;
                             println!("{}", "Goodbye!".bright_cyan());
                             break;
                         }
                         "clear" => {
                             self.conversation.clear();
+                            self.session_id = HistoryManager::generate_session_id();
                             println!("{}", "Conversation history cleared.".bright_yellow());
+                            continue;
+                        }
+                        "resume" => {
+                            if let Err(e) = self.handle_resume() {
+                                eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                            }
                             continue;
                         }
                         _ => {}
@@ -85,6 +103,10 @@ impl Repl {
 
                     if let Err(e) = self.process_message(line) {
                         eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                    } else {
+                        if let Err(e) = self.save_current_session() {
+                            eprintln!("{} Failed to save session: {}", "Warning:".bright_yellow(), e);
+                        }
                     }
 
                     println!();
@@ -93,6 +115,7 @@ impl Repl {
                     println!("{}", "Use 'exit' to quit.".dimmed());
                 }
                 Err(ReadlineError::Eof) => {
+                    self.save_current_session()?;
                     println!("{}", "Goodbye!".bright_cyan());
                     break;
                 }
@@ -502,6 +525,61 @@ impl Repl {
         println!("{} {}", ">>>".bright_green(), prompt);
         println!();
         self.process_message(prompt)?;
+        self.save_current_session()?;
+        Ok(())
+    }
+
+    fn save_current_session(&self) -> Result<()> {
+        if self.conversation.messages().is_empty() {
+            return Ok(());
+        }
+
+        self.history_manager.save_session(
+            &self.session_id,
+            self.conversation.messages(),
+            self.conversation.system_prompt(),
+        )?;
+
+        Ok(())
+    }
+
+    fn handle_resume(&mut self) -> Result<()> {
+        let sessions = self.history_manager.list_sessions()?;
+
+        if sessions.is_empty() {
+            println!("{}", "No saved sessions found.".yellow());
+            return Ok(());
+        }
+
+        let selected_id = crate::session_selector::select_session(sessions)?;
+
+        if let Some(session_id) = selected_id {
+            self.load_session_by_id(&session_id)?;
+            println!(
+                "{} {}",
+                "Session loaded:".bright_green(),
+                "Continue your conversation below".dimmed()
+            );
+            println!();
+        }
+
+        Ok(())
+    }
+
+    pub fn load_session_by_id(&mut self, session_id: &str) -> Result<()> {
+        let session = self.history_manager.load_session(session_id)?;
+
+        self.session_id = session.id.clone();
+        self.conversation.clear();
+        self.conversation.restore_messages(session.messages.clone());
+
+        println!(
+            "{} {} ({} messages)",
+            "Loaded session:".bright_green(),
+            session.id,
+            session.messages.len()
+        );
+
         Ok(())
     }
 }

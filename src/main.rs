@@ -2,7 +2,9 @@ mod api;
 mod cli;
 mod conversation;
 mod error;
+mod history;
 mod repl;
+mod session_selector;
 mod tools;
 
 use api::MorphClient;
@@ -10,6 +12,7 @@ use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
 use error::Result;
+use history::HistoryManager;
 use repl::Repl;
 use std::env;
 
@@ -65,7 +68,17 @@ fn main() -> Result<()> {
 
     println!();
 
-    let mut repl = Repl::new(api_key, cli.model, cli.max_tokens, workspace, morph_client)?;
+    let mut repl = Repl::new(api_key, cli.model, cli.max_tokens, workspace.clone(), morph_client)?;
+
+    if cli.resume {
+        let history_manager = HistoryManager::new(workspace)?;
+        let sessions = history_manager.list_sessions()?;
+        
+        if let Some(session_id) = session_selector::select_session(sessions)? {
+            repl.load_session_by_id(&session_id)?;
+            println!();
+        }
+    }
 
     if let Some(prompt) = cli.prompt {
         repl.process_single_prompt(&prompt)?;

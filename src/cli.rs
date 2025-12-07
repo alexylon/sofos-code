@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub prompt: Option<String>,
 
+    /// Resume a previous conversation session
+    #[arg(short, long)]
+    pub resume: bool,
+
     #[arg(long, default_value = "claude-sonnet-4-5")]
     pub model: String,
 

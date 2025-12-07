@@ -1,6 +1,6 @@
 use crate::api::Message;
 
-const MAX_MESSAGES: usize = 50;
+const MAX_MESSAGES: usize = 500;
 
 /// Manages conversation history for the REPL
 pub struct ConversationHistory {
@@ -101,6 +101,10 @@ Your goal is to help users with coding tasks efficiently and accurately."#,
 
     pub fn clear(&mut self) {
         self.messages.clear();
+    }
+
+    pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
     }
 
     pub fn _len(&self) -> usize {
