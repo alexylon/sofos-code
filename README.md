@@ -18,6 +18,16 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
+## Benchmark
+
+**Task:** Replace all `var` instances with appropriate `const` and `let` in a JavaScript project (13 files, 902 lines of code)
+
+**Results:**
+- **Sofos Code:** 1m 40s ⚡
+- **Claude Code CLI:** 4m 35s
+
+**~2.8x faster** (both with Morph Apply and `ripgrep` enabled).
+
 ## Installation
 
 ### Requirements
