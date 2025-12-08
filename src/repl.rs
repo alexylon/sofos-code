@@ -23,6 +23,8 @@ pub struct Repl {
     editor: DefaultEditor,
     model: String,
     max_tokens: u32,
+    enable_thinking: bool,
+    thinking_budget: u32,
     session_id: String,
     display_messages: Vec<crate::history::DisplayMessage>,
 }
@@ -34,6 +36,8 @@ impl Repl {
         max_tokens: u32,
         workspace: PathBuf,
         morph_client: Option<MorphClient>,
+        enable_thinking: bool,
+        thinking_budget: u32,
     ) -> Result<Self> {
         let client = AnthropicClient::new(api_key)?;
         let tool_executor = ToolExecutor::new(workspace.clone(), morph_client)?;
@@ -49,6 +53,14 @@ impl Repl {
         // Show message if custom instructions are loaded
         if custom_instructions.is_some() {
             eprintln!("{}", "Loaded custom instructions".bright_green());
+        }
+        
+        // Validate thinking budget
+        if enable_thinking && thinking_budget >= max_tokens {
+            return Err(SofosError::Config(format!(
+                "thinking_budget ({}) must be less than max_tokens ({})",
+                thinking_budget, max_tokens
+            )));
         }
         
         let conversation = ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
@@ -69,6 +81,8 @@ impl Repl {
             editor,
             model,
             max_tokens,
+            enable_thinking,
+            thinking_budget,
             session_id,
             display_messages: Vec::new(),
         })
@@ -166,6 +180,12 @@ impl Repl {
             content: user_input.to_string(),
         });
 
+        let thinking_config = if self.enable_thinking {
+            Some(crate::api::Thinking::enabled(self.thinking_budget))
+        } else {
+            None
+        };
+
         let request = CreateMessageRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
@@ -173,12 +193,53 @@ impl Repl {
             system: Some(self.conversation.system_prompt().to_string()),
             tools: Some(self.get_available_tools()),
             stream: None,
+            thinking: thinking_config,
         };
 
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-        let response = runtime.block_on(self.client.create_message(request))?;
+        let awaiting = Arc::new(AtomicBool::new(true));
+        let awaiting_clone = Arc::clone(&awaiting);
+
+        let animation_handle = thread::spawn(move || {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut frame_idx = 0;
+
+            // Hide cursor
+            print!("\x1B[?25l");
+            let _ = io::stdout().flush();
+
+            while awaiting_clone.load(Ordering::Relaxed) {
+                print!(
+                    "\r{} {}",
+                    frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
+                    "Awaiting response...".truecolor(0xFF, 0x99, 0x33)
+                );
+                let _ = io::stdout().flush();
+                frame_idx = (frame_idx + 1) % frames.len();
+                thread::sleep(Duration::from_millis(80));
+            }
+
+            // Clear the line and show cursor
+            print!("\r{}\r", " ".repeat(30));
+            print!("\x1B[?25h");
+            let _ = io::stdout().flush();
+        });
+
+        let response = runtime.block_on(self.client.create_message(request));
+
+        // Stop animation
+        awaiting.store(false, Ordering::Relaxed);
+        if let Err(e) = animation_handle.join() {
+            eprintln!(
+                "{} Animation thread panicked: {:?}",
+                "Warning:".bright_yellow().bold(),
+                e
+            );
+        }
+
+        let response = response?;
 
         self.handle_response(response.content, &runtime)?;
 
@@ -227,6 +288,12 @@ impl Repl {
                 });
                 
                 // Let Claude respond to the interruption
+                let thinking_config = if self.enable_thinking {
+                    Some(crate::api::Thinking::enabled(self.thinking_budget))
+                } else {
+                    None
+                };
+
                 let request = CreateMessageRequest {
                     model: self.model.clone(),
                     max_tokens: self.max_tokens,
@@ -234,6 +301,7 @@ impl Repl {
                     system: Some(self.conversation.system_prompt().to_string()),
                     tools: Some(self.get_available_tools()),
                     stream: None,
+                    thinking: thinking_config,
                 };
                 
                 match runtime.block_on(self.client.create_message(request)) {
@@ -257,9 +325,11 @@ impl Repl {
                         // Store the response
                         let message_blocks: Vec<crate::api::MessageContentBlock> = response.content
                             .iter()
-                            .map(crate::api::MessageContentBlock::from_content_block)
+                            .filter_map(crate::api::MessageContentBlock::from_content_block_for_api)
                             .collect();
-                        self.conversation.add_assistant_with_blocks(message_blocks);
+                        if !message_blocks.is_empty() {
+                            self.conversation.add_assistant_with_blocks(message_blocks);
+                        }
                     }
                     Err(e) => {
                         eprintln!(
@@ -281,6 +351,13 @@ impl Repl {
                     ContentBlock::Text { text } => {
                         if !text.trim().is_empty() {
                             text_output.push(text.clone());
+                        }
+                    }
+                    ContentBlock::Thinking { thinking, .. } => {
+                        if !thinking.trim().is_empty() {
+                            println!("{}", "Thinking:".truecolor(0xFF, 0x99, 0x33).bold());
+                            println!("{}", thinking.dimmed());
+                            println!();
                         }
                     }
                     ContentBlock::ToolUse { id, name, input } => {
@@ -317,12 +394,15 @@ impl Repl {
 
             // Store the full assistant response with content blocks
             // This includes both text and tool_use blocks so the API can match tool_results
+            // Note: Thinking blocks are redacted (empty string) to save tokens
             if !content_blocks.is_empty() {
                 let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
                     .iter()
-                    .map(crate::api::MessageContentBlock::from_content_block)
+                    .filter_map(crate::api::MessageContentBlock::from_content_block_for_api)
                     .collect();
-                self.conversation.add_assistant_with_blocks(message_blocks);
+                if !message_blocks.is_empty() {
+                    self.conversation.add_assistant_with_blocks(message_blocks);
+                }
             }
 
             // If no tools to execute, we're done
@@ -487,7 +567,7 @@ impl Repl {
                     print!(
                         "\r{} {}",
                         frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
-                        "Thinking...".truecolor(0xFF, 0x99, 0x33)
+                        "Processing...".truecolor(0xFF, 0x99, 0x33)
                     );
                     let _ = io::stdout().flush();
                     frame_idx = (frame_idx + 1) % frames.len();
@@ -495,7 +575,7 @@ impl Repl {
                 }
 
                 // Clear the line and show cursor
-                print!("\r{}\r", " ".repeat(20));
+                print!("\r{}\r", " ".repeat(30));
                 print!("\x1B[?25h");
                 let _ = io::stdout().flush();
             });
@@ -517,6 +597,12 @@ impl Repl {
                 eprintln!("===========================================\n");
             }
 
+            let thinking_config = if self.enable_thinking {
+                Some(crate::api::Thinking::enabled(self.thinking_budget))
+            } else {
+                None
+            };
+
             let request = CreateMessageRequest {
                 model: self.model.clone(),
                 max_tokens: self.max_tokens,
@@ -524,6 +610,7 @@ impl Repl {
                 system: Some(self.conversation.system_prompt().to_string()),
                 tools: Some(self.get_available_tools()),
                 stream: None,
+                thinking: thinking_config,
             };
 
             let response = match runtime.block_on(self.client.create_message(request)) {
@@ -568,6 +655,9 @@ impl Repl {
                     match block {
                         ContentBlock::Text { text } => {
                             eprintln!("  Block {}: Text({})", i, text.len())
+                        }
+                        ContentBlock::Thinking { thinking, .. } => {
+                            eprintln!("  Block {}: Thinking({})", i, thinking.len())
                         }
                         ContentBlock::ToolUse { name, .. } => {
                             eprintln!("  Block {}: ToolUse({})", i, name)

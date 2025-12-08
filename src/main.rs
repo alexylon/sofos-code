@@ -70,7 +70,15 @@ fn main() -> Result<()> {
 
     println!();
 
-    let mut repl = Repl::new(api_key, cli.model, cli.max_tokens, workspace.clone(), morph_client)?;
+    let mut repl = Repl::new(
+        api_key,
+        cli.model,
+        cli.max_tokens,
+        workspace.clone(),
+        morph_client,
+        cli.enable_thinking,
+        cli.thinking_budget,
+    )?;
 
     if cli.resume {
         let history_manager = HistoryManager::new(workspace)?;

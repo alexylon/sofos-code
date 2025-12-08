@@ -120,4 +120,34 @@ mod tests {
         let client = AnthropicClient::new("test-key".to_string());
         assert!(client.is_ok());
     }
+
+    #[test]
+    fn test_thinking_serialization() {
+        let thinking = Thinking::enabled(5120);
+        assert_eq!(thinking.thinking_type, "enabled");
+        assert_eq!(thinking.budget_tokens, 5120);
+
+        let json = serde_json::to_value(&thinking).unwrap();
+        assert_eq!(json["type"], "enabled");
+        assert_eq!(json["budget_tokens"], 5120);
+    }
+
+    #[test]
+    fn test_request_with_thinking() {
+        let thinking = Some(Thinking::enabled(3000));
+        let request = CreateMessageRequest {
+            model: "claude-sonnet-4-5".to_string(),
+            max_tokens: 8192,
+            messages: vec![],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking,
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert!(json["thinking"].is_object());
+        assert_eq!(json["thinking"]["type"], "enabled");
+        assert_eq!(json["thinking"]["budget_tokens"], 3000);
+    }
 }

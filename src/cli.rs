@@ -31,6 +31,14 @@ pub struct Cli {
     #[arg(long, default_value = "8192")]
     pub max_tokens: u32,
 
+    /// Enable extended thinking for complex reasoning tasks
+    #[arg(short = 't', long)]
+    pub enable_thinking: bool,
+
+    /// Token budget for thinking (must be less than max_tokens)
+    #[arg(long, default_value = "5120")]
+    pub thinking_budget: u32,
+
     #[arg(short, long)]
     pub verbose: bool,
 }

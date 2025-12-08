@@ -20,22 +20,6 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Iterative Tool Execution** - Claude can use up to 200 tools per request for complex multi-file operations
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
-## Benchmark
-
-**Task:** 
-
-Replace all `var` instances with appropriate `const` and `let` in a JavaScript project where all variables were `var` (13 files, 902 lines of code)*
-
-**Results:**
-
-| Test | Sofos Code | Claude Code CLI | Faster | Sofos Code | Claude Code CLI | Cheaper  |
-|------|------------|-----------------|--------|------------|-----------------|----------|
-| **Test 1** | 1m 40s | 4m 35s | **2.7x** |      |           |    |
-| **Test 2** | 1m 39s | 4m 02s | **2.4x** | $0.32      | $0.68           | **2x**   |
-| **Average** | **1m 40s** | **4m 19s** | **2.6x** ⚡ | **1m 40s** | **4m 19s**      | **2.6x** ⚡ |
-
-*Both tools received the same prompt, used Morph Apply, `ripgrep`, and the `claude-sonnet-4-5` model.
-
 ## Installation
 
 ### Requirements
@@ -91,15 +75,33 @@ sofos
 ### Options
 
 ```
--p, --prompt <TEXT>     One-shot mode
--r, --resume            Resume a previous session
---api-key <KEY>         Anthropic API key (overrides env var)
---morph-api-key <KEY>   Morph API key (overrides env var)
---model <MODEL>         Claude model (default: claude-sonnet-4-5)
---morph-model <MODEL>   Morph model (default: morph-v3-fast)
---max-tokens <N>        Max response tokens (default: 8192)
--v, --verbose           Verbose logging
+-p, --prompt <TEXT>          One-shot mode
+-r, --resume                 Resume a previous session
+    --api-key <KEY>          Anthropic API key (overrides env var)
+    --morph-api-key <KEY>    Morph API key (overrides env var)
+    --model <MODEL>          Claude model (default: claude-sonnet-4-5)
+    --morph-model <MODEL>    Morph model (default: morph-v3-fast)
+    --max-tokens <N>         Max response tokens (default: 8192)
+-t, --enable-thinking        Enable extended thinking (default: false)
+    --thinking-budget <N>    Token budget for thinking (default: 5120, must be < max-tokens)
+-v, --verbose                Verbose logging
 ```
+
+## Extended Thinking
+
+Enable extended thinking for complex reasoning tasks that benefit from deeper analysis (disabled by default):
+
+```bash
+# Enable with default 5120 token budget
+sofos --enable-thinking
+# or use short flag
+sofos -t
+
+# Customize thinking budget (must be less than max-tokens)
+sofos -t --thinking-budget 10000 --max-tokens 16000
+```
+
+**Note:** Thinking tokens count toward your API usage. Only enable for tasks that benefit from deeper reasoning.
 
 ## Custom Instructions
 

@@ -52,6 +52,8 @@ pub struct CreateMessageRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +99,11 @@ pub struct CreateMessageResponse {
 pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { 
+        thinking: String,
+        signature: String,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -117,6 +124,22 @@ pub enum ContentBlock {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thinking {
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+    pub budget_tokens: u32,
+}
+
+impl Thinking {
+    pub fn enabled(budget_tokens: u32) -> Self {
+        Self {
+            thinking_type: "enabled".to_string(),
+            budget_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchResult {
     #[serde(rename = "type")]
     pub result_type: String,
@@ -131,6 +154,11 @@ pub struct WebSearchResult {
 pub enum MessageContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { 
+        thinking: String,
+        signature: String,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -156,24 +184,32 @@ pub enum MessageContentBlock {
 }
 
 impl MessageContentBlock {
-    pub fn from_content_block(block: &ContentBlock) -> Self {
+    pub fn from_content_block_for_api(block: &ContentBlock) -> Option<Self> {
         match block {
-            ContentBlock::Text { text } => MessageContentBlock::Text { text: text.clone() },
-            ContentBlock::ToolUse { id, name, input } => MessageContentBlock::ToolUse {
+            ContentBlock::Text { text } => Some(MessageContentBlock::Text { text: text.clone() }),
+            ContentBlock::Thinking { thinking, signature } => {
+                // When thinking is enabled, we must include the complete unmodified thinking block
+                // with signature to maintain reasoning continuity during tool use
+                Some(MessageContentBlock::Thinking { 
+                    thinking: thinking.clone(),
+                    signature: signature.clone(),
+                })
+            },
+            ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
-            },
-            ContentBlock::ServerToolUse { id, name, input } => MessageContentBlock::ServerToolUse {
+            }),
+            ContentBlock::ServerToolUse { id, name, input } => Some(MessageContentBlock::ServerToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
-            },
+            }),
             ContentBlock::WebSearchToolResult { tool_use_id, content } => {
-                MessageContentBlock::WebSearchToolResult {
+                Some(MessageContentBlock::WebSearchToolResult {
                     tool_use_id: tool_use_id.clone(),
                     content: content.clone(),
-                }
+                })
             }
         }
     }
