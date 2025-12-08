@@ -73,7 +73,29 @@ sofos
 - `think on` - Enable extended thinking
 - `think off` - Disable extended thinking  
 - `think` - Show thinking status
-- `exit`, `quit`, or `Ctrl+D` - Exit
+- `exit`, `quit`, or `Ctrl+D` - Exit (displays session cost summary)
+
+## Cost Tracking
+
+Sofos automatically tracks token usage and calculates session costs. When you exit with `quit`, `exit`, or `Ctrl+D`, you'll see a summary:
+
+```
+──────────────────────────────────────────────────
+Session Summary
+──────────────────────────────────────────────────
+Input tokens:      12,345
+Output tokens:      5,678
+Total tokens:      18,023
+
+Estimated cost:     $0.1304
+──────────────────────────────────────────────────
+```
+
+**Cost Calculation:**
+- Costs are calculated based on official Claude pricing
+- Uses per-model pricing (Sonnet 4.5: $3/$15 per million input/output tokens)
+- All major Claude models are supported (Haiku, Sonnet, Opus variants)
+- Accurate for standard API usage
 
 ### Options
 

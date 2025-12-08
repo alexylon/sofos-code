@@ -90,8 +90,7 @@ pub struct CreateMessageResponse {
     pub _model: String,
     #[serde(rename = "stop_reason")]
     pub stop_reason: Option<String>,
-    #[serde(rename = "usage")]
-    pub _usage: Usage,
+    pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,12 +223,10 @@ pub enum _ContentDelta {
     InputJsonDelta { partial_json: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
-    #[serde(rename = "input_tokens")]
-    pub _input_tokens: u32,
-    #[serde(rename = "output_tokens")]
-    pub _output_tokens: u32,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
 }
 
 // Streaming types

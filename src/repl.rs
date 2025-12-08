@@ -27,6 +27,9 @@ pub struct Repl {
     thinking_budget: u32,
     session_id: String,
     display_messages: Vec<crate::history::DisplayMessage>,
+    // Session cost tracking
+    total_input_tokens: u32,
+    total_output_tokens: u32,
 }
 
 impl Repl {
@@ -85,7 +88,100 @@ impl Repl {
             thinking_budget,
             session_id,
             display_messages: Vec::new(),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
         })
+    }
+    
+    /// Calculate the cost for a given model based on token usage
+    fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
+        // Prices per million tokens in USD
+        let (input_price, output_price) = match model {
+            // Claude 4.5 models
+            "claude-sonnet-4-5" | "claude-sonnet-4.5" => (3.0, 15.0),
+            "claude-haiku-4-5" | "claude-haiku-4.5" => (0.8, 4.0),
+            
+            // Claude 4 models
+            "claude-sonnet-4" | "claude-4-sonnet-20250514" => (3.0, 15.0),
+            "claude-opus-4" | "claude-4-opus-20250514" => (15.0, 75.0),
+            
+            // Claude 4.1 models
+            "claude-opus-4.1" | "claude-opus-4-1" => (6.0, 30.0),
+            
+            // Claude 3.7 models
+            "claude-sonnet-3-7" | "claude-sonnet-3.7" => (3.0, 15.0),
+            
+            // Claude 3.5 models
+            "claude-sonnet-3-5" | "claude-sonnet-3.5" => (3.0, 15.0),
+            "claude-haiku-3-5" | "claude-haiku-3.5" => (0.8, 4.0),
+            
+            // Claude 3 models (legacy)
+            "claude-opus-3" | "claude-3-opus-20240229" => (15.0, 75.0),
+            "claude-sonnet-3" | "claude-3-sonnet-20240229" => (3.0, 15.0),
+            "claude-haiku-3" | "claude-3-haiku-20240307" => (0.25, 1.25),
+            
+            // Default fallback (use Sonnet 4.5 pricing)
+            _ => (3.0, 15.0),
+        };
+        
+        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_price;
+        let output_cost = (output_tokens as f64 / 1_000_000.0) * output_price;
+        
+        input_cost + output_cost
+    }
+    
+    /// Format number with thousand separators
+    fn format_number(n: u32) -> String {
+        let s = n.to_string();
+        let mut result = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                result.push(',');
+            }
+            result.push(c);
+        }
+        result.chars().rev().collect()
+    }
+    
+    /// Display session summary with cost information
+    fn display_session_summary(&self) {
+        if self.total_input_tokens == 0 && self.total_output_tokens == 0 {
+            // No API calls made in this session
+            return;
+        }
+        
+        println!();
+        println!("{}", "─".repeat(50).bright_cyan());
+        println!("{}", "Session Summary".bright_cyan().bold());
+        println!("{}", "─".repeat(50).bright_cyan());
+        
+        // Calculate estimated cost based on model pricing
+        let estimated_cost = Self::calculate_cost(
+            &self.model,
+            self.total_input_tokens,
+            self.total_output_tokens,
+        );
+        
+        println!("{:<20} {}", 
+            "Input tokens:".bright_white(),
+            Self::format_number(self.total_input_tokens).bright_green()
+        );
+        println!("{:<20} {}", 
+            "Output tokens:".bright_white(),
+            Self::format_number(self.total_output_tokens).bright_green()
+        );
+        println!("{:<20} {}", 
+            "Total tokens:".bright_white(),
+            Self::format_number(self.total_input_tokens + self.total_output_tokens).bright_green()
+        );
+        println!();
+        println!("{:<20} {}", 
+            "Estimated cost:".bright_white().bold(),
+            format!("${:.4}", estimated_cost).bright_yellow().bold()
+        );
+        
+        println!("{}", "─".repeat(50).bright_cyan());
+        println!();
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -112,7 +208,9 @@ impl Repl {
                     match line.to_lowercase().as_str() {
                         "exit" | "quit" => {
                             self.save_current_session()?;
-                            println!("\n{}", "Goodbye!".bright_cyan());
+                            self.display_session_summary();
+                            
+                            println!("{}", "Goodbye!".bright_cyan());
                             break;
                         }
                         "clear" => {
@@ -159,10 +257,8 @@ impl Repl {
 
                     if let Err(e) = self.process_message(line) {
                         eprintln!("{} {}", "Error:".bright_red().bold(), e);
-                    } else {
-                        if let Err(e) = self.save_current_session() {
-                            eprintln!("{} Failed to save session: {}", "Warning:".bright_yellow(), e);
-                        }
+                    } else if let Err(e) = self.save_current_session() {
+                        eprintln!("{} Failed to save session: {}", "Warning:".bright_yellow(), e);
                     }
 
                     println!();
@@ -172,6 +268,8 @@ impl Repl {
                 }
                 Err(ReadlineError::Eof) => {
                     self.save_current_session()?;
+                    self.display_session_summary();
+                    
                     println!("{}", "Goodbye!".bright_cyan());
                     break;
                 }
@@ -267,6 +365,10 @@ impl Repl {
         }
 
         let response = response?;
+        
+        // Track token usage
+        self.total_input_tokens += response.usage.input_tokens;
+        self.total_output_tokens += response.usage.output_tokens;
 
         self.handle_response(response.content, &runtime)?;
 
@@ -311,7 +413,7 @@ impl Repl {
                 
                 // Track this as a system message in display
                 self.display_messages.push(crate::history::DisplayMessage::UserMessage {
-                    content: format!("[System: Maximum tool iterations reached]"),
+                    content: "[System: Maximum tool iterations reached]".to_string(),
                 });
                 
                 // Let Claude respond to the interruption
@@ -660,6 +762,11 @@ impl Repl {
                             e
                         );
                     }
+                    
+                    // Track token usage
+                    self.total_input_tokens += resp.usage.input_tokens;
+                    self.total_output_tokens += resp.usage.output_tokens;
+                    
                     resp
                 }
                 Err(e) => {
@@ -753,6 +860,8 @@ impl Repl {
         println!();
         self.process_message(prompt)?;
         self.save_current_session()?;
+        self.display_session_summary();
+        
         Ok(())
     }
 
@@ -843,7 +952,7 @@ impl Repl {
                 crate::history::DisplayMessage::ToolExecution { tool_name, tool_input: _, tool_output } => {
                     if tool_name == "execute_bash" {
                         if let Ok(input_val) = serde_json::from_value::<serde_json::Value>(
-                            serde_json::to_value(&tool_output).unwrap_or_default()
+                            serde_json::to_value(tool_output).unwrap_or_default()
                         ) {
                             if let Some(command) = input_val.get("command").and_then(|v| v.as_str()) {
                                 println!(
@@ -891,7 +1000,7 @@ impl Repl {
                 
                 if line_count == 0 {
                     if file_path.is_empty() {
-                        format!("Read file (empty or not found)")
+                        "Read file (empty or not found)".to_string()
                     } else {
                         format!("Read file from {} - empty or not found", file_path.bright_cyan())
                     }

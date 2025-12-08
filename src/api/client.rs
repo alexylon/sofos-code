@@ -62,7 +62,7 @@ impl AnthropicClient {
         // Retry on network errors, timeouts, and some 5xx server errors
         error.is_timeout() 
             || error.is_connect() 
-            || error.status().map_or(false, |s| s.is_server_error())
+            || error.status().is_some_and(|s| s.is_server_error())
     }
 
     pub async fn create_message(
