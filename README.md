@@ -70,6 +70,9 @@ sofos
 
 - `resume` - Resume previous session
 - `clear` - Clear conversation history
+- `think on` - Enable extended thinking
+- `think off` - Disable extended thinking  
+- `think` - Show thinking status
 - `exit`, `quit`, or `Ctrl+D` - Exit
 
 ### Options

@@ -93,6 +93,7 @@ impl Repl {
         println!("{}", "Type your message or 'exit' to quit.".dimmed());
         println!("{}", "Type 'clear' to clear conversation history.".dimmed());
         println!("{}", "Type 'resume' to load a previous session.".dimmed());
+        println!("{}", "Type 'think on/off' to toggle extended thinking.".dimmed());
         println!();
 
         loop {
@@ -124,6 +125,32 @@ impl Repl {
                         "resume" => {
                             if let Err(e) = self.handle_resume() {
                                 eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                            }
+                            continue;
+                        }
+                        "think on" => {
+                            self.enable_thinking = true;
+                            println!(
+                                "\n{} (budget: {} tokens)\n",
+                                "Extended thinking enabled.".bright_green(),
+                                self.thinking_budget
+                            );
+                            continue;
+                        }
+                        "think off" => {
+                            self.enable_thinking = false;
+                            println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
+                            continue;
+                        }
+                        "think" => {
+                            if self.enable_thinking {
+                                println!(
+                                    "\n{} (budget: {} tokens)\n",
+                                    "Extended thinking is enabled".bright_green(),
+                                    self.thinking_budget
+                                );
+                            } else {
+                                println!("\n{}\n", "Extended thinking is disabled".bright_yellow());
                             }
                             continue;
                         }
@@ -207,7 +234,7 @@ impl Repl {
             let mut frame_idx = 0;
 
             // Hide cursor
-            print!("\x1B[?25l");
+            print!("\n\x1B[?25l");
             let _ = io::stdout().flush();
 
             while awaiting_clone.load(Ordering::Relaxed) {
@@ -355,7 +382,7 @@ impl Repl {
                     }
                     ContentBlock::Thinking { thinking, .. } => {
                         if !thinking.trim().is_empty() {
-                            println!("{}", "Thinking:".truecolor(0xFF, 0x99, 0x33).bold());
+                            println!("\n{}", "Thinking:".truecolor(0xFF, 0x99, 0x33).bold());
                             println!("{}", thinking.dimmed());
                             println!();
                         }
