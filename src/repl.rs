@@ -23,7 +23,6 @@ pub struct Repl {
     editor: DefaultEditor,
     model: String,
     max_tokens: u32,
-    recursion_depth: u32,
     session_id: String,
     display_messages: Vec<crate::history::DisplayMessage>,
 }
@@ -70,7 +69,6 @@ impl Repl {
             editor,
             model,
             max_tokens,
-            recursion_depth: 0,
             session_id,
             display_messages: Vec::new(),
         })
@@ -182,7 +180,6 @@ impl Repl {
 
         let response = runtime.block_on(self.client.create_message(request))?;
 
-        self.recursion_depth = 0;
         self.handle_response(response.content, &runtime)?;
 
         Ok(())
@@ -190,82 +187,150 @@ impl Repl {
 
     fn handle_response(
         &mut self,
-        content_blocks: Vec<ContentBlock>,
+        mut content_blocks: Vec<ContentBlock>,
         runtime: &tokio::runtime::Runtime,
     ) -> Result<()> {
-        const MAX_RECURSION_DEPTH: u32 = 500;
+        const MAX_TOOL_ITERATIONS: u32 = 200;
+        let mut iteration = 0;
 
-        if std::env::var("SOFOS_DEBUG").is_ok() {
-            eprintln!(
-                "\n=== handle_response: recursion_depth={}, blocks={} ===",
-                self.recursion_depth,
-                content_blocks.len()
-            );
-        }
+        loop {
+            iteration += 1;
 
-        if self.recursion_depth >= MAX_RECURSION_DEPTH {
-            eprintln!(
-                "\n{} Maximum recursion depth reached. Stopping to prevent infinite loop.",
-                "Warning:".bright_yellow().bold()
-            );
-            println!("{}", "The assistant has made the maximum number of tool calls. Please rephrase your request or break it into smaller tasks.".bright_yellow());
-            println!();
-            return Ok(());
-        }
+            if std::env::var("SOFOS_DEBUG").is_ok() {
+                eprintln!(
+                    "\n=== handle_response: iteration={}, blocks={} ===",
+                    iteration,
+                    content_blocks.len()
+                );
+            }
 
-        let mut text_output = Vec::new();
-        let mut tool_uses = Vec::new();
-
-        for block in &content_blocks {
-            match block {
-                ContentBlock::Text { text } => {
-                    if !text.trim().is_empty() {
-                        text_output.push(text.clone());
+            if iteration > MAX_TOOL_ITERATIONS {
+                eprintln!(
+                    "\n{} Maximum tool iterations reached. Stopping to prevent infinite loop.",
+                    "Warning:".bright_yellow().bold()
+                );
+                
+                // Inform Claude about the interruption so it can respond appropriately
+                let interruption_msg = format!(
+                    "SYSTEM INTERRUPTION: You have reached the maximum number of tool iterations ({}). \
+                    This limit prevents infinite loops. Please provide a summary of what you've accomplished \
+                    so far and suggest how the user should proceed. Consider breaking down the task into \
+                    smaller steps or asking the user for clarification.",
+                    MAX_TOOL_ITERATIONS
+                );
+                
+                self.conversation.add_user_message(interruption_msg.clone());
+                
+                // Track this as a system message in display
+                self.display_messages.push(crate::history::DisplayMessage::UserMessage {
+                    content: format!("[System: Maximum tool iterations reached]"),
+                });
+                
+                // Let Claude respond to the interruption
+                let request = CreateMessageRequest {
+                    model: self.model.clone(),
+                    max_tokens: self.max_tokens,
+                    messages: self.conversation.messages().to_vec(),
+                    system: Some(self.conversation.system_prompt().to_string()),
+                    tools: Some(self.get_available_tools()),
+                    stream: None,
+                };
+                
+                match runtime.block_on(self.client.create_message(request)) {
+                    Ok(response) => {
+                        // Display Claude's response to the interruption
+                        for block in &response.content {
+                            if let ContentBlock::Text { text } = block {
+                                if !text.trim().is_empty() {
+                                    println!("{}", "Assistant:".bright_blue().bold());
+                                    let highlighted = self.highlighter.highlight_text(text);
+                                    println!("{}", highlighted);
+                                    println!();
+                                    
+                                    self.display_messages.push(crate::history::DisplayMessage::AssistantMessage {
+                                        content: text.clone(),
+                                    });
+                                }
+                            }
+                        }
+                        
+                        // Store the response
+                        let message_blocks: Vec<crate::api::MessageContentBlock> = response.content
+                            .iter()
+                            .map(crate::api::MessageContentBlock::from_content_block)
+                            .collect();
+                        self.conversation.add_assistant_with_blocks(message_blocks);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "{} Failed to get response after interruption: {}",
+                            "Error:".bright_red().bold(),
+                            e
+                        );
                     }
                 }
-                ContentBlock::ToolUse { id, name, input } => {
-                    tool_uses.push((id.clone(), name.clone(), input.clone()));
-                }
-                ContentBlock::ServerToolUse { name, input, .. } => {
-                    // Server-side tools (like web_search) are executed by Claude API
-                    if std::env::var("SOFOS_DEBUG").is_ok() {
-                        eprintln!("Server tool use: {} with input: {:?}", name, input);
+                
+                return Ok(());
+            }
+
+            let mut text_output = Vec::new();
+            let mut tool_uses = Vec::new();
+
+            for block in &content_blocks {
+                match block {
+                    ContentBlock::Text { text } => {
+                        if !text.trim().is_empty() {
+                            text_output.push(text.clone());
+                        }
                     }
-                }
-                ContentBlock::WebSearchToolResult { content, .. } => {
-                    if !content.is_empty() {
-                        text_output.push(format!("\n[Web search returned {} results]", content.len()));
+                    ContentBlock::ToolUse { id, name, input } => {
+                        tool_uses.push((id.clone(), name.clone(), input.clone()));
+                    }
+                    ContentBlock::ServerToolUse { name, input, .. } => {
+                        // Server-side tools (like web_search) are executed by Claude API
+                        if std::env::var("SOFOS_DEBUG").is_ok() {
+                            eprintln!("Server tool use: {} with input: {:?}", name, input);
+                        }
+                    }
+                    ContentBlock::WebSearchToolResult { content, .. } => {
+                        if !content.is_empty() {
+                            text_output.push(format!("\n[Web search returned {} results]", content.len()));
+                        }
                     }
                 }
             }
-        }
 
-        if !text_output.is_empty() {
-            println!("{}", "Assistant:".bright_blue().bold());
-            for text in &text_output {
-                let highlighted = self.highlighter.highlight_text(text);
-                println!("{}", highlighted);
+            if !text_output.is_empty() {
+                println!("{}", "Assistant:".bright_blue().bold());
+                for text in &text_output {
+                    let highlighted = self.highlighter.highlight_text(text);
+                    println!("{}", highlighted);
+                }
+                println!();
+                
+                // Track assistant display message
+                let combined_text = text_output.join("\n");
+                self.display_messages.push(crate::history::DisplayMessage::AssistantMessage {
+                    content: combined_text,
+                });
             }
-            println!();
-            
-            // Track assistant display message
-            let combined_text = text_output.join("\n");
-            self.display_messages.push(crate::history::DisplayMessage::AssistantMessage {
-                content: combined_text,
-            });
-        }
 
-        // Store the full assistant response with content blocks
-        // This includes both text and tool_use blocks so the API can match tool_results
-        if !content_blocks.is_empty() {
-            let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
-                .iter()
-                .map(crate::api::MessageContentBlock::from_content_block)
-                .collect();
-            self.conversation.add_assistant_with_blocks(message_blocks);
-        }
+            // Store the full assistant response with content blocks
+            // This includes both text and tool_use blocks so the API can match tool_results
+            if !content_blocks.is_empty() {
+                let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
+                    .iter()
+                    .map(crate::api::MessageContentBlock::from_content_block)
+                    .collect();
+                self.conversation.add_assistant_with_blocks(message_blocks);
+            }
 
-        if !tool_uses.is_empty() {
+            // If no tools to execute, we're done
+            if tool_uses.is_empty() {
+                break;
+            }
+
+            // Execute tools
             let mut user_cancelled = false;
             let mut tool_results = Vec::new();
 
@@ -550,26 +615,8 @@ impl Repl {
                 return Ok(());
             }
 
-            // Increment recursion depth before recursive call
-            self.recursion_depth += 1;
-
-            if std::env::var("SOFOS_DEBUG").is_ok() {
-                eprintln!(
-                    "=== Making recursive call to handle_response with depth={} ===",
-                    self.recursion_depth
-                );
-            }
-
-            let result = self.handle_response(response.content, runtime);
-
-            if std::env::var("SOFOS_DEBUG").is_ok() {
-                eprintln!(
-                    "=== Returned from recursive call, depth was {} ===",
-                    self.recursion_depth
-                );
-            }
-
-            return result;
+            // Continue loop with new content blocks
+            content_blocks = response.content;
         }
 
         Ok(())

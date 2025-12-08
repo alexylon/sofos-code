@@ -17,17 +17,24 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Web Search** - Real-time web information via Claude's native search tool
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Visual Diff Display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
+- **Iterative Tool Execution** - Claude can use up to 200 tools per request for complex multi-file operations
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
 ## Benchmark
 
-**Task:** Replace all `var` instances with appropriate `const` and `let` in a JavaScript project (13 files, 902 lines of code)
+**Task:** 
+
+Replace all `var` instances with appropriate `const` and `let` in a JavaScript project where all variables were `var` (13 files, 902 lines of code)*
 
 **Results:**
-- **Sofos Code:** 1m 40s ⚡
-- **Claude Code CLI:** 4m 35s
 
-**~2.8x faster** (both tests with Morph Apply and `ripgrep` enabled).
+| Test | Sofos Code | Claude Code CLI | Faster | Sofos Code | Claude Code CLI | Cheaper  |
+|------|------------|-----------------|--------|------------|-----------------|----------|
+| **Test 1** | 1m 40s | 4m 35s | **2.7x** |      |           |    |
+| **Test 2** | 1m 39s | 4m 02s | **2.4x** | $0.32      | $0.68           | **2x**   |
+| **Average** | **1m 40s** | **4m 19s** | **2.6x** ⚡ | **1m 40s** | **4m 19s**      | **2.6x** ⚡ |
+
+*Both tools received the same prompt, used Morph Apply, `ripgrep`, and the `claude-sonnet-4-5` model.
 
 ## Installation
 

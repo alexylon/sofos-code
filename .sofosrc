@@ -23,7 +23,7 @@ Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API.
    - Assistant returns content blocks (text + tool_use)
    - REPL executes tools and collects results
    - Results sent back as user message with tool_result blocks
-   - Recursive handling allows Claude to use multiple tools in sequence
+   - **Loop-based handling** allows Claude to use multiple tools in sequence iteratively
 
 3. **Two-Level Instructions** (src/history.rs)
    - `.sofosrc`: Project-level, version controlled
@@ -139,7 +139,7 @@ src/
 - **Keep README clean and simple** - focus on essential user-facing information
 
 ## Security Considerations
-
+Ï
 **Critical Security Features:**
 
 1. **Path Validation** (filesystem.rs:validate_path)
@@ -190,37 +190,29 @@ src/
 2. Creates API request with all messages + system prompt
 3. Sends to Claude API
 
-**Claude responds with tools:**
+**Claude responds with tools (iterative loop):**
 1. Response contains text + tool_use blocks
 2. REPL adds full response (with both text and tool_use) to history as assistant message
 3. Executes each tool sequentially
 4. Collects all tool results
 5. Adds all results as single user message
-6. Makes new API request (recursive call to handle_response)
+6. Makes new API request and **continues loop** with new response
+7. **Loop exits** when Claude's response contains no tool calls
 
 **Important:** Tool results must be in a user message, with tool_use_id matching the original tool_use id.
 
-### Custom Instructions Loading
-
-**Load order (history.rs:load_custom_instructions):**
-1. Load `.sofosrc` from project root (if exists)
-2. Load `.sofos/instructions.md` from workspace (if exists)
-3. Combine with headers ("# Project Instructions", "# Personal Instructions")
-4. Append to system prompt
-
-**Display:**
-- If either file exists, show "Loaded custom instructions" in green
-- Silent if neither exists
-
-### Recursion Depth Limiting
+### Tool Iteration Limiting
 
 **Problem:** Claude can make infinite tool calls if it gets stuck in a loop
 
 **Solution:** (repl.rs:handle_response)
-- Track recursion depth in REPL struct
-- MAX_RECURSION_DEPTH = 50
-- If exceeded, show warning and stop
-- Reset to 0 at start of new user message
+- Use an **iterative loop** instead of recursion for constant stack space
+- Track iteration count in the loop
+- MAX_TOOL_ITERATIONS = 200
+- If exceeded, inject a system interruption message into the conversation
+- Claude receives the interruption and can provide a summary and suggestions
+- Clear, predictable control flow without recursion overhead
+- Graceful degradation: Claude knows it was interrupted and can help the user recover
 
 ### Thinking Animation
 
