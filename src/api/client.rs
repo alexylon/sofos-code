@@ -1,5 +1,6 @@
 use super::types::*;
 use crate::error::{Result, SofosError};
+use colored::Colorize;
 use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use std::pin::Pin;
@@ -8,6 +9,8 @@ use std::time::Duration;
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_RETRIES: u32 = 2;
+const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
 pub struct AnthropicClient {
     client: reqwest::Client,
@@ -33,25 +36,102 @@ impl AnthropicClient {
         Ok(Self { client })
     }
 
+    /// Check if we can reach the API endpoint
+    #[allow(dead_code)]
+    async fn check_connectivity(&self) -> Result<()> {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.client.head(API_BASE).send()
+        ).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(SofosError::NetworkError(format!(
+                "Cannot reach Anthropic API. Please check:\n  \
+                 1. Your internet connection\n  \
+                 2. Firewall/proxy settings\n  \
+                 3. API status at https://status.anthropic.com\n\
+                 Original error: {}", e
+            ))),
+            Err(_) => Err(SofosError::NetworkError(
+                "Connection timeout. Please check your network connection.".into()
+            )),
+        }
+    }
+
+    /// Determine if an error is worth retrying
+    fn is_retryable_error(error: &reqwest::Error) -> bool {
+        // Retry on network errors, timeouts, and some 5xx server errors
+        error.is_timeout() 
+            || error.is_connect() 
+            || error.status().map_or(false, |s| s.is_server_error())
+    }
+
     pub async fn create_message(
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
         let url = format!("{}/messages", API_BASE);
 
-        let response = self.client.post(&url).json(&request).send().await?;
+        // Try with retries
+        let mut last_error = None;
+        let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(SofosError::Api(format!(
-                "API request failed with status {}: {}",
-                status, error_text
-            )));
+        for attempt in 0..=MAX_RETRIES {
+            if attempt > 0 {
+                eprintln!(
+                    "{} Request failed, retrying in {:?}... (attempt {}/{})",
+                    "Network:".bright_yellow(),
+                    retry_delay,
+                    attempt,
+                    MAX_RETRIES
+                );
+                tokio::time::sleep(retry_delay).await;
+                retry_delay *= 2; // Exponential backoff
+            }
+
+            match self.client.post(&url).json(&request).send().await {
+                Ok(response) => {
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let error_text = response.text().await.unwrap_or_default();
+                        return Err(SofosError::Api(format!(
+                            "API request failed with status {}: {}",
+                            status, error_text
+                        )));
+                    }
+
+                    let result = response.json::<CreateMessageResponse>().await?;
+                    return Ok(result);
+                }
+                Err(e) => {
+                    let is_retryable = Self::is_retryable_error(&e);
+                    
+                    if attempt < MAX_RETRIES && is_retryable {
+                        last_error = Some(e);
+                        continue;
+                    } else {
+                        // Final attempt failed or error is not retryable
+                        return Err(SofosError::NetworkError(format!(
+                            "Failed to complete request after {} attempts.\n\
+                             This is usually a temporary network issue. Please try:\n  \
+                             1. Check your internet connection\n  \
+                             2. Resume this session and continue (your progress is saved)\n  \
+                             3. Visit https://status.anthropic.com for API status\n\n\
+                             Original error: {}",
+                            if is_retryable { attempt + 1 } else { 1 },
+                            e
+                        )));
+                    }
+                }
+            }
         }
 
-        let result = response.json::<CreateMessageResponse>().await?;
-        Ok(result)
+        // This should never be reached, but just in case
+        Err(last_error.map_or_else(
+            || SofosError::NetworkError("Unknown network error".into()),
+            |e| SofosError::NetworkError(format!(
+                "Failed after {} retries: {}", MAX_RETRIES, e
+            ))
+        ))
     }
 
     pub async fn _create_message_stream(

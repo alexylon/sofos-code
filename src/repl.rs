@@ -550,6 +550,15 @@ impl Repl {
                 eprintln!("=== About to generate response ===");
             }
 
+            // Save session before making API call (in case of network failure)
+            if let Err(e) = self.save_current_session() {
+                eprintln!(
+                    "{} Failed to save session before API call: {}",
+                    "Warning:".bright_yellow().bold(),
+                    e
+                );
+            }
+
             // After executing tools, get another response from Claude
             // Start thinking animation
             let thinking = Arc::new(AtomicBool::new(true));
