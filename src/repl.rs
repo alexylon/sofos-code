@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
 
 pub struct Repl {
     client: AnthropicClient,
@@ -190,6 +191,7 @@ impl Repl {
         println!("{}", "Type 'clear' to clear conversation history.".dimmed());
         println!("{}", "Type 'resume' to load a previous session.".dimmed());
         println!("{}", "Type 'think on/off' to toggle extended thinking.".dimmed());
+        println!("{}", "Press ESC while processing to interrupt and provide guidance.".dimmed());
         println!();
 
         loop {
@@ -324,47 +326,46 @@ impl Repl {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-        let awaiting = Arc::new(AtomicBool::new(true));
-        let awaiting_clone = Arc::clone(&awaiting);
-
-        let animation_handle = thread::spawn(move || {
-            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let mut frame_idx = 0;
-
-            // Hide cursor
-            print!("\n\x1B[?25l");
-            let _ = io::stdout().flush();
-
-            while awaiting_clone.load(Ordering::Relaxed) {
-                print!(
-                    "\r{} {}",
-                    frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
-                    "Awaiting response...".truecolor(0xFF, 0x99, 0x33)
-                );
-                let _ = io::stdout().flush();
-                frame_idx = (frame_idx + 1) % frames.len();
-                thread::sleep(Duration::from_millis(80));
-            }
-
-            // Clear the line and show cursor
-            print!("\r{}\r", " ".repeat(30));
-            print!("\x1B[?25h");
-            let _ = io::stdout().flush();
+        // Start interruptible animation and API call concurrently
+        let running = Arc::new(AtomicBool::new(true));
+        let interrupted = Arc::new(AtomicBool::new(false));
+        
+        // Animation + key detection in separate thread
+        let running_clone = Arc::clone(&running);
+        let interrupted_clone = Arc::clone(&interrupted);
+        let ui_handle = thread::spawn(move || {
+            Self::run_animation_with_interrupt(
+                "Awaiting response...".to_string(),
+                "(Press ESC to interrupt)".to_string(),
+                running_clone,
+                interrupted_clone,
+            )
         });
 
-        let response = runtime.block_on(self.client.create_message(request));
+        // Make API call
+        let response_result = runtime.block_on(self.client.create_message(request));
 
         // Stop animation
-        awaiting.store(false, Ordering::Relaxed);
-        if let Err(e) = animation_handle.join() {
-            eprintln!(
-                "{} Animation thread panicked: {:?}",
-                "Warning:".bright_yellow().bold(),
-                e
-            );
+        running.store(false, Ordering::Relaxed);
+        let _ = ui_handle.join();
+        
+        if interrupted.load(Ordering::Relaxed) {
+            println!("\n{}", "Interrupted by user. You can now provide additional guidance.".bright_yellow());
+            println!();
+            
+            // Add interruption message to conversation
+            let interrupt_msg = "INTERRUPT: The user pressed ESC to interrupt the request before receiving a response. \
+                                 They want to provide additional guidance or clarification. Wait for their next message.";
+            self.conversation.add_user_message(interrupt_msg.to_string());
+            
+            self.display_messages.push(crate::history::DisplayMessage::UserMessage {
+                content: "[Interrupted - no response received]".to_string(),
+            });
+            
+            return Ok(());
         }
 
-        let response = response?;
+        let response = response_result?;
         
         // Track token usage
         self.total_input_tokens += response.usage.input_tokens;
@@ -373,6 +374,70 @@ impl Repl {
         self.handle_response(response.content, &runtime)?;
 
         Ok(())
+    }
+    
+    /// Run animation with ESC interrupt detection
+    fn run_animation_with_interrupt(
+        action_message: String,
+        interrupt_message: String,
+        running: Arc<AtomicBool>,
+        interrupted: Arc<AtomicBool>,
+    ) {
+        let running_anim = Arc::clone(&running);
+        let running_key = Arc::clone(&running);
+        let interrupted_clone = Arc::clone(&interrupted);
+        
+        // Animation thread
+        let animation_handle = thread::spawn(move || {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut frame_idx = 0;
+
+            // Hide cursor
+            print!("\n\x1B[?25l");
+            let _ = io::stdout().flush();
+
+            while running_anim.load(Ordering::Relaxed) {
+                print!(
+                    "\r{} {} {}",
+                    frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
+                    action_message.truecolor(0xFF, 0x99, 0x33),
+                    interrupt_message.dimmed(),
+                );
+                let _ = io::stdout().flush();
+                frame_idx = (frame_idx + 1) % frames.len();
+                thread::sleep(Duration::from_millis(80));
+            }
+
+            // Clear the line and show cursor
+            print!("\r{}\r", " ".repeat(70));
+            print!("\x1B[?25h");
+            let _ = io::stdout().flush();
+        });
+        
+        // Key detection thread
+        let key_handle = thread::spawn(move || {
+            // Enable raw mode temporarily to detect ESC
+            if crossterm::terminal::enable_raw_mode().is_err() {
+                return;
+            }
+            
+            while running_key.load(Ordering::Relaxed) {
+                // Poll with timeout so we can check running flag
+                if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+                    if let Ok(Event::Key(KeyEvent { code: KeyCode::Esc, .. })) = event::read() {
+                        interrupted_clone.store(true, Ordering::Relaxed);
+                        running_key.store(false, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            }
+            
+            let _ = crossterm::terminal::disable_raw_mode();
+        });
+        
+        // Wait for both threads
+        let _ = animation_handle.join();
+        let _ = key_handle.join();
     }
 
     fn handle_response(
@@ -484,7 +549,7 @@ impl Repl {
                     }
                     ContentBlock::Thinking { thinking, .. } => {
                         if !thinking.trim().is_empty() {
-                            println!("\n{}", "Thinking:".truecolor(0xFF, 0x99, 0x33).bold());
+                            println!("\n{}", "Thinking:".yellow().bold());
                             println!("{}", thinking.dimmed());
                             println!();
                         }
@@ -689,33 +754,19 @@ impl Repl {
             }
 
             // After executing tools, get another response from Claude
-            // Start thinking animation
-            let thinking = Arc::new(AtomicBool::new(true));
-            let thinking_clone = Arc::clone(&thinking);
-
-            let animation_handle = thread::spawn(move || {
-                let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                let mut frame_idx = 0;
-
-                // Hide cursor
-                print!("\x1B[?25l");
-                let _ = io::stdout().flush();
-
-                while thinking_clone.load(Ordering::Relaxed) {
-                    print!(
-                        "\r{} {}",
-                        frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
-                        "Processing...".truecolor(0xFF, 0x99, 0x33)
-                    );
-                    let _ = io::stdout().flush();
-                    frame_idx = (frame_idx + 1) % frames.len();
-                    thread::sleep(Duration::from_millis(80));
-                }
-
-                // Clear the line and show cursor
-                print!("\r{}\r", " ".repeat(30));
-                print!("\x1B[?25h");
-                let _ = io::stdout().flush();
+            // Start thinking animation with interrupt support
+            let processing = Arc::new(AtomicBool::new(true));
+            let processing_interrupted = Arc::new(AtomicBool::new(false));
+            
+            let processing_clone = Arc::clone(&processing);
+            let processing_interrupted_clone = Arc::clone(&processing_interrupted);
+            let ui_handle = thread::spawn(move || {
+                Self::run_animation_with_interrupt(
+                    "Processing...".to_string(),
+                    "(Press ESC to interrupt)".to_string(),
+                    processing_clone,
+                    processing_interrupted_clone,
+                )
             });
 
             // Debug: show conversation history
@@ -751,18 +802,39 @@ impl Repl {
                 thinking: thinking_config,
             };
 
-            let response = match runtime.block_on(self.client.create_message(request)) {
+            let response_result = runtime.block_on(self.client.create_message(request));
+            
+            // Stop animation
+            processing.store(false, Ordering::Relaxed);
+            let _ = ui_handle.join();
+            
+            if processing_interrupted.load(Ordering::Relaxed) {
+                println!("\n{}", "Processing interrupted by user. You can now provide additional guidance.".bright_yellow());
+                println!();
+                
+                // Create a summary of what was done before interruption
+                let tools_executed: Vec<String> = tool_uses.iter()
+                    .map(|(_, name, _)| name.clone())
+                    .collect();
+                
+                let interrupt_msg = format!(
+                    "INTERRUPT: The user pressed ESC while waiting for your response after tool execution. \
+                     Tools that were executed: {}. The user wants to provide additional guidance before you continue. \
+                     Wait for their next message.",
+                    tools_executed.join(", ")
+                );
+                
+                self.conversation.add_user_message(interrupt_msg);
+                
+                self.display_messages.push(crate::history::DisplayMessage::UserMessage {
+                    content: format!("[Interrupted after executing: {}]", tools_executed.join(", ")),
+                });
+                
+                return Ok(());
+            }
+
+            let response = match response_result {
                 Ok(resp) => {
-                    // Stop animation
-                    thinking.store(false, Ordering::Relaxed);
-                    if let Err(e) = animation_handle.join() {
-                        eprintln!(
-                            "{} Animation thread panicked: {:?}",
-                            "Warning:".bright_yellow().bold(),
-                            e
-                        );
-                    }
-                    
                     // Track token usage
                     self.total_input_tokens += resp.usage.input_tokens;
                     self.total_output_tokens += resp.usage.output_tokens;
@@ -770,15 +842,6 @@ impl Repl {
                     resp
                 }
                 Err(e) => {
-                    // Stop animation on error
-                    thinking.store(false, Ordering::Relaxed);
-                    if let Err(panic_err) = animation_handle.join() {
-                        eprintln!(
-                            "{} Animation thread panicked: {:?}",
-                            "Warning:".bright_yellow().bold(),
-                            panic_err
-                        );
-                    }
                     eprintln!(
                         "{} Failed to get response after tool execution: {}",
                         "Error:".bright_red().bold(),

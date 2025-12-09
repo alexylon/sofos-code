@@ -24,6 +24,7 @@ rustyline = "17.0"
 colored = "3.0"
 syntect = "5.2"
 similar = "2.7"
+crossterm = "0"
 
 # Utilities
 futures = "0.3"

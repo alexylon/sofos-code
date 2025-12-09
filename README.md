@@ -18,6 +18,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Visual Diff Display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
 - **Iterative Tool Execution** - Claude can use up to 200 tools per request for complex multi-file operations
+- **Session Summary** – After exiting Sofos, a session summary is displayed, including the input and output tokens used and the estimated cost.
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
 ## Installation
@@ -74,6 +75,7 @@ sofos
 - `think off` - Disable extended thinking  
 - `think` - Show thinking status
 - `exit`, `quit`, or `Ctrl+D` - Exit (displays session cost summary)
+- Press `ESC` during AI processing to interrupt and provide additional guidance. Claude will know what was done before interruption
 
 ## Cost Tracking
 
