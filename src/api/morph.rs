@@ -31,6 +31,7 @@ struct MorphMessageResponse {
     content: String,
 }
 
+#[derive(Clone)]
 pub struct MorphClient {
     client: reqwest::Client,
     model: String,
@@ -83,18 +84,8 @@ impl MorphClient {
         };
 
         let url = format!("{}/chat/completions", MORPH_BASE_URL);
-
         let response = self.client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(SofosError::Api(format!(
-                "Morph API request failed with status {}: {}",
-                status, error_text
-            )));
-        }
-
+        let response = crate::api::client::AnthropicClient::check_response_status(response).await?;
         let result: MorphResponse = response.json().await?;
 
         result

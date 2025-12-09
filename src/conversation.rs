@@ -3,6 +3,7 @@ use crate::api::Message;
 const MAX_MESSAGES: usize = 500;
 
 /// Manages conversation history for the REPL
+#[derive(Clone)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
     system_prompt: String,

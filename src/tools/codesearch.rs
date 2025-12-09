@@ -2,6 +2,7 @@ use crate::error::{Result, SofosError};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[derive(Clone)]
 pub struct CodeSearchTool {
     workspace: PathBuf,
 }

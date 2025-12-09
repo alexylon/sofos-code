@@ -31,6 +31,9 @@ pub enum SofosError {
 
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
+
+    #[error("Interrupted by user")]
+    Interrupted,
 }
 
 pub type Result<T> = std::result::Result<T, SofosError>;

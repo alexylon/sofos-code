@@ -5,9 +5,12 @@ mod diff;
 mod error;
 mod history;
 mod repl;
+mod request_builder;
+mod response_handler;
 mod session_selector;
 mod syntax;
 mod tools;
+mod ui;
 
 use api::MorphClient;
 use clap::Parser;

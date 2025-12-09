@@ -26,6 +26,7 @@ fn confirm_action(prompt: &str) -> Result<bool> {
 }
 
 /// ToolExecutor handles execution of tool calls from Claude
+#[derive(Clone)]
 pub struct ToolExecutor {
     fs_tool: FileSystemTool,
     code_search_tool: Option<CodeSearchTool>,
@@ -57,6 +58,20 @@ impl ToolExecutor {
 
     pub fn has_code_search(&self) -> bool {
         self.code_search_tool.is_some()
+    }
+
+    pub fn get_available_tools(&self) -> Vec<crate::api::Tool> {
+        let mut tools = if self.has_morph() {
+            get_tools_with_morph()
+        } else {
+            get_tools()
+        };
+
+        if self.has_code_search() {
+            add_code_search_tool(&mut tools);
+        }
+
+        tools
     }
 
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<String> {

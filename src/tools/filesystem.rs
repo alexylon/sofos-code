@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
 
 /// FileSystemTool provides secure file operations sandboxed to a workspace directory
+#[derive(Clone)]
 pub struct FileSystemTool {
     workspace: PathBuf,
 }

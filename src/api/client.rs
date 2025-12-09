@@ -8,10 +8,11 @@ use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_RETRIES: u32 = 2;
-const INITIAL_RETRY_DELAY_MS: u64 = 500;
+const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 
+#[derive(Clone)]
 pub struct AnthropicClient {
     client: reqwest::Client,
 }
@@ -34,6 +35,18 @@ impl AnthropicClient {
             .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self { client })
+    }
+
+    pub(crate) async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(SofosError::Api(format!(
+                "API request failed with status {}: {}",
+                status, error_text
+            )));
+        }
+        Ok(response)
     }
 
     /// Check if we can reach the API endpoint
@@ -78,7 +91,7 @@ impl AnthropicClient {
         for attempt in 0..=MAX_RETRIES {
             if attempt > 0 {
                 eprintln!(
-                    "{} Request failed, retrying in {:?}... (attempt {}/{})",
+                    "\n{} Request failed, retrying in {:?}... (attempt {}/{})",
                     "Network:".bright_yellow(),
                     retry_delay,
                     attempt,
@@ -90,15 +103,7 @@ impl AnthropicClient {
 
             match self.client.post(&url).json(&request).send().await {
                 Ok(response) => {
-                    if !response.status().is_success() {
-                        let status = response.status();
-                        let error_text = response.text().await.unwrap_or_default();
-                        return Err(SofosError::Api(format!(
-                            "API request failed with status {}: {}",
-                            status, error_text
-                        )));
-                    }
-
+                    let response = Self::check_response_status(response).await?;
                     let result = response.json::<CreateMessageResponse>().await?;
                     return Ok(result);
                 }
@@ -140,17 +145,8 @@ impl AnthropicClient {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<_StreamEvent>> + Send>>> {
         request.stream = Some(true);
         let url = format!("{}/messages", API_BASE);
-
         let response = self.client.post(&url).json(&request).send().await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(SofosError::Api(format!(
-                "API request failed with status {}: {}",
-                status, error_text
-            )));
-        }
+        let response = Self::check_response_status(response).await?;
 
         let stream = response
             .bytes_stream()
