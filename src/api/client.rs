@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_RETRIES: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 
@@ -85,14 +85,25 @@ impl AnthropicClient {
         let url = format!("{}/messages", API_BASE);
 
         // Try with retries
-        let mut last_error = None;
+        let mut last_error: Option<reqwest::Error> = None;
         let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
 
         for attempt in 0..=MAX_RETRIES {
             if attempt > 0 {
+                let reason = if let Some(ref err) = last_error {
+                    if err.is_timeout() {
+                        "Request timed out"
+                    } else {
+                        &*format!("Request failed: {}", err)
+                    }
+                } else {
+                    "Request failed"
+                };
+
                 eprintln!(
-                    "\n{} Request failed, retrying in {:?}... (attempt {}/{})",
+                    " {} {}, retrying in {:?}... (attempt {}/{})",
                     "Network:".bright_yellow(),
+                    reason,
                     retry_delay,
                     attempt,
                     MAX_RETRIES
