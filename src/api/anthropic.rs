@@ -37,20 +37,6 @@ impl AnthropicClient {
         Ok(Self { client })
     }
 
-    pub(crate) async fn check_response_status(
-        response: reqwest::Response,
-    ) -> Result<reqwest::Response> {
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(SofosError::Api(format!(
-                "API request failed with status {}: {}",
-                status, error_text
-            )));
-        }
-        Ok(response)
-    }
-
     /// Check if we can reach the API endpoint
     #[allow(dead_code)]
     async fn check_connectivity(&self) -> Result<()> {
@@ -115,7 +101,7 @@ impl AnthropicClient {
 
             match self.client.post(&url).json(&request).send().await {
                 Ok(response) => {
-                    let response = Self::check_response_status(response).await?;
+                    let response = super::utils::check_response_status(response).await?;
                     let result = response.json::<CreateMessageResponse>().await?;
                     return Ok(result);
                 }
@@ -156,7 +142,7 @@ impl AnthropicClient {
         request.stream = Some(true);
         let url = format!("{}/messages", API_BASE);
         let response = self.client.post(&url).json(&request).send().await?;
-        let response = Self::check_response_status(response).await?;
+        let response = super::utils::check_response_status(response).await?;
 
         let stream = response
             .bytes_stream()

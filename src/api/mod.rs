@@ -2,6 +2,7 @@ pub mod anthropic;
 pub mod morph;
 pub mod openai;
 pub mod types;
+pub mod utils;
 
 pub use anthropic::AnthropicClient;
 pub use morph::MorphClient;

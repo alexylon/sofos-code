@@ -163,7 +163,7 @@ impl OpenAIClient {
 
         let url = format!("{}/chat/completions", OPENAI_API_BASE);
         let response = self.client.post(&url).json(&body).send().await?;
-        let response = check_response_status(response).await?;
+        let response = super::utils::check_response_status(response).await?;
         let parsed: OpenAIChatResponse = response.json().await?;
 
         let choice =
@@ -268,7 +268,7 @@ impl OpenAIClient {
         }
         
         let response = self.client.post(&url).json(&body).send().await?;
-        let response = check_response_status(response).await?;
+        let response = super::utils::check_response_status(response).await?;
         
         let response_text = response.text().await?;
         if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -520,16 +520,4 @@ struct OpenAIResponseUsage {
     input_tokens: Option<u32>,
     #[serde(default)]
     output_tokens: Option<u32>,
-}
-
-async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(SofosError::Api(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        )));
-    }
-    Ok(response)
 }

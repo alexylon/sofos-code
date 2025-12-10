@@ -85,7 +85,7 @@ impl MorphClient {
 
         let url = format!("{}/chat/completions", MORPH_BASE_URL);
         let response = self.client.post(&url).json(&request).send().await?;
-        let response = crate::api::anthropic::AnthropicClient::check_response_status(response).await?;
+        let response = super::utils::check_response_status(response).await?;
         let result: MorphResponse = response.json().await?;
 
         result
