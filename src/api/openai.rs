@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
-// OpenAI responses API (for gpt-5.1-codex) and chat completions (for other chat models)
+// OpenAI responses API (for gpt-5.1-codex-max) and chat completions (for other chat models)
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 const REQUEST_TIMEOUT: Duration = super::anthropic::REQUEST_TIMEOUT;
 
@@ -37,7 +37,7 @@ impl OpenAIClient {
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
-        // gpt-5.1-codex uses the /responses endpoint with `input`
+        // gpt-5.1-codex-max uses the /responses endpoint with `input`
         if request.model.contains("gpt-5.1-codex") {
             return self.call_responses(request).await;
         }

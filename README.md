@@ -2,13 +2,13 @@
 
 ![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg)
 
-A blazingly fast, interactive AI coding assistant powered by Claude or OpenAI, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
+A blazingly fast, interactive AI coding assistant powered by Claude or GPT, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
 <div align="center"><img src="/assets/sofos_code.png" style="width: 800px;" alt="Sofos Code"></div>
 
 ## Features
 
-- **Interactive REPL** - Multi-turn conversations with Claude or OpenAI
+- **Interactive REPL** - Multi-turn conversations with Claude or GPT
 - **Session History** - Automatic session saving and resume previous conversations
 - **Custom Instructions** - Project and personal instruction files for context-aware assistance
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
@@ -17,7 +17,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or OpenAI, i
 - **Web Search** - Real-time web information via Claude's native search tool
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Visual Diff Display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
-- **Iterative Tool Execution** - Claude can use up to 200 tools per request for complex multi-file operations
+- **Iterative Tool Execution** - Sofos can use up to 200 tools per request for complex multi-file operations
 - **Session Usage** – After exiting Sofos, a session usage is displayed, including the input and output tokens used and the estimated cost.
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 
@@ -103,7 +103,7 @@ Estimated cost:     $0.1304
 **Cost Calculation:**
 - Costs are calculated based on official model pricing
 - Claude models use official Anthropic pricing (e.g., Sonnet 4.5: $3/$15 per million input/output tokens)
-- OpenAI models use estimated pricing ($5/$15 per million tokens for gpt-5.1-codex models)
+- OpenAI models use official OpenAI pricing ($1.25/$10 per million tokens for gpt-5.1-codex and gpt-5.1-codex-max models)
 - Accurate for standard API usage
 
 ### Options
@@ -249,7 +249,7 @@ MIT License
 
 ## Acknowledgments
 
-Built with Rust and powered by Anthropic's Claude. Morph Apply integration for fast edits. Inspired by Aider and similar tools.
+Built with Rust and powered by Anthropic's Claude or OpenAI's GPT. Morph Apply integration for fast edits. Inspired by Aider and similar tools.
 
 ---
 

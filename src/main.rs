@@ -48,7 +48,7 @@ fn main() -> Result<()> {
                 eprintln!("Please set your OpenAI API key:");
                 eprintln!("  export OPENAI_API_KEY='your-api-key'");
                 eprintln!("Or use the --openai-api-key flag:");
-                eprintln!("  sofos --openai-api-key 'your-api-key' --model gpt-5.1-codex");
+                eprintln!("  sofos --openai-api-key 'your-api-key' --model gpt-5.1-codex-max");
                 std::process::exit(1);
             }
         }

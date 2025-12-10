@@ -304,18 +304,10 @@ impl UI {
     fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
         // Prices per million tokens in USD
         let (input_price, output_price) = match model {
-            "claude-sonnet-4-5" | "claude-sonnet-4.5" => (3.0, 15.0),
-            "claude-haiku-4-5" | "claude-haiku-4.5" => (0.8, 4.0),
-            "claude-sonnet-4" | "claude-4-sonnet-20250514" => (3.0, 15.0),
-            "claude-opus-4" | "claude-4-opus-20250514" => (15.0, 75.0),
-            "claude-opus-4.1" | "claude-opus-4-1" => (6.0, 30.0),
-            "claude-sonnet-3-7" | "claude-sonnet-3.7" => (3.0, 15.0),
-            "claude-sonnet-3-5" | "claude-sonnet-3.5" => (3.0, 15.0),
-            "claude-haiku-3-5" | "claude-haiku-3.5" => (0.8, 4.0),
-            "claude-opus-3" | "claude-3-opus-20240229" => (15.0, 75.0),
-            "claude-sonnet-3" | "claude-3-sonnet-20240229" => (3.0, 15.0),
-            "claude-haiku-3" | "claude-3-haiku-20240307" => (0.25, 1.25),
-            "gpt-5.1-codex" => (5.0, 15.0),
+            "claude-sonnet-4-5" => (3.0, 15.0),
+            "claude-opus-4-5" => (5.0, 25.0),
+            "claude-haiku-4-5" => (1.0, 5.0),
+            "gpt-5.1-codex-max" | "gpt-5.1-codex" | "gpt-5-codex" => (1.25, 10.0),
             // Default fallback (use Sonnet 4.5 pricing)
             _ => (3.0, 15.0),
         };
