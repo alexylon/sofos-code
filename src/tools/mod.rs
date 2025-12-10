@@ -25,7 +25,7 @@ fn confirm_action(prompt: &str) -> Result<bool> {
     Ok(answer == "y" || answer == "yes")
 }
 
-/// ToolExecutor handles execution of tool calls from Claude
+/// ToolExecutor handles execution of tool calls from AI
 #[derive(Clone)]
 pub struct ToolExecutor {
     fs_tool: FileSystemTool,

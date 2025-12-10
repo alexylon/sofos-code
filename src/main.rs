@@ -12,7 +12,7 @@ mod syntax;
 mod tools;
 mod ui;
 
-use api::{LlmClient, MorphClient, AnthropicClient, OpenAIClient};
+use api::{AnthropicClient, LlmClient, MorphClient, OpenAIClient};
 use clap::Parser;
 use cli::Cli;
 use colored::Colorize;

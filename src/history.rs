@@ -39,7 +39,7 @@ pub struct SessionMetadata {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
-    /// Messages in API format (for continuing the conversation with Claude)
+    /// Messages in API format (for continuing the conversation with AI)
     pub api_messages: Vec<Message>,
     /// Messages in display format (for reconstructing the original UI)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

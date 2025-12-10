@@ -146,7 +146,7 @@ impl OpenAIClient {
                         "parameters": input_schema
                     }
                 })),
-                _ => None, // Web search isn't supported via OpenAI tools
+                _ => None, // TODO: Add OpenAI web search
             })
             .collect();
 
@@ -243,7 +243,7 @@ impl OpenAIClient {
             if !tools.is_empty() {
                 body["tools"] = json!(tools);
                 body["tool_choice"] = json!("auto");
-                
+
                 if std::env::var("SOFOS_DEBUG").is_ok() {
                     eprintln!("\n=== OpenAI /responses Request ===");
                     eprintln!("Sending {} tools to OpenAI", tools.len());
@@ -260,23 +260,27 @@ impl OpenAIClient {
         }
 
         let url = format!("{}/responses", OPENAI_API_BASE);
-        
+
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== OpenAI /responses Request Body ===");
-            eprintln!("{}", serde_json::to_string_pretty(&body).unwrap_or_else(|_| "Failed to serialize".to_string()));
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&body)
+                    .unwrap_or_else(|_| "Failed to serialize".to_string())
+            );
             eprintln!("======================================\n");
         }
-        
+
         let response = self.client.post(&url).json(&body).send().await?;
         let response = super::utils::check_response_status(response).await?;
-        
+
         let response_text = response.text().await?;
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== OpenAI Raw Response ===");
             eprintln!("{}", response_text);
             eprintln!("===========================\n");
         }
-        
+
         let parsed: OpenAIResponse = serde_json::from_str(&response_text)
             .map_err(|e| SofosError::Api(format!("Failed to parse OpenAI response: {}", e)))?;
 
@@ -285,24 +289,27 @@ impl OpenAIClient {
             eprintln!("Model: {}", parsed.model);
             eprintln!("Output items count: {}", parsed.output.len());
             for (i, item) in parsed.output.iter().enumerate() {
-                eprintln!("  Item {}: type={}, content_count={}, tool_calls={:?}", 
-                    i, 
-                    item.item_type, 
+                eprintln!(
+                    "  Item {}: type={}, content_count={}, tool_calls={:?}",
+                    i,
+                    item.item_type,
                     item.content.len(),
                     item.tool_calls.as_ref().map(|tc| tc.len())
                 );
                 for (j, content) in item.content.iter().enumerate() {
-                    eprintln!("    Content {}: type={}, text_len={}", 
-                        j, 
-                        content.content_type, 
+                    eprintln!(
+                        "    Content {}: type={}, text_len={}",
+                        j,
+                        content.content_type,
                         content.text.len()
                     );
                 }
                 if let Some(ref tool_calls) = item.tool_calls {
                     for (j, call) in tool_calls.iter().enumerate() {
-                        eprintln!("    Tool call {}: name={}, args_len={}", 
-                            j, 
-                            call.name, 
+                        eprintln!(
+                            "    Tool call {}: name={}, args_len={}",
+                            j,
+                            call.name,
                             call.arguments.len()
                         );
                     }
@@ -316,7 +323,8 @@ impl OpenAIClient {
             match item.item_type.as_str() {
                 "message" => {
                     for content in item.content {
-                        if content.content_type == "output_text" && !content.text.trim().is_empty() {
+                        if content.content_type == "output_text" && !content.text.trim().is_empty()
+                        {
                             content_blocks.push(ContentBlock::Text { text: content.text });
                         }
                     }
@@ -334,8 +342,9 @@ impl OpenAIClient {
                     }
                 }
                 "function_call" => {
-                    if let (Some(name), Some(arguments), Some(call_id)) = 
-                        (item.name, item.arguments, item.call_id) {
+                    if let (Some(name), Some(arguments), Some(call_id)) =
+                        (item.name, item.arguments, item.call_id)
+                    {
                         let input = serde_json::from_str::<serde_json::Value>(&arguments)
                             .unwrap_or_else(|_| json!({"raw_arguments": arguments}));
                         content_blocks.push(ContentBlock::ToolUse {
@@ -359,7 +368,10 @@ impl OpenAIClient {
         }
 
         if std::env::var("SOFOS_DEBUG").is_ok() {
-            eprintln!("=== Converted to {} content blocks ===\n", content_blocks.len());
+            eprintln!(
+                "=== Converted to {} content blocks ===\n",
+                content_blocks.len()
+            );
         }
 
         let usage = parsed.usage.unwrap_or_default();
@@ -400,7 +412,11 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                         MessageContentBlock::Text { text } => {
                             input.push(json!({"role": msg.role, "content": text}));
                         }
-                        MessageContentBlock::ToolUse { id, name, input: tool_input } => {
+                        MessageContentBlock::ToolUse {
+                            id,
+                            name,
+                            input: tool_input,
+                        } => {
                             // Responses API requires function_call items to match with function_call_output
                             input.push(json!({
                                 "type": "function_call",

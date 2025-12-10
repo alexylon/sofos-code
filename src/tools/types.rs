@@ -207,7 +207,7 @@ fn morph_edit_file_tool() -> Tool {
     }
 }
 
-/// Get all available tools for Claude API
+/// Get all available tools for Claude/GPT API
 pub fn get_tools() -> Vec<Tool> {
     vec![
         read_file_tool(),

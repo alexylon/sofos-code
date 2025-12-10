@@ -9,7 +9,7 @@ use colored::Colorize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Handles Claude's responses and manages tool execution iteration
+/// Handles AI's responses and manages tool execution iteration
 pub struct ResponseHandler {
     client: LlmClient,
     tool_executor: ToolExecutor,
@@ -400,7 +400,7 @@ impl ResponseHandler {
             content: "[System: Maximum tool iterations reached]".to_string(),
         });
 
-        // Let Claude respond to the interruption
+        // Let AI respond to the interruption
         let request = self.build_request();
 
         match self.client.create_message(request).await {
