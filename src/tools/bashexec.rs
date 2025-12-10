@@ -17,7 +17,7 @@ impl BashExecutor {
     pub fn execute(&self, command: &str) -> Result<String> {
         if !self.is_safe_command(command) {
             return Err(SofosError::ToolExecution(
-                self.get_rejection_reason(command)
+                self.get_rejection_reason(command),
             ));
         }
 
@@ -190,8 +190,13 @@ impl BashExecutor {
     }
 
     fn is_safe_git_command(&self, command: &str) -> bool {
-        if !command.starts_with("git ") && !command.contains(" git ") && !command.contains(";git ")
-            && !command.contains("&&git ") && !command.contains("||git ") && !command.contains("|git ") {
+        if !command.starts_with("git ")
+            && !command.contains(" git ")
+            && !command.contains(";git ")
+            && !command.contains("&&git ")
+            && !command.contains("||git ")
+            && !command.contains("|git ")
+        {
             return true;
         }
 
@@ -234,7 +239,7 @@ impl BashExecutor {
             "git merge",
             "git rebase",
             "git tag -d",
-            "git stash",  // Blocks all stash operations except list/show (checked above)
+            "git stash", // Blocks all stash operations except list/show (checked above)
             "git init",
             "git add",
             "git rm",
@@ -298,9 +303,12 @@ impl BashExecutor {
         }
 
         // Absolute paths
-        if command.starts_with('/') || command.contains(" /") 
-            || command.contains("|/") || command.contains(";/")
-            || command.contains("&&/") || command.contains("||/")
+        if command.starts_with('/')
+            || command.contains(" /")
+            || command.contains("|/")
+            || command.contains(";/")
+            || command.contains("&&/")
+            || command.contains("||/")
         {
             return format!(
                 "Command blocked: '{}'\nReason: Contains absolute paths (starting with '/').\nOnly relative paths within the workspace are allowed.",
@@ -334,9 +342,21 @@ impl BashExecutor {
             ("rm", "delete files", "Use the delete_file tool"),
             ("mv", "move/rename files", "Use the move_file tool"),
             ("cp", "copy files", "Use the copy_file tool"),
-            ("chmod", "change permissions", "File permissions cannot be modified"),
-            ("mkdir", "create directories", "Use the create_directory tool"),
-            ("rmdir", "remove directories", "Use the delete_directory tool"),
+            (
+                "chmod",
+                "change permissions",
+                "File permissions cannot be modified",
+            ),
+            (
+                "mkdir",
+                "create directories",
+                "Use the create_directory tool",
+            ),
+            (
+                "rmdir",
+                "remove directories",
+                "Use the delete_directory tool",
+            ),
             ("touch", "create/modify files", "Use the write_file tool"),
         ];
 
@@ -421,14 +441,18 @@ impl BashExecutor {
             );
         }
 
-        if command_lower.contains("git stash") && !command_lower.contains("git stash list") && !command_lower.contains("git stash show") {
+        if command_lower.contains("git stash")
+            && !command_lower.contains("git stash list")
+            && !command_lower.contains("git stash show")
+        {
             return format!(
                 "Command blocked: '{}'\nReason: 'git stash' (without list/show) modifies repository state.\nAllowed: Use 'git stash list' or 'git stash show' to view stashed changes.",
                 command
             );
         }
 
-        if command_lower.contains("git remote add") || command_lower.contains("git remote set-url") {
+        if command_lower.contains("git remote add") || command_lower.contains("git remote set-url")
+        {
             return format!(
                 "Command blocked: '{}'\nReason: Modifying git remotes could redirect pushes to unauthorized servers.\nAllowed: Use 'git remote -v' to view configured remotes.",
                 command
@@ -590,7 +614,7 @@ mod tests {
         assert!(!executor.is_safe_command("git branch -D branch-name"));
         assert!(!executor.is_safe_command("git branch -d branch-name"));
         assert!(!executor.is_safe_command("git filter-branch"));
-        
+
         // Modifications
         assert!(!executor.is_safe_command("git add ."));
         assert!(!executor.is_safe_command("git add file.txt"));
@@ -655,7 +679,7 @@ mod tests {
             assert!(msg.contains("git status"));
         }
 
-        // Test rm error message  
+        // Test rm error message
         let result = executor.execute("rm file.txt");
         assert!(result.is_err());
         if let Err(crate::error::SofosError::ToolExecution(msg)) = result {

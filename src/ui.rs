@@ -26,8 +26,14 @@ impl UI {
         println!("{}", "Type your message or 'exit' to quit.".dimmed());
         println!("{}", "Type 'clear' to clear conversation history.".dimmed());
         println!("{}", "Type 'resume' to load a previous session.".dimmed());
-        println!("{}", "Type 'think on/off' to toggle extended thinking.".dimmed());
-        println!("{}", "Press ESC while processing to interrupt and provide guidance.".dimmed());
+        println!(
+            "{}",
+            "Type 'think on/off' to toggle extended thinking.".dimmed()
+        );
+        println!(
+            "{}",
+            "Press ESC while processing to interrupt and provide guidance.".dimmed()
+        );
         println!();
     }
 
@@ -35,11 +41,7 @@ impl UI {
         println!("{}", "Goodbye!".bright_cyan());
     }
 
-    pub fn display_session_summary(
-        model: &str,
-        total_input_tokens: u32,
-        total_output_tokens: u32,
-    ) {
+    pub fn display_session_summary(model: &str, total_input_tokens: u32, total_output_tokens: u32) {
         if total_input_tokens == 0 && total_output_tokens == 0 {
             return;
         }
@@ -215,8 +217,7 @@ impl UI {
             while running_key.load(Ordering::Relaxed) {
                 if event::poll(Duration::from_millis(100)).unwrap_or(false) {
                     if let Ok(Event::Key(KeyEvent {
-                        code: KeyCode::Esc,
-                        ..
+                        code: KeyCode::Esc, ..
                     })) = event::read()
                     {
                         interrupted_clone.store(true, Ordering::Relaxed);
@@ -257,7 +258,10 @@ impl UI {
                     if file_path.is_empty() {
                         "Read file (empty or not found)".to_string()
                     } else {
-                        format!("Read file from {} - empty or not found", file_path.bright_cyan())
+                        format!(
+                            "Read file from {} - empty or not found",
+                            file_path.bright_cyan()
+                        )
                     }
                 } else {
                     let end_line = offset + line_count - 1;
@@ -274,7 +278,10 @@ impl UI {
                 }
             }
             "list_directory" => {
-                let path = tool_input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                let path = tool_input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".");
 
                 let item_count = output
                     .lines()
@@ -308,6 +315,7 @@ impl UI {
             "claude-opus-3" | "claude-3-opus-20240229" => (15.0, 75.0),
             "claude-sonnet-3" | "claude-3-sonnet-20240229" => (3.0, 15.0),
             "claude-haiku-3" | "claude-3-haiku-20240307" => (0.25, 1.25),
+            "gpt-5.1-codex" => (5.0, 15.0),
             // Default fallback (use Sonnet 4.5 pricing)
             _ => (3.0, 15.0),
         };

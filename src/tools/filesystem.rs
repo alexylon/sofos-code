@@ -22,6 +22,8 @@ impl FileSystemTool {
     /// Validate and resolve a path relative to the workspace
     /// Returns an error if the path attempts to escape the workspace
     fn validate_path(&self, path: &str) -> Result<PathBuf> {
+        let path = path.trim();
+        
         if Path::new(path).is_absolute() {
             return Err(SofosError::PathViolation(
                 "Absolute paths are not allowed".to_string(),

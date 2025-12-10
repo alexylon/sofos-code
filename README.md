@@ -2,13 +2,13 @@
 
 ![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg)
 
-A blazingly fast, interactive AI coding assistant powered by Claude, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
+A blazingly fast, interactive AI coding assistant powered by Claude or OpenAI, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
 <div align="center"><img src="/assets/sofos_code.png" style="width: 800px;" alt="Sofos Code"></div>
 
 ## Features
 
-- **Interactive REPL** - Multi-turn conversations with Claude
+- **Interactive REPL** - Multi-turn conversations with Claude or OpenAI
 - **Session History** - Automatic session saving and resume previous conversations
 - **Custom Instructions** - Project and personal instruction files for context-aware assistance
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
@@ -26,7 +26,9 @@ A blazingly fast, interactive AI coding assistant powered by Claude, implemented
 ### Requirements
 
 - Rust 1.70+ ([install guide](https://rust-lang.org/tools/install/))
-- Anthropic API key ([get one](https://console.anthropic.com/))
+- At least one LLM API key:
+  - Anthropic API key ([get one](https://console.anthropic.com/)) for Claude models
+  - OpenAI API key ([get one](https://platform.openai.com/)) for OpenAI models
 
 ### Optional (but strongly recommended)
 
@@ -57,8 +59,10 @@ This directory contains sensitive data like conversation transcripts and persona
 ### Quick Start
 
 ```bash
-# Set your API key
-export ANTHROPIC_API_KEY='your-api-key'
+# Set your API key (choose one)
+export ANTHROPIC_API_KEY='your-anthropic-key'
+# or
+export OPENAI_API_KEY='your-openai-key'
 
 # Optional: Enable ultra-fast editing
 export MORPH_API_KEY='your-morph-key'
@@ -69,13 +73,16 @@ sofos
 
 ### Commands
 
-- `resume` - Resume previous session
-- `clear` - Clear conversation history
-- `think on` - Enable extended thinking
-- `think off` - Disable extended thinking  
-- `think` - Show thinking status
-- `exit`, `quit`, or `Ctrl+D` - Exit (displays session cost summary)
-- Press `ESC` during AI processing to interrupt and provide additional guidance. Claude will know what was done before interruption
+- `resume`          - Resume the previous session
+- `clear`           - Clear the conversation history
+- `think on`        - Enable extended thinking
+- `think off`       - Disable extended thinking
+- `think`           - Show the current thinking status
+- `exit`, `quit`,
+  or `Ctrl+D`       - Exit and display a session cost summary
+- `ESC` (while AI
+  is responding)    - Interrupt the response and provide additional guidance;
+  the assistant will remember what was done before the interruption.
 
 ## Cost Tracking
 
@@ -94,9 +101,9 @@ Estimated cost:     $0.1304
 ```
 
 **Cost Calculation:**
-- Costs are calculated based on official Claude pricing
-- Uses per-model pricing (Sonnet 4.5: $3/$15 per million input/output tokens)
-- All major Claude models are supported (Haiku, Sonnet, Opus variants)
+- Costs are calculated based on official model pricing
+- Claude models use official Anthropic pricing (e.g., Sonnet 4.5: $3/$15 per million input/output tokens)
+- OpenAI models use estimated pricing ($5/$15 per million tokens for gpt-5.1-codex models)
 - Accurate for standard API usage
 
 ### Options
@@ -105,8 +112,9 @@ Estimated cost:     $0.1304
 -p, --prompt <TEXT>          One-shot mode
 -r, --resume                 Resume a previous session
     --api-key <KEY>          Anthropic API key (overrides env var)
+    --openai-api-key <KEY>   OpenAI API key (overrides env var)
     --morph-api-key <KEY>    Morph API key (overrides env var)
-    --model <MODEL>          Claude model (default: claude-sonnet-4-5)
+    --model <MODEL>          Model to use (default: claude-sonnet-4-5)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
     --max-tokens <N>         Max response tokens (default: 8192)
 -t, --enable-thinking        Enable extended thinking (default: false)
@@ -152,7 +160,7 @@ Resume with `sofos --resume` or type `resume` in the REPL.
 
 ## Available Tools
 
-Claude can automatically use these tools:
+Sofos can automatically use these tools:
 
 **File Operations:**
 - `read_file` - Read file contents

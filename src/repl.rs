@@ -1,4 +1,4 @@
-use crate::api::{AnthropicClient, CreateMessageRequest, MorphClient};
+use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::{DisplayMessage, HistoryManager};
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub struct Repl {
-    client: AnthropicClient,
+    client: LlmClient,
     tool_executor: ToolExecutor,
     history_manager: HistoryManager,
     ui: UI,
@@ -32,7 +32,7 @@ pub struct Repl {
 
 impl Repl {
     pub fn new(
-        api_key: String,
+        client: LlmClient,
         model: String,
         max_tokens: u32,
         workspace: PathBuf,
@@ -40,7 +40,6 @@ impl Repl {
         enable_thinking: bool,
         thinking_budget: u32,
     ) -> Result<Self> {
-        let client = AnthropicClient::new(api_key)?;
         let tool_executor = ToolExecutor::new(workspace.clone(), morph_client)?;
 
         let has_morph = tool_executor.has_morph();
@@ -95,9 +94,7 @@ impl Repl {
         UI::print_welcome();
 
         loop {
-            let readline = self
-                .editor
-                .readline(&format!("{} ", ">>>".bright_green()));
+            let readline = self.editor.readline(&format!("{} ", ">>>".bright_green()));
 
             match readline {
                 Ok(line) => {
@@ -183,10 +180,9 @@ impl Repl {
     fn process_message(&mut self, user_input: &str) -> Result<()> {
         self.conversation.add_user_message(user_input.to_string());
 
-        self.display_messages
-            .push(DisplayMessage::UserMessage {
-                content: user_input.to_string(),
-            });
+        self.display_messages.push(DisplayMessage::UserMessage {
+            content: user_input.to_string(),
+        });
 
         let request = self.build_initial_request();
 
@@ -382,12 +378,12 @@ impl Repl {
 
         let interrupt_msg = "INTERRUPT: The user pressed ESC to interrupt the request before receiving a response. \
                              They want to provide additional guidance or clarification. Wait for their next message.";
-        self.conversation.add_user_message(interrupt_msg.to_string());
+        self.conversation
+            .add_user_message(interrupt_msg.to_string());
 
-        self.display_messages
-            .push(DisplayMessage::UserMessage {
-                content: "[Interrupted - no response received]".to_string(),
-            });
+        self.display_messages.push(DisplayMessage::UserMessage {
+            content: "[Interrupted - no response received]".to_string(),
+        });
     }
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {

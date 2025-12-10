@@ -109,15 +109,16 @@ impl HistoryManager {
             if message.role == "user" {
                 let text = match &message.content {
                     crate::api::MessageContent::Text { content } => content,
-                    crate::api::MessageContent::Blocks { content } => {
-                        content.iter().find_map(|block| {
+                    crate::api::MessageContent::Blocks { content } => content
+                        .iter()
+                        .find_map(|block| {
                             if let crate::api::MessageContentBlock::Text { text } = block {
                                 Some(text.as_str())
                             } else {
                                 None
                             }
-                        }).unwrap_or("")
-                    }
+                        })
+                        .unwrap_or(""),
                 };
 
                 let preview = text.trim();
@@ -196,7 +197,9 @@ impl HistoryManager {
             index.sessions.push(metadata);
         }
 
-        index.sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        index
+            .sessions
+            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
         let content = serde_json::to_string_pretty(&index)?;
         fs::write(index_path, content)?;
@@ -222,7 +225,7 @@ impl HistoryManager {
 
     pub fn load_custom_instructions(&self) -> Result<Option<String>> {
         let mut instructions = Vec::new();
-        
+
         // Load project-level instructions (version controlled)
         let project_instructions = self.workspace.join(PROJECT_INSTRUCTIONS_FILE);
         if project_instructions.exists() {
@@ -231,16 +234,19 @@ impl HistoryManager {
                 instructions.push(format!("# Project Instructions\n\n{}", content.trim()));
             }
         }
-        
+
         // Load workspace-level instructions (personal, gitignored)
-        let workspace_instructions = self.workspace.join(SOFOS_DIR).join(WORKSPACE_INSTRUCTIONS_FILE);
+        let workspace_instructions = self
+            .workspace
+            .join(SOFOS_DIR)
+            .join(WORKSPACE_INSTRUCTIONS_FILE);
         if workspace_instructions.exists() {
             let content = fs::read_to_string(&workspace_instructions)?;
             if !content.trim().is_empty() {
                 instructions.push(format!("# Personal Instructions\n\n{}", content.trim()));
             }
         }
-        
+
         if instructions.is_empty() {
             Ok(None)
         } else {
@@ -323,14 +329,24 @@ mod tests {
 
         let session_id1 = HistoryManager::generate_session_id();
         manager
-            .save_session(&session_id1, &[Message::user("First session")], &[], "System")
+            .save_session(
+                &session_id1,
+                &[Message::user("First session")],
+                &[],
+                "System",
+            )
             .unwrap();
 
         std::thread::sleep(std::time::Duration::from_secs(1));
 
         let session_id2 = HistoryManager::generate_session_id();
         manager
-            .save_session(&session_id2, &[Message::user("Second session")], &[], "System")
+            .save_session(
+                &session_id2,
+                &[Message::user("Second session")],
+                &[],
+                "System",
+            )
             .unwrap();
 
         let sessions = manager.list_sessions().unwrap();

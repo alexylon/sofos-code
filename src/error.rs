@@ -7,7 +7,7 @@ pub enum SofosError {
 
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
-    
+
     #[error("Network error: {0}")]
     NetworkError(String),
 

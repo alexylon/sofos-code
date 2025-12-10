@@ -99,10 +99,7 @@ pub enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "thinking")]
-    Thinking { 
-        thinking: String,
-        signature: String,
-    },
+    Thinking { thinking: String, signature: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -154,10 +151,7 @@ pub enum MessageContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "thinking")]
-    Thinking { 
-        thinking: String,
-        signature: String,
-    },
+    Thinking { thinking: String, signature: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -186,30 +180,36 @@ impl MessageContentBlock {
     pub fn from_content_block_for_api(block: &ContentBlock) -> Option<Self> {
         match block {
             ContentBlock::Text { text } => Some(MessageContentBlock::Text { text: text.clone() }),
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 // When thinking is enabled, we must include the complete unmodified thinking block
                 // with signature to maintain reasoning continuity during tool use
-                Some(MessageContentBlock::Thinking { 
+                Some(MessageContentBlock::Thinking {
                     thinking: thinking.clone(),
                     signature: signature.clone(),
                 })
-            },
+            }
             ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
             }),
-            ContentBlock::ServerToolUse { id, name, input } => Some(MessageContentBlock::ServerToolUse {
-                id: id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-            }),
-            ContentBlock::WebSearchToolResult { tool_use_id, content } => {
-                Some(MessageContentBlock::WebSearchToolResult {
-                    tool_use_id: tool_use_id.clone(),
-                    content: content.clone(),
+            ContentBlock::ServerToolUse { id, name, input } => {
+                Some(MessageContentBlock::ServerToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
                 })
             }
+            ContentBlock::WebSearchToolResult {
+                tool_use_id,
+                content,
+            } => Some(MessageContentBlock::WebSearchToolResult {
+                tool_use_id: tool_use_id.clone(),
+                content: content.clone(),
+            }),
         }
     }
 }

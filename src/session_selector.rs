@@ -37,9 +37,7 @@ pub fn select_session(sessions: Vec<SessionMetadata>) -> Result<Option<String>> 
     }
 
     match input.parse::<usize>() {
-        Ok(num) if num > 0 && num <= sessions.len() => {
-            Ok(Some(sessions[num - 1].id.clone()))
-        }
+        Ok(num) if num > 0 && num <= sessions.len() => Ok(Some(sessions[num - 1].id.clone())),
         _ => {
             println!("{}", "Invalid selection".red());
             Ok(None)

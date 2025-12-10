@@ -109,9 +109,9 @@ impl ToolExecutor {
 
                 // Check if file exists and read original content for diff
                 let original_content = self.fs_tool.read_file(path).ok();
-                
+
                 self.fs_tool.write_file(path, content)?;
-                
+
                 // If file existed before, show diff
                 if let Some(original) = original_content {
                     let diff_output = diff::generate_compact_diff(&original, content);
@@ -180,10 +180,10 @@ impl ToolExecutor {
                     .await?;
 
                 self.fs_tool.write_file(path, &merged_code)?;
-                
+
                 // Generate diff for display
                 let diff_output = diff::generate_compact_diff(&original_code, &merged_code);
-                
+
                 Ok(format!(
                     "Successfully applied Morph edit to '{}'\n\nChanges:\n{}",
                     path, diff_output

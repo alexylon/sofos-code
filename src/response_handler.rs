@@ -1,4 +1,4 @@
-use crate::api::{AnthropicClient, ContentBlock, CreateMessageRequest};
+use crate::api::{ContentBlock, CreateMessageRequest, LlmClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::DisplayMessage;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 /// Handles Claude's responses and manages tool execution iteration
 pub struct ResponseHandler {
-    client: AnthropicClient,
+    client: LlmClient,
     tool_executor: ToolExecutor,
     conversation: ConversationHistory,
     ui: UI,
@@ -23,7 +23,7 @@ pub struct ResponseHandler {
 
 impl ResponseHandler {
     pub fn new(
-        client: AnthropicClient,
+        client: LlmClient,
         tool_executor: ToolExecutor,
         conversation: ConversationHistory,
         model: String,
@@ -125,9 +125,7 @@ impl ResponseHandler {
                 return Ok(());
             }
 
-            let response = self
-                .get_next_response(&tool_uses, display_messages)
-                .await?;
+            let response = self.get_next_response(&tool_uses, display_messages).await?;
 
             *total_input_tokens += response.usage.input_tokens;
             *total_output_tokens += response.usage.output_tokens;
@@ -195,7 +193,8 @@ impl ResponseHandler {
                 }
                 ContentBlock::WebSearchToolResult { content, .. } => {
                     if !content.is_empty() {
-                        text_output.push(format!("\n[Web search returned {} results]", content.len()));
+                        text_output
+                            .push(format!("\n[Web search returned {} results]", content.len()));
                     }
                 }
             }
@@ -349,7 +348,8 @@ impl ResponseHandler {
             );
             println!();
 
-            let tools_executed: Vec<String> = tool_uses.iter().map(|(_, name, _)| name.clone()).collect();
+            let tools_executed: Vec<String> =
+                tool_uses.iter().map(|(_, name, _)| name.clone()).collect();
 
             let interrupt_msg = format!(
                 "INTERRUPT: The user pressed ESC while waiting for your response after tool execution. \

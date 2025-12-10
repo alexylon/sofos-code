@@ -8,7 +8,7 @@ use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_RETRIES: u32 = 2;
 const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 
@@ -37,7 +37,9 @@ impl AnthropicClient {
         Ok(Self { client })
     }
 
-    pub(crate) async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
+    pub(crate) async fn check_response_status(
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response> {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_default();
@@ -52,20 +54,19 @@ impl AnthropicClient {
     /// Check if we can reach the API endpoint
     #[allow(dead_code)]
     async fn check_connectivity(&self) -> Result<()> {
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            self.client.head(API_BASE).send()
-        ).await {
+        match tokio::time::timeout(Duration::from_secs(5), self.client.head(API_BASE).send()).await
+        {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(SofosError::NetworkError(format!(
                 "Cannot reach Anthropic API. Please check:\n  \
                  1. Your internet connection\n  \
                  2. Firewall/proxy settings\n  \
                  3. API status at https://status.anthropic.com\n\
-                 Original error: {}", e
+                 Original error: {}",
+                e
             ))),
             Err(_) => Err(SofosError::NetworkError(
-                "Connection timeout. Please check your network connection.".into()
+                "Connection timeout. Please check your network connection.".into(),
             )),
         }
     }
@@ -73,8 +74,8 @@ impl AnthropicClient {
     /// Determine if an error is worth retrying
     fn is_retryable_error(error: &reqwest::Error) -> bool {
         // Retry on network errors, timeouts, and some 5xx server errors
-        error.is_timeout() 
-            || error.is_connect() 
+        error.is_timeout()
+            || error.is_connect()
             || error.status().is_some_and(|s| s.is_server_error())
     }
 
@@ -120,7 +121,7 @@ impl AnthropicClient {
                 }
                 Err(e) => {
                     let is_retryable = Self::is_retryable_error(&e);
-                    
+
                     if attempt < MAX_RETRIES && is_retryable {
                         last_error = Some(e);
                         continue;
@@ -144,9 +145,7 @@ impl AnthropicClient {
         // This should never be reached, but just in case
         Err(last_error.map_or_else(
             || SofosError::NetworkError("Unknown network error".into()),
-            |e| SofosError::NetworkError(format!(
-                "Failed after {} retries: {}", MAX_RETRIES, e
-            ))
+            |e| SofosError::NetworkError(format!("Failed after {} retries: {}", MAX_RETRIES, e)),
         ))
     }
 

@@ -53,7 +53,7 @@ mod tests {
     fn test_simple_diff() {
         let original = "line 1\nline 2\nline 3\n";
         let modified = "line 1\nline 2 modified\nline 3\n";
-        
+
         let diff = generate_compact_diff(original, modified);
         assert!(diff.contains("line 2"));
     }
@@ -62,7 +62,7 @@ mod tests {
     fn test_multiple_changes() {
         let original = "var x = 1;\nvar y = 2;\nvar z = 3;\n";
         let modified = "const x = 1;\nconst y = 2;\nconst z = 3;\n";
-        
+
         let diff = generate_compact_diff(original, modified);
         assert!(diff.contains("-"));
         assert!(diff.contains("+"));

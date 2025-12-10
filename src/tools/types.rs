@@ -274,26 +274,26 @@ mod tests {
     fn test_web_search_tool_serialization() {
         let tool = web_search_tool();
         let serialized = serde_json::to_value(&tool).expect("Failed to serialize web search tool");
-        
+
         // Verify the correct structure for Claude's server-side web search
         assert_eq!(serialized["type"], "web_search_20250305");
         assert_eq!(serialized["name"], "web_search");
         assert_eq!(serialized["max_uses"], 5);
-        
+
         // Ensure it has the correct type identifier
         assert!(serialized.get("type").is_some());
     }
-    
+
     #[test]
     fn test_regular_tool_serialization() {
         let tool = read_file_tool();
         let serialized = serde_json::to_value(&tool).expect("Failed to serialize regular tool");
-        
+
         // Regular tools should have name, description, and input_schema
         assert_eq!(serialized["name"], "read_file");
         assert!(serialized.get("description").is_some());
         assert!(serialized.get("input_schema").is_some());
-        
+
         // Regular tools should NOT have a type field at the root
         assert!(serialized.get("type").is_none());
     }
