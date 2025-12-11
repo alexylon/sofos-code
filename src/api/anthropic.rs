@@ -70,6 +70,18 @@ impl AnthropicClient {
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
         let url = format!("{}/messages", API_BASE);
+        let mut request = request;
+
+        if let Some(tools) = request.tools.take() {
+            let filtered: Vec<Tool> = tools
+                .into_iter()
+                .filter(|t| !matches!(t, Tool::OpenAIWebSearch { tool_type: _ }))
+                .collect();
+
+            if !filtered.is_empty() {
+                request.tools = Some(filtered);
+            }
+        }
 
         // Try with retries
         let mut last_error: Option<reqwest::Error> = None;

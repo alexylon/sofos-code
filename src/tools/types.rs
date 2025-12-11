@@ -79,13 +79,19 @@ fn create_directory_tool() -> Tool {
     }
 }
 
-fn web_search_tool() -> Tool {
-    Tool::WebSearch {
+fn anthropic_web_search_tool() -> Tool {
+    Tool::AnthropicWebSearch {
         tool_type: "web_search_20250305".to_string(),
         name: "web_search".to_string(),
         max_uses: Some(5),
         allowed_domains: None,
         blocked_domains: None,
+    }
+}
+
+fn openai_web_search_tool() -> Tool {
+    Tool::OpenAIWebSearch {
+        tool_type: "web_search".to_string(),
     }
 }
 
@@ -218,8 +224,11 @@ pub fn get_tools() -> Vec<Tool> {
         delete_directory_tool(),
         move_file_tool(),
         copy_file_tool(),
-        web_search_tool(),
         execute_bash_tool(),
+        // Anthropic web search tool
+        anthropic_web_search_tool(),
+        // OpenAI web search tool
+        openai_web_search_tool(),
     ]
 }
 
@@ -234,9 +243,12 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
         delete_directory_tool(),
         move_file_tool(),
         copy_file_tool(),
-        web_search_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),
+        // Anthropic web search tool
+        anthropic_web_search_tool(),
+        // OpenAI web search tool
+        openai_web_search_tool(),
     ]
 }
 
@@ -271,8 +283,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_web_search_tool_serialization() {
-        let tool = web_search_tool();
+    fn test_regular_tool_serialization() {
+        let tool = read_file_tool();
+        let serialized = serde_json::to_value(&tool).expect("Failed to serialize regular tool");
+
+        // Regular tools should have name, description, and input_schema
+        assert_eq!(serialized["name"], "read_file");
+        assert!(serialized.get("description").is_some());
+        assert!(serialized.get("input_schema").is_some());
+
+        // Regular tools should NOT have a type field at the root
+        assert!(serialized.get("type").is_none());
+    }
+
+    #[test]
+    fn test_anthropic_web_search_tool_serialization() {
+        let tool = anthropic_web_search_tool();
         let serialized = serde_json::to_value(&tool).expect("Failed to serialize web search tool");
 
         // Verify the correct structure for Claude's server-side web search
@@ -285,16 +311,14 @@ mod tests {
     }
 
     #[test]
-    fn test_regular_tool_serialization() {
-        let tool = read_file_tool();
-        let serialized = serde_json::to_value(&tool).expect("Failed to serialize regular tool");
+    fn test_openai_web_search_tool_serialization() {
+        let tool = openai_web_search_tool();
+        let serialized = serde_json::to_value(&tool).expect("Failed to serialize web search tool");
 
-        // Regular tools should have name, description, and input_schema
-        assert_eq!(serialized["name"], "read_file");
-        assert!(serialized.get("description").is_some());
-        assert!(serialized.get("input_schema").is_some());
+        // Verify the correct structure for OpenAI's server-side web search
+        assert_eq!(serialized["type"], "web_search");
 
-        // Regular tools should NOT have a type field at the root
-        assert!(serialized.get("type").is_none());
+        // Ensure it has the correct type identifier
+        assert!(serialized.get("type").is_some());
     }
 }

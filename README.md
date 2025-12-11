@@ -14,7 +14,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec, 96-98% accuracy)
 - **Code Search** - Fast regex-based code search using `ripgrep` (optional)
-- **Web Search** - Real-time web information via Claude's native search tool
+- **Web Search** - Real-time web information via Claude's and OpenAI's native search tools
 - **Bash Execution** - Run tests and build commands safely (read-only, sandboxed)
 - **Visual Diff Display** - See exactly what changed with colored diffs (red for deletions, blue for additions)
 - **Iterative Tool Execution** - Sofos can use up to 200 tools per request for complex multi-file operations
@@ -173,7 +173,7 @@ Sofos can automatically use these tools:
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
-- `web_search` - Search the web for current information
+- `web_search` - Search the web for up-to-date information using Claude’s or OpenAI’s native web search
 - `execute_bash` - Run tests and build commands (read-only, sandboxed)
 
 ## Security

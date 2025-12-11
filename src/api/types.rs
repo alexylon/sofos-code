@@ -64,7 +64,7 @@ pub enum Tool {
         description: String,
         input_schema: serde_json::Value,
     },
-    WebSearch {
+    AnthropicWebSearch {
         #[serde(rename = "type")]
         tool_type: String,
         name: String,
@@ -74,6 +74,10 @@ pub enum Tool {
         allowed_domains: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         blocked_domains: Option<Vec<String>>,
+    },
+    OpenAIWebSearch {
+        #[serde(rename = "type")]
+        tool_type: String,
     },
 }
 
