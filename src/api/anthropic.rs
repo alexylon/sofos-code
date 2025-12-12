@@ -65,7 +65,7 @@ impl AnthropicClient {
             || error.status().is_some_and(|s| s.is_server_error())
     }
 
-    pub async fn create_message(
+    pub async fn create_anthropic_message(
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
@@ -227,6 +227,7 @@ mod tests {
             tools: None,
             stream: None,
             thinking,
+            reasoning: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();

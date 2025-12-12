@@ -183,6 +183,9 @@ impl ResponseHandler {
                 ContentBlock::Thinking { thinking, .. } => {
                     self.ui.print_thinking(thinking);
                 }
+                ContentBlock::Summary { summary } => {
+                    self.ui.print_thinking(summary);
+                }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_uses.push((id.clone(), name.clone(), input.clone()));
                 }
@@ -449,6 +452,7 @@ impl ResponseHandler {
 
     fn build_request(&self) -> CreateMessageRequest {
         RequestBuilder::new(
+            &self.client,
             &self.model,
             self.max_tokens,
             &self.conversation,

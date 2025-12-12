@@ -21,8 +21,8 @@ impl LlmClient {
         request: types::CreateMessageRequest,
     ) -> crate::error::Result<types::CreateMessageResponse> {
         match self {
-            LlmClient::Anthropic(client) => client.create_message(request).await,
-            LlmClient::OpenAI(client) => client.create_message(request).await,
+            LlmClient::Anthropic(client) => client.create_anthropic_message(request).await,
+            LlmClient::OpenAI(client) => client.create_openai_message(request).await,
         }
     }
 }

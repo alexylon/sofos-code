@@ -1,3 +1,4 @@
+use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
@@ -184,7 +185,7 @@ impl Repl {
             content: user_input.to_string(),
         });
 
-        let request = self.build_initial_request();
+        let initial_request = self.build_initial_request();
 
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
@@ -204,7 +205,7 @@ impl Repl {
             )
         });
 
-        let response_result = runtime.block_on(self.client.create_message(request));
+        let response_result = runtime.block_on(self.client.create_message(initial_request));
 
         running.store(false, Ordering::Relaxed);
         let _ = ui_handle.join();
@@ -252,6 +253,7 @@ impl Repl {
     /// Build initial request for user message
     fn build_initial_request(&self) -> CreateMessageRequest {
         RequestBuilder::new(
+            &self.client,
             &self.model,
             self.max_tokens,
             &self.conversation,
@@ -345,16 +347,36 @@ impl Repl {
 
     fn handle_think_on(&mut self) {
         self.enable_thinking = true;
-        println!(
-            "\n{} (budget: {} tokens)\n",
-            "Extended thinking enabled.".bright_green(),
-            self.thinking_budget
-        );
+
+        if matches!(self.client, Anthropic(_)) {
+            println!(
+                "\n{} (budget: {} tokens)\n",
+                "Extended thinking enabled.".bright_green(),
+                self.thinking_budget
+            );
+        } else {
+            let reasoning = Some(crate::api::Reasoning::enabled());
+            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
+
+            if let Some(e) = effort {
+                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
+            }
+        }
     }
 
     fn handle_think_off(&mut self) {
         self.enable_thinking = false;
-        println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
+
+        if matches!(self.client, Anthropic(_)) {
+            println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
+        } else {
+            let reasoning = Some(crate::api::Reasoning::disabled());
+            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
+
+            if let Some(e) = effort {
+                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
+            }
+        }
     }
 
     fn handle_think_status(&self) {

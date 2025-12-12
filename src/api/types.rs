@@ -54,6 +54,8 @@ pub struct CreateMessageRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Reasoning>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,8 @@ pub enum ContentBlock {
     Text { text: String },
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
+    #[serde(rename = "summary")]
+    Summary { summary: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -140,6 +144,28 @@ impl Thinking {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reasoning {
+    pub effort: String,
+    summary: String,
+}
+
+impl Reasoning {
+    pub fn enabled() -> Self {
+        Self {
+            effort: "high".to_string(),
+            summary: "auto".to_string(),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            effort: "low".to_string(),
+            summary: "auto".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSearchResult {
     #[serde(rename = "type")]
     pub result_type: String,
@@ -156,6 +182,8 @@ pub enum MessageContentBlock {
     Text { text: String },
     #[serde(rename = "thinking")]
     Thinking { thinking: String, signature: String },
+    #[serde(rename = "summary")]
+    Summary { summary: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -184,6 +212,7 @@ impl MessageContentBlock {
     pub fn from_content_block_for_api(block: &ContentBlock) -> Option<Self> {
         match block {
             ContentBlock::Text { text } => Some(MessageContentBlock::Text { text: text.clone() }),
+            // Claude's extended thinking
             ContentBlock::Thinking {
                 thinking,
                 signature,
@@ -195,6 +224,10 @@ impl MessageContentBlock {
                     signature: signature.clone(),
                 })
             }
+            // GPT's reasoning summary
+            ContentBlock::Summary { summary } => Some(MessageContentBlock::Summary {
+                summary: summary.clone(),
+            }),
             ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),

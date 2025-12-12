@@ -33,16 +33,11 @@ impl OpenAIClient {
         Ok(Self { client })
     }
 
-    pub async fn create_message(
+    pub async fn create_openai_message(
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
-        // gpt-5 models use the /responses endpoint with `input`
-        if request.model.starts_with("gpt-5") {
-            return self.call_responses(request).await;
-        }
-
-        self.call_chat_completions(request).await
+        self.call_responses(request).await
     }
 
     async fn call_responses(&self, request: CreateMessageRequest) -> Result<CreateMessageResponse> {
@@ -52,6 +47,7 @@ impl OpenAIClient {
             "model": request.model,
             "input": inputs,
             "max_output_tokens": request.max_tokens,
+            "reasoning": request.reasoning,
         });
 
         if let Some(tool_list) = request.tools.clone() {
@@ -108,20 +104,21 @@ impl OpenAIClient {
         let response = super::utils::check_response_status(response).await?;
 
         let response_text = response.text().await?;
+
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== OpenAI Raw Response ===");
             eprintln!("{}", response_text);
             eprintln!("===========================\n");
         }
 
-        let parsed: OpenAIResponse = serde_json::from_str(&response_text)
+        let response_parsed: OpenAIResponse = serde_json::from_str(&response_text)
             .map_err(|e| SofosError::Api(format!("Failed to parse OpenAI response: {}", e)))?;
 
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== OpenAI /responses API Response ===");
-            eprintln!("Model: {}", parsed.model);
-            eprintln!("Output items count: {}", parsed.output.len());
-            for (i, item) in parsed.output.iter().enumerate() {
+            eprintln!("Model: {}", response_parsed.model);
+            eprintln!("Output items count: {}", response_parsed.output.len());
+            for (i, item) in response_parsed.output.iter().enumerate() {
                 eprintln!(
                     "  Item {}: type={}, content_count={}, tool_calls={:?}",
                     i,
@@ -152,7 +149,7 @@ impl OpenAIClient {
         }
 
         let mut content_blocks = Vec::new();
-        for item in parsed.output {
+        for item in response_parsed.output {
             match item.item_type.as_str() {
                 "message" => {
                     for content in item.content {
@@ -188,8 +185,13 @@ impl OpenAIClient {
                     }
                 }
                 "reasoning" => {
-                    if std::env::var("SOFOS_DEBUG").is_ok() {
-                        eprintln!("  Skipping reasoning item");
+                    for summary in item.summary {
+                        if summary.summary_type == "summary_text" && !summary.text.trim().is_empty()
+                        {
+                            content_blocks.push(ContentBlock::Summary {
+                                summary: summary.text,
+                            });
+                        }
                     }
                 }
                 _ => {
@@ -207,187 +209,18 @@ impl OpenAIClient {
             );
         }
 
-        let usage = parsed.usage.unwrap_or_default();
+        let usage = response_parsed.usage.unwrap_or_default();
 
         Ok(CreateMessageResponse {
-            _id: parsed.id,
+            _id: response_parsed.id,
             _response_type: "message".to_string(),
             _role: "assistant".to_string(),
             content: content_blocks,
-            _model: parsed.model,
+            _model: response_parsed.model,
             stop_reason: None,
             usage: Usage {
                 input_tokens: usage.input_tokens.unwrap_or(0),
                 output_tokens: usage.output_tokens.unwrap_or(0),
-            },
-        })
-    }
-
-    async fn call_chat_completions(
-        &self,
-        request: CreateMessageRequest,
-    ) -> Result<CreateMessageResponse> {
-        let mut messages = Vec::new();
-
-        if let Some(system) = &request.system {
-            messages.push(json!({"role": "system", "content": system}));
-        }
-
-        for msg in request.messages {
-            match msg.role.as_str() {
-                "user" => match msg.content {
-                    MessageContent::Text { content } => {
-                        messages.push(json!({"role": "user", "content": content}));
-                    }
-                    MessageContent::Blocks { content } => {
-                        for block in content {
-                            match block {
-                                MessageContentBlock::Text { text } => {
-                                    messages.push(json!({"role": "user", "content": text}));
-                                }
-                                MessageContentBlock::ToolResult {
-                                    tool_use_id,
-                                    content,
-                                } => {
-                                    messages.push(json!({
-                                        "role": "tool",
-                                        "tool_call_id": tool_use_id,
-                                        "content": content,
-                                    }));
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                },
-                "assistant" => match msg.content {
-                    MessageContent::Text { content } => {
-                        messages.push(json!({"role": "assistant", "content": content}));
-                    }
-                    MessageContent::Blocks { content } => {
-                        let mut text_parts = Vec::new();
-                        let mut tool_calls = Vec::new();
-
-                        for block in content {
-                            match block {
-                                MessageContentBlock::Text { text } => text_parts.push(text),
-                                MessageContentBlock::ToolUse { id, name, input } => {
-                                    tool_calls.push(json!({
-                                        "id": id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": name,
-                                            "arguments": serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string())
-                                        }
-                                    }));
-                                }
-                                _ => {}
-                            }
-                        }
-
-                        if !text_parts.is_empty() || !tool_calls.is_empty() {
-                            let content = if text_parts.is_empty() {
-                                serde_json::Value::Null
-                            } else {
-                                json!(text_parts.join("\n"))
-                            };
-
-                            let mut message = json!({"role": "assistant"});
-                            if !content.is_null() {
-                                message["content"] = content;
-                            }
-                            if !tool_calls.is_empty() {
-                                message["tool_calls"] = json!(tool_calls);
-                            }
-                            messages.push(message);
-                        }
-                    }
-                },
-                _ => {}
-            }
-        }
-
-        let tools: Vec<serde_json::Value> = request
-            .tools
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|tool| match tool {
-                Tool::Regular {
-                    name,
-                    description,
-                    input_schema,
-                } => Some(json!({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": description,
-                        "parameters": input_schema
-                    }
-                })),
-                Tool::OpenAIWebSearch { tool_type } => Some(json!({"type": tool_type})),
-                _ => None,
-            })
-            .collect();
-
-        let mut body = json!({
-            "model": request.model,
-            "messages": messages,
-            "max_tokens": request.max_tokens,
-        });
-
-        if !tools.is_empty() {
-            body["tools"] = json!(tools);
-            body["tool_choice"] = json!("auto");
-        }
-
-        let url = format!("{}/chat/completions", OPENAI_API_BASE);
-        let response = self.client.post(&url).json(&body).send().await?;
-        let response = super::utils::check_response_status(response).await?;
-        let parsed: OpenAIChatResponse = response.json().await?;
-
-        let choice =
-            parsed.choices.into_iter().next().ok_or_else(|| {
-                SofosError::Api("OpenAI response contained no choices".to_string())
-            })?;
-
-        let mut content_blocks = Vec::new();
-
-        if let Some(text) = choice.message.content {
-            if !text.trim().is_empty() {
-                content_blocks.push(ContentBlock::Text { text });
-            }
-        }
-
-        if let Some(tool_calls) = choice.message.tool_calls {
-            for call in tool_calls {
-                let input = serde_json::from_str::<serde_json::Value>(&call.function.arguments)
-                    .unwrap_or_else(|_| json!({"raw_arguments": call.function.arguments}));
-                content_blocks.push(ContentBlock::ToolUse {
-                    id: call.id,
-                    name: call.function.name,
-                    input,
-                });
-            }
-        }
-
-        let usage = parsed.usage.unwrap_or_default();
-
-        Ok(CreateMessageResponse {
-            _id: parsed.id,
-            _response_type: "message".to_string(),
-            _role: "assistant".to_string(),
-            content: content_blocks,
-            _model: parsed.model,
-            stop_reason: choice.finish_reason.map(|r| {
-                if r == "length" {
-                    "max_tokens".to_string()
-                } else {
-                    r
-                }
-            }),
-            usage: Usage {
-                input_tokens: usage.prompt_tokens.unwrap_or(0),
-                output_tokens: usage.completion_tokens.unwrap_or(0),
             },
         })
     }
@@ -448,50 +281,6 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAIChatResponse {
-    id: String,
-    model: String,
-    choices: Vec<OpenAIChatChoice>,
-    #[serde(default)]
-    usage: Option<OpenAIUsage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIChatChoice {
-    #[serde(default)]
-    finish_reason: Option<String>,
-    message: OpenAIChatMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIChatMessage {
-    #[serde(default)]
-    content: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<OpenAIToolCall>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIToolCall {
-    id: String,
-    function: OpenAIToolFunction,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIToolFunction {
-    name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct OpenAIUsage {
-    #[serde(default)]
-    prompt_tokens: Option<u32>,
-    #[serde(default)]
-    completion_tokens: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
 struct OpenAIResponse {
     id: String,
     model: String,
@@ -507,6 +296,8 @@ struct OpenAIOutputItem {
     #[serde(default)]
     content: Vec<OpenAIOutputContent>,
     #[serde(default)]
+    summary: Vec<OpenAIOutputSummary>,
+    #[serde(default)]
     tool_calls: Option<Vec<OpenAIOutputToolCall>>,
     // Fields for when the item type is "function_call"
     #[serde(default)]
@@ -521,6 +312,14 @@ struct OpenAIOutputItem {
 struct OpenAIOutputContent {
     #[serde(rename = "type")]
     content_type: String,
+    #[serde(default)]
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIOutputSummary {
+    #[serde(rename = "type")]
+    summary_type: String,
     #[serde(default)]
     text: String,
 }
