@@ -85,6 +85,11 @@ sofos
 - `/exit`, `/quit`, `/q`, or `Ctrl+D` - Exit and display a session cost summary
 - `ESC` (while AI is responding) - Interrupt the response and provide additional guidance; the assistant will remember what was done before the interruption
 
+**Command shortcuts:**
+
+- Press **Tab** to show available commands (including partial matches on incomplete input) and navigate the completion menu; **Shift+Tab** moves to the previous item.
+- Hit **Enter** to expand the currently highlighted completion.
+
 ## Cost Tracking
 
 Sofos automatically tracks token usage and calculates session costs. When you exit with `quit`, `exit`, or `Ctrl+D`, you'll see a summary:

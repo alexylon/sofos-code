@@ -3,13 +3,17 @@ use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::{DisplayMessage, HistoryManager};
+use crate::prompt::ReplPrompt;
 use crate::request_builder::RequestBuilder;
 use crate::response_handler::ResponseHandler;
 use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;
-use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use crossterm::event::{KeyCode, KeyModifiers};
+use reedline::{
+    default_emacs_keybindings, ColumnarMenu, DefaultCompleter, Emacs, MenuBuilder, Reedline,
+    ReedlineEvent, ReedlineMenu, Signal,
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,7 +23,8 @@ pub struct Repl {
     tool_executor: ToolExecutor,
     history_manager: HistoryManager,
     ui: UI,
-    editor: DefaultEditor,
+    editor: Reedline,
+    prompt: ReplPrompt,
     model: String,
     max_tokens: u32,
     enable_thinking: bool,
@@ -78,8 +83,53 @@ impl Repl {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
         }
 
-        let editor = DefaultEditor::new()
-            .map_err(|e| SofosError::Config(format!("Failed to create editor: {}", e)))?;
+        let commands = vec![
+            "/comment".to_string(),
+            "/commit".to_string(),
+            "/compare".to_string(),
+            "/config".to_string(),
+            "/exit".to_string(),
+            "/quit".to_string(),
+            "/clear".to_string(),
+            "/resume".to_string(),
+            "/think".to_string(),
+            "/think on".to_string(),
+            "/think off".to_string(),
+            "/s".to_string(),
+            "/n".to_string(),
+        ];
+
+        let mut completer = DefaultCompleter::with_inclusions(&['/', '-', '_']);
+        completer = completer.set_min_word_len(1);
+        completer.insert(commands.clone());
+        let completer = Box::new(completer);
+
+        let completion_menu = ColumnarMenu::default().with_name("completion_menu");
+        let completion_menu = ReedlineMenu::EngineCompleter(Box::new(completion_menu));
+
+        let mut keybindings = default_emacs_keybindings();
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Tab,
+            ReedlineEvent::UntilFound(vec![
+                ReedlineEvent::Menu("completion_menu".into()),
+                ReedlineEvent::MenuNext,
+            ]),
+        );
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::BackTab,
+            ReedlineEvent::MenuPrevious,
+        );
+
+        let edit_mode = Box::new(Emacs::new(keybindings));
+
+        let editor = Reedline::create()
+            .with_completer(completer)
+            .with_edit_mode(edit_mode)
+            .with_menu(completion_menu);
+
+        let prompt = ReplPrompt::new(safe_mode);
 
         let session_id = HistoryManager::generate_session_id();
 
@@ -91,6 +141,7 @@ impl Repl {
             history_manager,
             ui,
             editor,
+            prompt,
             model,
             max_tokens,
             enable_thinking,
@@ -108,20 +159,13 @@ impl Repl {
         UI::print_welcome();
 
         loop {
-            let symbol = if self.safe_mode { "λ:" } else { "λ>" };
-            let readline = self
-                .editor
-                .readline(&format!("{} ", symbol.bright_green().bold()));
-
-            match readline {
-                Ok(line) => {
-                    let line = line.trim();
+            match self.editor.read_line(&self.prompt) {
+                Ok(Signal::Success(mut line)) => {
+                    line = line.trim().to_string();
 
                     if line.is_empty() {
                         continue;
                     }
-
-                    let _ = self.editor.add_history_entry(line);
 
                     match line.to_lowercase().as_str() {
                         "/exit" | "/quit" | "/q" => {
@@ -165,6 +209,7 @@ impl Repl {
                                 self.tool_executor.set_safe_mode(true);
                                 self.conversation
                                     .add_user_message(SAFE_MODE_MESSAGE.to_string());
+                                self.prompt.set_safe_mode(true);
                             }
                             continue;
                         }
@@ -178,13 +223,14 @@ impl Repl {
                                 All tools are available]"
                                         .to_string(),
                                 );
+                                self.prompt.set_safe_mode(false);
                             }
                             continue;
                         }
                         _ => {}
                     }
 
-                    if let Err(e) = self.process_message(line) {
+                    if let Err(e) = self.process_message(&line) {
                         eprintln!("{} {}", "Error:".bright_red().bold(), e);
                     } else if let Err(e) = self.save_current_session() {
                         eprintln!(
@@ -196,10 +242,8 @@ impl Repl {
 
                     println!();
                 }
-                Err(ReadlineError::Interrupted) => {
-                    println!("{}", "Use 'exit' to quit.".dimmed());
-                }
-                Err(ReadlineError::Eof) => {
+                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {
+                    println!("\nExiting...");
                     self.save_current_session()?;
                     UI::display_session_summary(
                         &self.model,
@@ -209,8 +253,8 @@ impl Repl {
                     UI::print_goodbye();
                     break;
                 }
-                Err(e) => {
-                    eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                Err(err) => {
+                    eprintln!("{} {}", "Error:".bright_red().bold(), err);
                     break;
                 }
             }

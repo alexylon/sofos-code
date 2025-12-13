@@ -4,6 +4,7 @@ mod conversation;
 mod diff;
 mod error;
 mod history;
+mod prompt;
 mod repl;
 mod request_builder;
 mod response_handler;
