@@ -97,7 +97,7 @@ impl UI {
         for display_msg in &session.display_messages {
             match display_msg {
                 DisplayMessage::UserMessage { content } => {
-                    println!("{} {}", "λ:".bright_green().bold(), content);
+                    println!("{} {}", "λ>".bright_green().bold(), content);
                     println!();
                 }
                 DisplayMessage::AssistantMessage { content } => {

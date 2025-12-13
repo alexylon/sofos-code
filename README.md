@@ -21,7 +21,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - **Session Usage** – After exiting Sofos, a session usage is displayed, including the input and output tokens used and the estimated cost.
 - **Secure** - All operations restricted to workspace, prevents directory traversal
 - **Safe Mode** - Start or switch to a write-protected mode that limits tools to listing/reading files and web search; 
-prompt changes from **`λ:`** to **`::`** as a visual cue
+prompt changes from **`λ>`** to **`λ:`** as a visual cue
 
 ## Installation
 
@@ -80,10 +80,10 @@ sofos
 - `/think on` - Enable extended thinking
 - `/think off`- Disable extended thinking
 - `/think`    - Show the current thinking status
-- `/s`        - Switch to safe mode (disables write/edit/delete tools)
-- `/n`        - Switch back to normal mode (re-enables all tools)
+- `/s`        - Switch to safe mode (disables write/edit/delete tools). Prompt changes to **`λ:`**
+- `/n`        - Switch back to normal mode (re-enables all tools). Prompt changes to **`λ>`**
 - `/exit`, `/quit`, `/q`, or `Ctrl+D` - Exit and display a session cost summary
-- `ESC` (while AI is responding) - Interrupt the response and provide additional guidance; the assistant will remember what was done before the interruption.
+- `ESC` (while AI is responding) - Interrupt the response and provide additional guidance; the assistant will remember what was done before the interruption
 
 ## Cost Tracking
 

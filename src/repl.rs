@@ -108,7 +108,7 @@ impl Repl {
         UI::print_welcome();
 
         loop {
-            let symbol = if self.safe_mode { "::" } else { "λ:" };
+            let symbol = if self.safe_mode { "λ:" } else { "λ>" };
             let readline = self
                 .editor
                 .readline(&format!("{} ", symbol.bright_green().bold()));
@@ -306,7 +306,7 @@ impl Repl {
     }
 
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
-        let symbol = if self.safe_mode { "::" } else { "λ:" };
+        let symbol = if self.safe_mode { "λ:" } else { "λ>" };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
         self.process_message(prompt)?;
