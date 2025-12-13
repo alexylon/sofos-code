@@ -6,7 +6,7 @@ authors = ["Alexander Alexandrov"]
 description = "An interactive AI coding agent for your terminal"
 license = "MIT"
 repository = "https://github.com/alexylon/sofos-code"
-keywords = ["cli", "ai", "llm", "coding-assistant", "coding-agent", "repl", "developer-tools", "rust"]
+keywords = ["cli", "ai", "llm", "coding-agent", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
