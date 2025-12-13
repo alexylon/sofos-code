@@ -213,12 +213,12 @@ fn morph_edit_file_tool() -> Tool {
     }
 }
 
-/// Get all available tools for Claude/GPT API
-pub fn get_tools() -> Vec<Tool> {
+/// Get available tools for Claude/GPT API
+pub fn get_all_tools() -> Vec<Tool> {
     vec![
+        list_directory_tool(),
         read_file_tool(),
         write_file_tool(false),
-        list_directory_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
@@ -232,12 +232,11 @@ pub fn get_tools() -> Vec<Tool> {
     ]
 }
 
-/// Get all available tools including Morph-powered fast editing
-pub fn get_tools_with_morph() -> Vec<Tool> {
+pub fn get_all_tools_with_morph() -> Vec<Tool> {
     vec![
+        list_directory_tool(),
         read_file_tool(),
         write_file_tool(true),
-        list_directory_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
@@ -245,6 +244,17 @@ pub fn get_tools_with_morph() -> Vec<Tool> {
         copy_file_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),
+        // Anthropic web search tool
+        anthropic_web_search_tool(),
+        // OpenAI web search tool
+        openai_web_search_tool(),
+    ]
+}
+
+pub fn get_read_only_tools() -> Vec<Tool> {
+    vec![
+        list_directory_tool(),
+        read_file_tool(),
         // Anthropic web search tool
         anthropic_web_search_tool(),
         // OpenAI web search tool

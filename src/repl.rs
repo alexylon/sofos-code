@@ -29,7 +29,12 @@ pub struct Repl {
     display_messages: Vec<DisplayMessage>,
     total_input_tokens: u32,
     total_output_tokens: u32,
+    safe_mode: bool,
 }
+
+const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
+                                No file modifications or bash commands are allowed.\
+                                Available tools: list_directory, read_file and web_search.]";
 
 impl Repl {
     pub fn new(
@@ -40,8 +45,9 @@ impl Repl {
         morph_client: Option<MorphClient>,
         enable_thinking: bool,
         thinking_budget: u32,
+        safe_mode: bool,
     ) -> Result<Self> {
-        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client)?;
+        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client, safe_mode)?;
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
@@ -63,8 +69,14 @@ impl Repl {
             )));
         }
 
-        let conversation =
+        let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
+
+        let display_messages = Vec::new();
+
+        if safe_mode {
+            conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
+        }
 
         let editor = DefaultEditor::new()
             .map_err(|e| SofosError::Config(format!("Failed to create editor: {}", e)))?;
@@ -85,9 +97,10 @@ impl Repl {
             thinking_budget,
             session_id,
             conversation,
-            display_messages: Vec::new(),
+            display_messages,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            safe_mode,
         })
     }
 
@@ -95,7 +108,10 @@ impl Repl {
         UI::print_welcome();
 
         loop {
-            let readline = self.editor.readline(&format!("{} ", ">>>".bright_green()));
+            let symbol = if self.safe_mode { "::" } else { "λ:" };
+            let readline = self
+                .editor
+                .readline(&format!("{} ", symbol.bright_green().bold()));
 
             match readline {
                 Ok(line) => {
@@ -108,7 +124,7 @@ impl Repl {
                     let _ = self.editor.add_history_entry(line);
 
                     match line.to_lowercase().as_str() {
-                        "exit" | "quit" => {
+                        "/exit" | "/quit" | "/q" => {
                             self.save_current_session()?;
                             UI::display_session_summary(
                                 &self.model,
@@ -118,26 +134,51 @@ impl Repl {
                             UI::print_goodbye();
                             break;
                         }
-                        "clear" => {
+                        "/clear" => {
                             self.handle_clear();
+                            self.conversation.add_user_message(
+                                "The session history has been cleared".to_string(),
+                            );
                             continue;
                         }
-                        "resume" => {
+                        "/resume" => {
                             if let Err(e) = self.handle_resume() {
                                 eprintln!("{} {}", "Error:".bright_red().bold(), e);
                             }
                             continue;
                         }
-                        "think on" => {
+                        "/think on" => {
                             self.handle_think_on();
                             continue;
                         }
-                        "think off" => {
+                        "/think off" => {
                             self.handle_think_off();
                             continue;
                         }
-                        "think" => {
+                        "/think" => {
                             self.handle_think_status();
+                            continue;
+                        }
+                        "/s" => {
+                            if !self.safe_mode {
+                                self.safe_mode = true;
+                                self.tool_executor.set_safe_mode(true);
+                                self.conversation
+                                    .add_user_message(SAFE_MODE_MESSAGE.to_string());
+                            }
+                            continue;
+                        }
+                        "/n" => {
+                            if self.safe_mode {
+                                self.safe_mode = false;
+                                self.tool_executor.set_safe_mode(false);
+                                self.conversation.add_user_message(
+                                    "[SYSTEM: Normal (unrestricted) mode has been enabled. \
+                                File modifications and bash commands are now allowed.\
+                                All tools are available]"
+                                        .to_string(),
+                                );
+                            }
                             continue;
                         }
                         _ => {}
@@ -265,7 +306,8 @@ impl Repl {
     }
 
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
-        println!("{} {}", ">>>".bright_green(), prompt);
+        let symbol = if self.safe_mode { "::" } else { "λ:" };
+        println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
         self.process_message(prompt)?;
         self.save_current_session()?;

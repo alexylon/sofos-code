@@ -69,7 +69,9 @@ Testing after code changes:
 - If tests fail, fix the errors and test again
 - Do NOT run tests for changes to: comments only, README.md, documentation files, or configuration files
 
-Your goal is to help users with coding tasks efficiently and accurately."#,
+Your goal is to help users with coding tasks efficiently and accurately.
+Always use the metric system for all measurements. If the user uses other units, convert them and answer in metric.
+Show imperial units only when the user explicitly asks for them."#,
             features.join("\n"),
             edit_instruction
         );

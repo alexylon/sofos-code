@@ -12,7 +12,8 @@ use filesystem::FileSystemTool;
 use serde_json::Value;
 use std::io::{self, Write};
 
-pub use types::{add_code_search_tool, get_tools, get_tools_with_morph};
+use crate::tools::types::get_read_only_tools;
+pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 fn confirm_action(prompt: &str) -> Result<bool> {
     print!("{} (y/n): ", prompt);
@@ -32,10 +33,15 @@ pub struct ToolExecutor {
     code_search_tool: Option<CodeSearchTool>,
     bash_executor: BashExecutor,
     morph_client: Option<MorphClient>,
+    safe_mode: bool,
 }
 
 impl ToolExecutor {
-    pub fn new(workspace: std::path::PathBuf, morph_client: Option<MorphClient>) -> Result<Self> {
+    pub fn new(
+        workspace: std::path::PathBuf,
+        morph_client: Option<MorphClient>,
+        safe_mode: bool,
+    ) -> Result<Self> {
         let code_search_tool = match CodeSearchTool::new(workspace.clone()) {
             Ok(tool) => Some(tool),
             Err(_) => {
@@ -49,6 +55,7 @@ impl ToolExecutor {
             code_search_tool,
             bash_executor: BashExecutor::new(workspace)?,
             morph_client,
+            safe_mode,
         })
     }
 
@@ -60,11 +67,17 @@ impl ToolExecutor {
         self.code_search_tool.is_some()
     }
 
+    pub fn set_safe_mode(&mut self, safe_mode: bool) {
+        self.safe_mode = safe_mode;
+    }
+
     pub fn get_available_tools(&self) -> Vec<crate::api::Tool> {
-        let mut tools = if self.has_morph() {
-            get_tools_with_morph()
+        let mut tools = if self.safe_mode {
+            get_read_only_tools()
+        } else if self.has_morph() {
+            get_all_tools_with_morph()
         } else {
-            get_tools()
+            get_all_tools()
         };
 
         if self.has_code_search() {

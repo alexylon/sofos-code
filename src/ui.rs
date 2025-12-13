@@ -97,7 +97,7 @@ impl UI {
         for display_msg in &session.display_messages {
             match display_msg {
                 DisplayMessage::UserMessage { content } => {
-                    println!("{} {}", ">>>".bright_green(), content);
+                    println!("{} {}", "λ:".bright_green().bold(), content);
                     println!();
                 }
                 DisplayMessage::AssistantMessage { content } => {
@@ -148,7 +148,10 @@ impl UI {
 
     pub fn print_thinking(&self, thinking: &str) {
         if !thinking.trim().is_empty() {
-            println!("\n{}", "Thinking:".yellow().bold());
+            println!(
+                "\n{}",
+                "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
+            );
             println!("{}", thinking.dimmed());
             println!();
         }

@@ -44,6 +44,10 @@ pub struct Cli {
 
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Enable read-only mode
+    #[arg(short, long)]
+    pub safe_mode: bool,
 }
 
 impl Cli {

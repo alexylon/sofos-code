@@ -112,6 +112,7 @@ fn main() -> Result<()> {
         morph_client,
         cli.enable_thinking,
         cli.thinking_budget,
+        cli.safe_mode,
     )?;
 
     if cli.resume {

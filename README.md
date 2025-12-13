@@ -20,6 +20,8 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - **Iterative Tool Execution** - Sofos can use up to 200 tools per request for complex multi-file operations
 - **Session Usage** – After exiting Sofos, a session usage is displayed, including the input and output tokens used and the estimated cost.
 - **Secure** - All operations restricted to workspace, prevents directory traversal
+- **Safe Mode** - Start or switch to a write-protected mode that limits tools to listing/reading files and web search; 
+prompt changes from **`λ:`** to **`::`** as a visual cue
 
 ## Installation
 
@@ -73,16 +75,15 @@ sofos
 
 ### Commands
 
-- `resume`          - Resume the previous session
-- `clear`           - Clear the conversation history
-- `think on`        - Enable extended thinking
-- `think off`       - Disable extended thinking
-- `think`           - Show the current thinking status
-- `exit`, `quit`,
-  or `Ctrl+D`       - Exit and display a session cost summary
-- `ESC` (while AI
-  is responding)    - Interrupt the response and provide additional guidance;
-  the assistant will remember what was done before the interruption.
+- `/resume`   - Resume the previous session
+- `/clear`    - Clear the conversation history
+- `/think on` - Enable extended thinking
+- `/think off`- Disable extended thinking
+- `/think`    - Show the current thinking status
+- `/s`        - Switch to safe mode (disables write/edit/delete tools)
+- `/n`        - Switch back to normal mode (re-enables all tools)
+- `/exit`, `/quit`, `/q`, or `Ctrl+D` - Exit and display a session cost summary
+- `ESC` (while AI is responding) - Interrupt the response and provide additional guidance; the assistant will remember what was done before the interruption.
 
 ## Cost Tracking
 
@@ -110,6 +111,7 @@ Estimated cost:     $0.1304
 
 ```
 -p, --prompt <TEXT>          One-shot mode
+-s, --safe-mode              Start in read-only mode (only read/list/web-search tools; no writes or bash commands)
 -r, --resume                 Resume a previous session
     --api-key <KEY>          Anthropic API key (overrides env var)
     --openai-api-key <KEY>   OpenAI API key (overrides env var)
@@ -175,6 +177,8 @@ Sofos can automatically use these tools:
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
 - `web_search` - Search the web for up-to-date information using Claude’s or OpenAI’s native web search
 - `execute_bash` - Run tests and build commands (read-only, sandboxed)
+
+When safe mode is enabled (via `--safe-mode` or `/s`), only `list_directory`, `read_file`, and `web_search` are available until you switch back with `/n`.
 
 ## Security
 
