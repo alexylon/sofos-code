@@ -1,6 +1,6 @@
 # Sofos Code
 
-![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg?color=blue) [![Crates.io](https://img.shields.io/crates/v/sofos.svg)](https://crates.io/crates/sofos)
+![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg) [![Crates.io](https://img.shields.io/crates/v/sofos.svg?color=blue)](https://crates.io/crates/sofos)
 
 A blazingly fast, interactive AI coding assistant powered by Claude or GPT, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
