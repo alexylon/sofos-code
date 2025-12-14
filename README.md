@@ -61,6 +61,14 @@ prompt changes from **`λ>`** to **`λ:`** as a visual cue
 - `ripgrep` for code search ([install guide](https://github.com/BurntSushi/ripgrep#installation))
 - Morph API key for ultra-fast editing ([get one](https://morphllm.com/))
 
+**Install from crates.io:**
+
+```bash
+cargo install sofos
+```
+
+**Or build from source:**
+
 ```bash
 git clone https://github.com/alexylon/sofos-code.git
 cd sofos-code
