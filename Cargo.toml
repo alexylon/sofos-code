@@ -1,11 +1,13 @@
 [package]
 name = "sofos"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
+
 authors = ["Alexander Alexandrov"]
 description = "An interactive AI coding agent for your terminal"
 license = "MIT"
 repository = "https://github.com/alexylon/sofos-code"
+documentation = "https://docs.rs/sofos"
 keywords = ["cli", "ai", "llm", "coding-agent", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
