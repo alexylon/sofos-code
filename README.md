@@ -6,6 +6,30 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 
 <div align="center"><img src="/assets/sofos_code.png" style="width: 800px;" alt="Sofos Code"></div>
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+  - [Requirements](#requirements)
+  - [Optional (but strongly recommended)](#optional-but-strongly-recommended)
+  - [Important: Gitignore Setup](#important-gitignore-setup)
+- [Usage](#usage)
+  - [Quick Start](#quick-start)
+  - [Commands](#commands)
+- [Cost Tracking](#cost-tracking)
+  - [Options](#options)
+- [Extended Thinking](#extended-thinking)
+- [Custom Instructions](#custom-instructions)
+- [Session History](#session-history)
+- [Available Tools](#available-tools)
+- [Security](#security)
+- [Development](#development)
+- [Troubleshooting](#troubleshooting)
+- [Morph Integration](#morph-integration)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+- [Links & Resources](#links--resources)
+
 ## Features
 
 - **Interactive REPL** - Multi-turn conversations with Claude or GPT
