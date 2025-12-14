@@ -260,6 +260,11 @@ MIT License
 
 Built with Rust and powered by Anthropic's Claude or OpenAI's GPT. Morph Apply integration for fast edits. Inspired by Aider and similar tools.
 
+## Links & Resources
+
+- [GitHub](https://github.com/alexylon/sofos-code)
+- [Crates.io](https://crates.io/crates/sofos)
+
 ---
 
 **Disclaimer:** Sofos Code may make mistakes. Always review generated code before use.
