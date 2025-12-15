@@ -48,13 +48,10 @@ impl<'a> RequestBuilder<'a> {
             None
         };
 
-        let system_prompt = if matches!(self.client, Anthropic(_)) {
-            Some(self.conversation.system_prompt().clone())
-        } else {
-            None
-        };
+        // Send system prompt to both Anthropic and OpenAI; cache hints are handled per API
+        let system_prompt = Some(self.conversation.system_prompt().clone());
 
-        CreateMessageRequest {
+        let mut request = CreateMessageRequest {
             model: self.model.to_string(),
             max_tokens: self.max_tokens,
             messages: self.conversation.messages().to_vec(),
@@ -63,6 +60,23 @@ impl<'a> RequestBuilder<'a> {
             stream: None,
             thinking: thinking_config,
             reasoning: reasoning_config,
+        };
+
+        // For Anthropic, drop tool cache metadata to avoid cache block limits
+        if matches!(self.client, Anthropic(_)) {
+            if let Some(tools) = request.tools.as_mut() {
+                for tool in tools.iter_mut() {
+                    match tool {
+                        crate::api::Tool::Regular { cache_control, .. }
+                        | crate::api::Tool::AnthropicWebSearch { cache_control, .. } => {
+                            *cache_control = None;
+                        }
+                        crate::api::Tool::OpenAIWebSearch { .. } => {}
+                    }
+                }
+            }
         }
+
+        request
     }
 }

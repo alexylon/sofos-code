@@ -230,15 +230,17 @@ impl OpenAIClient {
 fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
     let mut input = Vec::new();
 
+    let text_part = |part_type: &str, text: &str| -> serde_json::Value {
+        json!({
+            "type": part_type,
+            "text": text,
+        })
+    };
+
     if let Some(system_prompts) = &request.system {
         for system in system_prompts {
-            input.push(json!({
-                "role": "system",
-                "content": [{
-                    "type": "input_text",
-                    "text": system.text
-                }]
-            }));
+            let content = text_part("input_text", &system.text);
+            input.push(json!({"role": "system", "content": [content]}));
         }
     }
 
@@ -254,19 +256,19 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
 
         match &msg.content {
             MessageContent::Text { content } => {
-                parts.push(json!({"type": text_type, "text": content}));
+                parts.push(text_part(text_type, content));
             }
             MessageContent::Blocks { content } => {
                 for block in content {
                     match block {
                         MessageContentBlock::Text { text, .. } => {
-                            parts.push(json!({"type": text_type, "text": text}));
+                            parts.push(text_part(text_type, text));
                         }
                         MessageContentBlock::Thinking { .. } => {
                             // Thinking blocks are Claude-only; skip for OpenAI
                         }
                         MessageContentBlock::Summary { summary, .. } => {
-                            parts.push(json!({"type": "output_text", "text": summary}));
+                            parts.push(text_part("output_text", summary));
                         }
                         MessageContentBlock::ToolUse {
                             id,
@@ -277,20 +279,20 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                             // Responses API doesn't support tool_use in content; encode as text for context
                             let tool_args = serde_json::to_string(tool_input)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            parts.push(json!({
-                                "type": "output_text",
-                                "text": format!("Tool call {} -> {} with args: {}", id, name, tool_args),
-                            }));
+                            parts.push(text_part(
+                                "output_text",
+                                &format!("Tool call {} -> {} with args: {}", id, name, tool_args),
+                            ));
                         }
                         MessageContentBlock::ToolResult {
                             tool_use_id,
                             content: tool_content,
                             ..
                         } => {
-                            parts.push(json!({
-                                "type": "input_text",
-                                "text": format!("Tool result for {}:\n{}", tool_use_id, tool_content),
-                            }));
+                            parts.push(text_part(
+                                "input_text",
+                                &format!("Tool result for {}:\n{}", tool_use_id, tool_content),
+                            ));
                         }
                         MessageContentBlock::ServerToolUse {
                             name,
@@ -299,10 +301,10 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                         } => {
                             let tool_args = serde_json::to_string(tool_input)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            parts.push(json!({
-                                "type": "output_text",
-                                "text": format!("Server tool call {} with args: {}", name, tool_args),
-                            }));
+                            parts.push(text_part(
+                                "output_text",
+                                &format!("Server tool call {} with args: {}", name, tool_args),
+                            ));
                         }
                         MessageContentBlock::WebSearchToolResult {
                             tool_use_id,
@@ -314,7 +316,7 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                                 tool_use_id,
                                 content.len()
                             );
-                            parts.push(json!({"type": "input_text", "text": search_summary}));
+                            parts.push(text_part("input_text", &search_summary));
                         }
                     }
                 }
