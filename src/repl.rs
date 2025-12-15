@@ -125,6 +125,7 @@ impl Repl {
         let edit_mode = Box::new(Emacs::new(keybindings));
 
         let editor = Reedline::create()
+            .use_bracketed_paste(true)
             .with_completer(completer)
             .with_edit_mode(edit_mode)
             .with_menu(completion_menu);

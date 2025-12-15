@@ -58,6 +58,7 @@ impl OpenAIClient {
                         name,
                         description,
                         input_schema,
+                        ..
                     } => Some(json!({
                         "type": "function",
                         "name": name,
@@ -229,51 +230,102 @@ impl OpenAIClient {
 fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
     let mut input = Vec::new();
 
-    if let Some(system) = &request.system {
-        input.push(json!({
-            "role": "system",
-            "content": system
-        }));
+    if let Some(system_prompts) = &request.system {
+        for system in system_prompts {
+            input.push(json!({
+                "role": "system",
+                "content": [{
+                    "type": "input_text",
+                    "text": system.text
+                }]
+            }));
+        }
     }
 
     for msg in &request.messages {
+        let role = msg.role.as_str();
+        let text_type = if role == "assistant" {
+            "output_text"
+        } else {
+            "input_text"
+        };
+
+        let mut parts = Vec::new();
+
         match &msg.content {
             MessageContent::Text { content } => {
-                input.push(json!({"role": msg.role, "content": content}));
+                parts.push(json!({"type": text_type, "text": content}));
             }
             MessageContent::Blocks { content } => {
                 for block in content {
                     match block {
-                        MessageContentBlock::Text { text } => {
-                            input.push(json!({"role": msg.role, "content": text}));
+                        MessageContentBlock::Text { text, .. } => {
+                            parts.push(json!({"type": text_type, "text": text}));
+                        }
+                        MessageContentBlock::Thinking { .. } => {
+                            // Thinking blocks are Claude-only; skip for OpenAI
+                        }
+                        MessageContentBlock::Summary { summary, .. } => {
+                            parts.push(json!({"type": "output_text", "text": summary}));
                         }
                         MessageContentBlock::ToolUse {
                             id,
                             name,
                             input: tool_input,
+                            ..
                         } => {
-                            // Responses API requires function_call items to match with function_call_output
-                            input.push(json!({
-                                "type": "function_call",
-                                "call_id": id,
-                                "name": name,
-                                "arguments": serde_json::to_string(tool_input).unwrap_or_else(|_| "{}".to_string())
+                            // Responses API doesn't support tool_use in content; encode as text for context
+                            let tool_args = serde_json::to_string(tool_input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            parts.push(json!({
+                                "type": "output_text",
+                                "text": format!("Tool call {} -> {} with args: {}", id, name, tool_args),
                             }));
                         }
                         MessageContentBlock::ToolResult {
                             tool_use_id,
-                            content,
+                            content: tool_content,
+                            ..
                         } => {
-                            input.push(json!({
-                                "type": "function_call_output",
-                                "call_id": tool_use_id,
-                                "output": content
+                            parts.push(json!({
+                                "type": "input_text",
+                                "text": format!("Tool result for {}:\n{}", tool_use_id, tool_content),
                             }));
                         }
-                        _ => {}
+                        MessageContentBlock::ServerToolUse {
+                            name,
+                            input: tool_input,
+                            ..
+                        } => {
+                            let tool_args = serde_json::to_string(tool_input)
+                                .unwrap_or_else(|_| "{}".to_string());
+                            parts.push(json!({
+                                "type": "output_text",
+                                "text": format!("Server tool call {} with args: {}", name, tool_args),
+                            }));
+                        }
+                        MessageContentBlock::WebSearchToolResult {
+                            tool_use_id,
+                            content,
+                            ..
+                        } => {
+                            let search_summary = format!(
+                                "Web search results for {} ({} items)",
+                                tool_use_id,
+                                content.len()
+                            );
+                            parts.push(json!({"type": "input_text", "text": search_summary}));
+                        }
                     }
                 }
             }
+        }
+
+        if !parts.is_empty() {
+            input.push(json!({
+                "role": msg.role,
+                "content": parts,
+            }));
         }
     }
 

@@ -266,6 +266,7 @@ impl ResponseHandler {
                     tool_results.push(crate::api::MessageContentBlock::ToolResult {
                         tool_use_id: tool_id.clone(),
                         content: output.clone(),
+                        cache_control: None,
                     });
 
                     if output.starts_with("File deletion cancelled by user")
@@ -293,6 +294,7 @@ impl ResponseHandler {
                     tool_results.push(crate::api::MessageContentBlock::ToolResult {
                         tool_use_id: tool_id.clone(),
                         content: error_msg,
+                        cache_control: None,
                     });
                 }
             }

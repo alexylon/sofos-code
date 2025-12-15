@@ -1,4 +1,4 @@
-use crate::api::Tool;
+use crate::api::{CacheControl, Tool};
 use serde_json::json;
 
 fn read_file_tool() -> Tool {
@@ -15,6 +15,7 @@ fn read_file_tool() -> Tool {
             },
             "required": ["path"]
         }),
+        cache_control: Some(CacheControl::ephemeral(None)),
     }
 }
 
@@ -42,6 +43,7 @@ fn write_file_tool(has_morph: bool) -> Tool {
             },
             "required": ["path", "content"]
         }),
+        cache_control: None,
     }
 }
 
@@ -59,6 +61,7 @@ fn list_directory_tool() -> Tool {
             },
             "required": ["path"]
         }),
+        cache_control: None,
     }
 }
 
@@ -76,6 +79,7 @@ fn create_directory_tool() -> Tool {
             },
             "required": ["path"]
         }),
+        cache_control: None,
     }
 }
 
@@ -86,6 +90,7 @@ fn anthropic_web_search_tool() -> Tool {
         max_uses: Some(5),
         allowed_domains: None,
         blocked_domains: None,
+        cache_control: None,
     }
 }
 
@@ -109,6 +114,7 @@ fn execute_bash_tool() -> Tool {
             },
             "required": ["command"]
         }),
+        cache_control: None,
     }
 }
 
@@ -126,6 +132,7 @@ fn delete_file_tool() -> Tool {
             },
             "required": ["path"]
         }),
+        cache_control: None,
     }
 }
 
@@ -143,6 +150,7 @@ fn delete_directory_tool() -> Tool {
             },
             "required": ["path"]
         }),
+        cache_control: None,
     }
 }
 
@@ -164,6 +172,7 @@ fn move_file_tool() -> Tool {
             },
             "required": ["source", "destination"]
         }),
+        cache_control: None,
     }
 }
 
@@ -185,6 +194,7 @@ fn copy_file_tool() -> Tool {
             },
             "required": ["source", "destination"]
         }),
+        cache_control: None,
     }
 }
 
@@ -210,6 +220,7 @@ fn morph_edit_file_tool() -> Tool {
             },
             "required": ["path", "instruction", "code_edit"]
         }),
+        cache_control: None,
     }
 }
 
@@ -285,6 +296,7 @@ pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
             },
             "required": ["pattern"]
         }),
+        cache_control: None,
     });
 }
 

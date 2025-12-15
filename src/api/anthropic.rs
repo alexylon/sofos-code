@@ -72,6 +72,9 @@ impl AnthropicClient {
         let url = format!("{}/messages", API_BASE);
         let mut request = request;
 
+        // Anthropic doesn't accept summary blocks; map them to plain text
+        request.messages = sanitize_messages_for_anthropic(request.messages);
+
         if let Some(tools) = request.tools.take() {
             let filtered: Vec<Tool> = tools
                 .into_iter()
@@ -193,6 +196,29 @@ fn _parse_sse_events(text: &str) -> Result<Vec<_StreamEvent>> {
     }
 
     Ok(events)
+}
+
+fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|mut msg| {
+            if let MessageContent::Blocks { content } = msg.content {
+                let filtered_content = content
+                    .into_iter()
+                    .filter_map(|block| match block {
+                        // Anthropic does not accept "summary" content; drop for Claude
+                        MessageContentBlock::Summary { .. } => None,
+                        other => Some(other),
+                    })
+                    .collect();
+
+                msg.content = MessageContent::Blocks {
+                    content: filtered_content,
+                };
+            }
+            msg
+        })
+        .collect()
 }
 
 #[cfg(test)]

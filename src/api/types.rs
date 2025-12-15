@@ -65,6 +65,8 @@ pub enum Tool {
         name: String,
         description: String,
         input_schema: serde_json::Value,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     AnthropicWebSearch {
         #[serde(rename = "type")]
@@ -76,6 +78,8 @@ pub enum Tool {
         allowed_domains: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         blocked_domains: Option<Vec<String>>,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     OpenAIWebSearch {
         #[serde(rename = "type")]
@@ -180,16 +184,16 @@ pub struct SystemPrompt {
     #[serde(rename = "type")]
     pub system_type: String,
     pub text: String,
-    #[serde(rename = "cache_control")]
-    pub cache_control: CacheControl,
+    #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 impl SystemPrompt {
-    pub fn new(text: String) -> Self {
+    pub fn new_cached_with_ttl(text: String, ttl: Option<String>) -> Self {
         Self {
             system_type: "text".to_string(),
             text,
-            cache_control: CacheControl::new(),
+            cache_control: Some(CacheControl::ephemeral(ttl)),
         }
     }
 }
@@ -198,13 +202,22 @@ impl SystemPrompt {
 pub struct CacheControl {
     #[serde(rename = "type")]
     pub cache_type: String,
+    /// Optional TTL per Anthropic docs ("5m" default, or "1h" when allowed)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
 }
 
 impl CacheControl {
-    pub fn new() -> Self {
+    /// Default ephemeral cache with ttl "5m"
+    pub fn ephemeral(ttl: Option<String>) -> Self {
         Self {
             cache_type: "ephemeral".to_string(),
+            ttl,
         }
+    }
+
+    pub fn _ephemeral_one_hour() -> Self {
+        Self::ephemeral(Some("1h".to_string()))
     }
 }
 
@@ -212,39 +225,63 @@ impl CacheControl {
 #[serde(tag = "type")]
 pub enum MessageContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "thinking")]
-    Thinking { thinking: String, signature: String },
+    Thinking {
+        thinking: String,
+        signature: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "summary")]
-    Summary { summary: String },
+    Summary {
+        summary: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
         content: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "server_tool_use")]
     ServerToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
     #[serde(rename = "web_search_tool_result")]
     WebSearchToolResult {
         tool_use_id: String,
         content: Vec<WebSearchResult>,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 }
 
 impl MessageContentBlock {
     pub fn from_content_block_for_api(block: &ContentBlock) -> Option<Self> {
         match block {
-            ContentBlock::Text { text } => Some(MessageContentBlock::Text { text: text.clone() }),
+            ContentBlock::Text { text } => Some(MessageContentBlock::Text {
+                text: text.clone(),
+                cache_control: None,
+            }),
             // Claude's extended thinking
             ContentBlock::Thinking {
                 thinking,
@@ -255,22 +292,26 @@ impl MessageContentBlock {
                 Some(MessageContentBlock::Thinking {
                     thinking: thinking.clone(),
                     signature: signature.clone(),
+                    cache_control: None,
                 })
             }
             // GPT's reasoning summary
             ContentBlock::Summary { summary } => Some(MessageContentBlock::Summary {
                 summary: summary.clone(),
+                cache_control: None,
             }),
             ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
+                cache_control: None,
             }),
             ContentBlock::ServerToolUse { id, name, input } => {
                 Some(MessageContentBlock::ServerToolUse {
                     id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
+                    cache_control: None,
                 })
             }
             ContentBlock::WebSearchToolResult {
@@ -279,10 +320,13 @@ impl MessageContentBlock {
             } => Some(MessageContentBlock::WebSearchToolResult {
                 tool_use_id: tool_use_id.clone(),
                 content: content.clone(),
+                cache_control: None,
             }),
         }
     }
 }
+
+// Tool enum defined later with cache_control support
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

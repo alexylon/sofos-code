@@ -112,7 +112,7 @@ impl HistoryManager {
                     crate::api::MessageContent::Blocks { content } => content
                         .iter()
                         .find_map(|block| {
-                            if let crate::api::MessageContentBlock::Text { text } = block {
+                            if let crate::api::MessageContentBlock::Text { text, .. } = block {
                                 Some(text.as_str())
                             } else {
                                 None
@@ -291,7 +291,7 @@ impl HistoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::SystemPrompt;
+    use crate::api::{SystemPrompt};
     use tempfile::TempDir;
 
     #[test]
@@ -311,7 +311,8 @@ mod tests {
 
         let session_id = HistoryManager::generate_session_id();
         let messages = vec![Message::user("Test message")];
-        let system_prompt = SystemPrompt::new("Test system prompt".to_string());
+        let system_prompt =
+            SystemPrompt::new_cached_with_ttl("Test system prompt".to_string(), None);
 
         manager
             .save_session(&session_id, &messages, &[], &[system_prompt.clone()])
@@ -329,7 +330,7 @@ mod tests {
         let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
 
         let session_id1 = HistoryManager::generate_session_id();
-        let system_prompt = SystemPrompt::new("System".to_string());
+        let system_prompt = SystemPrompt::new_cached_with_ttl("System".to_string(), None);
 
         manager
             .save_session(

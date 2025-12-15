@@ -84,7 +84,10 @@ Show imperial units only when the user explicitly asks for them."#,
 
         Self {
             messages: Vec::new(),
-            system_prompt: vec![SystemPrompt::new(system_text.to_string())],
+            system_prompt: vec![SystemPrompt::new_cached_with_ttl(
+                system_text.to_string(),
+                None,
+            )],
         }
     }
 
@@ -170,6 +173,7 @@ mod tests {
             history.add_user_message(format!("User {}", i));
             history.add_assistant_with_blocks(vec![MessageContentBlock::Text {
                 text: format!("Assistant {}", i),
+                cache_control: None,
             }]);
         }
 
