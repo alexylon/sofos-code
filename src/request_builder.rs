@@ -48,11 +48,17 @@ impl<'a> RequestBuilder<'a> {
             None
         };
 
+        let system_prompt = if matches!(self.client, Anthropic(_)) {
+            Some(self.conversation.system_prompt().clone())
+        } else {
+            None
+        };
+
         CreateMessageRequest {
             model: self.model.to_string(),
             max_tokens: self.max_tokens,
             messages: self.conversation.messages().to_vec(),
-            system: Some(self.conversation.system_prompt().to_string()),
+            system: system_prompt,
             tools: Some(self.tools),
             stream: None,
             thinking: thinking_config,

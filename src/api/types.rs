@@ -47,7 +47,7 @@ pub struct CreateMessageRequest {
     pub max_tokens: u32,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<Vec<SystemPrompt>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -173,6 +173,39 @@ pub struct WebSearchResult {
     pub title: String,
     pub encrypted_content: String,
     pub page_age: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SystemPrompt {
+    #[serde(rename = "type")]
+    pub system_type: String,
+    pub text: String,
+    #[serde(rename = "cache_control")]
+    pub cache_control: CacheControl,
+}
+
+impl SystemPrompt {
+    pub fn new(text: String) -> Self {
+        Self {
+            system_type: "text".to_string(),
+            text,
+            cache_control: CacheControl::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CacheControl {
+    #[serde(rename = "type")]
+    pub cache_type: String,
+}
+
+impl CacheControl {
+    pub fn new() -> Self {
+        Self {
+            cache_type: "ephemeral".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

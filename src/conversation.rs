@@ -1,4 +1,4 @@
-use crate::api::Message;
+use crate::api::{Message, SystemPrompt};
 
 const MAX_MESSAGES: usize = 500;
 
@@ -6,7 +6,7 @@ const MAX_MESSAGES: usize = 500;
 #[derive(Clone)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
-    system_prompt: String,
+    system_prompt: Vec<SystemPrompt>,
 }
 
 impl ConversationHistory {
@@ -38,7 +38,7 @@ impl ConversationHistory {
             "- When creating or editing code, use the write_file tool"
         };
 
-        let mut system_prompt = format!(
+        let mut system_text = format!(
             r#"You are Sofos, an AI coding assistant. You have access to tools that allow you to:
 {}
 
@@ -78,13 +78,13 @@ Show imperial units only when the user explicitly asks for them."#,
 
         // Append custom instructions if provided
         if let Some(instructions) = custom_instructions {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&instructions);
+            system_text.push_str("\n\n");
+            system_text.push_str(&instructions);
         }
 
         Self {
             messages: Vec::new(),
-            system_prompt,
+            system_prompt: vec![SystemPrompt::new(system_text.to_string())],
         }
     }
 
@@ -114,7 +114,7 @@ Show imperial units only when the user explicitly asks for them."#,
         &self.messages
     }
 
-    pub fn system_prompt(&self) -> &str {
+    pub fn system_prompt(&self) -> &Vec<SystemPrompt> {
         &self.system_prompt
     }
 

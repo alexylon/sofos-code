@@ -1,4 +1,4 @@
-use crate::api::Message;
+use crate::api::{Message, SystemPrompt};
 use crate::error::{Result, SofosError};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -44,7 +44,7 @@ pub struct Session {
     /// Messages in display format (for reconstructing the original UI)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub display_messages: Vec<DisplayMessage>,
-    pub system_prompt: String,
+    pub system_prompt: Vec<SystemPrompt>,
     pub created_at: u64,
     pub updated_at: u64,
 }
@@ -141,7 +141,7 @@ impl HistoryManager {
         session_id: &str,
         messages: &[Message],
         display_messages: &[DisplayMessage],
-        system_prompt: &str,
+        system_prompt: &[SystemPrompt],
     ) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -154,7 +154,7 @@ impl HistoryManager {
             id: session_id.to_string(),
             api_messages: messages.to_vec(),
             display_messages: display_messages.to_vec(),
-            system_prompt: system_prompt.to_string(),
+            system_prompt: system_prompt.to_vec(),
             created_at: if session_path.exists() {
                 let existing: Session = serde_json::from_str(&fs::read_to_string(&session_path)?)?;
                 existing.created_at
@@ -291,6 +291,7 @@ impl HistoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::SystemPrompt;
     use tempfile::TempDir;
 
     #[test]
@@ -310,16 +311,16 @@ mod tests {
 
         let session_id = HistoryManager::generate_session_id();
         let messages = vec![Message::user("Test message")];
-        let system_prompt = "Test system prompt";
+        let system_prompt = SystemPrompt::new("Test system prompt".to_string());
 
         manager
-            .save_session(&session_id, &messages, &[], system_prompt)
+            .save_session(&session_id, &messages, &[], &[system_prompt.clone()])
             .unwrap();
 
         let loaded = manager.load_session(&session_id).unwrap();
         assert_eq!(loaded.id, session_id);
         assert_eq!(loaded.api_messages.len(), 1);
-        assert_eq!(loaded.system_prompt, system_prompt);
+        assert_eq!(loaded.system_prompt, vec![system_prompt]);
     }
 
     #[test]
@@ -328,12 +329,14 @@ mod tests {
         let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
 
         let session_id1 = HistoryManager::generate_session_id();
+        let system_prompt = SystemPrompt::new("System".to_string());
+
         manager
             .save_session(
                 &session_id1,
                 &[Message::user("First session")],
                 &[],
-                "System",
+                &[system_prompt.clone()],
             )
             .unwrap();
 
@@ -345,7 +348,7 @@ mod tests {
                 &session_id2,
                 &[Message::user("Second session")],
                 &[],
-                "System",
+                &[system_prompt],
             )
             .unwrap();
 
