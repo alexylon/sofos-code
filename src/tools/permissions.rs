@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-const SETTINGS_FILE: &str = ".sofos/settings.local.json";
+const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionSettings {
@@ -41,7 +41,7 @@ pub struct PermissionManager {
 
 impl PermissionManager {
     pub fn new(workspace: PathBuf) -> Result<Self> {
-        let settings_path = workspace.join(SETTINGS_FILE);
+        let settings_path = workspace.join(LOCAL_CONFIG_FILE);
         let settings = Self::load_settings(&settings_path)?;
 
         let allowed_commands = [
@@ -210,11 +210,11 @@ impl PermissionManager {
     fn load_settings(path: &PathBuf) -> Result<PermissionSettings> {
         if path.exists() {
             let content = fs::read_to_string(path).map_err(|e| {
-                SofosError::ToolExecution(format!("Failed to read settings file: {}", e))
+                SofosError::ToolExecution(format!("Failed to read config file: {}", e))
             })?;
 
-            serde_json::from_str(&content).map_err(|e| {
-                SofosError::ToolExecution(format!("Failed to parse settings file: {}", e))
+            toml::from_str(&content).map_err(|e| {
+                SofosError::ToolExecution(format!("Failed to parse config file: {}", e))
             })
         } else {
             Ok(PermissionSettings::default())
@@ -225,16 +225,16 @@ impl PermissionManager {
         // Ensure directory exists
         if let Some(parent) = self.settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
-                SofosError::ToolExecution(format!("Failed to create settings directory: {}", e))
+                SofosError::ToolExecution(format!("Failed to create config directory: {}", e))
             })?;
         }
 
-        let content = serde_json::to_string_pretty(&self.settings).map_err(|e| {
-            SofosError::ToolExecution(format!("Failed to serialize settings: {}", e))
+        let content = toml::to_string_pretty(&self.settings).map_err(|e| {
+            SofosError::ToolExecution(format!("Failed to serialize config: {}", e))
         })?;
 
         fs::write(&self.settings_path, content).map_err(|e| {
-            SofosError::ToolExecution(format!("Failed to write settings file: {}", e))
+            SofosError::ToolExecution(format!("Failed to write config file: {}", e))
         })?;
 
         Ok(())
@@ -455,5 +455,43 @@ mod tests {
             manager.check_command_permission("exact command").unwrap(),
             CommandPermission::Allowed
         );
+    }
+
+    #[test]
+    fn test_flexible_toml_format() {
+        // Test that various TOML formatting styles work correctly
+        let toml_content = r#"
+[permissions]
+allow = [
+  "Bash(custom_command_1)", 
+  "Bash(custom_command_2:*)",
+]
+deny = ["Bash(dangerous_command)"]
+ask = []
+"#;
+
+        let settings: PermissionSettings = toml::from_str(toml_content)
+            .expect("Failed to parse flexible TOML format");
+        
+        assert_eq!(settings.permissions.allow.len(), 2);
+        assert_eq!(settings.permissions.allow[0], "Bash(custom_command_1)");
+        assert_eq!(settings.permissions.allow[1], "Bash(custom_command_2:*)");
+        assert_eq!(settings.permissions.deny.len(), 1);
+        assert_eq!(settings.permissions.deny[0], "Bash(dangerous_command)");
+        assert_eq!(settings.permissions.ask.len(), 0);
+
+        // Test inline format too
+        let inline_toml = r#"
+[permissions]
+allow = ["Bash(cmd1)", "Bash(cmd2)"]
+deny = ["Bash(bad)"]
+ask = []
+"#;
+
+        let inline_settings: PermissionSettings = toml::from_str(inline_toml)
+            .expect("Failed to parse inline TOML format");
+        
+        assert_eq!(inline_settings.permissions.allow.len(), 2);
+        assert_eq!(inline_settings.permissions.deny.len(), 1);
     }
 }

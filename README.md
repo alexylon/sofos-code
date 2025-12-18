@@ -23,6 +23,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - [Session History](#session-history)
 - [Available Tools](#available-tools)
 - [Security](#security)
+  - [Bash Command Permissions (3-Tier System)](#bash-command-permissions-3-tier-system)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Morph Integration](#morph-integration)
@@ -258,18 +259,18 @@ These commands are always blocked:
 **Tier 3: Unknown Commands (User Confirmation)**
 Commands not in the predefined lists will prompt you for permission. You can:
 - Allow once (temporary permission for this session)
-- Remember decision (saved to `.sofos/settings.local.json` for future sessions)
+- Remember decision (saved to `.sofos/config.local.toml` for future sessions)
 - Deny once or permanently
 
-Your permission decisions are stored in `.sofos/settings.local.json`:
-```json
-{
-  "permissions": {
-    "allow": ["Bash(custom_script.sh:*)"],
-    "deny": ["Bash(dangerous_tool:*)"],
-    "ask": []
-  }
-}
+Your permission decisions are stored in `.sofos/config.local.toml`:
+```toml
+[permissions]
+allow = [
+  "Bash(custom_command_1)", 
+  "Bash(custom_command_2:*)",
+]
+deny = ["Bash(dangerous_command)"]
+ask = []
 ```
 
 This file is gitignored and specific to your local workspace.

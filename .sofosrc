@@ -112,7 +112,7 @@ src/
 - PermissionManager: Manages command permission checking
 - PermissionSettings: Stores user's allow/deny/ask lists
 - Three permission tiers: Allowed, Denied, Ask
-- Persists decisions to `.sofos/settings.local.json`
+- Persists decisions to `.sofos/config.local.toml`
 - Predefined lists: ~50 allowed commands, ~30 forbidden commands
 - Wildcard matching: `Bash(cargo:*)` matches all cargo commands
 - Exact matching: `Bash(cargo build)` matches specific command only
@@ -167,7 +167,7 @@ src/
    - **Tier 3 (Ask)**: Unknown commands
      - Prompt user for permission
      - Can be temporarily allowed or permanently remembered
-     - Decisions stored in `.sofos/settings.local.json`
+     - Decisions stored in `.sofos/config.local.toml`
    - Additional structural checks always enforced:
      - No parent traversal (`..`)
      - No absolute paths
@@ -305,8 +305,8 @@ cargo test -- --nocapture     # Show println output
 4. Document restriction in README.md
 
 **User-specific permissions (Tier 3):**
-- Stored in `.sofos/settings.local.json` (gitignored)
-- Format: `"Bash(command:*)"` for wildcards, `"Bash(exact command)"` for exact matches
+- Stored in `.sofos/config.local.toml` (gitignored)
+- Format: `allow = ["Bash(command:*)"]` for wildcards, `allow = ["Bash(exact command)"]` for exact matches
 - Can be edited manually or via interactive prompts
 
 ### Adding a New API Field
