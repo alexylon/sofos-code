@@ -1,6 +1,7 @@
 use crate::error::{Result, SofosError};
 use std::path::PathBuf;
 use std::process::Command;
+use crate::tools::permissions::{PermissionManager, CommandPermission};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
@@ -15,7 +16,31 @@ impl BashExecutor {
     }
 
     pub fn execute(&self, command: &str) -> Result<String> {
-        if !self.is_safe_command(command) {
+        let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
+        let permission = permission_manager.check_command_permission(command)?;
+
+        match permission {
+            CommandPermission::Allowed => {
+                // Command is in allowed list, execute directly
+            }
+            CommandPermission::Denied => {
+                return Err(SofosError::ToolExecution(
+                    self.get_rejection_reason(command),
+                ));
+            }
+            CommandPermission::Ask => {
+                let allowed = permission_manager.ask_user_permission(command)?;
+                if !allowed {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Command blocked by user: '{}'",
+                        command
+                    )));
+                }
+            }
+        }
+
+        // Additional safety checks (absolute paths, parent traversal, git restrictions)
+        if !self.is_safe_command_structure(command) {
             return Err(SofosError::ToolExecution(
                 self.get_rejection_reason(command),
             ));
@@ -76,43 +101,20 @@ impl BashExecutor {
         Ok(result)
     }
 
-    fn is_safe_command(&self, command: &str) -> bool {
-        let command_lower = command.to_lowercase();
-
-        if command_lower.starts_with("sudo") || command_lower.contains(" sudo ") {
-            return false;
-        }
-
+    fn is_safe_command_structure(&self, command: &str) -> bool {
         if command.contains("..") {
             return false;
         }
 
-        let directory_commands = [
-            "cd ", "cd\t", "cd;", "cd&", "cd|", "pushd ", "pushd\t", "pushd;", "pushd&", "pushd|",
-            "popd ", "popd\t", "popd;", "popd&", "popd|",
-        ];
-        for cmd in &directory_commands {
-            if command_lower.starts_with(cmd.trim_end())
-                || command_lower.contains(&format!(" {}", cmd.trim_end()))
-                || command_lower.contains(&format!(";{}", cmd.trim_end()))
-                || command_lower.contains(&format!("&&{}", cmd.trim_end()))
-                || command_lower.contains(&format!("||{}", cmd.trim_end()))
-                || command_lower.contains(&format!("|{}", cmd.trim_end()))
-            {
-                return false;
-            }
-        }
-
+        // Check for absolute paths
         if command.starts_with('/') {
             return false;
         }
 
-        // Catches: cat /etc/passwd, ls /tmp, etc.
         if command.contains(" /") {
             return false;
         }
 
-        // Check absolute paths after pipes, semicolons, and logical operators
         if command.contains("|/")
             || command.contains(";/")
             || command.contains("&&/")
@@ -121,68 +123,15 @@ impl BashExecutor {
             return false;
         }
 
-        if !self.is_safe_git_command(&command_lower) {
-            return false;
-        }
-
-        let forbidden_commands = [
-            "rm",
-            "mv",
-            "cp",
-            "chmod",
-            "chown",
-            "chgrp",
-            "mkdir",
-            "rmdir",
-            "touch",
-            "ln",
-            "dd",
-            "mkfs",
-            "mount",
-            "umount",
-            "kill",
-            "killall",
-            "pkill",
-            "shutdown",
-            "reboot",
-            "halt",
-            "poweroff",
-            "useradd",
-            "userdel",
-            "groupadd",
-            "groupdel",
-            "passwd",
-            "systemctl",
-            "service",
-            "fdisk",
-            "parted",
-            "mkswap",
-            "swapon",
-            "swapoff",
-        ];
-
-        for forbidden in &forbidden_commands {
-            if command_lower.starts_with(forbidden)
-                || command_lower.starts_with(&format!("{} ", forbidden))
-            {
-                return false;
-            }
-            // Check chained commands
-            if command_lower.contains(&format!("| {}", forbidden))
-                || command_lower.contains(&format!("; {}", forbidden))
-                || command_lower.contains(&format!("&& {}", forbidden))
-                || command_lower.contains(&format!("|| {}", forbidden))
-            {
-                return false;
-            }
-        }
-
         if command.contains('>') || command.contains(">>") {
             return false;
         }
 
-        // Here-doc can be used for malicious input
         if command.contains("<<") {
+            return false;
+        }
+
+        if !self.is_safe_git_command(&command.to_lowercase()) {
             return false;
         }
 
@@ -239,7 +188,7 @@ impl BashExecutor {
             "git merge",
             "git rebase",
             "git tag -d",
-            "git stash", // Blocks all stash operations except list/show (checked above)
+            "git stash",
             "git init",
             "git add",
             "git rm",
@@ -260,22 +209,11 @@ impl BashExecutor {
             }
         }
 
-        // Allow safe read-only git commands:
-        // git status, git log, git diff, git show, git branch (list only),
-        // git remote -v (view only), git config --list, git ls-files, etc.
         true
     }
 
     fn get_rejection_reason(&self, command: &str) -> String {
         let command_lower = command.to_lowercase();
-
-        // Sudo check
-        if command_lower.starts_with("sudo") || command_lower.contains(" sudo ") {
-            return format!(
-                "Command blocked: '{}'\nReason: Contains 'sudo' which requires privilege escalation.\nSofos only allows read-only operations for security.",
-                command
-            );
-        }
 
         // Parent directory traversal
         if command.contains("..") {
@@ -283,23 +221,6 @@ impl BashExecutor {
                 "Command blocked: '{}'\nReason: Contains '..' (parent directory traversal).\nAll operations must stay within the current workspace directory.",
                 command
             );
-        }
-
-        // Directory change commands
-        let directory_commands = ["cd", "pushd", "popd"];
-        for cmd in &directory_commands {
-            if command_lower.starts_with(cmd)
-                || command_lower.contains(&format!(" {}", cmd))
-                || command_lower.contains(&format!(";{}", cmd))
-                || command_lower.contains(&format!("&&{}", cmd))
-                || command_lower.contains(&format!("||{}", cmd))
-                || command_lower.contains(&format!("|{}", cmd))
-            {
-                return format!(
-                    "Command blocked: '{}'\nReason: Contains '{}' which changes the working directory.\nDirectory changes are not allowed for security. Use absolute paths from the workspace root instead.",
-                    command, cmd
-                );
-            }
         }
 
         // Absolute paths
@@ -337,48 +258,8 @@ impl BashExecutor {
             );
         }
 
-        // Forbidden commands
-        let forbidden_commands = [
-            ("rm", "delete files", "Use the delete_file tool"),
-            ("mv", "move/rename files", "Use the move_file tool"),
-            ("cp", "copy files", "Use the copy_file tool"),
-            (
-                "chmod",
-                "change permissions",
-                "File permissions cannot be modified",
-            ),
-            (
-                "mkdir",
-                "create directories",
-                "Use the create_directory tool",
-            ),
-            (
-                "rmdir",
-                "remove directories",
-                "Use the delete_directory tool",
-            ),
-            ("touch", "create/modify files", "Use the write_file tool"),
-        ];
-
-        for (cmd, action, alternative) in &forbidden_commands {
-            if command_lower.starts_with(cmd)
-                || command_lower.starts_with(&format!("{} ", cmd))
-                || command_lower.contains(&format!(" {}", cmd))
-                || command_lower.contains(&format!("|{}", cmd))
-                || command_lower.contains(&format!(";{}", cmd))
-                || command_lower.contains(&format!("&&{}", cmd))
-                || command_lower.contains(&format!("||{}", cmd))
-            {
-                return format!(
-                    "Command blocked: '{}'\nReason: Contains '{}' which would {} (modification operation).\n{}.",
-                    command, cmd, action, alternative
-                );
-            }
-        }
-
-        // Catch-all for other dangerous commands
         format!(
-            "Command blocked: '{}'\nReason: Command contains potentially unsafe operations.\nSofos only allows read-only commands for security.",
+            "Command blocked: '{}'\nReason: Command is in the forbidden list (destructive or violates sandbox).\nUse appropriate file operation tools instead.",
             command
         )
     }
@@ -386,7 +267,6 @@ impl BashExecutor {
     fn get_git_rejection_reason(&self, command: &str) -> String {
         let command_lower = command.to_lowercase();
 
-        // Check for specific dangerous git operations and provide helpful feedback
         if command_lower.contains("git push") {
             return format!(
                 "Command blocked: '{}'\nReason: 'git push' sends data to remote repositories (network operation).\nAllowed: Use 'git status', 'git log', 'git diff' to view changes.",
@@ -466,7 +346,6 @@ impl BashExecutor {
             );
         }
 
-        // Generic git rejection
         format!(
             "Command blocked: '{}'\nReason: Contains git operation that modifies repository or accesses network.\nAllowed git commands: status, log, diff, show, branch, remote -v, grep, blame, stash list/show",
             command
@@ -482,67 +361,50 @@ mod tests {
     fn test_safe_commands() {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
-        assert!(executor.is_safe_command("ls -la"));
-        assert!(executor.is_safe_command("cat file.txt"));
-        assert!(executor.is_safe_command("grep pattern file.txt"));
-        assert!(executor.is_safe_command("cargo test"));
-        assert!(executor.is_safe_command("cargo build"));
-        assert!(executor.is_safe_command("echo hello"));
-        assert!(executor.is_safe_command("pwd"));
+        // Note: These tests check the command structure safety only
+        // Actual permission checking is done by PermissionManager
+        assert!(executor.is_safe_command_structure("ls -la"));
+        assert!(executor.is_safe_command_structure("cat file.txt"));
+        assert!(executor.is_safe_command_structure("grep pattern file.txt"));
+        assert!(executor.is_safe_command_structure("cargo test"));
+        assert!(executor.is_safe_command_structure("cargo build"));
+        assert!(executor.is_safe_command_structure("echo hello"));
+        assert!(executor.is_safe_command_structure("pwd"));
     }
 
     #[test]
-    fn test_unsafe_commands() {
+    fn test_unsafe_command_structures() {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
-        assert!(!executor.is_safe_command("sudo ls"));
-        assert!(!executor.is_safe_command("rm file.txt"));
-        assert!(!executor.is_safe_command("mv file1 file2"));
-        assert!(!executor.is_safe_command("chmod 777 file"));
-        assert!(!executor.is_safe_command("echo hello > file.txt"));
-        assert!(!executor.is_safe_command("cat file.txt >> output.txt"));
-        assert!(!executor.is_safe_command("ls | rm file.txt"));
-        assert!(!executor.is_safe_command("ls && rm file.txt"));
+        // Test structural safety issues (not permission-based)
+        assert!(!executor.is_safe_command_structure("echo hello > file.txt"));
+        assert!(!executor.is_safe_command_structure("cat file.txt >> output.txt"));
     }
 
     #[test]
     fn test_path_traversal_blocked() {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
-        assert!(!executor.is_safe_command("cat ../file.txt"));
-        assert!(!executor.is_safe_command("ls ../../etc"));
-        assert!(!executor.is_safe_command("cat ../../../etc/passwd"));
-        assert!(!executor.is_safe_command("cat file.txt && ls .."));
-        assert!(!executor.is_safe_command("ls | cat ../secret"));
+        assert!(!executor.is_safe_command_structure("cat ../file.txt"));
+        assert!(!executor.is_safe_command_structure("ls ../../etc"));
+        assert!(!executor.is_safe_command_structure("cat ../../../etc/passwd"));
+        assert!(!executor.is_safe_command_structure("cat file.txt && ls .."));
+        assert!(!executor.is_safe_command_structure("ls | cat ../secret"));
     }
 
     #[test]
     fn test_absolute_paths_blocked() {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
-        assert!(!executor.is_safe_command("/bin/ls"));
-        assert!(!executor.is_safe_command("/etc/passwd"));
-        assert!(!executor.is_safe_command("cat /etc/passwd"));
-        assert!(!executor.is_safe_command("ls /tmp"));
-        assert!(!executor.is_safe_command("cat /home/user/secret"));
-        assert!(!executor.is_safe_command("ls && cat /etc/passwd"));
-        assert!(!executor.is_safe_command("echo test || cat /etc/passwd"));
-        assert!(!executor.is_safe_command("ls | grep /etc/passwd"));
-        assert!(!executor.is_safe_command("true;/bin/bash"));
-    }
-
-    #[test]
-    fn test_directory_change_blocked() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
-
-        assert!(!executor.is_safe_command("cd /tmp"));
-        assert!(!executor.is_safe_command("cd .."));
-        assert!(!executor.is_safe_command("cd / && ls"));
-        assert!(!executor.is_safe_command("ls && cd /tmp"));
-        assert!(!executor.is_safe_command("ls | cd /tmp"));
-        assert!(!executor.is_safe_command("pushd /tmp"));
-        assert!(!executor.is_safe_command("popd"));
-        assert!(!executor.is_safe_command("ls && pushd .."));
+        assert!(!executor.is_safe_command_structure("/bin/ls"));
+        assert!(!executor.is_safe_command_structure("/etc/passwd"));
+        assert!(!executor.is_safe_command_structure("cat /etc/passwd"));
+        assert!(!executor.is_safe_command_structure("ls /tmp"));
+        assert!(!executor.is_safe_command_structure("cat /home/user/secret"));
+        assert!(!executor.is_safe_command_structure("ls && cat /etc/passwd"));
+        assert!(!executor.is_safe_command_structure("echo test || cat /etc/passwd"));
+        assert!(!executor.is_safe_command_structure("ls | grep /etc/passwd"));
+        assert!(!executor.is_safe_command_structure("true;/bin/bash"));
     }
 
     #[test]
@@ -568,27 +430,27 @@ mod tests {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
         // Safe read-only git commands
-        assert!(executor.is_safe_command("git status"));
-        assert!(executor.is_safe_command("git log"));
-        assert!(executor.is_safe_command("git log --oneline"));
-        assert!(executor.is_safe_command("git diff"));
-        assert!(executor.is_safe_command("git diff HEAD~1"));
-        assert!(executor.is_safe_command("git show"));
-        assert!(executor.is_safe_command("git show HEAD"));
-        assert!(executor.is_safe_command("git branch"));
-        assert!(executor.is_safe_command("git branch -v"));
-        assert!(executor.is_safe_command("git branch --list"));
-        assert!(executor.is_safe_command("git remote -v"));
-        assert!(executor.is_safe_command("git config --list"));
-        assert!(executor.is_safe_command("git ls-files"));
-        assert!(executor.is_safe_command("git ls-tree HEAD"));
-        assert!(executor.is_safe_command("git blame file.txt"));
-        assert!(executor.is_safe_command("git grep pattern"));
-        assert!(executor.is_safe_command("git rev-parse HEAD"));
-        assert!(executor.is_safe_command("git describe --tags"));
-        assert!(executor.is_safe_command("git stash list"));
-        assert!(executor.is_safe_command("git stash show"));
-        assert!(executor.is_safe_command("git stash show stash@{0}"));
+        assert!(executor.is_safe_command_structure("git status"));
+        assert!(executor.is_safe_command_structure("git log"));
+        assert!(executor.is_safe_command_structure("git log --oneline"));
+        assert!(executor.is_safe_command_structure("git diff"));
+        assert!(executor.is_safe_command_structure("git diff HEAD~1"));
+        assert!(executor.is_safe_command_structure("git show"));
+        assert!(executor.is_safe_command_structure("git show HEAD"));
+        assert!(executor.is_safe_command_structure("git branch"));
+        assert!(executor.is_safe_command_structure("git branch -v"));
+        assert!(executor.is_safe_command_structure("git branch --list"));
+        assert!(executor.is_safe_command_structure("git remote -v"));
+        assert!(executor.is_safe_command_structure("git config --list"));
+        assert!(executor.is_safe_command_structure("git ls-files"));
+        assert!(executor.is_safe_command_structure("git ls-tree HEAD"));
+        assert!(executor.is_safe_command_structure("git blame file.txt"));
+        assert!(executor.is_safe_command_structure("git grep pattern"));
+        assert!(executor.is_safe_command_structure("git rev-parse HEAD"));
+        assert!(executor.is_safe_command_structure("git describe --tags"));
+        assert!(executor.is_safe_command_structure("git stash list"));
+        assert!(executor.is_safe_command_structure("git stash show"));
+        assert!(executor.is_safe_command_structure("git stash show stash@{0}"));
     }
 
     #[test]
@@ -596,58 +458,58 @@ mod tests {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
         // Remote operations (data leakage risk)
-        assert!(!executor.is_safe_command("git push"));
-        assert!(!executor.is_safe_command("git push origin main"));
-        assert!(!executor.is_safe_command("git push --force"));
-        assert!(!executor.is_safe_command("git pull"));
-        assert!(!executor.is_safe_command("git pull origin main"));
-        assert!(!executor.is_safe_command("git fetch"));
-        assert!(!executor.is_safe_command("git fetch origin"));
-        assert!(!executor.is_safe_command("git clone https://example.com/repo.git"));
+        assert!(!executor.is_safe_command_structure("git push"));
+        assert!(!executor.is_safe_command_structure("git push origin main"));
+        assert!(!executor.is_safe_command_structure("git push --force"));
+        assert!(!executor.is_safe_command_structure("git pull"));
+        assert!(!executor.is_safe_command_structure("git pull origin main"));
+        assert!(!executor.is_safe_command_structure("git fetch"));
+        assert!(!executor.is_safe_command_structure("git fetch origin"));
+        assert!(!executor.is_safe_command_structure("git clone https://example.com/repo.git"));
 
         // Destructive local operations
-        assert!(!executor.is_safe_command("git clean -fd"));
-        assert!(!executor.is_safe_command("git reset --hard"));
-        assert!(!executor.is_safe_command("git reset --hard HEAD~1"));
-        assert!(!executor.is_safe_command("git checkout -f"));
-        assert!(!executor.is_safe_command("git checkout -b newbranch"));
-        assert!(!executor.is_safe_command("git branch -D branch-name"));
-        assert!(!executor.is_safe_command("git branch -d branch-name"));
-        assert!(!executor.is_safe_command("git filter-branch"));
+        assert!(!executor.is_safe_command_structure("git clean -fd"));
+        assert!(!executor.is_safe_command_structure("git reset --hard"));
+        assert!(!executor.is_safe_command_structure("git reset --hard HEAD~1"));
+        assert!(!executor.is_safe_command_structure("git checkout -f"));
+        assert!(!executor.is_safe_command_structure("git checkout -b newbranch"));
+        assert!(!executor.is_safe_command_structure("git branch -D branch-name"));
+        assert!(!executor.is_safe_command_structure("git branch -d branch-name"));
+        assert!(!executor.is_safe_command_structure("git filter-branch"));
 
         // Modifications
-        assert!(!executor.is_safe_command("git add ."));
-        assert!(!executor.is_safe_command("git add file.txt"));
-        assert!(!executor.is_safe_command("git commit -m 'message'"));
-        assert!(!executor.is_safe_command("git commit --amend"));
-        assert!(!executor.is_safe_command("git rm file.txt"));
-        assert!(!executor.is_safe_command("git mv old.txt new.txt"));
-        assert!(!executor.is_safe_command("git merge branch"));
-        assert!(!executor.is_safe_command("git rebase main"));
-        assert!(!executor.is_safe_command("git cherry-pick abc123"));
-        assert!(!executor.is_safe_command("git revert abc123"));
-        assert!(!executor.is_safe_command("git restore file.txt"));
-        assert!(!executor.is_safe_command("git switch main"));
+        assert!(!executor.is_safe_command_structure("git add ."));
+        assert!(!executor.is_safe_command_structure("git add file.txt"));
+        assert!(!executor.is_safe_command_structure("git commit -m 'message'"));
+        assert!(!executor.is_safe_command_structure("git commit --amend"));
+        assert!(!executor.is_safe_command_structure("git rm file.txt"));
+        assert!(!executor.is_safe_command_structure("git mv old.txt new.txt"));
+        assert!(!executor.is_safe_command_structure("git merge branch"));
+        assert!(!executor.is_safe_command_structure("git rebase main"));
+        assert!(!executor.is_safe_command_structure("git cherry-pick abc123"));
+        assert!(!executor.is_safe_command_structure("git revert abc123"));
+        assert!(!executor.is_safe_command_structure("git restore file.txt"));
+        assert!(!executor.is_safe_command_structure("git switch main"));
 
         // Remote configuration changes
-        assert!(!executor.is_safe_command("git remote add origin https://evil.com/repo.git"));
-        assert!(!executor.is_safe_command("git remote set-url origin https://evil.com/repo.git"));
-        assert!(!executor.is_safe_command("git remote remove origin"));
+        assert!(!executor.is_safe_command_structure("git remote add origin https://evil.com/repo.git"));
+        assert!(!executor.is_safe_command_structure("git remote set-url origin https://evil.com/repo.git"));
+        assert!(!executor.is_safe_command_structure("git remote remove origin"));
 
         // Submodules (can fetch from remote)
-        assert!(!executor.is_safe_command("git submodule update"));
-        assert!(!executor.is_safe_command("git submodule init"));
+        assert!(!executor.is_safe_command_structure("git submodule update"));
+        assert!(!executor.is_safe_command_structure("git submodule init"));
 
         // Stash operations (modify state)
-        assert!(!executor.is_safe_command("git stash"));
-        assert!(!executor.is_safe_command("git stash pop"));
-        assert!(!executor.is_safe_command("git stash apply"));
-        assert!(!executor.is_safe_command("git stash drop"));
-        assert!(!executor.is_safe_command("git stash clear"));
+        assert!(!executor.is_safe_command_structure("git stash"));
+        assert!(!executor.is_safe_command_structure("git stash pop"));
+        assert!(!executor.is_safe_command_structure("git stash apply"));
+        assert!(!executor.is_safe_command_structure("git stash drop"));
+        assert!(!executor.is_safe_command_structure("git stash clear"));
 
         // Init (creates repository)
-        assert!(!executor.is_safe_command("git init"));
-        assert!(!executor.is_safe_command("git init new-repo"));
+        assert!(!executor.is_safe_command_structure("git init"));
+        assert!(!executor.is_safe_command_structure("git init new-repo"));
     }
 
     #[test]
@@ -655,15 +517,15 @@ mod tests {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
         // Safe commands in chains
-        assert!(executor.is_safe_command("git status && git log"));
-        assert!(executor.is_safe_command("git diff | grep pattern"));
-        assert!(executor.is_safe_command("echo test; git status"));
+        assert!(executor.is_safe_command_structure("git status && git log"));
+        assert!(executor.is_safe_command_structure("git diff | grep pattern"));
+        assert!(executor.is_safe_command_structure("echo test; git status"));
 
         // Dangerous commands in chains
-        assert!(!executor.is_safe_command("git status && git push"));
-        assert!(!executor.is_safe_command("git log | git commit -m 'test'"));
-        assert!(!executor.is_safe_command("echo test; git add ."));
-        assert!(!executor.is_safe_command("git status || git pull"));
+        assert!(!executor.is_safe_command_structure("git status && git push"));
+        assert!(!executor.is_safe_command_structure("git log | git commit -m 'test'"));
+        assert!(!executor.is_safe_command_structure("echo test; git add ."));
+        assert!(!executor.is_safe_command_structure("git status || git pull"));
     }
 
     #[test]
@@ -671,29 +533,14 @@ mod tests {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
         // Test git push error message
-        let result = executor.execute("git push origin main");
-        assert!(result.is_err());
-        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
-            assert!(msg.contains("git push origin main"));
-            assert!(msg.contains("network operation"));
-            assert!(msg.contains("git status"));
-        }
-
-        // Test rm error message
-        let result = executor.execute("rm file.txt");
-        assert!(result.is_err());
-        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
-            assert!(msg.contains("rm file.txt"));
-            assert!(msg.contains("delete files"));
-            assert!(msg.contains("delete_file tool"));
-        }
+        let reason = executor.get_git_rejection_reason("git push origin main");
+        assert!(reason.contains("git push origin main"));
+        assert!(reason.contains("network operation"));
+        assert!(reason.contains("git status"));
 
         // Test cd error message
-        let result = executor.execute("cd /tmp");
-        assert!(result.is_err());
-        if let Err(crate::error::SofosError::ToolExecution(msg)) = result {
-            assert!(msg.contains("cd /tmp"));
-            assert!(msg.contains("changes the working directory"));
-        }
+        let reason = executor.get_rejection_reason("cd /tmp");
+        assert!(reason.contains("cd /tmp"));
+        assert!(reason.contains("absolute paths"));
     }
 }

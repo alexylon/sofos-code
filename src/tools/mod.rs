@@ -2,6 +2,8 @@ pub mod bashexec;
 pub mod codesearch;
 pub mod filesystem;
 pub mod types;
+mod utils;
+pub mod permissions;
 
 use crate::api::MorphClient;
 use crate::diff;
@@ -10,21 +12,10 @@ use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
 use serde_json::Value;
-use std::io::{self, Write};
 
 use crate::tools::types::get_read_only_tools;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
-
-fn confirm_action(prompt: &str) -> Result<bool> {
-    print!("{} (y/n): ", prompt);
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-
-    let answer = input.trim().to_lowercase();
-    Ok(answer == "y" || answer == "yes")
-}
+use crate::tools::utils::confirm_action;
 
 /// ToolExecutor handles execution of tool calls from AI
 #[derive(Clone)]

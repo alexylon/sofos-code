@@ -103,7 +103,7 @@ fn openai_web_search_tool() -> Tool {
 fn execute_bash_tool() -> Tool {
     Tool::Regular {
         name: "execute_bash".to_string(),
-        description: "Execute read-only bash commands for testing code. Commands are sandboxed to the current directory. Forbidden: sudo, file modification commands (rm, mv, cp, chmod, etc.), and output redirection. Use this to run tests, check program output, or verify code behavior.".to_string(),
+        description: "Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services). Do not modify or delete files outside the working directory. Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {

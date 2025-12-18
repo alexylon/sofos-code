@@ -234,6 +234,46 @@ Bash execution is restricted to read-only operations:
 - ❌ Cannot modify files (`rm`, `mv`, `cp`, `chmod`, `mkdir`, `touch`)
 - ❌ Cannot change directories or use output redirection
 
+### Bash Command Permissions (3-Tier System)
+
+Sofos uses a 3-tier permission system for bash commands:
+
+**Tier 1: Allowed (Predefined Safe Commands)**
+These commands are automatically allowed without prompting:
+- Build tools: `cargo`, `npm`, `go`, `make`, `python`, `pip`, etc.
+- Read-only file operations: `ls`, `cat`, `grep`, `find`, `wc`, etc.
+- System info: `pwd`, `whoami`, `date`, `env`, etc.
+- Text processing: `sed`, `awk`, `sort`, `cut`, etc.
+- Safe git commands (read-only)
+
+**Tier 2: Forbidden (Predefined Dangerous Commands)**
+These commands are always blocked:
+- File deletion/modification: `rm`, `mv`, `cp`, `touch`, `mkdir`
+- Permissions: `chmod`, `chown`, `chgrp`
+- System control: `shutdown`, `reboot`, `systemctl`
+- User management: `useradd`, `userdel`, `passwd`
+- Process control: `kill`, `killall`
+- Directory navigation: `cd`, `pushd`, `popd` (breaks sandbox)
+
+**Tier 3: Unknown Commands (User Confirmation)**
+Commands not in the predefined lists will prompt you for permission. You can:
+- Allow once (temporary permission for this session)
+- Remember decision (saved to `.sofos/settings.local.json` for future sessions)
+- Deny once or permanently
+
+Your permission decisions are stored in `.sofos/settings.local.json`:
+```json
+{
+  "permissions": {
+    "allow": ["Bash(custom_script.sh:*)"],
+    "deny": ["Bash(dangerous_tool:*)"],
+    "ask": []
+  }
+}
+```
+
+This file is gitignored and specific to your local workspace.
+
 Git commands are restricted to read-only operations:
 
 - ✅ Can view history and status (`git status`, `git log`, `git diff`, `git show`)

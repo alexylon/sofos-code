@@ -4,7 +4,7 @@ use clap::Parser;
 #[command(
     name = "sofos",
     about = "An interactive AI coding assistant powered by Claude or OpenAI",
-    long_about = "Sofos is an AI-powered coding assistant (Claude / OpenAI) that can help you write code, edit files, and search the web. All file operations are sandboxed to the current working directory for security.",
+    long_about = "Sofos is an AI-powered coding assistant (Claude / OpenAI) that can help you write code, edit files, and search the web.",
     version
 )]
 pub struct Cli {

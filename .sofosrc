@@ -52,6 +52,7 @@ src/
 │   ├── filesystem.rs      # File operations (read, write, list, etc)
 │   ├── bashexec.rs        # Sandboxed bash execution
 │   ├── codesearch.rs      # Ripgrep integration
+│   ├── permissions.rs     # 3-tier command permission system
 │   ├── types.rs           # Tool definitions for API
 │   └── mod.rs
 ├── conversation.rs         # Message history management
@@ -102,12 +103,19 @@ src/
 - User confirmation required for deletions
 
 **src/tools/bashexec.rs**
-- COMMAND_BLOCKLIST: Dangerous commands that are always rejected
-- Output size limit: 50MB
-- No sudo, no file modifications, no directory changes
-- Read-only operations only
-- Git operations restricted: blocks push/pull/fetch/clone and all modifications
-- Allows safe git commands: status, log, diff, show, branch, remote -v, grep, blame
+- Uses PermissionManager for 3-tier command checking
+- Validates command structure (paths, redirection, git ops)
+- Executes commands with size limits
+- Provides detailed rejection messages
+
+**src/tools/permissions.rs**
+- PermissionManager: Manages command permission checking
+- PermissionSettings: Stores user's allow/deny/ask lists
+- Three permission tiers: Allowed, Denied, Ask
+- Persists decisions to `.sofos/settings.local.json`
+- Predefined lists: ~50 allowed commands, ~30 forbidden commands
+- Wildcard matching: `Bash(cargo:*)` matches all cargo commands
+- Exact matching: `Bash(cargo build)` matches specific command only
 
 ## Code Conventions
 
@@ -149,14 +157,22 @@ src/
    - Reject absolute paths
    - This is the first line of defense - NEVER bypass!
 
-2. **Bash Command Filtering** (bashexec.rs)
-   - Blocklist of dangerous commands (`rm`, `sudo`, `chmod`, etc)
-   - No output redirection (`>`, `>>`, `|`, `&`)
-   - No directory changes (`cd`, `pushd`, `popd`)
-   - No background execution (`&`)
-   - Read-only operations only
-   - Git command restrictions: blocks push, pull, fetch, clone, commit, add, and all modifications
-   - Allows safe git operations: status, log, diff, show, branch (list), remote -v, grep, blame, stash list/show
+2. **Bash Command 3-Tier Permission System** (permissions.rs + bashexec.rs)
+   - **Tier 1 (Allowed)**: Predefined safe commands (build tools, read-only operations)
+     - Automatically executed without user confirmation
+     - Examples: cargo, npm, ls, cat, grep, git status
+   - **Tier 2 (Forbidden)**: Predefined dangerous commands
+     - Always blocked with clear error messages
+     - Examples: rm, sudo, chmod, mkdir, cd, git push
+   - **Tier 3 (Ask)**: Unknown commands
+     - Prompt user for permission
+     - Can be temporarily allowed or permanently remembered
+     - Decisions stored in `.sofos/settings.local.json`
+   - Additional structural checks always enforced:
+     - No parent traversal (`..`)
+     - No absolute paths
+     - No output redirection
+     - Git operations limited to read-only
 
 3. **File Size Limits**
    - Read operations: 10MB limit
@@ -165,13 +181,14 @@ src/
 
 4. **User Confirmations**
    - Delete operations require interactive confirmation
-   - Shows what will be deleted before execution
+   - Unknown bash commands prompt for permission
+   - Shows what will be executed/deleted before action
    - User can cancel by declining
 
 **When Adding New Features:**
 - Always consider security implications first
 - Add path validation for any new file operations
-- Update blocklist if adding bash command capabilities
+- Update permission lists if adding bash command capabilities
 - Test with malicious inputs (path traversal attempts, etc)
 
 ## Important Implementation Details
@@ -273,6 +290,24 @@ cargo test -- --nocapture     # Show println output
 3. Add match arm in `src/tools/mod.rs` (ToolExecutor::execute)
 4. Test the new tool thoroughly
 5. Update README.md with tool description
+
+### Modifying Bash Command Permissions
+
+**To add a safe command to Tier 1 (Allowed):**
+1. Add to `allowed_commands` HashSet in `permissions.rs:new()`
+2. Test that command executes without prompting
+3. Document in README.md if it's a major addition
+
+**To add a dangerous command to Tier 2 (Forbidden):**
+1. Add to `forbidden_commands` HashSet in `permissions.rs:new()`
+2. Add helpful error message if needed
+3. Test that command is blocked
+4. Document restriction in README.md
+
+**User-specific permissions (Tier 3):**
+- Stored in `.sofos/settings.local.json` (gitignored)
+- Format: `"Bash(command:*)"` for wildcards, `"Bash(exact command)"` for exact matches
+- Can be edited manually or via interactive prompts
 
 ### Adding a New API Field
 
