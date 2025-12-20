@@ -123,7 +123,10 @@ impl BashExecutor {
             return false;
         }
 
-        if command.contains('>') || command.contains(">>") {
+        // Allow "2>&1" (stderr to stdout redirection) but block file output redirection
+        let command_without_stderr_redirect = command.replace("2>&1", "");
+        
+        if command_without_stderr_redirect.contains('>') || command_without_stderr_redirect.contains(">>") {
             return false;
         }
 
@@ -242,10 +245,11 @@ impl BashExecutor {
             return self.get_git_rejection_reason(command);
         }
 
-        // Output redirection
-        if command.contains('>') || command.contains(">>") {
+        // Output redirection (check after removing 2>&1)
+        let command_without_stderr_redirect = command.replace("2>&1", "");
+        if command_without_stderr_redirect.contains('>') || command_without_stderr_redirect.contains(">>") {
             return format!(
-                "Command blocked: '{}'\nReason: Contains output redirection ('>' or '>>').\nUse the write_file tool to create or modify files instead.",
+                "Command blocked: '{}'\nReason: Contains output redirection ('>' or '>>').\nNote: '2>&1' is allowed for combining stderr and stdout.\nUse the write_file tool to create or modify files instead.",
                 command
             );
         }
@@ -370,6 +374,12 @@ mod tests {
         assert!(executor.is_safe_command_structure("cargo build"));
         assert!(executor.is_safe_command_structure("echo hello"));
         assert!(executor.is_safe_command_structure("pwd"));
+        
+        // Test that 2>&1 is allowed (combines stderr to stdout)
+        assert!(executor.is_safe_command_structure("cargo build 2>&1"));
+        assert!(executor.is_safe_command_structure("npm test 2>&1"));
+        assert!(executor.is_safe_command_structure("ls 2>&1 | grep error"));
+        assert!(executor.is_safe_command_structure("cargo test 2>&1"));
     }
 
     #[test]
@@ -379,6 +389,10 @@ mod tests {
         // Test structural safety issues (not permission-based)
         assert!(!executor.is_safe_command_structure("echo hello > file.txt"));
         assert!(!executor.is_safe_command_structure("cat file.txt >> output.txt"));
+        
+        // These should still be blocked (file redirection even with 2>&1)
+        assert!(!executor.is_safe_command_structure("echo hello > file.txt 2>&1"));
+        assert!(!executor.is_safe_command_structure("cargo build 2>&1 > output.txt"));
     }
 
     #[test]
