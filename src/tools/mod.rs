@@ -1,9 +1,10 @@
 pub mod bashexec;
 pub mod codesearch;
 pub mod filesystem;
+pub mod permissions;
+pub mod tool_name;
 pub mod types;
 mod utils;
-pub mod permissions;
 
 use crate::api::MorphClient;
 use crate::diff;
@@ -12,10 +13,11 @@ use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
 use serde_json::Value;
+use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
-pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 use crate::tools::utils::confirm_action;
+pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 /// ToolExecutor handles execution of tool calls from AI
 #[derive(Clone)]
@@ -79,8 +81,10 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<String> {
-        match tool_name {
-            "read_file" => {
+        let tool = ToolName::from_str(tool_name)?;
+
+        match tool {
+            ToolName::ReadFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -103,7 +107,7 @@ impl ToolExecutor {
                     }
                 }
             }
-            "write_file" => {
+            ToolName::WriteFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -127,7 +131,7 @@ impl ToolExecutor {
                     Ok(format!("Successfully created file '{}'", path))
                 }
             }
-            "list_directory" => {
+            ToolName::ListDirectory => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -135,7 +139,7 @@ impl ToolExecutor {
                 let entries = self.fs_tool.list_directory(path)?;
                 Ok(format!("Contents of '{}':\n{}", path, entries.join("\n")))
             }
-            "create_directory" => {
+            ToolName::CreateDirectory => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -143,7 +147,7 @@ impl ToolExecutor {
                 self.fs_tool.create_directory(path)?;
                 Ok(format!("Successfully created directory '{}'", path))
             }
-            "search_code" => {
+            ToolName::SearchCode => {
                 let code_search = self.code_search_tool.as_ref()
                     .ok_or_else(|| SofosError::ToolExecution(
                         "Code search not available. Please install ripgrep: https://github.com/BurntSushi/ripgrep".to_string()
@@ -159,7 +163,7 @@ impl ToolExecutor {
                 let results = code_search.search(pattern, file_type, max_results)?;
                 Ok(format!("Code search results:\n\n{}", results))
             }
-            "morph_edit_file" => {
+            ToolName::MorphEditFile => {
                 let morph = self.morph_client.as_ref().ok_or_else(|| {
                     SofosError::ToolExecution(
                         "Morph client not available. Set MORPH_API_KEY to use morph_edit_file"
@@ -193,7 +197,7 @@ impl ToolExecutor {
                     path, diff_output
                 ))
             }
-            "delete_file" => {
+            ToolName::DeleteFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -210,7 +214,7 @@ impl ToolExecutor {
                 self.fs_tool.delete_file(path)?;
                 Ok(format!("Successfully deleted file '{}'", path))
             }
-            "delete_directory" => {
+            ToolName::DeleteDirectory => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
@@ -230,7 +234,7 @@ impl ToolExecutor {
                 self.fs_tool.delete_directory(path)?;
                 Ok(format!("Successfully deleted directory '{}'", path))
             }
-            "move_file" => {
+            ToolName::MoveFile => {
                 let source = input["source"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'source' parameter".to_string())
                 })?;
@@ -244,7 +248,7 @@ impl ToolExecutor {
                     source, destination
                 ))
             }
-            "copy_file" => {
+            ToolName::CopyFile => {
                 let source = input["source"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'source' parameter".to_string())
                 })?;
@@ -258,7 +262,7 @@ impl ToolExecutor {
                     source, destination
                 ))
             }
-            "execute_bash" => {
+            ToolName::ExecuteBash => {
                 let command = input["command"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'command' parameter".to_string())
                 })?;
@@ -266,11 +270,10 @@ impl ToolExecutor {
                 let result = self.bash_executor.execute(command)?;
                 Ok(result)
             }
-            // web_search is now handled server-side by Claude API, not by ToolExecutor
-            _ => Err(SofosError::ToolExecution(format!(
-                "Unknown tool: {}",
-                tool_name
-            ))),
+            ToolName::WebSearch => Err(SofosError::ToolExecution(
+                "web_search is handled server-side by the API and should not be executed locally"
+                    .to_string(),
+            )),
         }
     }
 }

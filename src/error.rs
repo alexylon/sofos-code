@@ -34,6 +34,13 @@ pub enum SofosError {
 
     #[error("Interrupted by user")]
     Interrupted,
+
+    #[error("{message}")]
+    Context {
+        message: String,
+        #[source]
+        source: Box<SofosError>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, SofosError>;

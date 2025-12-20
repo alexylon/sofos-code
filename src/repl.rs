@@ -1,11 +1,15 @@
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
+use crate::commands::{Command, CommandResult};
+use crate::config::{NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::{DisplayMessage, HistoryManager};
+use crate::model_config::ModelConfig;
 use crate::prompt::ReplPrompt;
 use crate::request_builder::RequestBuilder;
 use crate::response_handler::ResponseHandler;
+use crate::session_state::SessionState;
 use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;
@@ -18,6 +22,32 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+pub struct ReplConfig {
+    pub model: String,
+    pub max_tokens: u32,
+    pub enable_thinking: bool,
+    pub thinking_budget: u32,
+    pub safe_mode: bool,
+}
+
+impl ReplConfig {
+    pub fn new(
+        model: String,
+        max_tokens: u32,
+        enable_thinking: bool,
+        thinking_budget: u32,
+        safe_mode: bool,
+    ) -> Self {
+        Self {
+            model,
+            max_tokens,
+            enable_thinking,
+            thinking_budget,
+            safe_mode,
+        }
+    }
+}
+
 pub struct Repl {
     client: LlmClient,
     tool_executor: ToolExecutor,
@@ -25,34 +55,19 @@ pub struct Repl {
     ui: UI,
     editor: Reedline,
     prompt: ReplPrompt,
-    model: String,
-    max_tokens: u32,
-    enable_thinking: bool,
-    thinking_budget: u32,
-    session_id: String,
-    conversation: ConversationHistory,
-    display_messages: Vec<DisplayMessage>,
-    total_input_tokens: u32,
-    total_output_tokens: u32,
+    model_config: ModelConfig,
+    session_state: SessionState,
     safe_mode: bool,
 }
-
-const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
-                                No file modifications or bash commands are allowed.\
-                                Available tools: list_directory, read_file and web_search.]";
 
 impl Repl {
     pub fn new(
         client: LlmClient,
-        model: String,
-        max_tokens: u32,
+        config: ReplConfig,
         workspace: PathBuf,
         morph_client: Option<MorphClient>,
-        enable_thinking: bool,
-        thinking_budget: u32,
-        safe_mode: bool,
     ) -> Result<Self> {
-        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client, safe_mode)?;
+        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client, config.safe_mode)?;
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
@@ -67,37 +82,24 @@ impl Repl {
         }
 
         // Validate thinking budget
-        if enable_thinking && thinking_budget >= max_tokens {
+        if config.enable_thinking && config.thinking_budget >= config.max_tokens {
             return Err(SofosError::Config(format!(
                 "thinking_budget ({}) must be less than max_tokens ({})",
-                thinking_budget, max_tokens
+                config.thinking_budget, config.max_tokens
             )));
         }
 
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
 
-        let display_messages = Vec::new();
-
-        if safe_mode {
+        if config.safe_mode {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
         }
 
-        let commands = vec![
-            "/comment".to_string(),
-            "/commit".to_string(),
-            "/compare".to_string(),
-            "/config".to_string(),
-            "/exit".to_string(),
-            "/quit".to_string(),
-            "/clear".to_string(),
-            "/resume".to_string(),
-            "/think".to_string(),
-            "/think on".to_string(),
-            "/think off".to_string(),
-            "/s".to_string(),
-            "/n".to_string(),
-        ];
+        let commands: Vec<String> = crate::commands::COMMANDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let mut completer = DefaultCompleter::with_inclusions(&['/', '-', '_']);
         completer = completer.set_min_word_len(1);
@@ -130,9 +132,16 @@ impl Repl {
             .with_edit_mode(edit_mode)
             .with_menu(completion_menu);
 
-        let prompt = ReplPrompt::new(safe_mode);
+        let prompt = ReplPrompt::new(config.safe_mode);
 
         let session_id = HistoryManager::generate_session_id();
+        let session_state = SessionState::new(session_id, conversation);
+        let model_config = ModelConfig::new(
+            config.model,
+            config.max_tokens,
+            config.enable_thinking,
+            config.thinking_budget,
+        );
 
         let ui = UI::new();
 
@@ -143,16 +152,9 @@ impl Repl {
             ui,
             editor,
             prompt,
-            model,
-            max_tokens,
-            enable_thinking,
-            thinking_budget,
-            session_id,
-            conversation,
-            display_messages,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            safe_mode,
+            model_config,
+            session_state,
+            safe_mode: config.safe_mode,
         })
     }
 
@@ -168,69 +170,19 @@ impl Repl {
                         continue;
                     }
 
-                    match line.to_lowercase().as_str() {
-                        "/exit" | "/quit" | "/q" => {
-                            self.save_current_session()?;
-                            UI::display_session_summary(
-                                &self.model,
-                                self.total_input_tokens,
-                                self.total_output_tokens,
-                            );
-                            UI::print_goodbye();
-                            break;
-                        }
-                        "/clear" => {
-                            self.handle_clear();
-                            self.conversation.add_user_message(
-                                "The session history has been cleared".to_string(),
-                            );
-                            continue;
-                        }
-                        "/resume" => {
-                            if let Err(e) = self.handle_resume() {
+                    // Check if this is a command
+                    if let Some(command) = Command::from_str(&line) {
+                        match command.execute(self) {
+                            Ok(CommandResult::Continue) => continue,
+                            Ok(CommandResult::Exit) => break,
+                            Err(e) => {
                                 eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                                continue;
                             }
-                            continue;
                         }
-                        "/think on" => {
-                            self.handle_think_on();
-                            continue;
-                        }
-                        "/think off" => {
-                            self.handle_think_off();
-                            continue;
-                        }
-                        "/think" => {
-                            self.handle_think_status();
-                            continue;
-                        }
-                        "/s" => {
-                            if !self.safe_mode {
-                                self.safe_mode = true;
-                                self.tool_executor.set_safe_mode(true);
-                                self.conversation
-                                    .add_user_message(SAFE_MODE_MESSAGE.to_string());
-                                self.prompt.set_safe_mode(true);
-                            }
-                            continue;
-                        }
-                        "/n" => {
-                            if self.safe_mode {
-                                self.safe_mode = false;
-                                self.tool_executor.set_safe_mode(false);
-                                self.conversation.add_user_message(
-                                    "[SYSTEM: Normal (unrestricted) mode has been enabled. \
-                                File modifications and bash commands are now allowed.\
-                                All tools are available]"
-                                        .to_string(),
-                                );
-                                self.prompt.set_safe_mode(false);
-                            }
-                            continue;
-                        }
-                        _ => {}
                     }
 
+                    // Not a command, process as regular message
                     if let Err(e) = self.process_message(&line) {
                         eprintln!("{} {}", "Error:".bright_red().bold(), e);
                     } else if let Err(e) = self.save_current_session() {
@@ -247,9 +199,9 @@ impl Repl {
                     println!("\nExiting...");
                     self.save_current_session()?;
                     UI::display_session_summary(
-                        &self.model,
-                        self.total_input_tokens,
-                        self.total_output_tokens,
+                        &self.model_config.model,
+                        self.session_state.total_input_tokens,
+                        self.session_state.total_output_tokens,
                     );
                     UI::print_goodbye();
                     break;
@@ -265,11 +217,15 @@ impl Repl {
     }
 
     fn process_message(&mut self, user_input: &str) -> Result<()> {
-        self.conversation.add_user_message(user_input.to_string());
+        self.session_state
+            .conversation
+            .add_user_message(user_input.to_string());
 
-        self.display_messages.push(DisplayMessage::UserMessage {
-            content: user_input.to_string(),
-        });
+        self.session_state
+            .display_messages
+            .push(DisplayMessage::UserMessage {
+                content: user_input.to_string(),
+            });
 
         let initial_request = self.build_initial_request();
 
@@ -303,33 +259,33 @@ impl Repl {
 
         let response = response_result?;
 
-        self.total_input_tokens += response.usage.input_tokens;
-        self.total_output_tokens += response.usage.output_tokens;
+        self.session_state
+            .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
 
         let mut handler = ResponseHandler::new(
             self.client.clone(),
             self.tool_executor.clone(),
-            self.conversation.clone(),
-            self.model.clone(),
-            self.max_tokens,
-            self.enable_thinking,
-            self.thinking_budget,
+            self.session_state.conversation.clone(),
+            self.model_config.model.clone(),
+            self.model_config.max_tokens,
+            self.model_config.enable_thinking,
+            self.model_config.thinking_budget,
         );
 
         match runtime.block_on(handler.handle_response(
             response.content,
-            &mut self.display_messages,
-            &mut self.total_input_tokens,
-            &mut self.total_output_tokens,
+            &mut self.session_state.display_messages,
+            &mut self.session_state.total_input_tokens,
+            &mut self.session_state.total_output_tokens,
         )) {
             Ok(_) => {
                 // Update conversation from handler
-                self.conversation = handler.conversation().clone();
+                self.session_state.conversation = handler.conversation().clone();
                 Ok(())
             }
             Err(SofosError::Interrupted) => {
                 // Update conversation even on interrupt
-                self.conversation = handler.conversation().clone();
+                self.session_state.conversation = handler.conversation().clone();
                 Ok(())
             }
             Err(e) => Err(e),
@@ -340,12 +296,12 @@ impl Repl {
     fn build_initial_request(&self) -> CreateMessageRequest {
         RequestBuilder::new(
             &self.client,
-            &self.model,
-            self.max_tokens,
-            &self.conversation,
+            &self.model_config.model,
+            self.model_config.max_tokens,
+            &self.session_state.conversation,
             self.get_available_tools(),
-            self.enable_thinking,
-            self.thinking_budget,
+            self.model_config.enable_thinking,
+            self.model_config.thinking_budget,
         )
         .build()
     }
@@ -357,30 +313,51 @@ impl Repl {
         self.process_message(prompt)?;
         self.save_current_session()?;
         UI::display_session_summary(
-            &self.model,
-            self.total_input_tokens,
-            self.total_output_tokens,
+            &self.model_config.model,
+            self.session_state.total_input_tokens,
+            self.session_state.total_output_tokens,
         );
 
         Ok(())
     }
 
-    fn save_current_session(&self) -> Result<()> {
-        if self.conversation.messages().is_empty() {
+    // Public methods for command implementations
+
+    pub fn save_current_session(&self) -> Result<()> {
+        if self.session_state.conversation.messages().is_empty() {
             return Ok(());
         }
 
         self.history_manager.save_session(
-            &self.session_id,
-            self.conversation.messages(),
-            &self.display_messages,
-            self.conversation.system_prompt(),
+            &self.session_state.session_id,
+            self.session_state.conversation.messages(),
+            &self.session_state.display_messages,
+            self.session_state.conversation.system_prompt(),
         )?;
 
         Ok(())
     }
 
-    fn handle_resume(&mut self) -> Result<()> {
+    pub fn get_session_summary(&self) -> (String, u32, u32) {
+        (
+            self.model_config.model.clone(),
+            self.session_state.total_input_tokens,
+            self.session_state.total_output_tokens,
+        )
+    }
+
+    pub fn handle_clear_command(&mut self) -> Result<()> {
+        let new_session_id = HistoryManager::generate_session_id();
+        self.session_state.conversation.clear();
+        self.session_state.clear(new_session_id);
+        self.session_state
+            .conversation
+            .add_user_message("The session history has been cleared".to_string());
+        println!("\n{}\n", "Conversation history cleared.".bright_yellow());
+        Ok(())
+    }
+
+    pub fn handle_resume_command(&mut self) -> Result<()> {
         let sessions = self.history_manager.list_sessions()?;
 
         if sessions.is_empty() {
@@ -403,14 +380,83 @@ impl Repl {
         Ok(())
     }
 
+    pub fn handle_think_on(&mut self) {
+        self.model_config.set_thinking(true);
+
+        if matches!(self.client, Anthropic(_)) {
+            println!(
+                "\n{} (budget: {} tokens)\n",
+                "Extended thinking enabled.".bright_green(),
+                self.model_config.thinking_budget
+            );
+        } else {
+            let reasoning = Some(crate::api::Reasoning::enabled());
+            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
+
+            if let Some(e) = effort {
+                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
+            }
+        }
+    }
+
+    pub fn handle_think_off(&mut self) {
+        self.model_config.set_thinking(false);
+
+        if matches!(self.client, Anthropic(_)) {
+            println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
+        } else {
+            let reasoning = Some(crate::api::Reasoning::disabled());
+            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
+
+            if let Some(e) = effort {
+                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
+            }
+        }
+    }
+
+    pub fn handle_think_status(&self) {
+        if self.model_config.enable_thinking {
+            println!(
+                "\n{} (budget: {} tokens)\n",
+                "Extended thinking is enabled".bright_green(),
+                self.model_config.thinking_budget
+            );
+        } else {
+            println!("\n{}\n", "Extended thinking is disabled".bright_yellow());
+        }
+    }
+
+    pub fn enable_safe_mode(&mut self) {
+        if !self.safe_mode {
+            self.safe_mode = true;
+            self.tool_executor.set_safe_mode(true);
+            self.session_state
+                .conversation
+                .add_user_message(SAFE_MODE_MESSAGE.to_string());
+            self.prompt.set_safe_mode(true);
+        }
+    }
+
+    pub fn disable_safe_mode(&mut self) {
+        if self.safe_mode {
+            self.safe_mode = false;
+            self.tool_executor.set_safe_mode(false);
+            self.session_state
+                .conversation
+                .add_user_message(NORMAL_MODE_MESSAGE.to_string());
+            self.prompt.set_safe_mode(false);
+        }
+    }
+
     pub fn load_session_by_id(&mut self, session_id: &str) -> Result<()> {
         let session = self.history_manager.load_session(session_id)?;
 
-        self.session_id = session.id.clone();
-        self.conversation.clear();
-        self.conversation
+        self.session_state.session_id = session.id.clone();
+        self.session_state.conversation.clear();
+        self.session_state
+            .conversation
             .restore_messages(session.api_messages.clone());
-        self.display_messages = session.display_messages.clone();
+        self.session_state.display_messages = session.display_messages.clone();
 
         println!(
             "{} {} ({} messages)",
@@ -425,59 +471,6 @@ impl Repl {
         Ok(())
     }
 
-    fn handle_clear(&mut self) {
-        self.conversation.clear();
-        self.display_messages.clear();
-        self.session_id = HistoryManager::generate_session_id();
-        println!("\n{}\n", "Conversation history cleared.".bright_yellow());
-    }
-
-    fn handle_think_on(&mut self) {
-        self.enable_thinking = true;
-
-        if matches!(self.client, Anthropic(_)) {
-            println!(
-                "\n{} (budget: {} tokens)\n",
-                "Extended thinking enabled.".bright_green(),
-                self.thinking_budget
-            );
-        } else {
-            let reasoning = Some(crate::api::Reasoning::enabled());
-            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
-
-            if let Some(e) = effort {
-                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
-            }
-        }
-    }
-
-    fn handle_think_off(&mut self) {
-        self.enable_thinking = false;
-
-        if matches!(self.client, Anthropic(_)) {
-            println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
-        } else {
-            let reasoning = Some(crate::api::Reasoning::disabled());
-            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
-
-            if let Some(e) = effort {
-                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
-            }
-        }
-    }
-
-    fn handle_think_status(&self) {
-        if self.enable_thinking {
-            println!(
-                "\n{} (budget: {} tokens)\n",
-                "Extended thinking is enabled".bright_green(),
-                self.thinking_budget
-            );
-        } else {
-            println!("\n{}\n", "Extended thinking is disabled".bright_yellow());
-        }
-    }
-
     fn handle_initial_interrupt(&mut self) {
         println!(
             "\n{}",
@@ -487,12 +480,15 @@ impl Repl {
 
         let interrupt_msg = "INTERRUPT: The user pressed ESC to interrupt the request before receiving a response. \
                              They want to provide additional guidance or clarification. Wait for their next message.";
-        self.conversation
+        self.session_state
+            .conversation
             .add_user_message(interrupt_msg.to_string());
 
-        self.display_messages.push(DisplayMessage::UserMessage {
-            content: "[Interrupted - no response received]".to_string(),
-        });
+        self.session_state
+            .display_messages
+            .push(DisplayMessage::UserMessage {
+                content: "[Interrupted - no response received]".to_string(),
+            });
     }
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {

@@ -1,14 +1,19 @@
 mod api;
 mod cli;
+mod commands;
+mod config;
 mod conversation;
 mod diff;
 mod error;
+mod error_ext;
 mod history;
+mod model_config;
 mod prompt;
 mod repl;
 mod request_builder;
 mod response_handler;
 mod session_selector;
+mod session_state;
 mod syntax;
 mod tools;
 mod ui;
@@ -19,7 +24,7 @@ use cli::Cli;
 use colored::Colorize;
 use error::Result;
 use history::HistoryManager;
-use repl::Repl;
+use repl::{Repl, ReplConfig};
 use std::env;
 
 fn main() -> Result<()> {
@@ -105,16 +110,15 @@ fn main() -> Result<()> {
 
     println!();
 
-    let mut repl = Repl::new(
-        client,
+    let config = ReplConfig::new(
         cli.model,
         cli.max_tokens,
-        workspace.clone(),
-        morph_client,
         cli.enable_thinking,
         cli.thinking_budget,
         cli.safe_mode,
-    )?;
+    );
+
+    let mut repl = Repl::new(client, config, workspace.clone(), morph_client)?;
 
     if cli.resume {
         let history_manager = HistoryManager::new(workspace)?;

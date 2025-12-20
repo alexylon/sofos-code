@@ -1,5 +1,7 @@
 use crate::api::{Message, SystemPrompt};
 use crate::error::{Result, SofosError};
+use crate::error_ext::ResultExt;
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -9,8 +11,6 @@ const SOFOS_DIR: &str = ".sofos";
 const SESSIONS_DIR: &str = "sessions";
 const INDEX_FILE: &str = "index.json";
 const MAX_PREVIEW_LENGTH: usize = 120;
-const WORKSPACE_INSTRUCTIONS_FILE: &str = "instructions.md";
-const PROJECT_INSTRUCTIONS_FILE: &str = ".sofosrc";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DisplayMessage {
@@ -224,33 +224,35 @@ impl HistoryManager {
     }
 
     pub fn load_custom_instructions(&self) -> Result<Option<String>> {
-        let mut instructions = Vec::new();
+        let project_rc = self.workspace.join(".sofosrc");
+        let personal_instructions = self.workspace.join(".sofos/instructions.md");
 
-        // Load project-level instructions (version controlled)
-        let project_instructions = self.workspace.join(PROJECT_INSTRUCTIONS_FILE);
-        if project_instructions.exists() {
-            let content = fs::read_to_string(&project_instructions)?;
-            if !content.trim().is_empty() {
-                instructions.push(format!("# Project Instructions\n\n{}", content.trim()));
-            }
+        let mut combined = String::new();
+
+        if project_rc.exists() {
+            let content = fs::read_to_string(&project_rc).with_context(|| {
+                format!("Failed to read project instructions from {:?}", project_rc)
+            })?;
+            combined.push_str(&content);
         }
 
-        // Load workspace-level instructions (personal, gitignored)
-        let workspace_instructions = self
-            .workspace
-            .join(SOFOS_DIR)
-            .join(WORKSPACE_INSTRUCTIONS_FILE);
-        if workspace_instructions.exists() {
-            let content = fs::read_to_string(&workspace_instructions)?;
-            if !content.trim().is_empty() {
-                instructions.push(format!("# Personal Instructions\n\n{}", content.trim()));
+        if personal_instructions.exists() {
+            if !combined.is_empty() {
+                combined.push_str("\n\n");
             }
+            let content = fs::read_to_string(&personal_instructions).with_context(|| {
+                format!(
+                    "Failed to read personal instructions from {:?}",
+                    personal_instructions
+                )
+            })?;
+            combined.push_str(&content);
         }
 
-        if instructions.is_empty() {
+        if combined.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(instructions.join("\n\n")))
+            Ok(Some(combined))
         }
     }
 
@@ -291,7 +293,7 @@ impl HistoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::{SystemPrompt};
+    use crate::api::SystemPrompt;
     use tempfile::TempDir;
 
     #[test]

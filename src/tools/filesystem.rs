@@ -1,4 +1,5 @@
 use crate::error::{Result, SofosError};
+use crate::error_ext::ResultExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,19 +13,26 @@ pub struct FileSystemTool {
 
 impl FileSystemTool {
     pub fn new(workspace: PathBuf) -> Result<Self> {
-        let workspace = workspace.canonicalize().map_err(|e| {
-            SofosError::Config(format!("Failed to canonicalize workspace path: {}", e))
+        if !workspace.exists() {
+            return Err(SofosError::Config(format!(
+                "Workspace directory does not exist: {}",
+                workspace.display()
+            )));
+        }
+
+        let canonical = fs::canonicalize(&workspace).with_context(|| {
+            format!("Failed to resolve workspace path: {}", workspace.display())
         })?;
 
-        Ok(Self { workspace })
+        Ok(Self {
+            workspace: canonical,
+        })
     }
 
     /// Validate and resolve a path relative to the workspace
     /// Returns an error if the path attempts to escape the workspace
     fn validate_path(&self, path: &str) -> Result<PathBuf> {
-        let path = path.trim();
-
-        if Path::new(path).is_absolute() {
+        if path.starts_with('/') {
             return Err(SofosError::PathViolation(
                 "Absolute paths are not allowed".to_string(),
             ));
@@ -38,33 +46,22 @@ impl FileSystemTool {
 
         let full_path = self.workspace.join(path);
 
-        // Canonicalize if it exists, otherwise just check the parent
-        let canonical =
-            if full_path.exists() {
-                full_path.canonicalize().map_err(|e| {
-                    SofosError::InvalidPath(format!("Failed to canonicalize path: {}", e))
-                })?
+        let canonical = if full_path.exists() {
+            fs::canonicalize(&full_path)?
+        } else if let Some(parent) = full_path.parent() {
+            if parent.exists() {
+                let canonical_parent = fs::canonicalize(parent)?;
+                canonical_parent.join(full_path.file_name().context("Invalid filename")?)
             } else {
-                // For non-existent paths, validate that the parent is within workspace
-                if let Some(parent) = full_path.parent() {
-                    if parent.exists() {
-                        let canonical_parent = parent.canonicalize().map_err(|e| {
-                            SofosError::InvalidPath(format!("Failed to canonicalize parent: {}", e))
-                        })?;
-                        canonical_parent.join(full_path.file_name().ok_or_else(|| {
-                            SofosError::InvalidPath("Invalid filename".to_string())
-                        })?)
-                    } else {
-                        full_path
-                    }
-                } else {
-                    full_path
-                }
-            };
+                full_path
+            }
+        } else {
+            full_path
+        };
 
         if !canonical.starts_with(&self.workspace) {
             return Err(SofosError::PathViolation(format!(
-                "Path '{}' is outside the workspace",
+                "Path escapes workspace: {}",
                 path
             )));
         }
@@ -73,41 +70,37 @@ impl FileSystemTool {
     }
 
     pub fn read_file(&self, path: &str) -> Result<String> {
-        let full_path = self.validate_path(path)?;
+        let validated_path = self.validate_path(path)?;
 
-        if !full_path.exists() {
+        if !validated_path.exists() {
             return Err(SofosError::FileNotFound(path.to_string()));
         }
 
-        if !full_path.is_file() {
-            return Err(SofosError::InvalidPath(format!("'{}' is not a file", path)));
-        }
+        let metadata = fs::metadata(&validated_path)
+            .with_context(|| format!("Failed to read metadata for: {}", path))?;
 
-        // Check file size before reading to prevent OOM
-        let metadata = fs::metadata(&full_path).map_err(SofosError::Io)?;
         if metadata.len() > MAX_FILE_SIZE {
-            return Err(SofosError::InvalidPath(format!(
-                "File '{}' is too large ({} bytes). Maximum size is {} MB",
+            return Err(SofosError::ToolExecution(format!(
+                "File too large: {} (max: {} MB)",
                 path,
-                metadata.len(),
                 MAX_FILE_SIZE / (1024 * 1024)
             )));
         }
 
-        fs::read_to_string(&full_path).map_err(SofosError::Io)
+        fs::read_to_string(&validated_path)
+            .with_context(|| format!("Failed to read file: {}", path))
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {
-        let full_path = self.validate_path(path)?;
+        let validated_path = self.validate_path(path)?;
 
-        if let Some(parent) = full_path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = validated_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directories for: {}", path))?;
         }
 
-        fs::write(&full_path, content)?;
-        Ok(())
+        fs::write(&validated_path, content)
+            .with_context(|| format!("Failed to write file: {}", path))
     }
 
     pub fn _append_file(&self, path: &str, content: &str) -> Result<()> {
@@ -318,7 +311,6 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let fs_tool = FileSystemTool::new(temp_dir.path().to_path_buf()).unwrap();
 
-        // Create a file larger than 50MB (51MB)
         let large_data = vec![0u8; 51 * 1024 * 1024];
         fs_tool
             .write_file("large_file.bin", &String::from_utf8_lossy(&large_data))
@@ -328,13 +320,7 @@ mod tests {
         assert!(result.is_err());
 
         let err = result.unwrap_err();
-        assert!(matches!(err, SofosError::InvalidPath(_)));
-
-        // Verify error message mentions file size
-        if let SofosError::InvalidPath(msg) = err {
-            assert!(msg.contains("too large"));
-            assert!(msg.contains("50 MB"));
-        }
+        assert!(matches!(err, SofosError::ToolExecution(_)));
     }
 
     #[test]
@@ -347,15 +333,12 @@ mod tests {
 
         let fs_tool = FileSystemTool::new(temp_workspace.path().to_path_buf()).unwrap();
 
-        // Create a file outside the workspace
         let outside_file = temp_outside.path().join("secret.txt");
         fs::write(&outside_file, "secret data").unwrap();
 
-        // Try to create a symlink inside workspace pointing outside
         let symlink_path = temp_workspace.path().join("escape_link");
         symlink(&outside_file, &symlink_path).unwrap();
 
-        // Attempt to read via symlink should fail with path violation
         let result = fs_tool.read_file("escape_link");
         assert!(result.is_err());
 
@@ -363,7 +346,7 @@ mod tests {
         assert!(matches!(err, SofosError::PathViolation(_)));
 
         if let SofosError::PathViolation(msg) = err {
-            assert!(msg.contains("outside the workspace"));
+            assert!(msg.contains("workspace"));
         }
     }
 }

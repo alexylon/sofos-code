@@ -1,7 +1,7 @@
 use crate::error::{Result, SofosError};
+use crate::tools::permissions::{CommandPermission, PermissionManager};
 use std::path::PathBuf;
 use std::process::Command;
-use crate::tools::permissions::{PermissionManager, CommandPermission};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
@@ -492,8 +492,11 @@ mod tests {
         assert!(!executor.is_safe_command_structure("git switch main"));
 
         // Remote configuration changes
-        assert!(!executor.is_safe_command_structure("git remote add origin https://evil.com/repo.git"));
-        assert!(!executor.is_safe_command_structure("git remote set-url origin https://evil.com/repo.git"));
+        assert!(
+            !executor.is_safe_command_structure("git remote add origin https://evil.com/repo.git")
+        );
+        assert!(!executor
+            .is_safe_command_structure("git remote set-url origin https://evil.com/repo.git"));
         assert!(!executor.is_safe_command_structure("git remote remove origin"));
 
         // Submodules (can fetch from remote)

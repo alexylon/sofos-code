@@ -1,12 +1,12 @@
 use crate::api::{Message, SystemPrompt};
-
-const MAX_MESSAGES: usize = 500;
+use crate::config::SofosConfig;
 
 /// Manages conversation history for the REPL
 #[derive(Clone)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
     system_prompt: Vec<SystemPrompt>,
+    config: SofosConfig,
 }
 
 impl ConversationHistory {
@@ -93,12 +93,13 @@ Show imperial units only when the user explicitly asks for them."#,
                 system_text.to_string(),
                 None,
             )],
+            config: SofosConfig::default(),
         }
     }
 
     fn trim_if_needed(&mut self) {
-        if self.messages.len() > MAX_MESSAGES {
-            let remove_count = self.messages.len() - MAX_MESSAGES;
+        if self.messages.len() > self.config.max_messages {
+            let remove_count = self.messages.len() - self.config.max_messages;
             self.messages.drain(0..remove_count);
         }
     }

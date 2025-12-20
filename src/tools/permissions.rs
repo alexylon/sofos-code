@@ -229,9 +229,8 @@ impl PermissionManager {
             })?;
         }
 
-        let content = toml::to_string_pretty(&self.settings).map_err(|e| {
-            SofosError::ToolExecution(format!("Failed to serialize config: {}", e))
-        })?;
+        let content = toml::to_string_pretty(&self.settings)
+            .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
         fs::write(&self.settings_path, content).map_err(|e| {
             SofosError::ToolExecution(format!("Failed to write config file: {}", e))
@@ -246,7 +245,7 @@ impl PermissionManager {
 
     fn extract_base_command(command: &str) -> &str {
         let command = command.trim();
-        
+
         // Handle common prefixes
         let without_prefix = if let Some(stripped) = command.strip_prefix("Bash(") {
             if let Some(end) = stripped.find(')') {
@@ -302,10 +301,7 @@ impl PermissionManager {
     pub fn ask_user_permission(&mut self, command: &str) -> Result<bool> {
         let normalized = Self::normalize_command(command);
 
-        let prompt = format!(
-            "Allow command `{}`?",
-            command
-        );
+        let prompt = format!("Allow command `{}`?", command);
 
         let confirmed = confirm_action(&prompt)?;
         let remember = confirm_action("Remember this decision?")?;
@@ -400,7 +396,9 @@ mod tests {
 
         // Test unknown commands that need user confirmation
         assert_eq!(
-            manager.check_command_permission("custom_script.sh").unwrap(),
+            manager
+                .check_command_permission("custom_script.sh")
+                .unwrap(),
             CommandPermission::Ask
         );
         assert_eq!(
@@ -416,13 +414,21 @@ mod tests {
 
         {
             let mut manager = PermissionManager::new(workspace.clone()).unwrap();
-            manager.settings.permissions.allow.push("Bash(custom:*)".to_string());
+            manager
+                .settings
+                .permissions
+                .allow
+                .push("Bash(custom:*)".to_string());
             manager.save_settings().unwrap();
         }
 
         // Load again and verify
         let manager = PermissionManager::new(workspace).unwrap();
-        assert!(manager.settings.permissions.allow.contains(&"Bash(custom:*)".to_string()));
+        assert!(manager
+            .settings
+            .permissions
+            .allow
+            .contains(&"Bash(custom:*)".to_string()));
     }
 
     #[test]
@@ -432,7 +438,11 @@ mod tests {
         let mut manager = PermissionManager::new(workspace).unwrap();
 
         // Add wildcard permission
-        manager.settings.permissions.allow.push("Bash(custom:*)".to_string());
+        manager
+            .settings
+            .permissions
+            .allow
+            .push("Bash(custom:*)".to_string());
 
         // Should match wildcard
         assert_eq!(
@@ -448,7 +458,11 @@ mod tests {
         let mut manager = PermissionManager::new(workspace).unwrap();
 
         // Add exact permission
-        manager.settings.permissions.allow.push("Bash(exact command)".to_string());
+        manager
+            .settings
+            .permissions
+            .allow
+            .push("Bash(exact command)".to_string());
 
         // Exact match should be allowed
         assert_eq!(
@@ -470,9 +484,9 @@ deny = ["Bash(dangerous_command)"]
 ask = []
 "#;
 
-        let settings: PermissionSettings = toml::from_str(toml_content)
-            .expect("Failed to parse flexible TOML format");
-        
+        let settings: PermissionSettings =
+            toml::from_str(toml_content).expect("Failed to parse flexible TOML format");
+
         assert_eq!(settings.permissions.allow.len(), 2);
         assert_eq!(settings.permissions.allow[0], "Bash(custom_command_1)");
         assert_eq!(settings.permissions.allow[1], "Bash(custom_command_2:*)");
@@ -488,9 +502,9 @@ deny = ["Bash(bad)"]
 ask = []
 "#;
 
-        let inline_settings: PermissionSettings = toml::from_str(inline_toml)
-            .expect("Failed to parse inline TOML format");
-        
+        let inline_settings: PermissionSettings =
+            toml::from_str(inline_toml).expect("Failed to parse inline TOML format");
+
         assert_eq!(inline_settings.permissions.allow.len(), 2);
         assert_eq!(inline_settings.permissions.deny.len(), 1);
     }

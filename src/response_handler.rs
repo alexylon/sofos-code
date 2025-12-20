@@ -1,4 +1,5 @@
 use crate::api::{ContentBlock, CreateMessageRequest, LlmClient};
+use crate::config::SofosConfig;
 use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
 use crate::history::DisplayMessage;
@@ -19,6 +20,7 @@ pub struct ResponseHandler {
     max_tokens: u32,
     enable_thinking: bool,
     thinking_budget: u32,
+    config: SofosConfig,
 }
 
 impl ResponseHandler {
@@ -40,6 +42,7 @@ impl ResponseHandler {
             max_tokens,
             enable_thinking,
             thinking_budget,
+            config: SofosConfig::default(),
         }
     }
 
@@ -50,7 +53,6 @@ impl ResponseHandler {
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
     ) -> Result<()> {
-        const MAX_TOOL_ITERATIONS: u32 = 200;
         let mut iteration = 0;
 
         loop {
@@ -64,7 +66,7 @@ impl ResponseHandler {
                 );
             }
 
-            if iteration > MAX_TOOL_ITERATIONS {
+            if iteration > self.config.max_tool_iterations {
                 self.handle_max_iterations(
                     display_messages,
                     total_input_tokens,
@@ -384,8 +386,6 @@ impl ResponseHandler {
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
     ) -> Result<()> {
-        const MAX_TOOL_ITERATIONS: u32 = 200;
-
         eprintln!(
             "\n{} Maximum tool iterations reached. Stopping to prevent infinite loop.",
             "Warning:".bright_yellow().bold()
@@ -396,7 +396,7 @@ impl ResponseHandler {
             This limit prevents infinite loops. Please provide a summary of what you've accomplished \
             so far and suggest how the user should proceed. Consider breaking down the task into \
             smaller steps or asking the user for clarification.",
-            MAX_TOOL_ITERATIONS
+            self.config.max_tool_iterations
         );
 
         self.conversation.add_user_message(interruption_msg.clone());
