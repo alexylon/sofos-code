@@ -53,7 +53,6 @@ prompt changes from **`λ>`** to **`λ:`** as a visual cue
 
 ### Requirements
 
-- Rust 1.70+ ([install guide](https://rust-lang.org/tools/install/))
 - At least one LLM API key:
   - Anthropic API key ([get one](https://console.anthropic.com/)) for Claude models
   - OpenAI API key ([get one](https://platform.openai.com/)) for OpenAI models
@@ -63,7 +62,16 @@ prompt changes from **`λ>`** to **`λ:`** as a visual cue
 - `ripgrep` for code search ([install guide](https://github.com/BurntSushi/ripgrep#installation))
 - Morph API key for ultra-fast editing ([get one](https://morphllm.com/))
 
+**Install with Homebrew**
+
+```bash
+brew tap alexylon/tap
+brew install sofos
+```
+
 **Install from crates.io:**
+
+*Requires Rust 1.70+ ([install guide](https://rust-lang.org/tools/install/))*
 
 ```bash
 cargo install sofos
