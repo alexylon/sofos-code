@@ -24,7 +24,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - [Available Tools](#available-tools)
 - [Security](#security)
   - [Bash Command Permissions (3-Tier System)](#bash-command-permissions-3-tier-system)
-  - [Config file](#config-file)
+  - [Config File](#config-file)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Morph Integration](#morph-integration)
@@ -263,7 +263,7 @@ Commands not in the predefined lists will prompt you for permission. You can:
 - Remember decision (saved to `.sofos/config.local.toml` for future sessions)
 - Deny once or permanently
 
-### Config file
+### Config File
 
 Your permission decisions are stored in configuration files:
 
@@ -355,12 +355,18 @@ RUST_LOG=debug sofos
 ```
 
 **Project Structure:**
-- `src/api/` - Anthropic API client and types
-- `src/tools/` - Tool implementations (filesystem, bash, code search)
-- `src/conversation.rs` - Conversation history management
-- `src/history.rs` - Session persistence and custom instructions
-- `src/repl.rs` - Main REPL loop and display logic
-- `src/syntax.rs` - Syntax highlighting
+- `src/` - Core Rust code
+  - `api/` - Anthropic/OpenAI/Morph clients, shared API types/utilities
+  - `tools/` - Sandboxed tools (filesystem, bash exec, web/code search, permissions, utils, tests)
+  - `commands/` - Built-in REPL commands (e.g. `/resume`, `/clear`, safe mode)
+  - `repl.rs` / `ui.rs` - Interactive REPL + terminal UI
+  - `request_builder.rs` / `response_handler.rs` - LLM request/response plumbing + tool loop
+  - `conversation.rs` / `history.rs` / `session_state.rs` / `session_selector.rs` - Conversation state, persistence, resume UI
+  - `prompt.rs` / `model_config.rs` / `config.rs` / `cli.rs` - Prompt building, model selection, config + CLI flags
+  - `diff.rs` / `syntax.rs` / `error.rs` / `error_ext.rs` - Diff rendering, syntax highlighting, error types/helpers
+  - `main.rs` - Binary entry point
+- `tests/` - Integration tests
+- `assets/` - README images
 
 See `.sofosrc` for detailed project conventions.
 
