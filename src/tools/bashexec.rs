@@ -112,6 +112,9 @@ impl BashExecutor {
         // Heuristic-based detection of file paths in commands:
         // - Paths with '/' or starting with '.' or '~'
         // - Simple filenames (no shell metacharacters like '$', '`', '*', '?', '[')
+        //
+        // IMPORTANT: Bash commands are ALWAYS restricted to workspace, even if
+        // paths are in the Read allow list. Allow list only applies to read_file tool.
         for token in command.split_whitespace().skip(1) {
             let cleaned = token
                 .trim_matches('"')
@@ -133,6 +136,7 @@ impl BashExecutor {
                     && !cleaned.contains('['));
 
             if is_path {
+                // For deny rules: check if explicitly denied
                 let (perm, matched_rule) =
                     permission_manager.check_read_permission_with_source(cleaned);
                 match perm {
@@ -181,6 +185,10 @@ impl BashExecutor {
             || command.contains("&&/")
             || command.contains("||/")
         {
+            return false;
+        }
+
+        if command.contains("~/") || command.starts_with('~') {
             return false;
         }
 
@@ -303,7 +311,13 @@ impl BashExecutor {
             );
         }
 
-        // Git-specific blocking
+        if command.contains("~/") || command.starts_with('~') {
+            return format!(
+                "Command blocked: '{}'\nReason: Contains tilde paths ('~').\nBash commands are restricted to workspace only. Use read_file/list_directory tools for outside access.",
+                command
+            );
+        }
+
         if !self.is_safe_git_command(&command_lower) {
             return self.get_git_rejection_reason(command);
         }
@@ -647,15 +661,28 @@ ask = []
     fn test_error_messages_are_informative() {
         let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
 
-        // Test git push error message
         let reason = executor.get_git_rejection_reason("git push origin main");
         assert!(reason.contains("git push origin main"));
         assert!(reason.contains("network operation"));
         assert!(reason.contains("git status"));
 
-        // Test cd error message
         let reason = executor.get_rejection_reason("cd /tmp");
         assert!(reason.contains("cd /tmp"));
         assert!(reason.contains("absolute paths"));
+    }
+
+    #[test]
+    fn test_tilde_paths_blocked_in_bash() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        assert!(!executor.is_safe_command_structure("ls ~/tmp"));
+        assert!(!executor.is_safe_command_structure("cat ~/file.txt"));
+        assert!(!executor.is_safe_command_structure("grep pattern ~/docs/file.txt"));
+        assert!(!executor.is_safe_command_structure("echo test && ls ~/dir"));
+
+        let reason = executor.get_rejection_reason("ls ~/tmp/allowed");
+        assert!(reason.contains("tilde paths"));
+        assert!(reason.contains("read_file"));
+        assert!(reason.contains("workspace only"));
     }
 }
