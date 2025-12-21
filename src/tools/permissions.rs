@@ -1,5 +1,6 @@
 use crate::error::{Result, SofosError};
 use crate::tools::utils::confirm_action;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
@@ -37,12 +38,15 @@ pub struct PermissionManager {
     settings_path: PathBuf,
     allowed_commands: HashSet<String>,
     forbidden_commands: HashSet<String>,
+    read_allow_set: GlobSet,
+    read_deny_set: GlobSet,
 }
 
 impl PermissionManager {
     pub fn new(workspace: PathBuf) -> Result<Self> {
         let settings_path = workspace.join(LOCAL_CONFIG_FILE);
         let settings = Self::load_settings(&settings_path)?;
+        let (read_allow_set, read_deny_set) = Self::build_read_globs(&settings)?;
 
         let allowed_commands = [
             // Build tools
@@ -204,7 +208,42 @@ impl PermissionManager {
             settings_path,
             allowed_commands,
             forbidden_commands,
+            read_allow_set,
+            read_deny_set,
         })
+    }
+
+    fn build_read_globs(settings: &PermissionSettings) -> Result<(GlobSet, GlobSet)> {
+        let mut allow_builder = GlobSetBuilder::new();
+        let mut deny_builder = GlobSetBuilder::new();
+
+        let add_patterns = |builder: &mut GlobSetBuilder, entries: &[String]| -> Result<()> {
+            for entry in entries {
+                if let Some(pattern) = Self::extract_read_pattern(entry) {
+                    let expanded_pattern = Self::expand_tilde(pattern);
+                    let glob = Glob::new(&expanded_pattern).map_err(|e| {
+                        SofosError::ToolExecution(format!(
+                            "Invalid Read glob pattern '{}': {}",
+                            pattern, e
+                        ))
+                    })?;
+                    builder.add(glob);
+                }
+            }
+            Ok(())
+        };
+
+        add_patterns(&mut allow_builder, &settings.permissions.allow)?;
+        add_patterns(&mut deny_builder, &settings.permissions.deny)?;
+
+        let allow = allow_builder.build().map_err(|e| {
+            SofosError::ToolExecution(format!("Failed to build allow glob set: {}", e))
+        })?;
+        let deny = deny_builder.build().map_err(|e| {
+            SofosError::ToolExecution(format!("Failed to build deny glob set: {}", e))
+        })?;
+
+        Ok((allow, deny))
     }
 
     fn load_settings(path: &PathBuf) -> Result<PermissionSettings> {
@@ -213,16 +252,27 @@ impl PermissionManager {
                 SofosError::ToolExecution(format!("Failed to read config file: {}", e))
             })?;
 
-            toml::from_str(&content).map_err(|e| {
+            let settings: PermissionSettings = toml::from_str(&content).map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to parse config file: {}", e))
-            })
+            })?;
+
+            Ok(settings)
         } else {
             Ok(PermissionSettings::default())
         }
     }
 
+    fn extract_read_pattern(entry: &str) -> Option<&str> {
+        let trimmed = entry.trim();
+        if let Some(rest) = trimmed.strip_prefix("Read(") {
+            if let Some(end) = rest.rfind(')') {
+                return Some(&rest[..end]);
+            }
+        }
+        None
+    }
+
     fn save_settings(&self) -> Result<()> {
-        // Ensure directory exists
         if let Some(parent) = self.settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to create config directory: {}", e))
@@ -243,10 +293,13 @@ impl PermissionManager {
         format!("Bash({})", command.trim())
     }
 
+    fn normalize_read(path: &str) -> String {
+        format!("Read({})", path.trim())
+    }
+
     fn extract_base_command(command: &str) -> &str {
         let command = command.trim();
 
-        // Handle common prefixes
         let without_prefix = if let Some(stripped) = command.strip_prefix("Bash(") {
             if let Some(end) = stripped.find(')') {
                 &stripped[..end]
@@ -257,11 +310,128 @@ impl PermissionManager {
             command
         };
 
-        // Get first word (the actual command)
         without_prefix
             .split_whitespace()
             .next()
             .unwrap_or(without_prefix)
+    }
+
+    fn expand_tilde(path: &str) -> String {
+        if let Some(rest) = path.strip_prefix("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                return format!("{}/{}", home, rest);
+            }
+        } else if path == "~" {
+            if let Ok(home) = std::env::var("HOME") {
+                return home;
+            }
+        }
+        path.to_string()
+    }
+
+    pub fn expand_tilde_pub(path: &str) -> String {
+        Self::expand_tilde(path)
+    }
+
+    pub fn check_read_permission(&self, path: &str) -> CommandPermission {
+        let expanded = Self::expand_tilde(path);
+        let trimmed = expanded.trim();
+        let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+        let with_prefix = if stripped.starts_with("./") {
+            stripped.to_string()
+        } else {
+            format!("./{}", stripped)
+        };
+
+        self.check_read_permission_with_candidates(trimmed, stripped, Some(with_prefix))
+    }
+
+    pub fn check_read_permission_both_forms(
+        &self,
+        original: &str,
+        canonical: &str,
+    ) -> CommandPermission {
+        let result = self.check_read_permission(original);
+        if result == CommandPermission::Denied || result == CommandPermission::Ask {
+            return result;
+        }
+        if result == CommandPermission::Allowed {
+            if self.is_read_explicit_allow(original) {
+                return CommandPermission::Allowed;
+            }
+        }
+
+        let canonical_result = self.check_read_permission(canonical);
+        if canonical_result == CommandPermission::Denied
+            || canonical_result == CommandPermission::Ask
+        {
+            return canonical_result;
+        }
+
+        CommandPermission::Allowed
+    }
+
+    /// Returns true only if path is explicitly in allow list (not default allow)
+    pub fn is_read_explicit_allow(&self, path: &str) -> bool {
+        let expanded = Self::expand_tilde(path);
+        let trimmed = expanded.trim();
+        let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+        let with_prefix = if stripped.starts_with("./") {
+            stripped.to_string()
+        } else {
+            format!("./{}", stripped)
+        };
+
+        let candidates = [trimmed, stripped, with_prefix.as_str()];
+
+        for candidate in candidates.iter() {
+            let normalized = Self::normalize_read(candidate);
+            if self.settings.permissions.allow.contains(&normalized) {
+                return true;
+            }
+            if !self.read_allow_set.is_empty() && self.read_allow_set.is_match(candidate) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn is_read_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
+        self.is_read_explicit_allow(original) || self.is_read_explicit_allow(canonical)
+    }
+
+    fn check_read_permission_with_candidates(
+        &self,
+        trimmed: &str,
+        stripped: &str,
+        prefixed: Option<String>,
+    ) -> CommandPermission {
+        let mut candidates: Vec<&str> = vec![trimmed, stripped];
+        if let Some(pref) = prefixed.as_ref() {
+            candidates.push(pref);
+        }
+
+        for candidate in candidates.iter() {
+            let normalized = Self::normalize_read(candidate);
+            if self.settings.permissions.allow.contains(&normalized) {
+                return CommandPermission::Allowed;
+            }
+            if self.settings.permissions.deny.contains(&normalized) {
+                return CommandPermission::Denied;
+            }
+        }
+
+        for candidate in candidates.iter() {
+            if !self.read_allow_set.is_empty() && self.read_allow_set.is_match(candidate) {
+                return CommandPermission::Allowed;
+            }
+            if !self.read_deny_set.is_empty() && self.read_deny_set.is_match(candidate) {
+                return CommandPermission::Denied;
+            }
+        }
+
+        CommandPermission::Allowed
     }
 
     pub fn check_command_permission(&mut self, command: &str) -> Result<CommandPermission> {
@@ -276,7 +446,6 @@ impl PermissionManager {
             return Ok(CommandPermission::Denied);
         }
 
-        // Check wildcard matches (e.g., "Bash(cargo:*)")
         let wildcard_pattern = format!("Bash({}:*)", base_command);
         if self.settings.permissions.allow.contains(&wildcard_pattern) {
             return Ok(CommandPermission::Allowed);
@@ -294,7 +463,6 @@ impl PermissionManager {
             return Ok(CommandPermission::Denied);
         }
 
-        // Unknown command - ask user
         Ok(CommandPermission::Ask)
     }
 
@@ -313,6 +481,10 @@ impl PermissionManager {
                 self.settings.permissions.deny.push(normalized);
             }
             self.save_settings()?;
+            // Rebuild glob sets in case Read entries were dynamically added
+            let (allow_set, deny_set) = Self::build_read_globs(&self.settings)?;
+            self.read_allow_set = allow_set;
+            self.read_deny_set = deny_set;
         } else {
             self.settings.permissions.ask.push(normalized);
         }
@@ -332,6 +504,202 @@ pub enum CommandPermission {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_read_exact_and_wildcard_matching() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(./allowed.txt)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/*)".to_string());
+        settings.permissions.deny.push("Read(./.env.*)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        assert_eq!(
+            manager.check_read_permission("./allowed.txt"),
+            CommandPermission::Allowed
+        );
+        assert_eq!(
+            manager.check_read_permission("./secrets/creds.json"),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_read_permission("./.env.local"),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_read_permission("./other.txt"),
+            CommandPermission::Allowed
+        );
+    }
+
+    #[test]
+    fn test_read_allow_overrides_wildcard_deny() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(./secrets/allowed.txt)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/*)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        // Exact allow should win over wildcard deny
+        assert_eq!(
+            manager.check_read_permission("./secrets/allowed.txt"),
+            CommandPermission::Allowed
+        );
+    }
+
+    #[test]
+    fn test_is_read_explicit_allow_detects_allow_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/outside/**)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        assert!(manager.is_read_explicit_allow("/outside/secret.txt"));
+        assert!(!manager.is_read_explicit_allow("/other/secret.txt"));
+    }
+
+    #[test]
+    fn test_read_prefix_variants_match_globs() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .deny
+            .push("Read(./test/**)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        // Path without ./ should still be denied
+        assert_eq!(
+            manager.check_read_permission("test/file.txt"),
+            CommandPermission::Denied
+        );
+        // Path with ./ should also be denied
+        assert_eq!(
+            manager.check_read_permission("./test/inner/file.txt"),
+            CommandPermission::Denied
+        );
+    }
+
+    #[test]
+    fn test_tilde_expansion() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let home_path = PathBuf::from(home);
+            let zshrc_path = format!("{}/.zshrc", home_path.display());
+            settings
+                .permissions
+                .allow
+                .push(format!("Read({})", zshrc_path));
+        }
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        // Tilde should expand and match
+        if std::env::var_os("HOME").is_some() {
+            assert_eq!(
+                manager.check_read_permission("~/.zshrc"),
+                CommandPermission::Allowed
+            );
+        }
+    }
+
+    #[test]
+    fn test_tilde_in_glob_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+
+        if let Some(home) = std::env::var_os("HOME") {
+            let home_path = PathBuf::from(home);
+            settings
+                .permissions
+                .allow
+                .push(format!("Read({}/.config/**)", home_path.display()));
+        }
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        if std::env::var_os("HOME").is_some() {
+            assert_eq!(
+                manager.check_read_permission("~/.config/sofos/test.toml"),
+                CommandPermission::Allowed
+            );
+        }
+    }
 
     #[test]
     fn test_allowed_commands() {
@@ -507,5 +875,112 @@ ask = []
 
         assert_eq!(inline_settings.permissions.allow.len(), 2);
         assert_eq!(inline_settings.permissions.deny.len(), 1);
+    }
+
+    #[test]
+    fn test_tilde_expansion_in_permissions() {
+        let _temp_dir = TempDir::new().unwrap();
+
+        // Set HOME for this test
+        std::env::set_var("HOME", "/home/testuser");
+
+        let expanded = PermissionManager::expand_tilde_pub("~/file.txt");
+        assert_eq!(expanded, "/home/testuser/file.txt");
+
+        let expanded_dir = PermissionManager::expand_tilde_pub("~");
+        assert_eq!(expanded_dir, "/home/testuser");
+
+        let not_tilde = PermissionManager::expand_tilde_pub("./file.txt");
+        assert_eq!(not_tilde, "./file.txt");
+    }
+
+    #[test]
+    fn test_tilde_in_allow_rules() {
+        let temp_dir = TempDir::new().unwrap();
+        std::env::set_var("HOME", "/home/testuser");
+
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(~/.zshrc)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        assert!(manager.is_read_explicit_allow("~/.zshrc"));
+        assert!(manager.is_read_explicit_allow("/home/testuser/.zshrc"));
+    }
+
+    #[test]
+    fn test_glob_patterns_recursive() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/**)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        assert_eq!(
+            manager.check_read_permission("./secrets/file.txt"),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_read_permission("./secrets/nested/deep/file.txt"),
+            CommandPermission::Denied
+        );
+    }
+
+    #[test]
+    fn test_exact_allow_overrides_glob_deny() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(./secrets/exception.txt)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/**)".to_string());
+
+        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+
+        let manager = PermissionManager {
+            settings,
+            settings_path: temp_dir.path().join(".sofos/config.local.toml"),
+            allowed_commands: HashSet::new(),
+            forbidden_commands: HashSet::new(),
+            read_allow_set: allow_set,
+            read_deny_set: deny_set,
+        };
+
+        assert_eq!(
+            manager.check_read_permission("./secrets/exception.txt"),
+            CommandPermission::Allowed
+        );
+        assert_eq!(
+            manager.check_read_permission("./secrets/blocked.txt"),
+            CommandPermission::Denied
+        );
     }
 }

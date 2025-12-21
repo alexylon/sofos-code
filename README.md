@@ -24,6 +24,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - [Available Tools](#available-tools)
 - [Security](#security)
   - [Bash Command Permissions (3-Tier System)](#bash-command-permissions-3-tier-system)
+  - [Config file](#config-file)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Morph Integration](#morph-integration)
@@ -262,18 +263,43 @@ Commands not in the predefined lists will prompt you for permission. You can:
 - Remember decision (saved to `.sofos/config.local.toml` for future sessions)
 - Deny once or permanently
 
+### Config file
+
 Your permission decisions are stored in `.sofos/config.local.toml`:
 ```toml
 [permissions]
 allow = [
   "Bash(custom_command_1)", 
   "Bash(custom_command_2:*)",
+  "Read(~/.zshrc)",
+  "Read(/etc/hosts)",
 ]
-deny = ["Bash(dangerous_command)"]
-ask = []
+deny = [
+  "Bash(dangerous_command)",
+  "Read(./.env)",
+  "Read(./.env.*)",
+  "Read(./secrets/**)",
+]
+ask = ["Bash(unknown_tool)"]
 ```
 
-This file is gitignored and specific to your local workspace.
+**Read Permission Rules:**
+- Files inside workspace: allowed by default, denied if matched by `deny` rule
+- Files outside workspace: denied by default, allowed only if matched by `allow` rule
+- Supports glob patterns (`*` for single level, `**` for recursive)
+- Supports tilde expansion (`~` expands to home directory)
+- Paths are canonicalized before checking (symlinks resolved, `..` normalized)
+- For outside workspace files, use absolute paths or tilde paths in config
+- `ask` list only applies to Bash commands, not Read operations
+
+**Bash Command Rules:**
+- Always sandboxed to workspace (cannot access outside files even if Read allow rule exists)
+- Commands in `allow` execute without prompts
+- Commands in `deny` are always blocked
+- Commands in `ask` prompt for permission each time
+- Path arguments in commands are checked against Read deny rules
+
+This file is gitignored and local to your workspace.
 
 Git commands are restricted to read-only operations:
 

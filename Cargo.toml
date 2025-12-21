@@ -28,6 +28,7 @@ syntect = "5.2"
 similar = "2.7"
 crossterm = "0.29"
 reedline = "0.44"
+globset = "0.4"
 
 # Utilities
 futures = "0.3"

@@ -39,6 +39,9 @@ impl BashExecutor {
             }
         }
 
+        // Enforce read permissions on paths referenced in the command (e.g., cat ./test/secret)
+        self.enforce_read_permissions(&permission_manager, command)?;
+
         // Additional safety checks (absolute paths, parent traversal, git restrictions)
         if !self.is_safe_command_structure(command) {
             return Err(SofosError::ToolExecution(
@@ -99,6 +102,57 @@ impl BashExecutor {
         }
 
         Ok(result)
+    }
+
+    fn enforce_read_permissions(
+        &self,
+        permission_manager: &PermissionManager,
+        command: &str,
+    ) -> Result<()> {
+        // Heuristic-based detection of file paths in commands:
+        // - Paths with '/' or starting with '.' or '~'
+        // - Simple filenames (no shell metacharacters like '$', '`', '*', '?', '[')
+        for token in command.split_whitespace().skip(1) {
+            let cleaned = token
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_matches(';')
+                .trim();
+
+            if cleaned.is_empty() || cleaned.starts_with('-') {
+                continue;
+            }
+
+            let is_path = cleaned.contains('/')
+                || cleaned.starts_with('.')
+                || cleaned.starts_with('~')
+                || (!cleaned.contains('$')
+                    && !cleaned.contains('`')
+                    && !cleaned.contains('*')
+                    && !cleaned.contains('?')
+                    && !cleaned.contains('['));
+
+            if is_path {
+                match permission_manager.check_read_permission(cleaned) {
+                    CommandPermission::Allowed => {}
+                    CommandPermission::Denied => {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Read blocked by .sofos/config.local.toml (deny rule) for path '{}' in command.",
+                            cleaned
+                        )));
+                    }
+                    CommandPermission::Ask => {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Path '{}' requires confirmation per .sofos/config.local.toml. \
+                            Move it to allow or deny list.",
+                            cleaned
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn is_safe_command_structure(&self, command: &str) -> bool {
@@ -438,6 +492,39 @@ mod tests {
         if let Err(SofosError::ToolExecution(msg)) = result {
             assert!(msg.contains("too large"));
             assert!(msg.contains("10 MB"));
+        } else {
+            panic!("Expected ToolExecution error");
+        }
+    }
+
+    #[test]
+    fn test_read_permission_blocks_cat() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+
+        // Write deny config for test folder reads
+        let config_dir = temp_dir.path().join(".sofos");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.local.toml"),
+            r#"[permissions]
+allow = []
+deny = ["Read(./test/**)"]
+ask = []
+"#,
+        )
+        .unwrap();
+
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf()).unwrap();
+
+        // Even without creating the file, permission check should block before execution
+        let result = executor.execute("cat ./test/secret.txt");
+
+        assert!(result.is_err());
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("Read blocked"));
         } else {
             panic!("Expected ToolExecution error");
         }

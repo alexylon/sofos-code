@@ -12,12 +12,16 @@ use crate::error::{Result, SofosError};
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;
+use permissions::PermissionManager;
 use serde_json::Value;
 use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::confirm_action;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
+
+#[cfg(test)]
+mod tests;
 
 /// ToolExecutor handles execution of tool calls from AI
 #[derive(Clone)]
@@ -89,21 +93,70 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                match self.fs_tool.read_file(path) {
-                    Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
-                    Err(e) => {
-                        if matches!(e, SofosError::FileNotFound(_)) {
-                            let parent_dir = std::path::Path::new(path)
-                                .parent()
-                                .and_then(|p| p.to_str())
-                                .unwrap_or(".");
-                            Err(SofosError::ToolExecution(format!(
-                                "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
-                                path, parent_dir
-                            )))
-                        } else {
-                            Err(e)
-                        }
+                let permission_manager =
+                    PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+
+                // Canonicalize to resolve symlinks and normalize relative paths
+                let full_path = if path.starts_with('/') || path.starts_with('~') {
+                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
+                } else {
+                    self.fs_tool._workspace().join(path)
+                };
+
+                let canonical = match std::fs::canonicalize(&full_path) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        let parent_dir = std::path::Path::new(path)
+                            .parent()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or(".");
+                        return Err(SofosError::ToolExecution(format!(
+                            "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
+                            path, parent_dir
+                        )));
+                    }
+                };
+
+                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+                let canonical_str = canonical.to_str().unwrap_or(path);
+
+                // Check permissions on both original and canonical forms
+                match permission_manager.check_read_permission_both_forms(path, canonical_str) {
+                    permissions::CommandPermission::Denied => {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Read blocked by .sofos/config.local.toml (deny rule) for path '{}'.",
+                            path
+                        )));
+                    }
+                    permissions::CommandPermission::Ask => {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Path '{}' is in 'ask' list. Note: Ask permission only works for Bash commands. \
+                            For Read permissions, use 'allow' or 'deny' only.",
+                            path
+                        )));
+                    }
+                    permissions::CommandPermission::Allowed => {}
+                }
+
+                let is_explicit_allow =
+                    permission_manager.is_read_explicit_allow_both_forms(path, canonical_str);
+
+                if !is_inside_workspace && !is_explicit_allow {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Path '{}' is outside workspace and not explicitly allowed in .sofos/config.local.toml.",
+                        path
+                    )));
+                }
+
+                if is_inside_workspace {
+                    match self.fs_tool.read_file(path) {
+                        Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    match self.fs_tool.read_file_with_outside_access(canonical_str) {
+                        Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
+                        Err(e) => Err(e),
                     }
                 }
             }

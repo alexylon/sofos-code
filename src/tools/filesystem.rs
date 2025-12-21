@@ -91,6 +91,41 @@ impl FileSystemTool {
             .with_context(|| format!("Failed to read file: {}", path))
     }
 
+    /// Read a file that may be outside the workspace
+    /// Only used when explicitly allowed by config - does not enforce workspace prefix
+    pub fn read_file_with_outside_access(&self, path: &str) -> Result<String> {
+        let full_path = PathBuf::from(path);
+
+        if !full_path.is_absolute() {
+            let joined = self.workspace.join(path);
+            self.read_canonicalized(joined, path)
+        } else {
+            self.read_canonicalized(full_path, path)
+        }
+    }
+
+    fn read_canonicalized(&self, path_buf: PathBuf, original: &str) -> Result<String> {
+        let canonical = fs::canonicalize(&path_buf)
+            .with_context(|| format!("Failed to resolve path: {}", original))?;
+
+        if !canonical.exists() {
+            return Err(SofosError::FileNotFound(original.to_string()));
+        }
+
+        let metadata = fs::metadata(&canonical)
+            .with_context(|| format!("Failed to read metadata for: {}", original))?;
+
+        if metadata.len() > MAX_FILE_SIZE {
+            return Err(SofosError::ToolExecution(format!(
+                "File too large: {} (max: {} MB)",
+                original,
+                MAX_FILE_SIZE / (1024 * 1024)
+            )));
+        }
+
+        fs::read_to_string(&canonical).with_context(|| format!("Failed to read file: {}", original))
+    }
+
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {
         let validated_path = self.validate_path(path)?;
 
