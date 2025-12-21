@@ -265,13 +265,37 @@ Commands not in the predefined lists will prompt you for permission. You can:
 
 ### Config file
 
-Your permission decisions are stored in `.sofos/config.local.toml`:
+Your permission decisions are stored in configuration files:
+
+**`~/.sofos/config.toml`** (global, optional)
+- Applies to all Sofos workspaces on your machine
+- Useful for personal preferences (e.g., always allow reading `~/.zshrc`)
+- Gitignored by default (in your home directory)
+
+**`.sofos/config.local.toml`** (workspace-specific, gitignored)
+- Applies only to the current workspace
+- Local settings override global settings when they conflict
+- Same rule → local takes precedence
+- Different rules → both apply
+
+Example global config (`~/.sofos/config.toml`):
+```toml
+[permissions]
+allow = [
+  "Bash(custom_tool)",
+  "Read(~/.zshrc)",
+  "Read(~/.config/**)",
+]
+deny = []
+ask = []
+```
+
+Example local config (`.sofos/config.local.toml`):
 ```toml
 [permissions]
 allow = [
   "Bash(custom_command_1)", 
   "Bash(custom_command_2:*)",
-  "Read(~/.zshrc)",
   "Read(/etc/hosts)",
 ]
 deny = [
@@ -299,7 +323,11 @@ ask = ["Bash(unknown_tool)"]
 - Commands in `ask` prompt for permission each time
 - Path arguments in commands are checked against Read deny rules
 
-This file is gitignored and local to your workspace.
+**Interactive Decisions:**
+- When you approve/deny an unknown bash command with "remember", it's saved to `.sofos/config.local.toml`
+- Global config is never modified automatically - edit it manually as needed
+
+Both files are gitignored and local to your system.
 
 Git commands are restricted to read-only operations:
 

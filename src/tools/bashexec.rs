@@ -133,17 +133,24 @@ impl BashExecutor {
                     && !cleaned.contains('['));
 
             if is_path {
-                match permission_manager.check_read_permission(cleaned) {
+                let (perm, matched_rule) =
+                    permission_manager.check_read_permission_with_source(cleaned);
+                match perm {
                     CommandPermission::Allowed => {}
                     CommandPermission::Denied => {
+                        let config_source = if let Some(ref rule) = matched_rule {
+                            permission_manager.get_rule_source(rule)
+                        } else {
+                            ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                        };
                         return Err(SofosError::ToolExecution(format!(
-                            "Read blocked by .sofos/config.local.toml (deny rule) for path '{}' in command.",
-                            cleaned
+                            "Read blocked by deny rule in {} for path '{}' in command.",
+                            config_source, cleaned
                         )));
                     }
                     CommandPermission::Ask => {
                         return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' requires confirmation per .sofos/config.local.toml. \
+                            "Path '{}' requires confirmation per config file. \
                             Move it to allow or deny list.",
                             cleaned
                         )));

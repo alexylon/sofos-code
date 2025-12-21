@@ -121,11 +121,35 @@ impl ToolExecutor {
                 let canonical_str = canonical.to_str().unwrap_or(path);
 
                 // Check permissions on both original and canonical forms
-                match permission_manager.check_read_permission_both_forms(path, canonical_str) {
+                let (perm_original, matched_rule_original) =
+                    permission_manager.check_read_permission_with_source(path);
+                let (perm_canonical, matched_rule_canonical) =
+                    permission_manager.check_read_permission_with_source(canonical_str);
+
+                // Use the denied result if either check failed
+                let (final_perm, matched_rule) =
+                    if perm_original == permissions::CommandPermission::Denied {
+                        (perm_original, matched_rule_original)
+                    } else if perm_canonical == permissions::CommandPermission::Denied {
+                        (perm_canonical, matched_rule_canonical)
+                    } else if perm_original == permissions::CommandPermission::Ask {
+                        (perm_original, None)
+                    } else if perm_canonical == permissions::CommandPermission::Ask {
+                        (perm_canonical, None)
+                    } else {
+                        (permissions::CommandPermission::Allowed, None)
+                    };
+
+                match final_perm {
                     permissions::CommandPermission::Denied => {
+                        let config_source = if let Some(ref rule) = matched_rule {
+                            permission_manager.get_rule_source(rule)
+                        } else {
+                            ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                        };
                         return Err(SofosError::ToolExecution(format!(
-                            "Read blocked by .sofos/config.local.toml (deny rule) for path '{}'.",
-                            path
+                            "Read blocked by deny rule in {} for path '{}'.",
+                            config_source, path
                         )));
                     }
                     permissions::CommandPermission::Ask => {
@@ -143,7 +167,8 @@ impl ToolExecutor {
 
                 if !is_inside_workspace && !is_explicit_allow {
                     return Err(SofosError::ToolExecution(format!(
-                        "Path '{}' is outside workspace and not explicitly allowed in .sofos/config.local.toml.",
+                        "Path '{}' is outside workspace and not explicitly allowed. \
+                        Add to 'allow' list in .sofos/config.local.toml or ~/.sofos/config.toml.",
                         path
                     )));
                 }
