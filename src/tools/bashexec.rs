@@ -1,21 +1,48 @@
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
 #[derive(Clone)]
 pub struct BashExecutor {
     workspace: PathBuf,
+    /// Session-scoped temporary permissions (not persisted to config)
+    session_allowed: Arc<Mutex<HashSet<String>>>,
+    session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 impl BashExecutor {
     pub fn new(workspace: PathBuf) -> Result<Self> {
-        Ok(Self { workspace })
+        Ok(Self {
+            workspace,
+            session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            session_denied: Arc::new(Mutex::new(HashSet::new())),
+        })
     }
 
     pub fn execute(&self, command: &str) -> Result<String> {
+        let normalized = format!("Bash({})", command.trim());
+
+        // Check session-scoped decisions first (for "allow once" / "deny once")
+        if let Ok(allowed) = self.session_allowed.lock() {
+            if allowed.contains(&normalized) {
+                // Previously allowed this session, skip permission check
+                return self.execute_after_permission_check(command);
+            }
+        }
+        if let Ok(denied) = self.session_denied.lock() {
+            if denied.contains(&normalized) {
+                return Err(SofosError::ToolExecution(format!(
+                    "Command blocked (denied earlier this session): '{}'",
+                    command
+                )));
+            }
+        }
+
         let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
         let permission = permission_manager.check_command_permission(command)?;
 
@@ -29,17 +56,35 @@ impl BashExecutor {
                 ));
             }
             CommandPermission::Ask => {
-                let allowed = permission_manager.ask_user_permission(command)?;
+                let (allowed, remember) = permission_manager.ask_user_permission(command)?;
                 if !allowed {
+                    if !remember {
+                        // Store session-scoped denial
+                        if let Ok(mut denied) = self.session_denied.lock() {
+                            denied.insert(normalized);
+                        }
+                    }
                     return Err(SofosError::ToolExecution(format!(
                         "Command blocked by user: '{}'",
                         command
                     )));
                 }
+                if !remember {
+                    // Store session-scoped allowance
+                    if let Ok(mut allowed) = self.session_allowed.lock() {
+                        allowed.insert(normalized);
+                    }
+                }
             }
         }
 
-        // Enforce read permissions on paths referenced in the command (e.g., cat ./test/secret)
+        self.execute_after_permission_check(command)
+    }
+
+    fn execute_after_permission_check(&self, command: &str) -> Result<String> {
+        let permission_manager = PermissionManager::new(self.workspace.clone())?;
+
+        // Enforce read permissions on paths referenced in the command
         self.enforce_read_permissions(&permission_manager, command)?;
 
         // Additional safety checks (absolute paths, parent traversal, git restrictions)
@@ -684,5 +729,52 @@ ask = []
         assert!(reason.contains("tilde paths"));
         assert!(reason.contains("read_file"));
         assert!(reason.contains("workspace only"));
+    }
+
+    #[test]
+    fn test_session_scoped_permissions_persist() {
+        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+
+        // Simulate adding a command to session_allowed
+        {
+            let mut allowed = executor.session_allowed.lock().unwrap();
+            allowed.insert("Bash(my_custom_cmd)".to_string());
+        }
+
+        // Verify it's recognized on subsequent check
+        {
+            let allowed = executor.session_allowed.lock().unwrap();
+            assert!(allowed.contains("Bash(my_custom_cmd)"));
+        }
+
+        // Simulate adding a command to session_denied
+        {
+            let mut denied = executor.session_denied.lock().unwrap();
+            denied.insert("Bash(blocked_cmd)".to_string());
+        }
+
+        // Verify denied is recognized
+        {
+            let denied = executor.session_denied.lock().unwrap();
+            assert!(denied.contains("Bash(blocked_cmd)"));
+        }
+    }
+
+    #[test]
+    fn test_session_permissions_shared_across_clones() {
+        let executor1 = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor2 = executor1.clone();
+
+        // Add permission via executor1
+        {
+            let mut allowed = executor1.session_allowed.lock().unwrap();
+            allowed.insert("Bash(shared_cmd)".to_string());
+        }
+
+        // Verify executor2 sees it (Arc sharing)
+        {
+            let allowed = executor2.session_allowed.lock().unwrap();
+            assert!(allowed.contains("Bash(shared_cmd)"));
+        }
     }
 }

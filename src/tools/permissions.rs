@@ -579,7 +579,7 @@ impl PermissionManager {
         Ok(CommandPermission::Ask)
     }
 
-    pub fn ask_user_permission(&mut self, command: &str) -> Result<bool> {
+    pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {
         let normalized = Self::normalize_command(command);
 
         let prompt = format!("Allow command `{}`?", command);
@@ -597,11 +597,9 @@ impl PermissionManager {
             let (allow_set, deny_set) = Self::build_read_globs(&self.settings)?;
             self.read_allow_set = allow_set;
             self.read_deny_set = deny_set;
-        } else {
-            self.settings.permissions.ask.push(normalized);
         }
 
-        Ok(confirmed)
+        Ok((confirmed, remember))
     }
 }
 
