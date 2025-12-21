@@ -1,11 +1,13 @@
 use crate::error::{Result, SofosError};
 use colored::Colorize;
+use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 pub const MAX_RETRIES: u32 = 2;
 pub const INITIAL_RETRY_DELAY_MS: u64 = 1000;
+const JITTER_FACTOR: f64 = 0.3; // Add 0-30% random jitter
 
 pub async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
     if !response.status().is_success() {
@@ -23,7 +25,7 @@ pub fn is_retryable_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.status().is_some_and(|s| s.is_server_error())
 }
 
-/// Execute an async operation with retries and exponential backoff.
+/// Execute an async operation with retries and exponential backoff with jitter.
 /// Returns the result of the operation or the last error after all retries exhausted.
 pub async fn with_retries<F, Fut, T>(service_name: &str, operation: F) -> Result<T>
 where
@@ -46,15 +48,19 @@ where
                 })
                 .unwrap_or_else(|| "Request failed".to_string());
 
+            // Add jitter to prevent thundering herd
+            let jitter = rand::rng().random_range(0.0..JITTER_FACTOR);
+            let jittered_delay = retry_delay.mul_f64(1.0 + jitter);
+
             eprintln!(
                 " {} {}, retrying in {:?}... (attempt {}/{})",
                 format!("{}:", service_name).bright_yellow(),
                 reason,
-                retry_delay,
+                jittered_delay,
                 attempt,
                 MAX_RETRIES
             );
-            tokio::time::sleep(retry_delay).await;
+            tokio::time::sleep(jittered_delay).await;
             retry_delay *= 2;
         }
 

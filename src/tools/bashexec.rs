@@ -7,6 +7,25 @@ use std::sync::{Arc, Mutex};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
 
+/// Convert Unix signal number to human-readable name
+#[cfg(unix)]
+fn signal_name(sig: i32) -> &'static str {
+    match sig {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => "unknown",
+    }
+}
+
 #[derive(Clone)]
 pub struct BashExecutor {
     workspace: PathBuf,
@@ -121,11 +140,26 @@ impl BashExecutor {
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {
+            let exit_info = match output.status.code() {
+                Some(code) => format!("exit code: {}", code),
+                None => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        match output.status.signal() {
+                            Some(sig) => format!("signal: {} ({})", sig, signal_name(sig)),
+                            None => "unknown termination".to_string(),
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        "unknown termination".to_string()
+                    }
+                }
+            };
             return Ok(format!(
-                "Command failed with exit code: {}\nSTDOUT:\n{}\nSTDERR:\n{}",
-                output.status.code().unwrap_or(-1),
-                stdout,
-                stderr
+                "Command failed with {}\nSTDOUT:\n{}\nSTDERR:\n{}",
+                exit_info, stdout, stderr
             ));
         }
 

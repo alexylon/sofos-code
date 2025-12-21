@@ -29,6 +29,7 @@ similar = "2.7"
 crossterm = "0.29"
 reedline = "0.44"
 globset = "0.4"
+rand = "0.9"
 
 # Utilities
 futures = "0.3"
