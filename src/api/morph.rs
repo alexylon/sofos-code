@@ -1,16 +1,17 @@
+use super::utils::{self, REQUEST_TIMEOUT};
 use crate::error::{Result, SofosError};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
 const MORPH_BASE_URL: &str = "https://api.morphllm.com/v1";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct MorphMessage {
     role: String,
     content: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct MorphRequest {
     model: String,
     messages: Vec<MorphMessage>,
@@ -49,6 +50,7 @@ impl MorphClient {
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -84,8 +86,17 @@ impl MorphClient {
         };
 
         let url = format!("{}/chat/completions", MORPH_BASE_URL);
-        let response = self.client.post(&url).json(&request).send().await?;
-        let response = super::utils::check_response_status(response).await?;
+
+        let client = self.client.clone();
+        let response = utils::with_retries("Morph", || {
+            let client = client.clone();
+            let url = url.clone();
+            let request = request.clone();
+            async move { client.post(&url).json(&request).send().await }
+        })
+        .await?;
+
+        let response = utils::check_response_status(response).await?;
         let result: MorphResponse = response.json().await?;
 
         result

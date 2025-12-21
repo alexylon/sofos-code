@@ -50,9 +50,9 @@ fn format_timestamp(timestamp: u64) -> String {
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .expect("System time is before UNIX epoch")
+        .unwrap_or(Duration::ZERO)
         .as_secs();
-    let diff = now - timestamp;
+    let diff = now.saturating_sub(timestamp);
 
     if diff < 60 {
         "just now".to_string()

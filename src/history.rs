@@ -5,7 +5,7 @@ use crate::error_ext::ResultExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SOFOS_DIR: &str = ".sofos";
 const SESSIONS_DIR: &str = "sessions";
@@ -99,7 +99,7 @@ impl HistoryManager {
     pub fn generate_session_id() -> String {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("System time is before UNIX epoch")
+            .unwrap_or(Duration::ZERO)
             .as_millis();
         format!("session_{}", timestamp)
     }
@@ -145,7 +145,7 @@ impl HistoryManager {
     ) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("System time is before UNIX epoch")
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         let session_path = self.sessions_dir().join(format!("{}.json", session_id));
