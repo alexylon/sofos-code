@@ -3,11 +3,13 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use crate::history::DisplayMessage;
 use crate::syntax::SyntaxHighlighter;
+
+const THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// UI utilities for displaying messages, animations, and formatting
 pub struct UI {
@@ -233,9 +235,27 @@ impl UI {
             let _ = crossterm::terminal::disable_raw_mode();
         });
 
-        // Wait for both threads
-        let _ = animation_handle.join();
-        let _ = key_handle.join();
+        // Wait for threads with timeout to prevent hanging
+        Self::join_with_timeout(animation_handle, THREAD_JOIN_TIMEOUT);
+        Self::join_with_timeout(key_handle, THREAD_JOIN_TIMEOUT);
+
+        // Ensure terminal is in a good state even if threads didn't clean up
+        let _ = crossterm::terminal::disable_raw_mode();
+        print!("\x1B[?25h"); // Show cursor
+        let _ = io::stdout().flush();
+    }
+
+    /// Join a thread with a timeout. If the thread doesn't finish in time, abandon it.
+    fn join_with_timeout<T>(handle: JoinHandle<T>, timeout: Duration) {
+        let start = Instant::now();
+        while !handle.is_finished() {
+            if start.elapsed() > timeout {
+                // Thread is stuck, abandon it (it will be cleaned up when process exits)
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = handle.join();
     }
 
     pub fn create_tool_display_message(
