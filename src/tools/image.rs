@@ -155,13 +155,15 @@ impl ImageLoader {
                     ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
                 };
                 return Err(SofosError::ToolExecution(format!(
-                    "Read blocked by deny rule in {} for image path '{}'.",
-                    config_source, path
+                    "Read access denied for image '{}'\n\
+                     Hint: Blocked by deny rule in {}",
+                    path, config_source
                 )));
             }
             CommandPermission::Ask => {
                 return Err(SofosError::ToolExecution(format!(
-                    "Image path '{}' is in 'ask' list. For image access, use 'allow' or 'deny' only.",
+                    "Image path '{}' is in 'ask' list\n\
+                     Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for image access.",
                     path
                 )));
             }
@@ -174,9 +176,9 @@ impl ImageLoader {
 
         if !is_inside_workspace && !is_explicit_allow {
             return Err(SofosError::ToolExecution(format!(
-                "Image path '{}' is outside workspace and not explicitly allowed. \
-                Add to 'allow' list in .sofos/config.local.toml or ~/.sofos/config.toml.",
-                path
+                "Image '{}' is outside workspace and not explicitly allowed\n\
+                 Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
+                path, path
             )));
         }
 

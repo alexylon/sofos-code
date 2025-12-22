@@ -43,7 +43,7 @@ impl ToolExecutor {
         let code_search_tool = match CodeSearchTool::new(workspace.clone()) {
             Ok(tool) => Some(tool),
             Err(_) => {
-                eprintln!("Warning: ripgrep not found. Code search will be unavailable.");
+                crate::ui::UI::print_warning("ripgrep not found. Code search will be unavailable.");
                 None
             }
         };
@@ -149,14 +149,15 @@ impl ToolExecutor {
                             ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
                         };
                         return Err(SofosError::ToolExecution(format!(
-                            "Read blocked by deny rule in {} for path '{}'.",
-                            config_source, path
+                            "Read access denied for path '{}'\n\
+                             Hint: Blocked by deny rule in {}",
+                            path, config_source
                         )));
                     }
                     permissions::CommandPermission::Ask => {
                         return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' is in 'ask' list. Note: Ask permission only works for Bash commands. \
-                            For Read permissions, use 'allow' or 'deny' only.",
+                            "Path '{}' is in 'ask' list\n\
+                             Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for Read permissions.",
                             path
                         )));
                     }
@@ -168,9 +169,9 @@ impl ToolExecutor {
 
                 if !is_inside_workspace && !is_explicit_allow {
                     return Err(SofosError::ToolExecution(format!(
-                        "Path '{}' is outside workspace and not explicitly allowed. \
-                        Add to 'allow' list in .sofos/config.local.toml or ~/.sofos/config.toml.",
-                        path
+                        "Path '{}' is outside workspace and not explicitly allowed\n\
+                         Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
+                        path, path
                     )));
                 }
 
@@ -262,13 +263,15 @@ impl ToolExecutor {
                             ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
                         };
                         return Err(SofosError::ToolExecution(format!(
-                            "Read blocked by deny rule in {} for path '{}'.",
-                            config_source, path
+                            "Read access denied for path '{}'\n\
+                             Hint: Blocked by deny rule in {}",
+                            path, config_source
                         )));
                     }
                     permissions::CommandPermission::Ask => {
                         return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' is in 'ask' list. Note: Ask permission only works for Bash commands.",
+                            "Path '{}' is in 'ask' list\n\
+                             Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for Read permissions.",
                             path
                         )));
                     }
@@ -280,9 +283,9 @@ impl ToolExecutor {
 
                 if !is_inside_workspace && !is_explicit_allow {
                     return Err(SofosError::ToolExecution(format!(
-                        "Path '{}' is outside workspace and not explicitly allowed. \
-                        Add to 'allow' list in .sofos/config.local.toml or ~/.sofos/config.toml.",
-                        path
+                        "Path '{}' is outside workspace and not explicitly allowed\n\
+                         Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
+                        path, path
                     )));
                 }
 

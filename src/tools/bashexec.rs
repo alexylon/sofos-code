@@ -227,14 +227,15 @@ impl BashExecutor {
                             ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
                         };
                         return Err(SofosError::ToolExecution(format!(
-                            "Read blocked by deny rule in {} for path '{}' in command.",
-                            config_source, cleaned
+                            "Read access denied for path '{}' in command\n\
+                             Hint: Blocked by deny rule in {}",
+                            cleaned, config_source
                         )));
                     }
                     CommandPermission::Ask => {
                         return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' requires confirmation per config file. \
-                            Move it to allow or deny list.",
+                            "Path '{}' requires confirmation per config file\n\
+                             Hint: Move it to 'allow' or 'deny' list.",
                             cleaned
                         )));
                     }
@@ -368,15 +369,14 @@ impl BashExecutor {
     fn get_rejection_reason(&self, command: &str) -> String {
         let command_lower = command.to_lowercase();
 
-        // Parent directory traversal
         if command.contains("..") {
             return format!(
-                "Command blocked: '{}'\nReason: Contains '..' (parent directory traversal).\nAll operations must stay within the current workspace directory.",
+                "Command '{}' contains '..' (parent directory traversal)\n\
+                 Hint: All operations must stay within the current workspace directory.",
                 command
             );
         }
 
-        // Absolute paths
         if command.starts_with('/')
             || command.contains(" /")
             || command.contains("|/")
@@ -385,14 +385,16 @@ impl BashExecutor {
             || command.contains("||/")
         {
             return format!(
-                "Command blocked: '{}'\nReason: Contains absolute paths (starting with '/').\nOnly relative paths within the workspace are allowed.",
+                "Command '{}' contains absolute paths (starting with '/')\n\
+                 Hint: Only relative paths within the workspace are allowed.",
                 command
             );
         }
 
         if command.contains("~/") || command.starts_with('~') {
             return format!(
-                "Command blocked: '{}'\nReason: Contains tilde paths ('~').\nBash commands are restricted to workspace only. Use read_file/list_directory tools for outside access.",
+                "Command '{}' contains tilde paths ('~')\n\
+                 Hint: Bash commands are restricted to workspace. Use read_file/list_directory for outside access.",
                 command
             );
         }
@@ -401,27 +403,28 @@ impl BashExecutor {
             return self.get_git_rejection_reason(command);
         }
 
-        // Output redirection (check after removing 2>&1)
         let command_without_stderr_redirect = command.replace("2>&1", "");
         if command_without_stderr_redirect.contains('>')
             || command_without_stderr_redirect.contains(">>")
         {
             return format!(
-                "Command blocked: '{}'\nReason: Contains output redirection ('>' or '>>').\nNote: '2>&1' is allowed for combining stderr and stdout.\nUse the write_file tool to create or modify files instead.",
+                "Command '{}' contains output redirection ('>' or '>>')\n\
+                 Hint: Use write_file tool to create or modify files. Note: '2>&1' is allowed.",
                 command
             );
         }
 
-        // Here-doc
         if command.contains("<<") {
             return format!(
-                "Command blocked: '{}'\nReason: Contains here-doc ('<<').\nUse the write_file tool to create files instead.",
+                "Command '{}' contains here-doc ('<<')\n\
+                 Hint: Use write_file tool to create files instead.",
                 command
             );
         }
 
         format!(
-            "Command blocked: '{}'\nReason: Command is in the forbidden list (destructive or violates sandbox).\nUse appropriate file operation tools instead.",
+            "Command '{}' is in the forbidden list (destructive or violates sandbox)\n\
+             Hint: Use appropriate file operation tools instead.",
             command
         )
     }
@@ -431,55 +434,62 @@ impl BashExecutor {
 
         if command_lower.contains("git push") {
             return format!(
-                "Command blocked: '{}'\nReason: 'git push' sends data to remote repositories (network operation).\nAllowed: Use 'git status', 'git log', 'git diff' to view changes.",
+                "Command '{}' blocked: 'git push' sends data to remote repositories\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view changes.",
                 command
             );
         }
 
         if command_lower.contains("git pull") || command_lower.contains("git fetch") {
+            let op = if command_lower.contains("git pull") { "git pull" } else { "git fetch" };
             return format!(
-                "Command blocked: '{}'\nReason: '{}' fetches data from remote repositories (network operation).\nAllowed: Use 'git status', 'git log', 'git diff' to view local changes.",
-                command,
-                if command_lower.contains("git pull") { "git pull" } else { "git fetch" }
+                "Command '{}' blocked: '{}' fetches data from remote repositories\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view local changes.",
+                command, op
             );
         }
 
         if command_lower.contains("git clone") {
             return format!(
-                "Command blocked: '{}'\nReason: 'git clone' downloads repositories (network operation and creates directories).\nClone repositories manually outside of Sofos.",
+                "Command '{}' blocked: 'git clone' downloads repositories\n\
+                 Hint: Clone repositories manually outside of Sofos.",
                 command
             );
         }
 
         if command_lower.contains("git commit") || command_lower.contains("git add") {
+            let op = if command_lower.contains("git commit") { "git commit" } else { "git add" };
             return format!(
-                "Command blocked: '{}'\nReason: '{}' modifies the git repository.\nAllowed: Use 'git status', 'git diff' to view changes. Create commits manually.",
-                command,
-                if command_lower.contains("git commit") { "git commit" } else { "git add" }
+                "Command '{}' blocked: '{}' modifies the git repository\n\
+                 Hint: Use 'git status', 'git diff' to view changes. Create commits manually.",
+                command, op
             );
         }
 
         if command_lower.contains("git reset") || command_lower.contains("git clean") {
+            let op = if command_lower.contains("git reset") { "git reset" } else { "git clean" };
             return format!(
-                "Command blocked: '{}'\nReason: '{}' is a destructive operation that discards changes.\nAllowed: Use 'git status', 'git log', 'git diff' to view repository state.",
-                command,
-                if command_lower.contains("git reset") { "git reset" } else { "git clean" }
+                "Command '{}' blocked: '{}' is a destructive operation\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view repository state.",
+                command, op
             );
         }
 
         if command_lower.contains("git checkout") || command_lower.contains("git switch") {
+            let op = if command_lower.contains("git checkout") { "git checkout" } else { "git switch" };
             return format!(
-                "Command blocked: '{}'\nReason: '{}' changes branches or modifies working directory.\nAllowed: Use 'git branch' to list branches, 'git status' to see current branch.",
-                command,
-                if command_lower.contains("git checkout") { "git checkout" } else { "git switch" }
+                "Command '{}' blocked: '{}' changes branches or modifies working directory\n\
+                 Hint: Use 'git branch' to list branches, 'git status' to see current branch.",
+                command, op
             );
         }
 
         if command_lower.contains("git merge") || command_lower.contains("git rebase") {
+            let op = if command_lower.contains("git merge") { "git merge" } else { "git rebase" };
             return format!(
-                "Command blocked: '{}'\nReason: '{}' modifies git history and repository state.\nPerform merges/rebases manually outside of Sofos.",
-                command,
-                if command_lower.contains("git merge") { "git merge" } else { "git rebase" }
+                "Command '{}' blocked: '{}' modifies git history\n\
+                 Hint: Perform merges/rebases manually outside of Sofos.",
+                command, op
             );
         }
 
@@ -488,7 +498,8 @@ impl BashExecutor {
             && !command_lower.contains("git stash show")
         {
             return format!(
-                "Command blocked: '{}'\nReason: 'git stash' (without list/show) modifies repository state.\nAllowed: Use 'git stash list' or 'git stash show' to view stashed changes.",
+                "Command '{}' blocked: 'git stash' modifies repository state\n\
+                 Hint: Use 'git stash list' or 'git stash show' to view stashed changes.",
                 command
             );
         }
@@ -496,20 +507,23 @@ impl BashExecutor {
         if command_lower.contains("git remote add") || command_lower.contains("git remote set-url")
         {
             return format!(
-                "Command blocked: '{}'\nReason: Modifying git remotes could redirect pushes to unauthorized servers.\nAllowed: Use 'git remote -v' to view configured remotes.",
+                "Command '{}' blocked: Modifying git remotes is not allowed\n\
+                 Hint: Use 'git remote -v' to view configured remotes.",
                 command
             );
         }
 
         if command_lower.contains("git submodule") {
             return format!(
-                "Command blocked: '{}'\nReason: 'git submodule' can fetch from remote repositories (network operation).\nManage submodules manually outside of Sofos.",
+                "Command '{}' blocked: 'git submodule' can fetch from remote repositories\n\
+                 Hint: Manage submodules manually outside of Sofos.",
                 command
             );
         }
 
         format!(
-            "Command blocked: '{}'\nReason: Contains git operation that modifies repository or accesses network.\nAllowed git commands: status, log, diff, show, branch, remote -v, grep, blame, stash list/show",
+            "Command '{}' blocked: git operation modifies repository or accesses network\n\
+             Hint: Allowed git commands: status, log, diff, show, branch, remote -v, grep, blame",
             command
         )
     }
@@ -624,7 +638,7 @@ ask = []
 
         assert!(result.is_err());
         if let Err(SofosError::ToolExecution(msg)) = result {
-            assert!(msg.contains("Read blocked"));
+            assert!(msg.contains("Read access denied") || msg.contains("denied"));
         } else {
             panic!("Expected ToolExecution error");
         }
@@ -742,7 +756,7 @@ ask = []
 
         let reason = executor.get_git_rejection_reason("git push origin main");
         assert!(reason.contains("git push origin main"));
-        assert!(reason.contains("network operation"));
+        assert!(reason.contains("remote repositories"));
         assert!(reason.contains("git status"));
 
         let reason = executor.get_rejection_reason("cd /tmp");
@@ -762,7 +776,7 @@ ask = []
         let reason = executor.get_rejection_reason("ls ~/tmp/allowed");
         assert!(reason.contains("tilde paths"));
         assert!(reason.contains("read_file"));
-        assert!(reason.contains("workspace only"));
+        assert!(reason.contains("workspace"));
     }
 
     #[test]

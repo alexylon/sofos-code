@@ -281,9 +281,9 @@ impl ResponseHandler {
                     }
 
                     let error_msg = format!("{}", e);
-                    
+
                     if e.is_blocked() {
-                        UI::print_blocked(&error_msg);
+                        UI::print_blocked_multiline(&error_msg);
                     } else {
                         UI::print_error(&format!("Tool execution failed: {}", e));
                     }

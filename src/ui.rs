@@ -49,6 +49,65 @@ impl MessageSeverity {
     }
 }
 
+/// Structured message for consistent formatting (reserved for future use)
+#[allow(dead_code)]
+pub struct FormattedMessage {
+    pub severity: MessageSeverity,
+    pub title: String,
+    pub details: Option<String>,
+    pub hint: Option<String>,
+}
+
+#[allow(dead_code)]
+impl FormattedMessage {
+    pub fn blocked(title: impl Into<String>) -> Self {
+        Self {
+            severity: MessageSeverity::Blocked,
+            title: title.into(),
+            details: None,
+            hint: None,
+        }
+    }
+
+    pub fn warning(title: impl Into<String>) -> Self {
+        Self {
+            severity: MessageSeverity::Warning,
+            title: title.into(),
+            details: None,
+            hint: None,
+        }
+    }
+
+    pub fn error(title: impl Into<String>) -> Self {
+        Self {
+            severity: MessageSeverity::Error,
+            title: title.into(),
+            details: None,
+            hint: None,
+        }
+    }
+
+    pub fn with_details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+
+    pub fn print(&self) {
+        eprintln!("{} {}", self.severity.prefix(), self.title);
+        if let Some(ref details) = self.details {
+            eprintln!("  {}", details.dimmed());
+        }
+        if let Some(ref hint) = self.hint {
+            eprintln!("  {} {}", "Hint:".bright_cyan(), hint);
+        }
+    }
+}
+
 /// RAII guard that ensures raw mode is disabled when dropped.
 /// Prevents terminal corruption if a panic occurs while in raw mode.
 struct RawModeGuard;
@@ -87,6 +146,25 @@ impl UI {
 
     pub fn print_blocked(message: &str) {
         Self::print_message(MessageSeverity::Blocked, message);
+    }
+
+    /// Print a blocked message with proper formatting for multi-line content.
+    /// First line gets the "Blocked:" prefix, subsequent lines are indented.
+    pub fn print_blocked_multiline(message: &str) {
+        let mut lines = message.lines();
+        if let Some(first_line) = lines.next() {
+            eprintln!("{} {}", MessageSeverity::Blocked.prefix(), first_line);
+            for line in lines {
+                if line.trim().starts_with("Hint:") {
+                    let hint_content = line.trim().strip_prefix("Hint:").unwrap_or("").trim();
+                    eprintln!("  {} {}", "Hint:".bright_cyan(), hint_content);
+                } else {
+                    eprintln!("  {}", line.dimmed());
+                }
+            }
+        } else {
+            Self::print_blocked(message);
+        }
     }
 
     pub fn print_warning(message: &str) {
