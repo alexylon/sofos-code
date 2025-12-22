@@ -1,6 +1,6 @@
 [package]
 name = "sofos"
-version = "0.1.9"
+version = "0.1.11"
 edition = "2021"
 
 authors = ["Alexander Alexandrov"]
@@ -30,6 +30,7 @@ crossterm = "0.29"
 reedline = "0.44"
 globset = "0.4"
 rand = "0.9"
+base64 = "0.22"
 
 # Utilities
 futures = "0.3"

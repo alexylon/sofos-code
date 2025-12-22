@@ -24,6 +24,16 @@ impl Message {
         }
     }
 
+    /// Create a user message with content blocks (text and/or images)
+    pub fn user_with_blocks(content_blocks: Vec<MessageContentBlock>) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::Blocks {
+                content: content_blocks,
+            },
+        }
+    }
+
     pub fn assistant_with_blocks(content_blocks: Vec<MessageContentBlock>) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -230,6 +240,12 @@ pub enum MessageContentBlock {
         #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    #[serde(rename = "image")]
+    Image {
+        source: ImageSource,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     #[serde(rename = "thinking")]
     Thinking {
         thinking: String,
@@ -273,6 +289,16 @@ pub enum MessageContentBlock {
         #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+}
+
+/// Image source for the API - can be base64-encoded or a URL
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ImageSource {
+    #[serde(rename = "base64")]
+    Base64 { media_type: String, data: String },
+    #[serde(rename = "url")]
+    Url { url: String },
 }
 
 impl MessageContentBlock {

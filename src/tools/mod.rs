@@ -1,6 +1,7 @@
 pub mod bashexec;
 pub mod codesearch;
 pub mod filesystem;
+pub mod image;
 pub mod permissions;
 pub mod tool_name;
 pub mod types;

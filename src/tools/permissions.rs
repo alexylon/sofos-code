@@ -701,6 +701,22 @@ mod tests {
     }
 
     #[test]
+    fn test_is_read_explicit_allow_absolute_path_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/Users/alex/test/images/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert!(manager.is_read_explicit_allow("/Users/alex/test/images/test.jpg"));
+        assert!(manager.is_read_explicit_allow("/Users/alex/test/images/subdir/photo.png"));
+        assert!(!manager.is_read_explicit_allow("/Users/alex/other/test.jpg"));
+    }
+
+    #[test]
     fn test_read_prefix_variants_match_globs() {
         let temp_dir = TempDir::new().unwrap();
         let mut settings = PermissionSettings::default();

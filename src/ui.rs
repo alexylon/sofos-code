@@ -3,13 +3,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::thread;
+use std::time::Duration;
 
 use crate::history::DisplayMessage;
 use crate::syntax::SyntaxHighlighter;
-
-const THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// RAII guard that ensures raw mode is disabled when dropped.
 /// Prevents terminal corruption if a panic occurs while in raw mode.
@@ -212,11 +210,10 @@ impl UI {
             let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
             let mut frame_idx = 0;
 
-            // Hide cursor
             print!("\n\x1B[?25l");
             let _ = io::stdout().flush();
 
-            while running_anim.load(Ordering::Relaxed) {
+            while running_anim.load(Ordering::SeqCst) {
                 print!(
                     "\r{} {} {}",
                     frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
@@ -228,55 +225,41 @@ impl UI {
                 thread::sleep(Duration::from_millis(80));
             }
 
-            // Clear the line and show cursor
             print!("\r{}\r", " ".repeat(70));
             print!("\x1B[?25h");
+            println!(); // Move to new line so next output doesn't conflict
             let _ = io::stdout().flush();
         });
 
         let key_handle = thread::spawn(move || {
-            // Guard enables raw mode and ensures it's disabled even if thread panics
             let _guard = match RawModeGuard::new() {
                 Some(g) => g,
                 None => return,
             };
 
-            while running_key.load(Ordering::Relaxed) {
-                if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+            while running_key.load(Ordering::SeqCst) {
+                if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                     if let Ok(Event::Key(KeyEvent {
                         code: KeyCode::Esc, ..
                     })) = event::read()
                     {
-                        interrupted_clone.store(true, Ordering::Relaxed);
-                        running_key.store(false, Ordering::Relaxed);
+                        interrupted_clone.store(true, Ordering::SeqCst);
+                        running_key.store(false, Ordering::SeqCst);
                         break;
                     }
                 }
             }
-            // _guard dropped here, disabling raw mode
         });
 
-        // Wait for threads with timeout to prevent hanging
-        Self::join_with_timeout(animation_handle, THREAD_JOIN_TIMEOUT);
-        Self::join_with_timeout(key_handle, THREAD_JOIN_TIMEOUT);
+        // Wait for both threads to complete properly
+        // Don't use timeout - abandoning threads can corrupt terminal state
+        let _ = animation_handle.join();
+        let _ = key_handle.join();
 
-        // Ensure terminal is in a good state even if threads didn't clean up
+        // Final cleanup - ensure terminal is in a known good state
         let _ = crossterm::terminal::disable_raw_mode();
-        print!("\x1B[?25h"); // Show cursor
+        print!("\x1B[?25h");
         let _ = io::stdout().flush();
-    }
-
-    /// Join a thread with a timeout. If the thread doesn't finish in time, abandon it.
-    fn join_with_timeout<T>(handle: JoinHandle<T>, timeout: Duration) {
-        let start = Instant::now();
-        while !handle.is_finished() {
-            if start.elapsed() > timeout {
-                // Thread is stuck, abandon it (it will be cleaned up when process exits)
-                return;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let _ = handle.join();
     }
 
     pub fn create_tool_display_message(

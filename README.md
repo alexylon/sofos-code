@@ -16,6 +16,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - [Usage](#usage)
   - [Quick Start](#quick-start)
   - [Commands](#commands)
+  - [Image Vision](#image-vision)
 - [Cost Tracking](#cost-tracking)
   - [Options](#options)
 - [Extended Thinking](#extended-thinking)
@@ -35,6 +36,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 ## Features
 
 - **Interactive REPL** - Multi-turn conversations with Claude or GPT
+- **Image Vision** - Analyze local or web images by including paths/URLs in your message
 - **Session History** - Automatic session saving and resume previous conversations
 - **Custom Instructions** - Project and personal instruction files for context-aware assistance
 - **File Operations** - Read, write, list, and create files/directories (sandboxed to current directory)
@@ -131,6 +133,29 @@ sofos
 
 - Press **Tab** to show available commands (including partial matches on incomplete input) and navigate the completion menu; **Shift+Tab** moves to the previous item.
 - Hit **Enter** to expand the currently highlighted completion.
+
+### Image Vision
+
+Include image paths or URLs directly in your message to have the AI analyze them:
+
+```bash
+# Local images (relative to workspace)
+What's in this screenshot.png?
+Describe ./images/diagram.jpg and explain the architecture
+
+# Web images
+Analyze this https://example.com/chart.png
+What do you see in https://i.imgur.com/abc123.jpg?
+```
+
+**Supported formats:** JPEG, PNG, GIF, WebP (max 20MB for local files)
+
+**Permission rules apply:** Local images outside workspace require explicit allow in config.
+
+**Visual feedback:** When an image is detected, you'll see:
+- `🔍 Detected 1 image reference(s)`
+- `📷 Image loaded: local: path/to/image.png` (on success)
+- `⚠️  Failed to load image: <error>` (on failure)
 
 ## Cost Tracking
 

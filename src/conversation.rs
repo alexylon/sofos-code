@@ -26,10 +26,11 @@ impl ConversationHistory {
             "4. Create directories",
             "5. Search the web for information",
             "6. Execute read-only bash commands (for testing code)",
+            "7. View images (user includes image path or URL in their message)",
         ];
 
         if has_code_search {
-            features.push("7. Search code using ripgrep");
+            features.push("8. Search code using ripgrep");
         }
 
         let edit_instruction = if has_morph {
@@ -52,11 +53,24 @@ When helping users:
   * Tier 1 (Allowed): Build tools (cargo, npm, python), read-only ops (ls, cat, grep) execute automatically
   * Tier 2 (Forbidden): Destructive commands (rm, chmod, sudo) are always blocked
   * Tier 3 (Ask): Unknown commands prompt user for permission
-  * All commands are sandboxed to workspace (no parent traversal, no absolute paths)
+  * Bash commands are ALWAYS sandboxed to workspace (no parent traversal, no absolute paths)
 - Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services).
 Do not modify or delete files outside the working directory.
 Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.
 - Explain your reasoning when using tools
+
+Outside Workspace Access:
+- read_file and list_directory CAN access absolute paths (like /path/to/file) and ~/paths IF the user has configured Read permissions
+- To view files outside workspace, use read_file or list_directory with the absolute or ~/ path directly
+- NEVER use bash commands (cat, ls, etc.) for outside workspace access - bash is always sandboxed to workspace
+- Images: users can view images by including the path in their message (works for both workspace and permitted outside paths)
+
+Image Vision:
+- When users include image paths (.jpg, .png, .gif, .webp) or URLs in their message, you will see the image
+- Local images: relative paths (in workspace) or absolute/~/ paths (if permitted in config)
+- Web images: URLs starting with http:// or https://
+- You do NOT need to use any tool to view images - they are automatically loaded and shown to you
+- If asked to view an image, tell the user to include the image path or URL in their message
 
 CRITICAL - Making Changes:
 - NEVER make code changes or file modifications unless explicitly instructed by the user
@@ -162,6 +176,26 @@ Show imperial units only when the user explicitly asks for them."#,
                             + Self::estimate_tokens(&content_str)
                             + 20
                     }
+                    MessageContentBlock::Image { source, .. } => {
+                        // Images are tokenized based on pixel dimensions
+                        // Estimate ~1000 tokens per image (typical for medium-sized images)
+                        // Actual formula: tokens = (width * height) / 750
+                        match source {
+                            crate::api::ImageSource::Base64 { data, .. } => {
+                                // Rough estimate based on base64 data size
+                                // Base64 encodes 3 bytes into 4 chars, so decode estimate
+                                let estimated_bytes = data.len() * 3 / 4;
+                                // Assume typical compression, estimate pixels
+                                // Very rough: ~10 bytes per pixel after compression
+                                let estimated_pixels = estimated_bytes / 10;
+                                (estimated_pixels / 750).max(100)
+                            }
+                            crate::api::ImageSource::Url { .. } => {
+                                // Can't know size without fetching; assume medium image
+                                1000
+                            }
+                        }
+                    }
                 })
                 .sum(),
         }
@@ -204,6 +238,12 @@ Show imperial units only when the user explicitly asks for them."#,
 
     pub fn add_user_message(&mut self, content: String) {
         self.messages.push(Message::user(content));
+        self.trim_if_needed();
+    }
+
+    /// Add a user message with content blocks (text and/or images)
+    pub fn add_user_with_blocks(&mut self, blocks: Vec<crate::api::MessageContentBlock>) {
+        self.messages.push(Message::user_with_blocks(blocks));
         self.trim_if_needed();
     }
 

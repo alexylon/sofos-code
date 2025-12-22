@@ -1,5 +1,5 @@
 use crate::api::LlmClient::Anthropic;
-use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
+use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlock, MorphClient};
 use crate::commands::{Command, CommandResult};
 use crate::config::{NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::conversation::ConversationHistory;
@@ -10,6 +10,7 @@ use crate::prompt::ReplPrompt;
 use crate::request_builder::RequestBuilder;
 use crate::response_handler::ResponseHandler;
 use crate::session_state::SessionState;
+use crate::tools::image::{extract_image_references, ImageLoader, ImageReference};
 use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;
@@ -52,6 +53,7 @@ pub struct Repl {
     client: LlmClient,
     tool_executor: ToolExecutor,
     history_manager: HistoryManager,
+    image_loader: ImageLoader,
     ui: UI,
     editor: Reedline,
     prompt: ReplPrompt,
@@ -73,6 +75,7 @@ impl Repl {
         let has_code_search = tool_executor.has_code_search();
 
         let history_manager = HistoryManager::new(workspace.clone())?;
+        let image_loader = ImageLoader::new(workspace.clone())?;
 
         // Load custom instructions
         let custom_instructions = history_manager.load_custom_instructions()?;
@@ -149,6 +152,7 @@ impl Repl {
             client,
             tool_executor,
             history_manager,
+            image_loader,
             ui,
             editor,
             prompt,
@@ -165,6 +169,14 @@ impl Repl {
             match self.editor.read_line(&self.prompt) {
                 Ok(Signal::Success(mut line)) => {
                     line = line.trim().to_string();
+
+                    // Strip bracketed paste mode markers (ESC[200~ and ESC[201~)
+                    // These can appear when pasting text in some terminals
+                    line = line
+                        .replace("\x1b[200~", "")
+                        .replace("\x1b[201~", "")
+                        .replace("^[[200~", "")
+                        .replace("^[[201~", "");
 
                     if line.is_empty() {
                         continue;
@@ -217,9 +229,88 @@ impl Repl {
     }
 
     fn process_message(&mut self, user_input: &str) -> Result<()> {
-        self.session_state
-            .conversation
-            .add_user_message(user_input.to_string());
+        let (remaining_text, image_refs) = extract_image_references(user_input);
+
+        if !image_refs.is_empty() {
+            println!(
+                "{} Detected {} image reference(s)",
+                "🔍".bright_cyan(),
+                image_refs.len()
+            );
+        }
+
+        let content_blocks = if !image_refs.is_empty() {
+            let mut blocks: Vec<MessageContentBlock> = Vec::new();
+            let mut failed_images: Vec<String> = Vec::new();
+
+            // Load images first (Claude recommends images before text)
+            for img_ref in &image_refs {
+                match self.image_loader.load_image(img_ref) {
+                    Ok(source) => {
+                        let api_source = match source {
+                            crate::tools::image::ImageSource::Base64 { media_type, data } => {
+                                ImageSource::Base64 { media_type, data }
+                            }
+                            crate::tools::image::ImageSource::Url { url } => {
+                                ImageSource::Url { url }
+                            }
+                        };
+                        blocks.push(MessageContentBlock::Image {
+                            source: api_source,
+                            cache_control: None,
+                        });
+
+                        let path_str = match img_ref {
+                            ImageReference::LocalPath(p) => format!("local: {}", p),
+                            ImageReference::WebUrl(u) => format!("url: {}", u),
+                        };
+                        println!("{} {}", "📷 Image loaded:".bright_cyan(), path_str.dimmed());
+                    }
+                    Err(e) => {
+                        let path_str = match img_ref {
+                            ImageReference::LocalPath(p) => p.clone(),
+                            ImageReference::WebUrl(u) => u.clone(),
+                        };
+                        let error_msg = format!("[Failed to load image '{}': {}]", path_str, e);
+                        failed_images.push(error_msg);
+                        println!("\n{} {}\n", "⚠️  Failed to load image:".bright_yellow().bold(), e);
+                    }
+                }
+            }
+
+            let mut text_parts: Vec<String> = Vec::new();
+            
+            if !remaining_text.trim().is_empty() {
+                text_parts.push(remaining_text.clone());
+            }
+            
+            if !failed_images.is_empty() {
+                text_parts.extend(failed_images);
+            }
+
+            if !text_parts.is_empty() {
+                blocks.push(MessageContentBlock::Text {
+                    text: text_parts.join("\n\n"),
+                    cache_control: None,
+                });
+            } else if blocks.is_empty() {
+                return Err(SofosError::ToolExecution(
+                    "No valid images or text in message".to_string(),
+                ));
+            }
+
+            Some(blocks)
+        } else {
+            None
+        };
+
+        if let Some(blocks) = content_blocks {
+            self.session_state.conversation.add_user_with_blocks(blocks);
+        } else {
+            self.session_state
+                .conversation
+                .add_user_message(user_input.to_string());
+        }
 
         self.session_state
             .display_messages
