@@ -54,7 +54,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 **Install:**
 
 ```bash
-# Homebrew
+# Homebrew (could be behind `cargo install`)
 brew tap alexylon/tap && brew install sofos
 
 # Cargo (requires Rust 1.70+)
