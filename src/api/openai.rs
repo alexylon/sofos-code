@@ -4,6 +4,7 @@ use crate::error::{Result, SofosError};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::json;
+use std::time::Duration;
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
