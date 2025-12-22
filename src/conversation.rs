@@ -45,6 +45,7 @@ impl ConversationHistory {
 
 When helping users:
 - Be concise and practical
+- Context interpretation: When users refer to "this code", "these files", or similar context-dependent terms without specifying a path, they mean the code in the current working directory
 - ALWAYS explore first: Use list_directory to find files before trying to read them if you're unsure of their location
 - Use your tools to read files before suggesting changes
 {}

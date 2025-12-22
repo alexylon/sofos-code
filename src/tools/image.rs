@@ -239,15 +239,66 @@ impl ImageLoader {
 pub fn extract_image_references(input: &str) -> (String, Vec<ImageReference>) {
     let mut remaining_text = String::new();
     let mut references = Vec::new();
+    let mut chars = input.chars().peekable();
+    let mut current_word = String::new();
+    let mut in_quotes = false;
+    let mut quote_char = ' ';
 
-    for word in input.split_whitespace() {
-        if let Some(reference) = detect_image_reference(word) {
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' | '\'' if !in_quotes => {
+                in_quotes = true;
+                quote_char = ch;
+            }
+            q if in_quotes && q == quote_char => {
+                in_quotes = false;
+                if let Some(reference) = detect_image_reference(&current_word) {
+                    references.push(reference);
+                    current_word.clear();
+                } else {
+                    if !remaining_text.is_empty() {
+                        remaining_text.push(' ');
+                    }
+                    remaining_text.push(quote_char);
+                    remaining_text.push_str(&current_word);
+                    remaining_text.push(quote_char);
+                    current_word.clear();
+                }
+            }
+            ' ' | '\t' | '\n' | '\r' if !in_quotes => {
+                if !current_word.is_empty() {
+                    if let Some(reference) = detect_image_reference(&current_word) {
+                        references.push(reference);
+                    } else {
+                        if !remaining_text.is_empty() {
+                            remaining_text.push(' ');
+                        }
+                        remaining_text.push_str(&current_word);
+                    }
+                    current_word.clear();
+                }
+            }
+            _ => {
+                current_word.push(ch);
+            }
+        }
+    }
+
+    if !current_word.is_empty() {
+        if in_quotes {
+            // Unclosed quote - treat as regular text to avoid losing user's input
+            if !remaining_text.is_empty() {
+                remaining_text.push(' ');
+            }
+            remaining_text.push(quote_char);
+            remaining_text.push_str(&current_word);
+        } else if let Some(reference) = detect_image_reference(&current_word) {
             references.push(reference);
         } else {
             if !remaining_text.is_empty() {
                 remaining_text.push(' ');
             }
-            remaining_text.push_str(word);
+            remaining_text.push_str(&current_word);
         }
     }
 
@@ -374,5 +425,110 @@ mod tests {
         assert_eq!(ImageFormat::Png.mime_type(), "image/png");
         assert_eq!(ImageFormat::Gif.mime_type(), "image/gif");
         assert_eq!(ImageFormat::Webp.mime_type(), "image/webp");
+    }
+
+    #[test]
+    fn test_extract_quoted_paths_with_spaces() {
+        // Test double-quoted path with spaces
+        let (text, refs) = extract_image_references(
+            "check out \"/Users/alex/test/sofos_allowed/test_r copy.png\" please",
+        );
+        assert_eq!(refs.len(), 1, "Should detect quoted path with spaces");
+        assert!(
+            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png"),
+            "Path should match exactly: {:?}",
+            refs
+        );
+        assert_eq!(text, "check out please");
+
+        // Test single-quoted path with spaces
+        let (text, refs) = extract_image_references(
+            "view '/home/user/my photos/vacation.jpg' now",
+        );
+        assert_eq!(refs.len(), 1, "Should detect single-quoted path with spaces");
+        assert!(
+            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/home/user/my photos/vacation.jpg")
+        );
+        assert_eq!(text, "view now");
+
+        // Test path with spaces at the end
+        let (text, refs) = extract_image_references(
+            "\"/Users/alex/test/image file.png\"",
+        );
+        assert_eq!(refs.len(), 1, "Should detect quoted path at end");
+        assert!(
+            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/image file.png")
+        );
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn test_extract_mixed_quoted_and_unquoted() {
+        // Mix of quoted path and unquoted path
+        let (text, refs) = extract_image_references(
+            "compare \"file with space.png\" and simple.jpg",
+        );
+        assert_eq!(refs.len(), 2, "Should detect both quoted and unquoted paths");
+        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "file with space.png"));
+        assert!(matches!(&refs[1], ImageReference::LocalPath(p) if p == "simple.jpg"));
+        assert_eq!(text, "compare and");
+    }
+
+    #[test]
+    fn test_extract_quoted_non_image() {
+        // Quoted text that's not an image should remain in text
+        let (text, refs) = extract_image_references(
+            "the title is \"Hello World\" and image.png",
+        );
+        assert_eq!(refs.len(), 1, "Should only detect the actual image");
+        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "image.png"));
+        assert_eq!(text, "the title is \"Hello World\" and");
+    }
+
+    #[test]
+    fn test_extract_unclosed_quote() {
+        // Unclosed quote should be treated as regular text
+        let (text, refs) = extract_image_references(
+            "this is \"unclosed quote and image.png",
+        );
+        // The unclosed quote should make everything after it part of the text
+        assert_eq!(refs.len(), 0, "Unclosed quote should prevent image detection");
+        assert!(text.contains("unclosed quote and image.png"));
+    }
+
+    #[test]
+    fn test_extract_web_url_with_spaces_quoted() {
+        // Web URLs with spaces (rare but possible)
+        let (text, refs) = extract_image_references(
+            "see \"https://example.com/my image.png\" please",
+        );
+        assert_eq!(refs.len(), 1, "Should detect quoted URL with spaces");
+        assert!(
+            matches!(&refs[0], ImageReference::WebUrl(u) if u == "https://example.com/my image.png")
+        );
+        assert_eq!(text, "see please");
+    }
+
+    #[test]
+    fn test_user_reported_case() {
+        // Exact case from user report: path with space but no quotes
+        // This will NOT work without quotes - user needs to quote it
+        let (_text, refs) = extract_image_references(
+            "/Users/alex/test/sofos_allowed/test_r copy.png",
+        );
+        // Without quotes, this gets split into two words
+        // Only "copy.png" would be detected as an image
+        assert_eq!(refs.len(), 1, "Only the second part is detected as image");
+        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "copy.png"));
+
+        // With quotes, it should work
+        let (text, refs) = extract_image_references(
+            "\"/Users/alex/test/sofos_allowed/test_r copy.png\"",
+        );
+        assert_eq!(refs.len(), 1, "Quoted path should be detected as single image");
+        assert!(
+            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png")
+        );
+        assert_eq!(text, "");
     }
 }

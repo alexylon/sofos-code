@@ -7,6 +7,7 @@ use crate::request_builder::RequestBuilder;
 use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -235,7 +236,19 @@ impl ResponseHandler {
             };
             self.ui.print_tool_header(tool_name, command);
 
+            // Hide cursor during bash execution
+            if tool_name == "execute_bash" {
+                print!("\x1B[?25l");
+                let _ = std::io::stdout().flush();
+            }
+
             let result = self.tool_executor.execute(tool_name, tool_input).await;
+
+            // Show cursor and add newline after bash execution completes
+            if tool_name == "execute_bash" {
+                print!("\x1B[?25h");
+                println!();
+            }
 
             match result {
                 Ok(output) => {
@@ -336,7 +349,7 @@ impl ResponseHandler {
         let ui_handle = std::thread::spawn(move || {
             UI::run_animation_with_interrupt(
                 "Processing...".to_string(),
-                "(Press ESC to interrupt)".to_string(),
+                "(Press ESC to interrupt) ".to_string(),
                 processing_clone,
                 processing_interrupted_clone,
             )

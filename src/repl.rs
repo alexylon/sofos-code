@@ -340,7 +340,7 @@ impl Repl {
         let ui_handle = std::thread::spawn(move || {
             UI::run_animation_with_interrupt(
                 "Awaiting response...".to_string(),
-                "(Press ESC to interrupt)".to_string(),
+                "(Press ESC to interrupt) ".to_string(),
                 running_clone,
                 interrupted_clone,
             )

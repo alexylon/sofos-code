@@ -143,12 +143,20 @@ Include image paths or URLs directly in your message to have the AI analyze them
 What's in this screenshot.png?
 Describe ./images/diagram.jpg and explain the architecture
 
+# Paths with spaces must be quoted
+What do you see in "/Users/alex/Documents/my image.png"?
+Analyze './screenshots/test result.png'
+
 # Web images
 Analyze this https://example.com/chart.png
 What do you see in https://i.imgur.com/abc123.jpg?
 ```
 
 **Supported formats:** JPEG, PNG, GIF, WebP (max 20MB for local files)
+
+**Important:** If your image path contains spaces, wrap it in quotes (single or double):
+- ✅ `"path/with space.png"` or `'path/with space.png'`
+- ❌ `path/with space.png` (will be split into multiple words)
 
 **Permission rules apply:** Local images outside workspace require explicit allow in config.
 

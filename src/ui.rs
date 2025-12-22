@@ -338,11 +338,12 @@ impl UI {
     pub fn print_tool_header(&self, tool_name: &str, command: Option<&str>) {
         if tool_name == "execute_bash" {
             if let Some(cmd) = command {
-                println!(
+                print!(
                     "{} {}",
                     "Executing:".bright_green().bold(),
                     cmd.bright_cyan()
                 );
+                let _ = io::stdout().flush();
             }
         } else {
             println!(
