@@ -18,7 +18,7 @@ use serde_json::Value;
 use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
-use crate::tools::utils::confirm_action;
+use crate::tools::utils::confirm_destructive;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 #[cfg(test)]
@@ -371,7 +371,7 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                let confirmed = confirm_action(&format!("Delete file '{}'?", path))?;
+                let confirmed = confirm_destructive(&format!("Delete file '{}'?", path))?;
 
                 if !confirmed {
                     return Ok(format!(
@@ -388,7 +388,7 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                let confirmed = confirm_action(&format!(
+                let confirmed = confirm_destructive(&format!(
                     "Delete directory '{}' and all its contents?",
                     path
                 ))?;

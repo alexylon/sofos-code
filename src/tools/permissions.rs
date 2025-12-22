@@ -1,5 +1,5 @@
 use crate::error::{Result, SofosError};
-use crate::tools::utils::confirm_action;
+use crate::tools::utils::{confirm_action, confirm_permission};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -584,7 +584,7 @@ impl PermissionManager {
 
         let prompt = format!("Allow command `{}`?", command);
 
-        let confirmed = confirm_action(&prompt)?;
+        let confirmed = confirm_permission(&prompt)?;
         let remember = confirm_action("Remember this decision?")?;
 
         if remember {
