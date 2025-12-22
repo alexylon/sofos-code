@@ -1,13 +1,11 @@
 use super::types::*;
+use super::utils::{self, REQUEST_TIMEOUT};
 use crate::error::{Result, SofosError};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Duration;
 
-// OpenAI responses API (for gpt-5 models) and chat completions (for other chat models)
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
-const REQUEST_TIMEOUT: Duration = super::anthropic::REQUEST_TIMEOUT;
 
 #[derive(Clone)]
 pub struct OpenAIClient {
@@ -101,9 +99,16 @@ impl OpenAIClient {
             eprintln!("======================================\n");
         }
 
-        let response = self.client.post(&url).json(&body).send().await?;
-        let response = super::utils::check_response_status(response).await?;
+        let client = self.client.clone();
+        let response = utils::with_retries("OpenAI", || {
+            let client = client.clone();
+            let url = url.clone();
+            let body = body.clone();
+            async move { client.post(&url).json(&body).send().await }
+        })
+        .await?;
 
+        let response = utils::check_response_status(response).await?;
         let response_text = response.text().await?;
 
         if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -115,6 +120,10 @@ impl OpenAIClient {
         let response_parsed: OpenAIResponse = serde_json::from_str(&response_text)
             .map_err(|e| SofosError::Api(format!("Failed to parse OpenAI response: {}", e)))?;
 
+        self.build_response(response_parsed)
+    }
+
+    fn build_response(&self, response_parsed: OpenAIResponse) -> Result<CreateMessageResponse> {
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("\n=== OpenAI /responses API Response ===");
             eprintln!("Model: {}", response_parsed.model);

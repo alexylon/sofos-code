@@ -1,4 +1,11 @@
 use crate::error::{Result, SofosError};
+use colored::Colorize;
+use std::future::Future;
+use std::time::Duration;
+
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+pub const MAX_RETRIES: u32 = 2;
+pub const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 
 pub async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
     if !response.status().is_success() {
@@ -10,4 +17,69 @@ pub async fn check_response_status(response: reqwest::Response) -> Result<reqwes
         )));
     }
     Ok(response)
+}
+
+pub fn is_retryable_error(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.status().is_some_and(|s| s.is_server_error())
+}
+
+/// Execute an async operation with retries and exponential backoff.
+/// Returns the result of the operation or the last error after all retries exhausted.
+pub async fn with_retries<F, Fut, T>(service_name: &str, operation: F) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = std::result::Result<T, reqwest::Error>>,
+{
+    let mut last_error: Option<reqwest::Error> = None;
+    let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
+
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let reason = last_error
+                .as_ref()
+                .map(|e| {
+                    if e.is_timeout() {
+                        "Request timed out".to_string()
+                    } else {
+                        format!("Request failed: {}", e)
+                    }
+                })
+                .unwrap_or_else(|| "Request failed".to_string());
+
+            eprintln!(
+                " {} {}, retrying in {:?}... (attempt {}/{})",
+                format!("{}:", service_name).bright_yellow(),
+                reason,
+                retry_delay,
+                attempt,
+                MAX_RETRIES
+            );
+            tokio::time::sleep(retry_delay).await;
+            retry_delay *= 2;
+        }
+
+        match operation().await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                let is_retryable = is_retryable_error(&e);
+
+                if attempt < MAX_RETRIES && is_retryable {
+                    last_error = Some(e);
+                    continue;
+                } else {
+                    return Err(SofosError::NetworkError(format!(
+                        "{} request failed after {} attempts: {}",
+                        service_name,
+                        if is_retryable { attempt + 1 } else { 1 },
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    Err(last_error.map_or_else(
+        || SofosError::NetworkError(format!("Unknown {} error", service_name)),
+        |e| SofosError::NetworkError(format!("Failed after {} retries: {}", MAX_RETRIES, e)),
+    ))
 }
