@@ -4,13 +4,13 @@ use serde_json::json;
 fn read_file_tool() -> Tool {
     Tool::Regular {
         name: "read_file".to_string(),
-        description: "Read the contents of a file in the current workspace. Only works for files within the current project directory.".to_string(),
+        description: "Read the contents of a file in the current workspace. Can also read files outside the workspace if explicitly allowed via Read permissions in the config.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
+                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md'). Can also be absolute or ~/ paths if allowed in config."
                 }
             },
             "required": ["path"]
@@ -50,13 +50,13 @@ fn write_file_tool(has_morph: bool) -> Tool {
 fn list_directory_tool() -> Tool {
     Tool::Regular {
         name: "list_directory".to_string(),
-        description: "List all files and directories in a given path. Only works within the current project directory.".to_string(),
+        description: "List all files and directories in a given path. Only works within the current project directory unless the path is explicitly allowed via Read permissions in the config.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the directory (e.g., 'src' or '.')"
+                    "description": "The relative path to the directory (e.g., 'src' or '.'). Can also be absolute or ~/ paths if allowed in config."
                 }
             },
             "required": ["path"]
