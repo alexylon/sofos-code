@@ -43,4 +43,24 @@ pub enum SofosError {
     },
 }
 
+impl SofosError {
+    /// Returns true if this error represents a security block or permission denial
+    /// (expected behavior) rather than an actual failure
+    pub fn is_blocked(&self) -> bool {
+        match self {
+            Self::PathViolation(_) => true,
+            Self::ToolExecution(msg) => {
+                msg.contains("blocked")
+                    || msg.contains("Blocked")
+                    || msg.contains("denied")
+                    || msg.contains("not allowed")
+                    || msg.contains("not explicitly allowed")
+                    || msg.contains("outside workspace")
+            }
+            Self::Context { source, .. } => source.is_blocked(),
+            _ => false,
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, SofosError>;

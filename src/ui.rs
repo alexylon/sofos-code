@@ -9,6 +9,46 @@ use std::time::Duration;
 use crate::history::DisplayMessage;
 use crate::syntax::SyntaxHighlighter;
 
+/// Message severity levels for consistent UI feedback
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageSeverity {
+    /// Security restrictions, permission denials - expected behavior
+    Blocked,
+    /// Recoverable issues, non-critical problems
+    Warning,
+    /// Actual failures (network, IO, parsing errors)
+    Error,
+    /// Informational messages
+    #[allow(dead_code)]
+    Info,
+    /// Success messages
+    #[allow(dead_code)]
+    Success,
+}
+
+impl MessageSeverity {
+    pub fn prefix(&self) -> colored::ColoredString {
+        match self {
+            Self::Blocked => "Blocked:".truecolor(0xFF, 0xA5, 0x00).bold(), // Orange
+            Self::Warning => "Warning:".bright_yellow().bold(),
+            Self::Error => "Error:".bright_red().bold(),
+            Self::Info => "Info:".bright_cyan().bold(),
+            Self::Success => "Success:".bright_green().bold(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Blocked => "🔒",
+            Self::Warning => "⚠️ ",
+            Self::Error => "✗",
+            Self::Info => "ℹ️ ",
+            Self::Success => "✓",
+        }
+    }
+}
+
 /// RAII guard that ensures raw mode is disabled when dropped.
 /// Prevents terminal corruption if a panic occurs while in raw mode.
 struct RawModeGuard;
@@ -39,6 +79,27 @@ impl UI {
         Self {
             highlighter: SyntaxHighlighter::new(),
         }
+    }
+
+    pub fn print_message(severity: MessageSeverity, message: &str) {
+        eprintln!("{} {}", severity.prefix(), message);
+    }
+
+    pub fn print_blocked(message: &str) {
+        Self::print_message(MessageSeverity::Blocked, message);
+    }
+
+    pub fn print_warning(message: &str) {
+        Self::print_message(MessageSeverity::Warning, message);
+    }
+
+    pub fn print_error(message: &str) {
+        Self::print_message(MessageSeverity::Error, message);
+    }
+
+    #[allow(dead_code)]
+    pub fn print_info(message: &str) {
+        Self::print_message(MessageSeverity::Info, message);
     }
 
     pub fn print_welcome() {

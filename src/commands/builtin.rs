@@ -2,7 +2,6 @@ use super::CommandResult;
 use crate::error::Result;
 use crate::repl::Repl;
 use crate::ui::UI;
-use colored::Colorize;
 
 pub fn exit_command(repl: &mut Repl) -> Result<CommandResult> {
     repl.save_current_session()?;
@@ -19,7 +18,7 @@ pub fn clear_command(repl: &mut Repl) -> Result<CommandResult> {
 
 pub fn resume_command(repl: &mut Repl) -> Result<CommandResult> {
     if let Err(e) = repl.handle_resume_command() {
-        eprintln!("{} {}", "Error:".bright_red().bold(), e);
+        UI::print_error(&e.to_string());
     }
     Ok(CommandResult::Continue)
 }

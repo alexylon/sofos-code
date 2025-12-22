@@ -188,7 +188,11 @@ impl Repl {
                             Ok(CommandResult::Continue) => continue,
                             Ok(CommandResult::Exit) => break,
                             Err(e) => {
-                                eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                                if e.is_blocked() {
+                                    UI::print_blocked(&e.to_string());
+                                } else {
+                                    UI::print_error(&e.to_string());
+                                }
                                 continue;
                             }
                         }
@@ -196,13 +200,13 @@ impl Repl {
 
                     // Not a command, process as regular message
                     if let Err(e) = self.process_message(&line) {
-                        eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                        if e.is_blocked() {
+                            UI::print_blocked(&e.to_string());
+                        } else {
+                            UI::print_error(&e.to_string());
+                        }
                     } else if let Err(e) = self.save_current_session() {
-                        eprintln!(
-                            "{} Failed to save session: {}",
-                            "Warning:".bright_yellow(),
-                            e
-                        );
+                        UI::print_warning(&format!("Failed to save session: {}", e));
                     }
 
                     println!();
@@ -219,7 +223,7 @@ impl Repl {
                     break;
                 }
                 Err(err) => {
-                    eprintln!("{} {}", "Error:".bright_red().bold(), err);
+                    UI::print_error(&err.to_string());
                     break;
                 }
             }

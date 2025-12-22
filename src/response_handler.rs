@@ -142,10 +142,7 @@ impl ResponseHandler {
 
             if let Some(ref stop_reason) = response.stop_reason {
                 if stop_reason == "max_tokens" {
-                    eprintln!(
-                        "\n{} Response was cut off due to token limit.",
-                        "Warning:".bright_yellow().bold()
-                    );
+                    UI::print_warning("Response was cut off due to token limit.");
                     eprintln!(
                         "Consider using --max-tokens with a higher value (current: {})",
                         self.max_tokens
@@ -283,8 +280,13 @@ impl ResponseHandler {
                         eprintln!("=== Tool {} failed: {} ===", i + 1, e);
                     }
 
-                    let error_msg = format!("Tool execution failed: {}", e);
-                    eprintln!("{} {}", "Error:".bright_red().bold(), error_msg);
+                    let error_msg = format!("{}", e);
+                    
+                    if e.is_blocked() {
+                        UI::print_blocked(&error_msg);
+                    } else {
+                        UI::print_error(&format!("Tool execution failed: {}", e));
+                    }
                     println!();
 
                     display_messages.push(DisplayMessage::ToolExecution {
@@ -386,10 +388,7 @@ impl ResponseHandler {
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
     ) -> Result<()> {
-        eprintln!(
-            "\n{} Maximum tool iterations reached. Stopping to prevent infinite loop.",
-            "Warning:".bright_yellow().bold()
-        );
+        UI::print_warning("Maximum tool iterations reached. Stopping to prevent infinite loop.");
 
         let interruption_msg = format!(
             "SYSTEM INTERRUPTION: You have reached the maximum number of tool iterations ({}). \
@@ -437,11 +436,7 @@ impl ResponseHandler {
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "{} Failed to get response after interruption: {}",
-                    "Error:".bright_red().bold(),
-                    e
-                );
+                UI::print_error(&format!("Failed to get response after interruption: {}", e));
             }
         }
 

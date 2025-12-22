@@ -26,6 +26,7 @@ use error::Result;
 use history::HistoryManager;
 use repl::{Repl, ReplConfig};
 use std::env;
+use ui::UI;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -44,12 +45,12 @@ fn main() -> Result<()> {
             Ok(key) => match OpenAIClient::new(key) {
                 Ok(c) => LlmClient::OpenAI(c),
                 Err(e) => {
-                    eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                    UI::print_error(&e.to_string());
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                UI::print_error(&e.to_string());
                 eprintln!();
                 eprintln!("Please set your OpenAI API key:");
                 eprintln!("  export OPENAI_API_KEY='your-api-key'");
@@ -63,12 +64,12 @@ fn main() -> Result<()> {
             Ok(key) => match AnthropicClient::new(key) {
                 Ok(c) => LlmClient::Anthropic(c),
                 Err(e) => {
-                    eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                    UI::print_error(&e.to_string());
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                eprintln!("{} {}", "Error:".bright_red().bold(), e);
+                UI::print_error(&e.to_string());
                 eprintln!();
                 eprintln!("Please set your Anthropic API key:");
                 eprintln!("  export ANTHROPIC_API_KEY='your-api-key'");
@@ -102,11 +103,7 @@ fn main() -> Result<()> {
                 Some(client)
             }
             Err(e) => {
-                eprintln!(
-                    "{} Failed to initialize Morph client: {}",
-                    "Warning:".bright_yellow(),
-                    e
-                );
+                UI::print_warning(&format!("Failed to initialize Morph client: {}", e));
                 None
             }
         }
@@ -160,7 +157,7 @@ fn check_api_connectivity(client: &LlmClient) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            eprintln!("{} {}", "✗".bright_red().bold(), e);
+            UI::print_error(&e.to_string());
             std::process::exit(1);
         }
     }
