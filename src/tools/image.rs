@@ -43,7 +43,7 @@ pub enum ImageSource {
 
 pub fn detect_image_reference(text: &str) -> Option<ImageReference> {
     let trimmed = text.trim();
-    
+
     // Strip common trailing punctuation that might be attached to paths in sentences
     let cleaned = trimmed.trim_end_matches(|c| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
 
@@ -313,7 +313,9 @@ mod tests {
             "what do you see on this image: /Users/alex/test/images/test.jpg",
         );
         assert_eq!(refs.len(), 1, "Should detect 1 image reference");
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/images/test.jpg"));
+        assert!(
+            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/images/test.jpg")
+        );
         assert_eq!(text, "what do you see on this image:");
     }
 
@@ -322,27 +324,36 @@ mod tests {
         // Test with absolute paths
         let (_, refs) = extract_image_references("check /path/to/image.png please");
         assert_eq!(refs.len(), 1);
-        
+
         // Test with tilde paths
         let (_, refs) = extract_image_references("view ~/photos/test.jpg");
         assert_eq!(refs.len(), 1);
-        
+
         // Test without any text, just path
         let (text, refs) = extract_image_references("/Users/test/photo.jpg");
         assert_eq!(refs.len(), 1);
         assert_eq!(text, "");
-        
+
         // Test with trailing punctuation (common in sentences)
         let (_, refs) = extract_image_references("look at this: /path/to/image.jpg.");
-        assert_eq!(refs.len(), 1, "Should detect image even with trailing period");
-        
+        assert_eq!(
+            refs.len(),
+            1,
+            "Should detect image even with trailing period"
+        );
+
         // Test with comma
         let (_, refs) = extract_image_references("files: image.png, other.txt");
         assert_eq!(refs.len(), 1, "Should detect image before comma");
-        
+
         // Test exact user case: relative path after colon
-        let (text, refs) = extract_image_references("what do you in in this image: images/test_image.png");
-        assert_eq!(refs.len(), 1, "Should detect relative image path after colon");
+        let (text, refs) =
+            extract_image_references("what do you in in this image: images/test_image.png");
+        assert_eq!(
+            refs.len(),
+            1,
+            "Should detect relative image path after colon"
+        );
         assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "images/test_image.png"));
         assert_eq!(text, "what do you in in this image:");
     }

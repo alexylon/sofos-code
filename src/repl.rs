@@ -189,9 +189,9 @@ impl Repl {
                             Ok(CommandResult::Exit) => break,
                             Err(e) => {
                                 if e.is_blocked() {
-                                    UI::print_blocked(&e.to_string());
+                                    UI::print_blocked_with_hint(&e);
                                 } else {
-                                    UI::print_error(&e.to_string());
+                                    UI::print_error_with_hint(&e);
                                 }
                                 continue;
                             }
@@ -201,9 +201,9 @@ impl Repl {
                     // Not a command, process as regular message
                     if let Err(e) = self.process_message(&line) {
                         if e.is_blocked() {
-                            UI::print_blocked(&e.to_string());
+                            UI::print_blocked_with_hint(&e);
                         } else {
-                            UI::print_error(&e.to_string());
+                            UI::print_error_with_hint(&e);
                         }
                     } else if let Err(e) = self.save_current_session() {
                         UI::print_warning(&format!("Failed to save session: {}", e));
@@ -277,17 +277,21 @@ impl Repl {
                         };
                         let error_msg = format!("[Failed to load image '{}': {}]", path_str, e);
                         failed_images.push(error_msg);
-                        println!("\n{} {}\n", "⚠️  Failed to load image:".bright_yellow().bold(), e);
+                        println!(
+                            "\n{} {}\n",
+                            "⚠️  Failed to load image:".bright_yellow().bold(),
+                            e
+                        );
                     }
                 }
             }
 
             let mut text_parts: Vec<String> = Vec::new();
-            
+
             if !remaining_text.trim().is_empty() {
                 text_parts.push(remaining_text.clone());
             }
-            
+
             if !failed_images.is_empty() {
                 text_parts.extend(failed_images);
             }

@@ -18,7 +18,7 @@ pub fn clear_command(repl: &mut Repl) -> Result<CommandResult> {
 
 pub fn resume_command(repl: &mut Repl) -> Result<CommandResult> {
     if let Err(e) = repl.handle_resume_command() {
-        UI::print_error(&e.to_string());
+        UI::print_error_with_hint(&e);
     }
     Ok(CommandResult::Continue)
 }

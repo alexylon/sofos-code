@@ -441,7 +441,11 @@ impl BashExecutor {
         }
 
         if command_lower.contains("git pull") || command_lower.contains("git fetch") {
-            let op = if command_lower.contains("git pull") { "git pull" } else { "git fetch" };
+            let op = if command_lower.contains("git pull") {
+                "git pull"
+            } else {
+                "git fetch"
+            };
             return format!(
                 "Command '{}' blocked: '{}' fetches data from remote repositories\n\
                  Hint: Use 'git status', 'git log', 'git diff' to view local changes.",
@@ -458,7 +462,11 @@ impl BashExecutor {
         }
 
         if command_lower.contains("git commit") || command_lower.contains("git add") {
-            let op = if command_lower.contains("git commit") { "git commit" } else { "git add" };
+            let op = if command_lower.contains("git commit") {
+                "git commit"
+            } else {
+                "git add"
+            };
             return format!(
                 "Command '{}' blocked: '{}' modifies the git repository\n\
                  Hint: Use 'git status', 'git diff' to view changes. Create commits manually.",
@@ -467,7 +475,11 @@ impl BashExecutor {
         }
 
         if command_lower.contains("git reset") || command_lower.contains("git clean") {
-            let op = if command_lower.contains("git reset") { "git reset" } else { "git clean" };
+            let op = if command_lower.contains("git reset") {
+                "git reset"
+            } else {
+                "git clean"
+            };
             return format!(
                 "Command '{}' blocked: '{}' is a destructive operation\n\
                  Hint: Use 'git status', 'git log', 'git diff' to view repository state.",
@@ -476,7 +488,11 @@ impl BashExecutor {
         }
 
         if command_lower.contains("git checkout") || command_lower.contains("git switch") {
-            let op = if command_lower.contains("git checkout") { "git checkout" } else { "git switch" };
+            let op = if command_lower.contains("git checkout") {
+                "git checkout"
+            } else {
+                "git switch"
+            };
             return format!(
                 "Command '{}' blocked: '{}' changes branches or modifies working directory\n\
                  Hint: Use 'git branch' to list branches, 'git status' to see current branch.",
@@ -485,7 +501,11 @@ impl BashExecutor {
         }
 
         if command_lower.contains("git merge") || command_lower.contains("git rebase") {
-            let op = if command_lower.contains("git merge") { "git merge" } else { "git rebase" };
+            let op = if command_lower.contains("git merge") {
+                "git merge"
+            } else {
+                "git rebase"
+            };
             return format!(
                 "Command '{}' blocked: '{}' modifies git history\n\
                  Hint: Perform merges/rebases manually outside of Sofos.",

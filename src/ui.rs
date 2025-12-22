@@ -175,6 +175,25 @@ impl UI {
         Self::print_message(MessageSeverity::Error, message);
     }
 
+    pub fn print_error_with_hint(error: &crate::error::SofosError) {
+        eprintln!("{} {}", MessageSeverity::Error.prefix(), error);
+        if let Some(hint) = error.hint() {
+            eprintln!("  {} {}", "Hint:".bright_cyan(), hint);
+        }
+    }
+
+    pub fn print_blocked_with_hint(error: &crate::error::SofosError) {
+        let msg = error.to_string();
+        if msg.contains('\n') && msg.contains("Hint:") {
+            Self::print_blocked_multiline(&msg);
+        } else {
+            eprintln!("{} {}", MessageSeverity::Blocked.prefix(), error);
+            if let Some(hint) = error.hint() {
+                eprintln!("  {} {}", "Hint:".bright_cyan(), hint);
+            }
+        }
+    }
+
     #[allow(dead_code)]
     pub fn print_info(message: &str) {
         Self::print_message(MessageSeverity::Info, message);
@@ -311,7 +330,7 @@ impl UI {
                 "\n{}",
                 "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
             );
-            println!("{}", thinking.dimmed());
+            println!("{}", thinking.dimmed().italic());
             println!();
         }
     }

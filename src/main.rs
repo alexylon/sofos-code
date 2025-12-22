@@ -45,17 +45,12 @@ fn main() -> Result<()> {
             Ok(key) => match OpenAIClient::new(key) {
                 Ok(c) => LlmClient::OpenAI(c),
                 Err(e) => {
-                    UI::print_error(&e.to_string());
+                    UI::print_error_with_hint(&e);
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                UI::print_error(&e.to_string());
-                eprintln!();
-                eprintln!("Please set your OpenAI API key:");
-                eprintln!("  export OPENAI_API_KEY='your-api-key'");
-                eprintln!("Or use the --openai-api-key flag:");
-                eprintln!("  sofos --openai-api-key 'your-api-key' --model gpt-5.1-codex-max");
+                UI::print_error_with_hint(&e);
                 std::process::exit(1);
             }
         }
@@ -64,17 +59,12 @@ fn main() -> Result<()> {
             Ok(key) => match AnthropicClient::new(key) {
                 Ok(c) => LlmClient::Anthropic(c),
                 Err(e) => {
-                    UI::print_error(&e.to_string());
+                    UI::print_error_with_hint(&e);
                     std::process::exit(1);
                 }
             },
             Err(e) => {
-                UI::print_error(&e.to_string());
-                eprintln!();
-                eprintln!("Please set your Anthropic API key:");
-                eprintln!("  export ANTHROPIC_API_KEY='your-api-key'");
-                eprintln!("Or use the --api-key flag:");
-                eprintln!("  sofos --api-key 'your-api-key'");
+                UI::print_error_with_hint(&e);
                 std::process::exit(1);
             }
         }
@@ -157,7 +147,7 @@ fn check_api_connectivity(client: &LlmClient) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            UI::print_error(&e.to_string());
+            UI::print_error_with_hint(&e);
             std::process::exit(1);
         }
     }

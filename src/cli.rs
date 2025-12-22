@@ -1,3 +1,4 @@
+use crate::error::SofosError;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -55,17 +56,15 @@ pub struct Cli {
 }
 
 impl Cli {
-    pub fn get_anthropic_api_key(&self) -> Result<String, String> {
-        self.api_key.clone().ok_or_else(|| {
-            "ANTHROPIC_API_KEY not found. Please set it as an environment variable or use --api-key"
-                .to_string()
-        })
+    pub fn get_anthropic_api_key(&self) -> Result<String, SofosError> {
+        self.api_key
+            .clone()
+            .ok_or_else(|| SofosError::Config("ANTHROPIC_API_KEY not found".to_string()))
     }
 
-    pub fn get_openai_api_key(&self) -> Result<String, String> {
-        self.openai_api_key.clone().ok_or_else(|| {
-            "OPENAI_API_KEY not found. Please set it as an environment variable or use --openai-api-key"
-                .to_string()
-        })
+    pub fn get_openai_api_key(&self) -> Result<String, SofosError> {
+        self.openai_api_key
+            .clone()
+            .ok_or_else(|| SofosError::Config("OPENAI_API_KEY not found".to_string()))
     }
 }

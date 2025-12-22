@@ -54,7 +54,7 @@ pub fn confirm_action_enhanced(
     io::stdin().read_line(&mut input)?;
 
     let answer = input.trim().to_lowercase();
-    
+
     // Default to No - only explicit "y" or "yes" confirms
     Ok(answer == "y" || answer == "yes")
 }
