@@ -82,7 +82,7 @@ impl HistoryManager {
                 sessions: Vec::new(),
             };
             let content = serde_json::to_string_pretty(&index)?;
-            fs::write(index_path, content)?;
+            atomic_write(&index_path, &content)?;
         }
 
         Ok(())
@@ -165,7 +165,7 @@ impl HistoryManager {
         };
 
         let content = serde_json::to_string_pretty(&session)?;
-        fs::write(&session_path, content)?;
+        atomic_write(&session_path, &content)?;
 
         self.update_index(&session)?;
 
@@ -202,7 +202,7 @@ impl HistoryManager {
             .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
 
         let content = serde_json::to_string_pretty(&index)?;
-        fs::write(index_path, content)?;
+        atomic_write(&index_path, &content)?;
 
         Ok(())
     }
@@ -283,11 +283,20 @@ impl HistoryManager {
             index.sessions.retain(|s| s.id != session_id);
 
             let content = serde_json::to_string_pretty(&index)?;
-            fs::write(index_path, content)?;
+            atomic_write(&index_path, &content)?;
         }
 
         Ok(())
     }
+}
+
+/// Write content to a file atomically by writing to a temp file first, then renaming.
+/// This prevents corruption if the process crashes mid-write.
+fn atomic_write(path: &PathBuf, content: &str) -> Result<()> {
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, content)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 #[cfg(test)]

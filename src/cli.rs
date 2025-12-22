@@ -25,6 +25,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub resume: bool,
 
+    /// Check API connectivity and exit
+    #[arg(long)]
+    pub check_connection: bool,
+
     #[arg(long, default_value = "claude-sonnet-4-5")]
     pub model: String,
 

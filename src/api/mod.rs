@@ -25,4 +25,18 @@ impl LlmClient {
             LlmClient::OpenAI(client) => client.create_openai_message(request).await,
         }
     }
+
+    pub async fn check_connectivity(&self) -> crate::error::Result<()> {
+        match self {
+            LlmClient::Anthropic(client) => client.check_connectivity().await,
+            LlmClient::OpenAI(client) => client.check_connectivity().await,
+        }
+    }
+
+    pub fn provider_name(&self) -> &'static str {
+        match self {
+            LlmClient::Anthropic(_) => "Anthropic",
+            LlmClient::OpenAI(_) => "OpenAI",
+        }
+    }
 }

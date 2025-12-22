@@ -11,6 +11,26 @@ use crate::syntax::SyntaxHighlighter;
 
 const THREAD_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// RAII guard that ensures raw mode is disabled when dropped.
+/// Prevents terminal corruption if a panic occurs while in raw mode.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn new() -> Option<Self> {
+        if crossterm::terminal::enable_raw_mode().is_ok() {
+            Some(Self)
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+}
+
 /// UI utilities for displaying messages, animations, and formatting
 pub struct UI {
     highlighter: SyntaxHighlighter,
@@ -215,9 +235,11 @@ impl UI {
         });
 
         let key_handle = thread::spawn(move || {
-            if crossterm::terminal::enable_raw_mode().is_err() {
-                return;
-            }
+            // Guard enables raw mode and ensures it's disabled even if thread panics
+            let _guard = match RawModeGuard::new() {
+                Some(g) => g,
+                None => return,
+            };
 
             while running_key.load(Ordering::Relaxed) {
                 if event::poll(Duration::from_millis(100)).unwrap_or(false) {
@@ -231,8 +253,7 @@ impl UI {
                     }
                 }
             }
-
-            let _ = crossterm::terminal::disable_raw_mode();
+            // _guard dropped here, disabling raw mode
         });
 
         // Wait for threads with timeout to prevent hanging

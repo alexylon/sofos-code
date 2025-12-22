@@ -4,6 +4,7 @@ use crate::error::{Result, SofosError};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::json;
+use std::time::Duration;
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
@@ -29,6 +30,28 @@ impl OpenAIClient {
             .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self { client })
+    }
+
+    pub async fn check_connectivity(&self) -> Result<()> {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.client.head(OPENAI_API_BASE).send(),
+        )
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(SofosError::NetworkError(format!(
+                "Cannot reach OpenAI API. Please check:\n  \
+                 1. Your internet connection\n  \
+                 2. Firewall/proxy settings\n  \
+                 3. API status at https://status.openai.com\n\
+                 Original error: {}",
+                e
+            ))),
+            Err(_) => Err(SofosError::NetworkError(
+                "Connection timeout. Please check your network connection.".into(),
+            )),
+        }
     }
 
     pub async fn create_openai_message(

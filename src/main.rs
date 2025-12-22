@@ -79,6 +79,10 @@ fn main() -> Result<()> {
         }
     };
 
+    if cli.check_connection {
+        return check_api_connectivity(&client);
+    }
+
     let workspace = env::current_dir().map_err(|e| {
         error::SofosError::Config(format!("Failed to get current directory: {}", e))
     })?;
@@ -137,4 +141,27 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn check_api_connectivity(client: &LlmClient) -> Result<()> {
+    let provider = client.provider_name();
+    println!("Checking {} API connectivity...", provider.bright_cyan());
+
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| error::SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
+
+    match runtime.block_on(client.check_connectivity()) {
+        Ok(()) => {
+            println!(
+                "{} {} API is reachable",
+                "✓".bright_green().bold(),
+                provider
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("{} {}", "✗".bright_red().bold(), e);
+            std::process::exit(1);
+        }
+    }
 }

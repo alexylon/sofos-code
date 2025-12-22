@@ -13,6 +13,11 @@ pub async fn check_response_status(response: reqwest::Response) -> Result<reqwes
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await.unwrap_or_default();
+        tracing::error!(
+            status = %status,
+            error = %error_text,
+            "API request failed"
+        );
         return Err(SofosError::Api(format!(
             "API request failed with status {}: {}",
             status, error_text
@@ -52,6 +57,15 @@ where
             let jitter = rand::rng().random_range(0.0..JITTER_FACTOR);
             let jittered_delay = retry_delay.mul_f64(1.0 + jitter);
 
+            tracing::warn!(
+                service = service_name,
+                attempt = attempt,
+                max_retries = MAX_RETRIES,
+                delay_ms = jittered_delay.as_millis() as u64,
+                reason = %reason,
+                "Retrying API request"
+            );
+
             eprintln!(
                 " {} {}, retrying in {:?}... (attempt {}/{})",
                 format!("{}:", service_name).bright_yellow(),
@@ -73,6 +87,13 @@ where
                     last_error = Some(e);
                     continue;
                 } else {
+                    tracing::error!(
+                        service = service_name,
+                        attempts = if is_retryable { attempt + 1 } else { 1 },
+                        error = %e,
+                        retryable = is_retryable,
+                        "API request failed permanently"
+                    );
                     return Err(SofosError::NetworkError(format!(
                         "{} request failed after {} attempts: {}",
                         service_name,

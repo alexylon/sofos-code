@@ -35,8 +35,7 @@ impl AnthropicClient {
     }
 
     /// Check if we can reach the API endpoint
-    #[allow(dead_code)]
-    async fn check_connectivity(&self) -> Result<()> {
+    pub async fn check_connectivity(&self) -> Result<()> {
         match tokio::time::timeout(Duration::from_secs(5), self.client.head(API_BASE).send()).await
         {
             Ok(Ok(_)) => Ok(()),
