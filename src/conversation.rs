@@ -97,10 +97,108 @@ Show imperial units only when the user explicitly asks for them."#,
         }
     }
 
+    /// Estimate token count for a string
+    fn estimate_tokens(text: &str) -> usize {
+        // Conservative: 1 token per 3.5 chars (accounts for code/JSON being token-heavy)
+        (text.len() as f64 / 3.5).ceil() as usize
+    }
+
+    /// Estimate total tokens in system prompt
+    fn estimate_system_tokens(&self) -> usize {
+        self.system_prompt
+            .iter()
+            .map(|sp| Self::estimate_tokens(&sp.text))
+            .sum()
+    }
+
+    /// Estimate tokens for a single message
+    fn estimate_message_tokens(msg: &Message) -> usize {
+        use crate::api::{MessageContent, MessageContentBlock};
+
+        match &msg.content {
+            MessageContent::Text { content } => Self::estimate_tokens(content),
+            MessageContent::Blocks { content } => content
+                .iter()
+                .map(|block| match block {
+                    MessageContentBlock::Text { text, .. } => Self::estimate_tokens(text),
+                    MessageContentBlock::Thinking {
+                        thinking,
+                        signature,
+                        ..
+                    } => Self::estimate_tokens(thinking) + Self::estimate_tokens(signature) + 10,
+                    MessageContentBlock::Summary { summary, .. } => {
+                        Self::estimate_tokens(summary) + 10
+                    }
+                    MessageContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => {
+                        let input_str = serde_json::to_string(input).unwrap_or_default();
+                        Self::estimate_tokens(id)
+                            + Self::estimate_tokens(name)
+                            + Self::estimate_tokens(&input_str)
+                            + 10
+                    }
+                    MessageContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => Self::estimate_tokens(tool_use_id) + Self::estimate_tokens(content) + 10,
+                    MessageContentBlock::ServerToolUse {
+                        id, name, input, ..
+                    } => {
+                        let input_str = serde_json::to_string(input).unwrap_or_default();
+                        Self::estimate_tokens(id)
+                            + Self::estimate_tokens(name)
+                            + Self::estimate_tokens(&input_str)
+                            + 10
+                    }
+                    MessageContentBlock::WebSearchToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        let content_str = serde_json::to_string(content).unwrap_or_default();
+                        Self::estimate_tokens(tool_use_id)
+                            + Self::estimate_tokens(&content_str)
+                            + 20
+                    }
+                })
+                .sum(),
+        }
+    }
+
+    /// Calculate total estimated tokens for current conversation
+    fn estimate_total_tokens(&self) -> usize {
+        let system_tokens = self.estimate_system_tokens();
+        let message_tokens: usize = self
+            .messages
+            .iter()
+            .map(|m| Self::estimate_message_tokens(m))
+            .sum();
+
+        system_tokens + message_tokens
+    }
+
+    /// Trim messages to stay within token budget
     fn trim_if_needed(&mut self) {
         if self.messages.len() > self.config.max_messages {
             let remove_count = self.messages.len() - self.config.max_messages;
             self.messages.drain(0..remove_count);
+        }
+
+        let mut total_tokens = self.estimate_total_tokens();
+
+        while total_tokens > self.config.max_context_tokens && self.messages.len() > 10 {
+            let removed_tokens = Self::estimate_message_tokens(&self.messages[0]);
+            self.messages.remove(0);
+            total_tokens -= removed_tokens;
+        }
+
+        if total_tokens > self.config.max_context_tokens && self.messages.len() <= 10 {
+            eprintln!(
+                "⚠️  Warning: Conversation approaching token limit ({} tokens). Consider starting a new session.",
+                total_tokens
+            );
         }
     }
 
@@ -195,5 +293,35 @@ mod tests {
         }
 
         assert_eq!(history.messages().len(), 20);
+    }
+
+    #[test]
+    fn test_token_limit_trimming() {
+        let mut history = ConversationHistory::new();
+        history.config.max_context_tokens = 5000;
+
+        // ~1000 chars = ~286 tokens; system prompt ~857 tokens; need enough to exceed 5000
+        let large_content = "x".repeat(1000);
+
+        for i in 0..20 {
+            history.add_user_message(format!("{} {}", i, large_content));
+        }
+
+        assert!(history.messages().len() < 20);
+        assert!(history.messages().len() >= 10);
+
+        if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
+            assert!(!content.starts_with("0 "));
+        }
+    }
+
+    #[test]
+    fn test_token_estimation() {
+        // 35 chars = 10 tokens at 3.5 chars/token
+        let tokens = ConversationHistory::estimate_tokens("12345678901234567890123456789012345");
+        assert_eq!(tokens, 10);
+
+        let tokens = ConversationHistory::estimate_tokens("");
+        assert_eq!(tokens, 0);
     }
 }

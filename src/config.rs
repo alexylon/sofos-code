@@ -3,6 +3,9 @@
 pub struct SofosConfig {
     /// Maximum number of messages to keep in conversation history
     pub max_messages: usize,
+    /// Maximum context tokens to send to API (includes system prompt and messages)
+    /// Set to 180,000 to leave buffer below API's 200,000 limit
+    pub max_context_tokens: usize,
     /// Maximum number of tool execution iterations to prevent infinite loops
     pub max_tool_iterations: u32,
     /// Maximum file size for read operations (in bytes)
@@ -17,6 +20,7 @@ impl Default for SofosConfig {
     fn default() -> Self {
         Self {
             max_messages: 500,
+            max_context_tokens: 180_000,
             max_tool_iterations: 200,
             max_file_size: 10 * 1024 * 1024,   // 10MB
             max_bash_output: 50 * 1024 * 1024, // 50MB
@@ -46,6 +50,7 @@ mod tests {
     fn test_default_config() {
         let config = SofosConfig::default();
         assert_eq!(config.max_messages, 500);
+        assert_eq!(config.max_context_tokens, 180_000);
         assert_eq!(config.max_tool_iterations, 200);
         assert_eq!(config.max_file_size, 10 * 1024 * 1024);
         assert_eq!(config.max_bash_output, 50 * 1024 * 1024);
