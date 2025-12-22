@@ -122,7 +122,7 @@ Exit summary shows token usage and estimated cost (based on official API pricing
 
 ```
 -p, --prompt <TEXT>          One-shot mode
--s, --safe-mode              Start in read-only mode (only read/list/web-search tools; no writes or bash commands)
+-s, --safe-mode              Start in read-only mode (only read/list/web-search/image tools; no writes or bash commands)
 -r, --resume                 Resume a previous session
     --api-key <KEY>          Anthropic API key (overrides env var)
     --openai-api-key <KEY>   OpenAI API key (overrides env var)
@@ -179,7 +179,7 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 
 **Note:** Only `read_file`, `list_directory`, and `image` can access paths outside workspace when explicitly allowed in config. All other operations are workspace-only.
 
-Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `web_search`.
+Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `web_search`, `image`.
 
 ## Security
 
