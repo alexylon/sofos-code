@@ -442,19 +442,19 @@ mod tests {
         assert_eq!(text, "check out please");
 
         // Test single-quoted path with spaces
-        let (text, refs) = extract_image_references(
-            "view '/home/user/my photos/vacation.jpg' now",
+        let (text, refs) = extract_image_references("view '/home/user/my photos/vacation.jpg' now");
+        assert_eq!(
+            refs.len(),
+            1,
+            "Should detect single-quoted path with spaces"
         );
-        assert_eq!(refs.len(), 1, "Should detect single-quoted path with spaces");
         assert!(
             matches!(&refs[0], ImageReference::LocalPath(p) if p == "/home/user/my photos/vacation.jpg")
         );
         assert_eq!(text, "view now");
 
         // Test path with spaces at the end
-        let (text, refs) = extract_image_references(
-            "\"/Users/alex/test/image file.png\"",
-        );
+        let (text, refs) = extract_image_references("\"/Users/alex/test/image file.png\"");
         assert_eq!(refs.len(), 1, "Should detect quoted path at end");
         assert!(
             matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/image file.png")
@@ -465,10 +465,13 @@ mod tests {
     #[test]
     fn test_extract_mixed_quoted_and_unquoted() {
         // Mix of quoted path and unquoted path
-        let (text, refs) = extract_image_references(
-            "compare \"file with space.png\" and simple.jpg",
+        let (text, refs) =
+            extract_image_references("compare \"file with space.png\" and simple.jpg");
+        assert_eq!(
+            refs.len(),
+            2,
+            "Should detect both quoted and unquoted paths"
         );
-        assert_eq!(refs.len(), 2, "Should detect both quoted and unquoted paths");
         assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "file with space.png"));
         assert!(matches!(&refs[1], ImageReference::LocalPath(p) if p == "simple.jpg"));
         assert_eq!(text, "compare and");
@@ -477,9 +480,7 @@ mod tests {
     #[test]
     fn test_extract_quoted_non_image() {
         // Quoted text that's not an image should remain in text
-        let (text, refs) = extract_image_references(
-            "the title is \"Hello World\" and image.png",
-        );
+        let (text, refs) = extract_image_references("the title is \"Hello World\" and image.png");
         assert_eq!(refs.len(), 1, "Should only detect the actual image");
         assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "image.png"));
         assert_eq!(text, "the title is \"Hello World\" and");
@@ -488,20 +489,21 @@ mod tests {
     #[test]
     fn test_extract_unclosed_quote() {
         // Unclosed quote should be treated as regular text
-        let (text, refs) = extract_image_references(
-            "this is \"unclosed quote and image.png",
-        );
+        let (text, refs) = extract_image_references("this is \"unclosed quote and image.png");
         // The unclosed quote should make everything after it part of the text
-        assert_eq!(refs.len(), 0, "Unclosed quote should prevent image detection");
+        assert_eq!(
+            refs.len(),
+            0,
+            "Unclosed quote should prevent image detection"
+        );
         assert!(text.contains("unclosed quote and image.png"));
     }
 
     #[test]
     fn test_extract_web_url_with_spaces_quoted() {
         // Web URLs with spaces (rare but possible)
-        let (text, refs) = extract_image_references(
-            "see \"https://example.com/my image.png\" please",
-        );
+        let (text, refs) =
+            extract_image_references("see \"https://example.com/my image.png\" please");
         assert_eq!(refs.len(), 1, "Should detect quoted URL with spaces");
         assert!(
             matches!(&refs[0], ImageReference::WebUrl(u) if u == "https://example.com/my image.png")
@@ -513,19 +515,21 @@ mod tests {
     fn test_user_reported_case() {
         // Exact case from user report: path with space but no quotes
         // This will NOT work without quotes - user needs to quote it
-        let (_text, refs) = extract_image_references(
-            "/Users/alex/test/sofos_allowed/test_r copy.png",
-        );
+        let (_text, refs) =
+            extract_image_references("/Users/alex/test/sofos_allowed/test_r copy.png");
         // Without quotes, this gets split into two words
         // Only "copy.png" would be detected as an image
         assert_eq!(refs.len(), 1, "Only the second part is detected as image");
         assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "copy.png"));
 
         // With quotes, it should work
-        let (text, refs) = extract_image_references(
-            "\"/Users/alex/test/sofos_allowed/test_r copy.png\"",
+        let (text, refs) =
+            extract_image_references("\"/Users/alex/test/sofos_allowed/test_r copy.png\"");
+        assert_eq!(
+            refs.len(),
+            1,
+            "Quoted path should be detected as single image"
         );
-        assert_eq!(refs.len(), 1, "Quoted path should be detected as single image");
         assert!(
             matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png")
         );

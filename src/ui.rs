@@ -1,13 +1,14 @@
+use crate::history::DisplayMessage;
+use crate::syntax::SyntaxHighlighter;
 use colored::Colorize;
+use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
-use std::io::{self, Write};
+use crossterm::execute;
+use std::io::{self, stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-
-use crate::history::DisplayMessage;
-use crate::syntax::SyntaxHighlighter;
 
 /// Message severity levels for consistent UI feedback
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -515,4 +516,19 @@ impl UI {
         }
         result.chars().rev().collect()
     }
+}
+
+fn set_cursor_style(style: SetCursorStyle) -> io::Result<()> {
+    let mut out = stdout();
+    execute!(out, style)?;
+    out.flush()?;
+    Ok(())
+}
+
+pub fn set_safe_mode_cursor_style() -> io::Result<()> {
+    set_cursor_style(SetCursorStyle::BlinkingUnderScore)
+}
+
+pub fn set_normal_mode_cursor_style() -> io::Result<()> {
+    set_cursor_style(SetCursorStyle::DefaultUserShape)
 }

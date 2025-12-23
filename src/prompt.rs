@@ -1,3 +1,4 @@
+use crate::ui::{set_normal_mode_cursor_style, set_safe_mode_cursor_style};
 use colored::Colorize;
 use reedline::{Prompt, PromptEditMode, PromptHistorySearch};
 
@@ -12,6 +13,12 @@ impl ReplPrompt {
     }
 
     pub fn set_safe_mode(&mut self, safe_mode: bool) {
+        if safe_mode {
+            set_safe_mode_cursor_style().ok();
+        } else {
+            set_normal_mode_cursor_style().ok();
+        }
+
         self.safe_mode = safe_mode;
     }
 }

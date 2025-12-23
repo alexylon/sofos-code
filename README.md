@@ -89,8 +89,8 @@ sofos
 - `/resume` - Resume previous session
 - `/clear` - Clear conversation history
 - `/think [on|off]` - Toggle extended thinking (shows status if no arg)
-- `/s` - Safe mode (read-only, prompt: **`λ:`**)
-- `/n` - Normal mode (all tools, prompt: **`λ>`**)
+- `/s` - Safe mode (read-only, prompt: **`λ:`**, blinking underscore (`_`) cursor)
+- `/n` - Normal mode (all tools, prompt: **`λ>`**, default cursor)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
 - `ESC` - Interrupt AI response
 

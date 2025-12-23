@@ -14,17 +14,16 @@ impl CodeSearchTool {
         let env_override = std::env::var_os("SOFOS_RG_PATH").map(PathBuf::from);
 
         // Fallback search list for common macOS/Homebrew and Linux locations
-        let fallback_paths = [
-            "/opt/homebrew/bin/rg",
-            "/usr/local/bin/rg",
-            "/usr/bin/rg",
-        ];
+        let fallback_paths = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"];
 
         let try_path = |p: &PathBuf| Command::new(p).arg("--version").output();
 
         if let Some(p) = env_override {
             if try_path(&p).is_ok() {
-                return Ok(Self { workspace, rg_path: p });
+                return Ok(Self {
+                    workspace,
+                    rg_path: p,
+                });
             }
         }
 

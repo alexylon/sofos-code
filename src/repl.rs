@@ -12,7 +12,7 @@ use crate::response_handler::ResponseHandler;
 use crate::session_state::SessionState;
 use crate::tools::image::{extract_image_references, ImageLoader, ImageReference};
 use crate::tools::ToolExecutor;
-use crate::ui::UI;
+use crate::ui::{set_safe_mode_cursor_style, UI};
 use colored::Colorize;
 use crossterm::event::{KeyCode, KeyModifiers};
 use reedline::{
@@ -98,6 +98,7 @@ impl Repl {
 
         if config.safe_mode {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
+            set_safe_mode_cursor_style()?;
         }
 
         let commands: Vec<String> = crate::commands::COMMANDS
