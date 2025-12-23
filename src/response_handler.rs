@@ -78,7 +78,8 @@ impl ResponseHandler {
                 return Ok(());
             }
 
-            let (text_output, tool_uses) = self.process_content_blocks(&content_blocks);
+            let (text_output, tool_uses, had_reasoning) =
+                self.process_content_blocks(&content_blocks);
 
             // Display and store assistant's text response
             if !text_output.is_empty() {
@@ -103,6 +104,25 @@ impl ResponseHandler {
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);
                 }
+            }
+
+            // OpenAI can return reasoning/summary-only blocks; auto-continue once to get real text
+            if tool_uses.is_empty()
+                && text_output.is_empty()
+                && had_reasoning
+                && matches!(self.client, LlmClient::OpenAI(_))
+            {
+                let response = self.get_next_response(&[], display_messages).await?;
+
+                *total_input_tokens += response.usage.input_tokens;
+                *total_output_tokens += response.usage.output_tokens;
+
+                if response.content.is_empty() {
+                    break;
+                }
+
+                content_blocks = response.content;
+                continue;
             }
 
             if tool_uses.is_empty() {
@@ -170,9 +190,10 @@ impl ResponseHandler {
     fn process_content_blocks(
         &self,
         content_blocks: &[ContentBlock],
-    ) -> (Vec<String>, Vec<(String, String, serde_json::Value)>) {
+    ) -> (Vec<String>, Vec<(String, String, serde_json::Value)>, bool) {
         let mut text_output = Vec::new();
         let mut tool_uses = Vec::new();
+        let mut had_reasoning = false;
 
         for block in content_blocks {
             match block {
@@ -183,9 +204,11 @@ impl ResponseHandler {
                 }
                 ContentBlock::Thinking { thinking, .. } => {
                     self.ui.print_thinking(thinking);
+                    had_reasoning = true;
                 }
                 ContentBlock::Summary { summary } => {
                     self.ui.print_thinking(summary);
+                    had_reasoning = true;
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     tool_uses.push((id.clone(), name.clone(), input.clone()));
@@ -204,7 +227,7 @@ impl ResponseHandler {
             }
         }
 
-        (text_output, tool_uses)
+        (text_output, tool_uses, had_reasoning)
     }
 
     async fn execute_tools(
