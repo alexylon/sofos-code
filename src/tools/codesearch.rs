@@ -5,16 +5,51 @@ use std::process::Command;
 #[derive(Clone)]
 pub struct CodeSearchTool {
     workspace: PathBuf,
+    rg_path: PathBuf,
 }
 
 impl CodeSearchTool {
     pub fn new(workspace: PathBuf) -> Result<Self> {
-        match Command::new("rg").arg("--version").output() {
-            Ok(_) => Ok(Self { workspace }),
-            Err(_) => Err(SofosError::Config(
-                "ripgrep (rg) not found. Please install it: https://github.com/BurntSushi/ripgrep#installation".to_string()
-            )),
+        // Allow users to pin an explicit rg path (e.g. when PATH is sanitized in GUI apps)
+        let env_override = std::env::var_os("SOFOS_RG_PATH").map(PathBuf::from);
+
+        // Fallback search list for common macOS/Homebrew and Linux locations
+        let fallback_paths = [
+            "/opt/homebrew/bin/rg",
+            "/usr/local/bin/rg",
+            "/usr/bin/rg",
+        ];
+
+        let try_path = |p: &PathBuf| Command::new(p).arg("--version").output();
+
+        if let Some(p) = env_override {
+            if try_path(&p).is_ok() {
+                return Ok(Self { workspace, rg_path: p });
+            }
         }
+
+        let default_rg = PathBuf::from("rg");
+        if try_path(&default_rg).is_ok() {
+            return Ok(Self {
+                workspace,
+                rg_path: default_rg,
+            });
+        }
+
+        for path in fallback_paths.iter().map(PathBuf::from) {
+            if try_path(&path).is_ok() {
+                return Ok(Self {
+                    workspace,
+                    rg_path: path,
+                });
+            }
+        }
+
+        let path_env = std::env::var("PATH").unwrap_or_else(|_| "<unset>".to_string());
+        Err(SofosError::Config(format!(
+            "ripgrep (rg) not found. Checked SOFOS_RG_PATH, PATH, and common locations.\nPATH seen by Sofos: {}\nInstall ripgrep: https://github.com/BurntSushi/ripgrep#installation",
+            path_env
+        )))
     }
 
     /// Search for a pattern in the codebase using ripgrep
@@ -24,7 +59,7 @@ impl CodeSearchTool {
         file_type: Option<&str>,
         max_results: Option<usize>,
     ) -> Result<String> {
-        let mut cmd = Command::new("rg");
+        let mut cmd = Command::new(&self.rg_path);
 
         cmd.arg("--heading")
             .arg("--line-number")
@@ -39,7 +74,9 @@ impl CodeSearchTool {
         }
 
         if let Some(ft) = file_type {
-            cmd.arg("--type").arg(ft);
+            if !ft.trim().is_empty() {
+                cmd.arg("--type").arg(ft);
+            }
         }
 
         cmd.arg(pattern);
