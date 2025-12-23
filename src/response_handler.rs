@@ -85,9 +85,8 @@ impl ResponseHandler {
             if !text_output.is_empty() {
                 println!("{}", "Assistant:".bright_blue().bold());
                 for text in &text_output {
-                    self.ui.print_assistant_text(text);
+                    self.ui.print_assistant_text(text)?;
                 }
-                println!();
 
                 let combined_text = text_output.join("\n");
                 display_messages.push(DisplayMessage::AssistantMessage {
@@ -288,8 +287,8 @@ impl ResponseHandler {
                         UI::create_tool_display_message(tool_name, tool_input, &output);
 
                     if !display_output.is_empty() {
-                        println!("{}", display_output.dimmed());
-                        println!();
+                        let ui = UI::new();
+                        ui.print_tool_output(&display_output);
                     }
 
                     display_messages.push(DisplayMessage::ToolExecution {
@@ -475,8 +474,7 @@ impl ResponseHandler {
                     if let ContentBlock::Text { text } = block {
                         if !text.trim().is_empty() {
                             println!("{}", "Assistant:".bright_blue().bold());
-                            self.ui.print_assistant_text(text);
-                            println!();
+                            self.ui.print_assistant_text(text)?;
 
                             display_messages.push(DisplayMessage::AssistantMessage {
                                 content: text.clone(),

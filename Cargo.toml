@@ -1,6 +1,6 @@
 [package]
 name = "sofos"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 
 authors = ["Alexander Alexandrov"]
@@ -25,6 +25,9 @@ toml = "0.9"
 thiserror = "2"
 colored = "3"
 syntect = "5"
+# pulldown-cmark-mdcat v2.7 needs pulldown-cmark v0.12
+pulldown-cmark = "0.12"
+pulldown-cmark-mdcat = "2.7"
 similar = "2"
 crossterm = "0.29"
 reedline = "0.44"

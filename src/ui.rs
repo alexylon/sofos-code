@@ -10,6 +10,15 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use pulldown_cmark::{Options, Parser};
+use pulldown_cmark_mdcat::{
+    push_tty,
+    resources::NoopResourceHandler,
+    terminal::{TerminalProgram, TerminalSize},
+    Environment, Settings, Theme,
+};
+use syntect::parsing::SyntaxSet;
+
 /// Message severity levels for consistent UI feedback
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
@@ -130,6 +139,7 @@ impl Drop for RawModeGuard {
 }
 
 /// UI utilities for displaying messages, animations, and formatting
+#[allow(dead_code)]
 pub struct UI {
     highlighter: SyntaxHighlighter,
 }
@@ -258,14 +268,14 @@ impl UI {
         println!();
     }
 
-    pub fn display_session(&self, session: &crate::history::Session) {
+    pub fn display_session(&self, session: &crate::history::Session) -> io::Result<()> {
         if session.display_messages.is_empty() {
             println!(
                 "{}",
                 "Note: No display history available for this session.".dimmed()
             );
             println!();
-            return;
+            return Ok(());
         }
 
         println!("{}", "═".repeat(80).bright_cyan());
@@ -281,9 +291,7 @@ impl UI {
                 }
                 DisplayMessage::AssistantMessage { content } => {
                     println!("{}", "Assistant:".bright_blue().bold());
-                    let highlighted = self.highlighter.highlight_text(content);
-                    println!("{}", highlighted);
-                    println!();
+                    self.print_assistant_text(content)?;
                 }
                 DisplayMessage::ToolExecution {
                     tool_name,
@@ -296,33 +304,25 @@ impl UI {
                         ) {
                             if let Some(command) = input_val.get("command").and_then(|v| v.as_str())
                             {
-                                println!(
-                                    "{} {}",
-                                    "Executing:".bright_green().bold(),
-                                    command.bright_cyan()
-                                );
+                                self.print_tool_header(tool_name, Some(command));
                             }
                         }
                     } else {
-                        println!(
-                            "{} {}",
-                            "Using tool:".bright_yellow().bold(),
-                            tool_name.bright_yellow()
-                        );
+                        self.print_tool_header(tool_name, None);
                     }
-                    println!("{}", tool_output.dimmed());
-                    println!();
+                    self.print_tool_output(tool_output);
                 }
             }
         }
 
         println!("{}", "═".repeat(80).bright_cyan());
         println!();
+        Ok(())
     }
 
-    pub fn print_assistant_text(&self, text: &str) {
-        let highlighted = self.highlighter.highlight_text(text);
-        println!("{}", highlighted);
+    pub fn print_assistant_text(&self, text: &str) -> io::Result<()> {
+        self.print_markdown_highlighted(text)?;
+        Ok(())
     }
 
     pub fn print_thinking(&self, thinking: &str) {
@@ -331,8 +331,7 @@ impl UI {
                 "\n{}",
                 "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
             );
-            println!("{}", thinking.dimmed().italic());
-            println!();
+            println!("{}\n", thinking.dimmed().italic());
         }
     }
 
@@ -344,7 +343,7 @@ impl UI {
                     "Executing:".bright_green().bold(),
                     cmd.bright_cyan()
                 );
-                let _ = io::stdout().flush();
+                let _ = stdout().flush();
             }
         } else {
             println!(
@@ -353,6 +352,35 @@ impl UI {
                 tool_name.bright_yellow()
             );
         }
+    }
+
+    pub fn print_tool_output(&self, tool_output: &str) {
+        println!("{}\n", tool_output.dimmed());
+    }
+
+    /// Render Markdown to the current terminal with ANSI styling + syntax-highlighted fenced code blocks.
+    pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
+        let parser = Parser::new_ext(md, Options::all());
+
+        // Required by the API; current_dir is just a convenient absolute base.
+        let environment = Environment::for_local_directory(&std::env::current_dir()?)?;
+
+        let settings = Settings {
+            terminal_capabilities: TerminalProgram::detect().capabilities(),
+            terminal_size: TerminalSize::detect().unwrap_or_default(),
+            syntax_set: &SyntaxSet::load_defaults_newlines(),
+            theme: Theme::default(),
+        };
+
+        let mut out = stdout().lock();
+        push_tty(
+            &settings,
+            &environment,
+            &NoopResourceHandler,
+            &mut out,
+            parser,
+        )?;
+        out.flush()
     }
 
     pub fn run_animation_with_interrupt(
@@ -371,7 +399,7 @@ impl UI {
             let mut frame_idx = 0;
 
             print!("\n\x1B[?25l");
-            let _ = io::stdout().flush();
+            let _ = stdout().flush();
 
             while running_anim.load(Ordering::SeqCst) {
                 print!(
@@ -380,7 +408,7 @@ impl UI {
                     action_message.truecolor(0xFF, 0x99, 0x33),
                     interrupt_message.dimmed(),
                 );
-                let _ = io::stdout().flush();
+                let _ = stdout().flush();
                 frame_idx = (frame_idx + 1) % frames.len();
                 thread::sleep(Duration::from_millis(80));
             }
@@ -388,7 +416,7 @@ impl UI {
             print!("\r{}\r", " ".repeat(70));
             print!("\x1B[?25h");
             println!(); // Move to new line so next output doesn't conflict
-            let _ = io::stdout().flush();
+            let _ = stdout().flush();
         });
 
         let key_handle = thread::spawn(move || {
@@ -419,7 +447,7 @@ impl UI {
         // Final cleanup - ensure terminal is in a known good state
         let _ = crossterm::terminal::disable_raw_mode();
         print!("\x1B[?25h");
-        let _ = io::stdout().flush();
+        let _ = stdout().flush();
     }
 
     pub fn create_tool_display_message(

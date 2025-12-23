@@ -32,6 +32,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 ## Features
 
 - **Interactive REPL** - Multi-turn conversations with Claude or GPT
+- **Markdown Formatting** - AI responses with syntax highlighting for code blocks
 - **Image Vision** - Analyze local or web images
 - **Session History** - Auto-save and resume conversations
 - **Custom Instructions** - Project and personal context files

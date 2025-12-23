@@ -4,6 +4,7 @@ use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
 
+#[allow(dead_code)]
 pub struct SyntaxHighlighter {
     syntax_set: SyntaxSet,
     theme_set: ThemeSet,
@@ -17,6 +18,7 @@ impl SyntaxHighlighter {
         }
     }
 
+    #[allow(dead_code)]
     pub fn highlight_text(&self, text: &str) -> String {
         let mut result = String::new();
         let mut in_code_block = false;

@@ -584,7 +584,7 @@ impl Repl {
         );
         println!();
 
-        self.ui.display_session(&session);
+        self.ui.display_session(&session)?;
 
         Ok(())
     }
