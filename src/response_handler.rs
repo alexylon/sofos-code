@@ -10,6 +10,7 @@ use colored::Colorize;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
 /// Handles AI's responses and manages tool execution iteration
 pub struct ResponseHandler {
@@ -356,7 +357,22 @@ impl ResponseHandler {
         });
 
         let request = self.build_request();
-        let response_result = self.client.create_message(request).await;
+        let client = self.client.clone();
+        let req = request;
+        let mut request_handle = tokio::spawn(async move { client.create_message(req).await });
+
+        let response_result: Result<_> = tokio::select! {
+            res = &mut request_handle => {
+                match res {
+                    Ok(inner) => inner,
+                    Err(e) => Err(SofosError::Join(format!("{}", e))),
+                }
+            }
+            _ = Self::wait_for_interrupt(Arc::clone(&processing_interrupted)) => {
+                request_handle.abort();
+                Err(SofosError::Interrupted)
+            }
+        };
 
         // Stop animation
         processing.store(false, Ordering::Relaxed);
@@ -393,6 +409,13 @@ impl ResponseHandler {
         }
 
         response_result
+    }
+
+    /// Await the interrupt flag in an async-friendly loop (50ms poll).
+    async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
+        while !flag.load(Ordering::Relaxed) {
+            sleep(Duration::from_millis(50)).await;
+        }
     }
 
     async fn handle_max_iterations(

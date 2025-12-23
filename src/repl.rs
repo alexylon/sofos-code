@@ -22,6 +22,7 @@ use reedline::{
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
 pub struct ReplConfig {
     pub model: String,
@@ -346,7 +347,24 @@ impl Repl {
             )
         });
 
-        let response_result = runtime.block_on(self.client.create_message(initial_request));
+        let client = self.client.clone();
+        let req = initial_request;
+        let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
+
+        let response_result = runtime.block_on(async {
+            tokio::select! {
+                res = &mut request_handle => {
+                    match res {
+                        Ok(inner) => inner,
+                        Err(e) => Err(SofosError::Join(format!("{}", e)))
+                    }
+                }
+                _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
+                    request_handle.abort();
+                    Err(SofosError::Interrupted)
+                }
+            }
+        });
 
         running.store(false, Ordering::Relaxed);
         let _ = ui_handle.join();
@@ -592,5 +610,12 @@ impl Repl {
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {
         self.tool_executor.get_available_tools()
+    }
+
+    /// Await the interrupt flag in an async-friendly loop (50ms poll).
+    async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
+        while !flag.load(Ordering::Relaxed) {
+            sleep(Duration::from_millis(50)).await;
+        }
     }
 }

@@ -32,6 +32,9 @@ pub enum SofosError {
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
 
+    #[error("Task join error: {0}")]
+    Join(String),
+
     #[error("Interrupted by user")]
     Interrupted,
 
@@ -57,6 +60,7 @@ impl SofosError {
                     || msg.contains("not explicitly allowed")
                     || msg.contains("outside workspace")
             }
+            Self::Join(_) => false,
             Self::Context { source, .. } => source.is_blocked(),
             _ => false,
         }
@@ -200,6 +204,7 @@ impl SofosError {
                     None
                 }
             }
+            Self::Join(_) => None,
 
             Self::Context { source, .. } => source.hint(),
             Self::Interrupted => None,
