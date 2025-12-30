@@ -126,8 +126,13 @@ impl HistoryManager {
                     continue;
                 }
 
-                return if preview.len() > MAX_PREVIEW_LENGTH {
-                    format!("{}...", &preview[..MAX_PREVIEW_LENGTH])
+                return if preview.chars().count() > MAX_PREVIEW_LENGTH {
+                    let truncate_at = preview
+                        .char_indices()
+                        .nth(MAX_PREVIEW_LENGTH)
+                        .map(|(idx, _)| idx)
+                        .unwrap_or(preview.len());
+                    format!("{}...", &preview[..truncate_at])
                 } else {
                     preview.to_string()
                 };
@@ -381,5 +386,15 @@ mod tests {
         let preview = HistoryManager::extract_preview(&messages);
         assert_eq!(preview.len(), MAX_PREVIEW_LENGTH + 3);
         assert!(preview.ends_with("..."));
+
+        // Test UTF-8 multi-byte characters (Cyrillic)
+        let cyrillic_message = "създай текстов файл test-3.txt";
+        let messages = vec![Message::user(cyrillic_message)];
+        let preview = HistoryManager::extract_preview(&messages);
+        // Should not panic and should truncate at character boundary
+        assert!(preview.chars().count() <= MAX_PREVIEW_LENGTH + 3); // +3 for "..."
+        if preview.ends_with("...") {
+            assert!(preview.chars().count() <= MAX_PREVIEW_LENGTH + 3);
+        }
     }
 }
