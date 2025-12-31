@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::history::SessionMetadata;
+use crate::session::SessionMetadata;
 use colored::Colorize;
 use std::io::{self, Write};
 

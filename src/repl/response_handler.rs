@@ -1,9 +1,9 @@
 use crate::api::{ContentBlock, CreateMessageRequest, LlmClient};
 use crate::config::SofosConfig;
-use crate::conversation::ConversationHistory;
 use crate::error::{Result, SofosError};
-use crate::history::DisplayMessage;
-use crate::request_builder::RequestBuilder;
+use crate::repl::conversation::ConversationHistory;
+use crate::repl::request_builder::RequestBuilder;
+use crate::session::DisplayMessage;
 use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;

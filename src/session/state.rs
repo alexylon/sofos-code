@@ -1,5 +1,5 @@
-use crate::conversation::ConversationHistory;
-use crate::history::DisplayMessage;
+use crate::repl::conversation::ConversationHistory;
+use crate::session::DisplayMessage;
 
 /// Manages the state of a single REPL session
 #[derive(Clone)]

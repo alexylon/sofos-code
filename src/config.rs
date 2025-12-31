@@ -1,17 +1,11 @@
 /// Central configuration for Sofos
 #[derive(Debug, Clone)]
 pub struct SofosConfig {
-    /// Maximum number of messages to keep in conversation history
     pub max_messages: usize,
-    /// Maximum context tokens to send to API (includes system prompt and messages)
-    /// Set to 180,000 to leave buffer below API's 200,000 limit
     pub max_context_tokens: usize,
-    /// Maximum number of tool execution iterations to prevent infinite loops
     pub max_tool_iterations: u32,
-    /// Maximum file size for read operations (in bytes)
     #[allow(dead_code)]
     pub max_file_size: usize,
-    /// Maximum bash command output size (in bytes)
     #[allow(dead_code)]
     pub max_bash_output: usize,
 }
@@ -22,9 +16,38 @@ impl Default for SofosConfig {
             max_messages: 500,
             max_context_tokens: 180_000,
             max_tool_iterations: 200,
-            max_file_size: 10 * 1024 * 1024,   // 10MB
-            max_bash_output: 50 * 1024 * 1024, // 50MB
+            max_file_size: 10 * 1024 * 1024,
+            max_bash_output: 50 * 1024 * 1024,
         }
+    }
+}
+
+/// Configuration for the language model
+#[derive(Clone)]
+pub struct ModelConfig {
+    pub model: String,
+    pub max_tokens: u32,
+    pub enable_thinking: bool,
+    pub thinking_budget: u32,
+}
+
+impl ModelConfig {
+    pub fn new(
+        model: String,
+        max_tokens: u32,
+        enable_thinking: bool,
+        thinking_budget: u32,
+    ) -> Self {
+        Self {
+            model,
+            max_tokens,
+            enable_thinking,
+            thinking_budget,
+        }
+    }
+
+    pub fn set_thinking(&mut self, enabled: bool) {
+        self.enable_thinking = enabled;
     }
 }
 

@@ -14,18 +14,18 @@ Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API.
 
 ### Key Design Decisions
 
-1. **Dual Session Storage Format** (src/history.rs)
+1. **Dual Session Storage Format** (src/session/history.rs)
    - `api_messages`: Anthropic API format for continuing conversations
    - `display_messages`: UI-friendly format for showing conversation history
    - This separation ensures Claude sees proper API format while users see original UI
 
-2. **Tool Calling Pattern** (src/repl.rs)
+2. **Tool Calling Pattern** (src/repl/mod.rs)
    - Assistant returns content blocks (text + tool_use)
    - REPL executes tools and collects results
    - Results sent back as user message with tool_result blocks
    - **Loop-based handling** allows Claude to use multiple tools in sequence iteratively
 
-3. **Two-Level Instructions** (src/history.rs)
+3. **Two-Level Instructions** (src/session/history.rs)
    - `.sofosrc`: Project-level, version controlled
    - `.sofos/instructions.md`: Personal, gitignored
    - Both appended to system prompt at startup
@@ -43,27 +43,47 @@ Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API.
 
 ```
 src/
-├── api/                    # Anthropic API integration
-│   ├── client.rs          # HTTP client for Claude API
-│   ├── morph.rs           # Morph Apply API client (optional)
-│   ├── types.rs           # Message types and serialization
-│   └── mod.rs
-├── tools/                  # Tool implementations
-│   ├── filesystem.rs      # File operations (read, write, list, etc)
-│   ├── bashexec.rs        # Sandboxed bash execution
-│   ├── codesearch.rs      # Ripgrep integration
-│   ├── permissions.rs     # 3-tier command permission system
-│   ├── types.rs           # Tool definitions for API
-│   └── mod.rs
-├── conversation.rs         # Message history management
-├── diff.rs                 # Contextual diff generation and display
-├── history.rs              # Session persistence + custom instructions
-├── repl.rs                 # Main REPL loop and display logic
-├── syntax.rs               # Markdown/code syntax highlighting
-├── cli.rs                  # Command-line argument parsing
-├── error.rs                # Error types
-├── session_selector.rs     # TUI for session selection
-└── main.rs                 # Entry point
+├── main.rs              # Entry point
+├── cli.rs               # CLI argument parsing
+├── error.rs             # Error types
+├── error_ext.rs         # Error extensions
+├── config.rs            # Configuration (SofosConfig, ModelConfig)
+│
+├── api/                 # API clients
+│   ├── anthropic.rs     # Claude API client
+│   ├── openai.rs        # OpenAI API client
+│   ├── morph.rs         # Morph Apply API client
+│   ├── types.rs         # Message types and serialization
+│   └── utils.rs         # API utilities
+│
+├── repl/                # REPL components
+│   ├── mod.rs           # Main REPL loop and Repl struct
+│   ├── conversation.rs  # Message history management
+│   ├── prompt.rs        # Prompt rendering
+│   ├── request_builder.rs   # API request construction
+│   └── response_handler.rs  # Response processing
+│
+├── session/             # Session management
+│   ├── history.rs       # Session persistence + custom instructions
+│   ├── state.rs         # Runtime session state
+│   └── selector.rs      # Session selection TUI
+│
+├── tools/               # Tool implementations
+│   ├── filesystem.rs    # File operations (read, write, list, etc)
+│   ├── bashexec.rs      # Sandboxed bash execution
+│   ├── codesearch.rs    # Ripgrep integration
+│   ├── image.rs         # Image handling
+│   ├── permissions.rs   # 3-tier command permission system
+│   ├── types.rs         # Tool definitions for API
+│   └── utils.rs         # Tool utilities
+│
+├── ui/                  # UI components
+│   ├── mod.rs           # Main UI utilities and display logic
+│   ├── syntax.rs        # Markdown/code syntax highlighting
+│   └── diff.rs          # Contextual diff generation and display
+│
+└── commands/            # Built-in commands
+    └── builtin.rs       # Command implementations
 ```
 
 ### Key Files
@@ -73,25 +93,28 @@ src/
 - Handles serialization/deserialization for Anthropic API
 - Supports both regular and server-side tools (like web_search)
 
-**src/diff.rs**
+**src/ui/diff.rs**
 - Generate contextual diffs showing only changed code blocks
 - Uses `similar` crate for accurate line-by-line diffing
 - Formats output with colored backgrounds (red for deletions, blue for additions)
 - Context lines (default: 2) show unchanged code around changes
 - Used by morph_edit_file tool to display what changed
 
-**src/history.rs**
+**src/session/history.rs**
 - SessionMetadata: Preview and timestamps for session list
 - Session: Dual storage (api_messages + display_messages)
 - DisplayMessage: Enum for user messages, assistant responses, and tool executions
 
-**src/repl.rs**
+**src/repl/mod.rs**
 - Main event loop (run method)
-- handle_response: Recursively processes assistant responses and tool calls
-- display_session: Reconstructs conversation UI when resuming
-- Max recursion depth: 50 (prevents infinite loops)
+- Manages REPL state and user interaction
+- Coordinates conversation, tools, and UI
 
-**src/conversation.rs**
+**src/repl/response_handler.rs**
+- Iteratively processes assistant responses and tool calls
+- Max iterations: 200 (prevents infinite loops)
+
+**src/repl/conversation.rs**
 - Manages in-memory message history
 - Trims to MAX_MESSAGES (500) to prevent token overflow
 - Builds system prompt with features list and custom instructions
@@ -222,7 +245,7 @@ src/
 
 **Problem:** Claude can make infinite tool calls if it gets stuck in a loop
 
-**Solution:** (repl.rs:handle_response)
+**Solution:** (src/repl/response_handler.rs)
 - Use an **iterative loop** instead of recursion for constant stack space
 - Track iteration count in the loop
 - MAX_TOOL_ITERATIONS = 200

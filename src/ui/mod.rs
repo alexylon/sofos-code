@@ -1,5 +1,9 @@
-use crate::history::DisplayMessage;
-use crate::syntax::SyntaxHighlighter;
+pub mod diff;
+pub mod syntax;
+
+use crate::session::history::Session;
+use crate::session::DisplayMessage;
+use crate::ui::syntax::SyntaxHighlighter;
 use colored::Colorize;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -268,7 +272,7 @@ impl UI {
         println!();
     }
 
-    pub fn display_session(&self, session: &crate::history::Session) -> io::Result<()> {
+    pub fn display_session(&self, session: &Session) -> io::Result<()> {
         if session.display_messages.is_empty() {
             println!(
                 "{}",

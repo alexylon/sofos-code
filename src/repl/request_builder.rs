@@ -1,6 +1,6 @@
 use crate::api::LlmClient::{Anthropic, OpenAI};
 use crate::api::{CreateMessageRequest, LlmClient, Tool};
-use crate::conversation::ConversationHistory;
+use crate::repl::conversation::ConversationHistory;
 
 pub struct RequestBuilder<'a> {
     client: &'a LlmClient,

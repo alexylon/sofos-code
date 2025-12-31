@@ -246,7 +246,52 @@ cargo build --release         # Build release
 RUST_LOG=debug sofos          # Debug logging
 ```
 
-**Structure:** `src/` (api, tools, commands, repl, ui, conversation, history, config, etc.), `tests/`, `assets/`, `.sofos/` (gitignored), `.sofosrc` (version controlled)
+**Structure:**
+
+```
+src/
+├── main.rs              # Entry point
+├── cli.rs               # CLI argument parsing
+├── error.rs             # Error types
+├── error_ext.rs         # Error extensions
+├── config.rs            # Configuration (SofosConfig, ModelConfig)
+│
+├── api/                 # API clients
+│   ├── anthropic.rs     # Claude API client
+│   ├── openai.rs        # OpenAI API client
+│   ├── morph.rs         # Morph Apply API client
+│   ├── types.rs         # Message types and serialization
+│   └── utils.rs         # API utilities
+│
+├── repl/                # REPL components
+│   ├── mod.rs           # Main REPL loop
+│   ├── conversation.rs  # Message history management
+│   ├── prompt.rs        # Prompt rendering
+│   ├── request_builder.rs   # API request construction
+│   └── response_handler.rs  # Response processing
+│
+├── session/             # Session management
+│   ├── history.rs       # Session persistence
+│   ├── state.rs         # Runtime session state
+│   └── selector.rs      # Session selection TUI
+│
+├── tools/               # Tool implementations
+│   ├── filesystem.rs    # File operations
+│   ├── bashexec.rs      # Bash execution
+│   ├── codesearch.rs    # Code search (ripgrep)
+│   ├── image.rs         # Image handling
+│   ├── permissions.rs   # Permission system
+│   ├── types.rs         # Tool definitions
+│   └── utils.rs         # Tool utilities
+│
+├── ui/                  # UI components
+│   ├── mod.rs           # Main UI utilities
+│   ├── syntax.rs        # Syntax highlighting
+│   └── diff.rs          # Diff generation
+│
+└── commands/            # Built-in commands
+    └── builtin.rs       # Command implementations
+```
 
 See `.sofosrc` for detailed conventions.
 

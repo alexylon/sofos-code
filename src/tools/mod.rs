@@ -8,8 +8,8 @@ pub mod types;
 mod utils;
 
 use crate::api::MorphClient;
-use crate::diff;
 use crate::error::{Result, SofosError};
+use crate::ui::diff;
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
 use filesystem::FileSystemTool;

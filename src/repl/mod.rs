@@ -1,15 +1,19 @@
+pub mod conversation;
+mod prompt;
+mod request_builder;
+mod response_handler;
+
+pub use conversation::ConversationHistory;
+pub use prompt::ReplPrompt;
+pub use request_builder::RequestBuilder;
+pub use response_handler::ResponseHandler;
+
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlock, MorphClient};
 use crate::commands::{Command, CommandResult};
-use crate::config::{NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
-use crate::conversation::ConversationHistory;
+use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
-use crate::history::{DisplayMessage, HistoryManager};
-use crate::model_config::ModelConfig;
-use crate::prompt::ReplPrompt;
-use crate::request_builder::RequestBuilder;
-use crate::response_handler::ResponseHandler;
-use crate::session_state::SessionState;
+use crate::session::{DisplayMessage, HistoryManager, SessionState};
 use crate::tools::image::{extract_image_references, ImageLoader, ImageReference};
 use crate::tools::ToolExecutor;
 use crate::ui::{set_safe_mode_cursor_style, UI};
@@ -483,7 +487,7 @@ impl Repl {
             return Ok(());
         }
 
-        let selected_id = crate::session_selector::select_session(sessions)?;
+        let selected_id = crate::session::select_session(sessions)?;
 
         if let Some(session_id) = selected_id {
             self.load_session_by_id(&session_id)?;

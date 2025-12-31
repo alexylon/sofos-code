@@ -2,19 +2,10 @@ mod api;
 mod cli;
 mod commands;
 mod config;
-mod conversation;
-mod diff;
 mod error;
 mod error_ext;
-mod history;
-mod model_config;
-mod prompt;
 mod repl;
-mod request_builder;
-mod response_handler;
-mod session_selector;
-mod session_state;
-mod syntax;
+mod session;
 mod tools;
 mod ui;
 
@@ -23,8 +14,8 @@ use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
 use error::Result;
-use history::HistoryManager;
 use repl::{Repl, ReplConfig};
+use session::HistoryManager;
 use std::env;
 use ui::UI;
 
@@ -115,7 +106,7 @@ fn main() -> Result<()> {
         let history_manager = HistoryManager::new(workspace)?;
         let sessions = history_manager.list_sessions()?;
 
-        if let Some(session_id) = session_selector::select_session(sessions)? {
+        if let Some(session_id) = session::select_session(sessions)? {
             repl.load_session_by_id(&session_id)?;
             println!();
         }
