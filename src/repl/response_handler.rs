@@ -23,6 +23,7 @@ pub struct ResponseHandler {
     enable_thinking: bool,
     thinking_budget: u32,
     config: SofosConfig,
+    available_tools: Vec<crate::api::Tool>,
 }
 
 impl ResponseHandler {
@@ -34,6 +35,7 @@ impl ResponseHandler {
         max_tokens: u32,
         enable_thinking: bool,
         thinking_budget: u32,
+        available_tools: Vec<crate::api::Tool>,
     ) -> Self {
         Self {
             client,
@@ -45,6 +47,7 @@ impl ResponseHandler {
             enable_thinking,
             thinking_budget,
             config: SofosConfig::default(),
+            available_tools,
         }
     }
 
@@ -501,7 +504,7 @@ impl ResponseHandler {
     }
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {
-        self.tool_executor.get_available_tools()
+        self.available_tools.clone()
     }
 
     fn build_request(&self) -> CreateMessageRequest {

@@ -32,6 +32,9 @@ pub enum SofosError {
     #[error("Tool execution error: {0}")]
     ToolExecution(String),
 
+    #[error("MCP error: {0}")]
+    McpError(String),
+
     #[error("Task join error: {0}")]
     Join(String),
 
@@ -60,6 +63,7 @@ impl SofosError {
                     || msg.contains("not explicitly allowed")
                     || msg.contains("outside workspace")
             }
+            Self::McpError(_) => false,
             Self::Join(_) => false,
             Self::Context { source, .. } => source.is_blocked(),
             _ => false,
@@ -200,6 +204,18 @@ impl SofosError {
                     Some(
                         "Set MORPH_API_KEY environment variable to enable fast editing".to_string(),
                     )
+                } else {
+                    None
+                }
+            }
+            Self::McpError(msg) => {
+                if msg.contains("Failed to connect") || msg.contains("Failed to start") {
+                    Some(
+                        "Check that the MCP server command/URL is correct and accessible"
+                            .to_string(),
+                    )
+                } else if msg.contains("Failed to list tools") || msg.contains("Failed to parse") {
+                    Some("The MCP server may be incompatible or misconfigured".to_string())
                 } else {
                     None
                 }

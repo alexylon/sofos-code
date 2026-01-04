@@ -9,6 +9,7 @@ mod utils;
 
 use crate::api::MorphClient;
 use crate::error::{Result, SofosError};
+use crate::mcp::McpManager;
 use crate::ui::diff;
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
@@ -31,6 +32,7 @@ pub struct ToolExecutor {
     code_search_tool: Option<CodeSearchTool>,
     bash_executor: BashExecutor,
     morph_client: Option<MorphClient>,
+    mcp_manager: Option<McpManager>,
     safe_mode: bool,
 }
 
@@ -38,6 +40,7 @@ impl ToolExecutor {
     pub fn new(
         workspace: std::path::PathBuf,
         morph_client: Option<MorphClient>,
+        mcp_manager: Option<McpManager>,
         safe_mode: bool,
     ) -> Result<Self> {
         let code_search_tool = match CodeSearchTool::new(workspace.clone()) {
@@ -53,6 +56,7 @@ impl ToolExecutor {
             code_search_tool,
             bash_executor: BashExecutor::new(workspace)?,
             morph_client,
+            mcp_manager,
             safe_mode,
         })
     }
@@ -69,7 +73,7 @@ impl ToolExecutor {
         self.safe_mode = safe_mode;
     }
 
-    pub fn get_available_tools(&self) -> Vec<crate::api::Tool> {
+    pub async fn get_available_tools(&self) -> Vec<crate::api::Tool> {
         let mut tools = if self.safe_mode {
             get_read_only_tools()
         } else if self.has_morph() {
@@ -82,10 +86,23 @@ impl ToolExecutor {
             add_code_search_tool(&mut tools);
         }
 
+        if let Some(mcp_manager) = &self.mcp_manager {
+            if let Ok(mcp_tools) = mcp_manager.get_all_tools().await {
+                tools.extend(mcp_tools);
+            }
+        }
+
         tools
     }
 
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<String> {
+        // Check if this is an MCP tool first
+        if let Some(mcp_manager) = &self.mcp_manager {
+            if mcp_manager.is_mcp_tool(tool_name).await {
+                return mcp_manager.execute_tool(tool_name, input).await;
+            }
+        }
+
         let tool = ToolName::from_str(tool_name)?;
 
         match tool {

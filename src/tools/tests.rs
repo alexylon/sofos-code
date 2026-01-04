@@ -13,7 +13,7 @@ async fn test_read_file_blocks_relative_escape() {
     )
     .unwrap();
 
-    let executor = ToolExecutor::new(workspace.path().to_path_buf(), None, false).unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_path_buf(), None, None, false).unwrap();
 
     let result = executor
         .execute(
@@ -54,7 +54,7 @@ async fn test_read_file_allows_explicit_outside_path_with_glob() {
     )
     .unwrap();
 
-    let executor = ToolExecutor::new(workspace.path().to_path_buf(), None, false).unwrap();
+    let executor = ToolExecutor::new(workspace.path().to_path_buf(), None, None, false).unwrap();
 
     // Should allow access via glob pattern
     let result = executor

@@ -4,6 +4,8 @@
 
 A blazingly fast, interactive AI coding assistant powered by Claude or GPT, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
+Tested on macOS but should work on Linux and Windows as well.
+
 <div align="center"><img src="/assets/sofos_code.png" style="width: 800px;" alt="Sofos Code"></div>
 
 ## Table of Contents
@@ -20,6 +22,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 - [Custom Instructions](#custom-instructions)
 - [Session History](#session-history)
 - [Available Tools](#available-tools)
+- [MCP Servers](#mcp-servers)
 - [Security](#security)
   - [Configuration](#configuration)
 - [Development](#development)
@@ -178,9 +181,20 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 **Image Vision:**
 - `image` - View and analyze images (JPEG, PNG, GIF, WebP)
 
+**MCP Tools:**
+- Tools from configured MCP servers (prefixed with server name, e.g., `filesystem_read_file`)
+
 **Note:** Only `read_file`, `list_directory`, and `image` can access paths outside workspace when explicitly allowed in config. All other operations are workspace-only.
 
 Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `web_search`, `image`.
+
+## MCP Servers
+
+Connect to external tools via MCP (Model Context Protocol). Configure in `~/.sofos/config.toml` or `.sofos/config.local.toml` (see the example in the "Configuration" section).
+
+Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`). See `examples/mcp_quickstart.md`.
+
+**Popular servers:** https://github.com/modelcontextprotocol/servers
 
 ## Security
 
@@ -229,6 +243,24 @@ ask = [
   # Only for Bash commands (prompts for approval)
   "Bash(unknown_tool)",
 ]
+
+[mcpServers.company-internal]
+command = "/usr/local/bin/company-mcp-server"
+args = ["--config", "/etc/company/mcp-config.json"]
+env = { "COMPANY_API_URL" = "https://internal.company.com" }
+
+[mcpServers.filesystem]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
+
+[mcpServers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }
+
+[mcpServers.api]
+url = "https://api.example.com/mcp"
+headers = { "Authorization" = "Bearer token123" }
 ```
 
 **Rules:**
@@ -262,6 +294,13 @@ src/
 │   ├── morph.rs         # Morph Apply API client
 │   ├── types.rs         # Message types and serialization
 │   └── utils.rs         # API utilities
+│
+├── mcp/                 # MCP (Model Context Protocol) integration
+│   ├── mod.rs           # MCP module exports
+│   ├── config.rs        # MCP server configuration loading
+│   ├── protocol.rs      # MCP protocol types (JSON-RPC, tools)
+│   ├── client.rs        # MCP client implementations (stdio, HTTP)
+│   └── manager.rs       # MCP server connection management
 │
 ├── repl/                # REPL components
 │   ├── mod.rs           # Main REPL loop

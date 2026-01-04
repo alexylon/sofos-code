@@ -13,6 +13,7 @@ use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlo
 use crate::commands::{Command, CommandResult};
 use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
+use crate::mcp::McpManager;
 use crate::session::{DisplayMessage, HistoryManager, SessionState};
 use crate::tools::image::{extract_image_references, ImageLoader, ImageReference};
 use crate::tools::ToolExecutor;
@@ -65,6 +66,7 @@ pub struct Repl {
     model_config: ModelConfig,
     session_state: SessionState,
     safe_mode: bool,
+    available_tools: Vec<crate::api::Tool>,
 }
 
 impl Repl {
@@ -74,7 +76,29 @@ impl Repl {
         workspace: PathBuf,
         morph_client: Option<MorphClient>,
     ) -> Result<Self> {
-        let tool_executor = ToolExecutor::new(workspace.clone(), morph_client, config.safe_mode)?;
+        // Initialize MCP manager
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
+
+        let mcp_manager = runtime.block_on(async {
+            match McpManager::new(workspace.clone()).await {
+                Ok(manager) => {
+                    println!("{}", "MCP servers initialized".bright_green());
+                    Some(manager)
+                }
+                Err(e) => {
+                    eprintln!("Warning: Failed to initialize MCP manager: {}", e);
+                    None
+                }
+            }
+        });
+
+        let tool_executor = ToolExecutor::new(
+            workspace.clone(),
+            morph_client,
+            mcp_manager,
+            config.safe_mode,
+        )?;
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
@@ -154,7 +178,7 @@ impl Repl {
 
         let ui = UI::new();
 
-        Ok(Self {
+        let mut repl = Self {
             client,
             tool_executor,
             history_manager,
@@ -165,7 +189,15 @@ impl Repl {
             model_config,
             session_state,
             safe_mode: config.safe_mode,
-        })
+            available_tools: Vec::new(),
+        };
+
+        // Initialize available tools (needs async)
+        let available_tools =
+            runtime.block_on(async { repl.tool_executor.get_available_tools().await });
+        repl.available_tools = available_tools;
+
+        Ok(repl)
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -392,6 +424,7 @@ impl Repl {
             self.model_config.max_tokens,
             self.model_config.enable_thinking,
             self.model_config.thinking_budget,
+            self.available_tools.clone(),
         );
 
         match runtime.block_on(handler.handle_response(
@@ -552,6 +585,8 @@ impl Repl {
         if !self.safe_mode {
             self.safe_mode = true;
             self.tool_executor.set_safe_mode(true);
+            self.refresh_available_tools();
+
             self.session_state
                 .conversation
                 .add_user_message(SAFE_MODE_MESSAGE.to_string());
@@ -563,10 +598,19 @@ impl Repl {
         if self.safe_mode {
             self.safe_mode = false;
             self.tool_executor.set_safe_mode(false);
+            self.refresh_available_tools();
+
             self.session_state
                 .conversation
                 .add_user_message(NORMAL_MODE_MESSAGE.to_string());
             self.prompt.set_safe_mode(false);
+        }
+    }
+
+    fn refresh_available_tools(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Runtime::new() {
+            self.available_tools =
+                runtime.block_on(async { self.tool_executor.get_available_tools().await });
         }
     }
 
@@ -614,7 +658,7 @@ impl Repl {
     }
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {
-        self.tool_executor.get_available_tools()
+        self.available_tools.clone()
     }
 
     /// Await the interrupt flag in an async-friendly loop (50ms poll).

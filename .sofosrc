@@ -56,6 +56,13 @@ src/
 │   ├── types.rs         # Message types and serialization
 │   └── utils.rs         # API utilities
 │
+├── mcp/                 # MCP (Model Context Protocol) integration
+│   ├── mod.rs           # MCP module exports
+│   ├── config.rs        # MCP server configuration loading
+│   ├── protocol.rs      # MCP protocol types (JSON-RPC, tools)
+│   ├── client.rs        # MCP client implementations (stdio, HTTP)
+│   └── manager.rs       # MCP server connection management
+│
 ├── repl/                # REPL components
 │   ├── mod.rs           # Main REPL loop and Repl struct
 │   ├── conversation.rs  # Message history management
