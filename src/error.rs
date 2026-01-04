@@ -62,6 +62,11 @@ impl SofosError {
                     || msg.contains("not allowed")
                     || msg.contains("not explicitly allowed")
                     || msg.contains("outside workspace")
+                    || msg.contains("absolute paths")
+                    || msg.contains("contains '..'")
+                    || msg.contains("tilde paths")
+                    || msg.contains("output redirection")
+                    || msg.contains("here-doc")
             }
             Self::McpError(_) => false,
             Self::Join(_) => false,
