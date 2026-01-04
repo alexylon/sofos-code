@@ -26,6 +26,7 @@ fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),
         )
+        .without_time()
         .init();
 
     let cli = Cli::parse();

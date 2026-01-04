@@ -82,10 +82,7 @@ impl Repl {
 
         let mcp_manager = runtime.block_on(async {
             match McpManager::new(workspace.clone()).await {
-                Ok(manager) => {
-                    println!("{}", "MCP servers initialized".bright_green());
-                    Some(manager)
-                }
+                Ok(manager) => Some(manager),
                 Err(e) => {
                     eprintln!("Warning: Failed to initialize MCP manager: {}", e);
                     None

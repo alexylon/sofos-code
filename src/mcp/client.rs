@@ -116,7 +116,7 @@ impl StdioClient {
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::null());
 
         for (key, value) in env_vars {
             cmd.env(key, value);

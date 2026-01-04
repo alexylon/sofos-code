@@ -2,6 +2,7 @@ use crate::error::{Result, SofosError};
 use crate::mcp::client::McpClient;
 use crate::mcp::config::load_mcp_config;
 use crate::mcp::protocol::{CallToolResult, ToolContent};
+use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,12 +27,19 @@ impl McpManager {
                     // Get tools from this server
                     match client.list_tools().await {
                         Ok(tools) => {
+                            let tool_count = tools.len();
                             for tool in tools {
                                 // Prefix tool name with server name to avoid conflicts
                                 let prefixed_name = format!("{}_{}", server_name, tool.name);
                                 tool_to_server.insert(prefixed_name, server_name.clone());
                             }
                             clients.insert(server_name.clone(), client);
+                            println!(
+                                "{} MCP server '{}' initialized ({} tools)",
+                                "✓".bright_green(),
+                                server_name.bright_cyan(),
+                                tool_count
+                            );
                         }
                         Err(e) => {
                             eprintln!(
@@ -102,17 +110,14 @@ impl McpManager {
             SofosError::McpError(format!("MCP server '{}' not connected", server_name))
         })?;
 
-        // Extract the original tool name (remove server prefix)
         let original_tool_name = tool_name
             .strip_prefix(&format!("{}_", server_name))
             .unwrap_or(tool_name);
 
-        // Call the tool
         let result = client
             .call_tool(original_tool_name, Some(input.clone()))
             .await?;
 
-        // Format the result
         Ok(format_tool_result(result))
     }
 
