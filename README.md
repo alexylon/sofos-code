@@ -44,6 +44,7 @@ Tested on macOS but should work on Linux and Windows as well.
 - **Code Search** - Fast regex search with ripgrep
 - **Web Search** - Real-time info via Claude's/OpenAI's native search
 - **Bash Execution** - Run tests and builds (read-only, sandboxed)
+- **MCP Integration** - Connect to external tools via Model Context Protocol
 - **Visual Diffs** - Colored change display
 - **Iterative Tools** - Up to 200 tool calls per request
 - **Cost Tracking** - Session token usage and cost estimates
