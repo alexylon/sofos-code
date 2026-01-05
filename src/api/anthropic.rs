@@ -144,7 +144,6 @@ fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
                     .into_iter()
                     .filter_map(|block| match block {
                         MessageContentBlock::Summary { .. } => None,
-                        MessageContentBlock::WebSearchToolResult { .. } => None,
                         other => Some(other),
                     })
                     .collect();
