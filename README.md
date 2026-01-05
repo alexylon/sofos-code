@@ -24,7 +24,7 @@ Tested on macOS but should work on Linux and Windows as well.
 - [Available Tools](#available-tools)
 - [MCP Servers](#mcp-servers)
 - [Security](#security)
-  - [Configuration](#configuration)
+- [Configuration](#configuration)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Morph Integration](#morph-integration)
@@ -156,7 +156,7 @@ The `--thinking-budget` parameter only applies to Claude models.
 
 ## Custom Instructions
 
-**`.sofosrc`** (project root, version controlled) - Team-wide conventions, architecture  
+**`.sofosrc`** (project root, version controlled) - Team-wide conventions, architecture (see this project's `.sofosrc` for example)
 **`.sofos/instructions.md`** (gitignored) - Personal preferences
 
 Both loaded at startup and appended to system prompt.
@@ -211,7 +211,7 @@ Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`).
 2. **Forbidden (always blocked):** rm, mv, cp, chmod, sudo, mkdir, cd, kill, shutdown
 3. **Ask (prompt user):** Unknown commands require approval; can be remembered in config
 
-### Configuration
+## Configuration
 
 Permissions are stored in `.sofos/config.local.toml` (workspace-specific, gitignored) or `~/.sofos/config.toml` (global, optional). Local config overrides global.
 
@@ -250,10 +250,6 @@ command = "/usr/local/bin/company-mcp-server"
 args = ["--config", "/etc/company/mcp-config.json"]
 env = { "COMPANY_API_URL" = "https://internal.company.com" }
 
-[mcpServers.filesystem]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
-
 [mcpServers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
@@ -264,12 +260,14 @@ url = "https://api.example.com/mcp"
 headers = { "Authorization" = "Bearer token123" }
 ```
 
-**Rules:**
+**Rules\*:**
 - Workspace files: allowed by default unless in `deny` list
 - Outside workspace: denied by default unless in `allow` list
 - Glob patterns supported: `*` (single level), `**` (recursive)
 - Tilde expansion: `~` → home directory
 - `ask` only works for Bash commands, not Read permissions
+
+\* These rules do not restrict MCP server command paths
 
 ## Development
 

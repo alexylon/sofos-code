@@ -322,7 +322,7 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                             ..
                         } => {
                             parts.push(text_part(
-                                "input_text",
+                                text_type,
                                 &format!("Tool result for {}:\n{}", tool_use_id, tool_content),
                             ));
                         }
@@ -350,24 +350,20 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                             );
                             parts.push(text_part("input_text", &search_summary));
                         }
-                        MessageContentBlock::Image { source, .. } => {
-                            // OpenAI Responses API image handling - encode as URL or skip for base64
-                            match source {
-                                crate::api::ImageSource::Url { url } => {
-                                    parts.push(json!({
-                                        "type": "input_image",
-                                        "image_url": url
-                                    }));
-                                }
-                                crate::api::ImageSource::Base64 { media_type, data } => {
-                                    // OpenAI accepts base64 images as data URLs
-                                    parts.push(json!({
-                                        "type": "input_image",
-                                        "image_url": format!("data:{};base64,{}", media_type, data)
-                                    }));
-                                }
+                        MessageContentBlock::Image { source, .. } => match source {
+                            ImageSource::Url { url } => {
+                                parts.push(json!({
+                                    "type": "input_image",
+                                    "image_url": url
+                                }));
                             }
-                        }
+                            ImageSource::Base64 { media_type, data } => {
+                                parts.push(json!({
+                                    "type": "input_image",
+                                    "image_url": format!("data:{};base64,{}", media_type, data)
+                                }));
+                            }
+                        },
                     }
                 }
             }

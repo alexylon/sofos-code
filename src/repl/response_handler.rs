@@ -84,7 +84,6 @@ impl ResponseHandler {
             let (text_output, tool_uses, had_reasoning) =
                 self.process_content_blocks(&content_blocks);
 
-            // Display and store assistant's text response
             if !text_output.is_empty() {
                 println!("{}", "Assistant:".bright_blue().bold());
                 for text in &text_output {
@@ -97,7 +96,6 @@ impl ResponseHandler {
                 });
             }
 
-            // Store assistant response in conversation
             if !content_blocks.is_empty() {
                 let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
                     .iter()
@@ -282,12 +280,12 @@ impl ResponseHandler {
                         eprintln!(
                             "=== Tool {} succeeded, output length: {} ===",
                             i + 1,
-                            output.len()
+                            output.text().len()
                         );
                     }
 
                     let display_output =
-                        UI::create_tool_display_message(tool_name, tool_input, &output);
+                        UI::create_tool_display_message(tool_name, tool_input, output.text());
 
                     if !display_output.is_empty() {
                         let ui = UI::new();
@@ -300,15 +298,26 @@ impl ResponseHandler {
                         tool_output: display_output.clone(),
                     });
 
-                    // Collect tool result for API
                     tool_results.push(crate::api::MessageContentBlock::ToolResult {
                         tool_use_id: tool_id.clone(),
-                        content: output.clone(),
+                        content: output.text().to_string(),
                         cache_control: None,
                     });
 
-                    if output.starts_with("File deletion cancelled by user")
-                        || output.starts_with("Directory deletion cancelled by user")
+                    for image in output.images() {
+                        tool_results.push(crate::api::MessageContentBlock::Image {
+                            source: crate::api::ImageSource::Base64 {
+                                media_type: image.mime_type.clone(),
+                                data: image.base64_data.clone(),
+                            },
+                            cache_control: None,
+                        });
+                    }
+
+                    if output.text().starts_with("File deletion cancelled by user")
+                        || output
+                            .text()
+                            .starts_with("Directory deletion cancelled by user")
                     {
                         user_cancelled = true;
                         break;
@@ -399,11 +408,10 @@ impl ResponseHandler {
             }
         };
 
-        // Stop animation
-        processing.store(false, Ordering::Relaxed);
-        let _ = ui_handle.join();
+        processing.store(false, Ordering::SeqCst);
+        ui_handle.join().ok();
 
-        if processing_interrupted.load(Ordering::Relaxed) {
+        if processing_interrupted.load(Ordering::SeqCst) {
             println!(
                 "\n{}",
                 "Processing interrupted by user. You can now provide additional guidance."

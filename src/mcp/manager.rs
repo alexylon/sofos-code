@@ -8,6 +8,34 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// Structured tool result that can contain both text and image data
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub text: String,
+    pub images: Vec<ImageData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageData {
+    pub mime_type: String,
+    pub base64_data: String,
+}
+
+impl ToolResult {
+    #[allow(dead_code)]
+    pub fn text_only(text: String) -> Self {
+        Self {
+            text,
+            images: Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
+}
+
 /// Manages multiple MCP server connections and their tools
 pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, McpClient>>>,
@@ -31,7 +59,7 @@ impl McpManager {
                             for tool in tools {
                                 // Prefix tool name with server name to avoid conflicts
                                 let prefixed_name = format!("{}_{}", server_name, tool.name);
-                                tool_to_server.insert(prefixed_name, server_name.clone());
+                                tool_to_server.insert(prefixed_name, server_name.to_string());
                             }
                             clients.insert(server_name.clone(), client);
                             println!(
@@ -97,7 +125,11 @@ impl McpManager {
     }
 
     /// Execute an MCP tool call
-    pub async fn execute_tool(&self, tool_name: &str, input: &serde_json::Value) -> Result<String> {
+    pub async fn execute_tool(
+        &self,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Result<ToolResult> {
         let tool_to_server = self.tool_to_server.lock().await;
         let clients = self.clients.lock().await;
 
@@ -128,41 +160,49 @@ impl McpManager {
     }
 }
 
-fn format_tool_result(result: CallToolResult) -> String {
-    let mut output = String::new();
+fn format_tool_result(result: CallToolResult) -> ToolResult {
+    let mut text_output = String::new();
+    let mut images = Vec::new();
 
     if result.is_error == Some(true) {
-        output.push_str("Error from MCP tool:\n");
+        text_output.push_str("Error from MCP tool:\n");
     }
 
     for content in result.content {
         match content {
             ToolContent::Text { text } => {
-                output.push_str(&text);
-                output.push('\n');
+                text_output.push_str(&text);
+                text_output.push('\n');
             }
             ToolContent::Image { data, mime_type } => {
-                output.push_str(&format!("[Image: {} ({})]\n", data, mime_type));
+                let size_kb = (data.len() * 3 / 4) / 1024;
+                text_output.push_str(&format!("[Image: {} ({} KB)]\n", mime_type, size_kb));
+                images.push(ImageData {
+                    mime_type,
+                    base64_data: data,
+                });
             }
             ToolContent::Resource {
                 uri,
                 mime_type,
                 text,
             } => {
-                output.push_str(&format!("[Resource: {}", uri));
-                if let Some(mt) = mime_type {
-                    output.push_str(&format!(" ({})", mt));
+                text_output.push_str(&format!("[Resource: {}]\n", uri));
+                if let Some(mime) = mime_type {
+                    text_output.push_str(&format!("MIME type: {}\n", mime));
                 }
-                output.push_str("]\n");
-                if let Some(t) = text {
-                    output.push_str(&t);
-                    output.push('\n');
+                if let Some(content) = text {
+                    text_output.push_str(&content);
+                    text_output.push('\n');
                 }
             }
         }
     }
 
-    output
+    ToolResult {
+        text: text_output,
+        images,
+    }
 }
 
 impl Clone for McpManager {

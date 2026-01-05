@@ -22,6 +22,45 @@ use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::confirm_destructive;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
+// Re-export MCP tool result types for use in response handler
+pub use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
+
+/// Result from tool execution that can contain text and/or images
+#[derive(Debug, Clone)]
+pub enum ToolExecutionResult {
+    /// Simple text result (for most tools)
+    Text(String),
+    /// Structured result with optional images (for MCP tools)
+    Structured(McpToolResult),
+}
+
+impl ToolExecutionResult {
+    /// Get the text content
+    pub fn text(&self) -> &str {
+        match self {
+            ToolExecutionResult::Text(s) => s,
+            ToolExecutionResult::Structured(r) => &r.text,
+        }
+    }
+
+    /// Check if this result has images
+    #[allow(dead_code)]
+    pub fn has_images(&self) -> bool {
+        match self {
+            ToolExecutionResult::Text(_) => false,
+            ToolExecutionResult::Structured(r) => !r.images.is_empty(),
+        }
+    }
+
+    /// Get images if any
+    pub fn images(&self) -> &[ImageData] {
+        match self {
+            ToolExecutionResult::Text(_) => &[],
+            ToolExecutionResult::Structured(r) => &r.images,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -95,17 +134,18 @@ impl ToolExecutor {
         tools
     }
 
-    pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<String> {
+    pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<ToolExecutionResult> {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name).await {
-                return mcp_manager.execute_tool(tool_name, input).await;
+                let result = mcp_manager.execute_tool(tool_name, input).await?;
+                return Ok(ToolExecutionResult::Structured(result));
             }
         }
 
         let tool = ToolName::from_str(tool_name)?;
 
-        match tool {
+        let text_result = match tool {
             ToolName::ReadFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
@@ -391,10 +431,10 @@ impl ToolExecutor {
                 let confirmed = confirm_destructive(&format!("Delete file '{}'?", path))?;
 
                 if !confirmed {
-                    return Ok(format!(
+                    return Ok(ToolExecutionResult::Text(format!(
                         "File deletion cancelled by user. The file '{}' was not deleted.",
                         path
-                    ));
+                    )));
                 }
 
                 self.fs_tool.delete_file(path)?;
@@ -411,10 +451,10 @@ impl ToolExecutor {
                 ))?;
 
                 if !confirmed {
-                    return Ok(format!(
+                    return Ok(ToolExecutionResult::Text(format!(
                         "Directory deletion cancelled by user. The directory '{}' and its contents were not deleted. What would you like to do instead?",
                         path
-                    ));
+                    )));
                 }
 
                 self.fs_tool.delete_directory(path)?;
@@ -460,6 +500,8 @@ impl ToolExecutor {
                 "web_search is handled server-side by the API and should not be executed locally"
                     .to_string(),
             )),
-        }
+        };
+
+        Ok(ToolExecutionResult::Text(text_result?))
     }
 }
