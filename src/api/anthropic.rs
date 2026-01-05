@@ -23,6 +23,10 @@ impl AnthropicClient {
                 .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("token-efficient-tools-2025-02-19"),
+        );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()

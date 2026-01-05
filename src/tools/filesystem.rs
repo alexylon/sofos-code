@@ -4,6 +4,24 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
+const MAX_TOOL_OUTPUT_TOKENS: usize = 8_000; // ~28KB, prevents excessive context usage
+
+/// Truncate file content if it exceeds token limit for context efficiency
+fn truncate_for_context(content: &str, max_tokens: usize) -> String {
+    let estimated_tokens = content.len() / 4;
+    if estimated_tokens > max_tokens {
+        let truncate_at = max_tokens * 4;
+        let truncated_content = &content[..truncate_at.min(content.len())];
+        format!(
+            "{}...\n\n[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
+            truncated_content,
+            estimated_tokens,
+            max_tokens
+        )
+    } else {
+        content.to_string()
+    }
+}
 
 /// FileSystemTool provides secure file operations sandboxed to a workspace directory
 #[derive(Clone)]
@@ -87,8 +105,10 @@ impl FileSystemTool {
             )));
         }
 
-        fs::read_to_string(&validated_path)
-            .with_context(|| format!("Failed to read file: {}", path))
+        let content = fs::read_to_string(&validated_path)
+            .with_context(|| format!("Failed to read file: {}", path))?;
+
+        Ok(truncate_for_context(&content, MAX_TOOL_OUTPUT_TOKENS))
     }
 
     /// Read a file that may be outside the workspace
@@ -123,7 +143,10 @@ impl FileSystemTool {
             )));
         }
 
-        fs::read_to_string(&canonical).with_context(|| format!("Failed to read file: {}", original))
+        let content = fs::read_to_string(&canonical)
+            .with_context(|| format!("Failed to read file: {}", original))?;
+
+        Ok(truncate_for_context(&content, MAX_TOOL_OUTPUT_TOKENS))
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {

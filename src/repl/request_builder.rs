@@ -62,16 +62,16 @@ impl<'a> RequestBuilder<'a> {
             reasoning: reasoning_config,
         };
 
-        // For Anthropic, drop tool cache metadata to avoid cache block limits
+        // For Anthropic, enable cache on last tool to mark cache breakpoint
         if matches!(self.client, Anthropic(_)) {
             if let Some(tools) = request.tools.as_mut() {
-                for tool in tools.iter_mut() {
-                    match tool {
-                        crate::api::Tool::Regular { cache_control, .. }
-                        | crate::api::Tool::AnthropicWebSearch { cache_control, .. } => {
-                            *cache_control = None;
+                if let Some(last_tool) = tools.last_mut() {
+                    match last_tool {
+                        Tool::Regular { cache_control, .. }
+                        | Tool::AnthropicWebSearch { cache_control, .. } => {
+                            *cache_control = Some(crate::api::CacheControl::ephemeral(None));
                         }
-                        crate::api::Tool::OpenAIWebSearch { .. } => {}
+                        Tool::OpenAIWebSearch { .. } => {}
                     }
                 }
             }

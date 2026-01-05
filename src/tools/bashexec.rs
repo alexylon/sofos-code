@@ -6,6 +6,24 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
+const MAX_TOOL_OUTPUT_TOKENS: usize = 8_000; // ~28KB, prevents excessive context usage
+
+/// Truncate bash output if it exceeds token limit for context efficiency
+fn truncate_for_context(content: &str, max_tokens: usize) -> String {
+    let estimated_tokens = content.len() / 4;
+    if estimated_tokens > max_tokens {
+        let truncate_at = max_tokens * 4;
+        let truncated_content = &content[..truncate_at.min(content.len())];
+        format!(
+            "{}...\n\n[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
+            truncated_content,
+            estimated_tokens,
+            max_tokens
+        )
+    } else {
+        content.to_string()
+    }
+}
 
 /// Convert Unix signal number to human-readable name
 #[cfg(unix)]
@@ -157,10 +175,11 @@ impl BashExecutor {
                     }
                 }
             };
-            return Ok(format!(
+            let error_output = format!(
                 "Command failed with {}\nSTDOUT:\n{}\nSTDERR:\n{}",
                 exit_info, stdout, stderr
-            ));
+            );
+            return Ok(truncate_for_context(&error_output, MAX_TOOL_OUTPUT_TOKENS));
         }
 
         let mut result = String::new();
@@ -180,7 +199,7 @@ impl BashExecutor {
             result = "Command executed successfully (no output)".to_string();
         }
 
-        Ok(result)
+        Ok(truncate_for_context(&result, MAX_TOOL_OUTPUT_TOKENS))
     }
 
     fn enforce_read_permissions(
