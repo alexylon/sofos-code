@@ -246,7 +246,9 @@ pub fn extract_image_references(input: &str) -> (String, Vec<ImageReference>) {
 
     while let Some(ch) = chars.next() {
         match ch {
-            '"' | '\'' if !in_quotes => {
+            // Only treat quotes as delimiters if we're at a word boundary (current_word is empty)
+            // This prevents apostrophes in contractions like "don't" from being treated as quotes
+            '"' | '\'' if !in_quotes && current_word.is_empty() => {
                 in_quotes = true;
                 quote_char = ch;
             }
@@ -534,5 +536,23 @@ mod tests {
             matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png")
         );
         assert_eq!(text, "");
+    }
+
+    #[test]
+    fn test_contractions_dont_break_parsing() {
+        // Contractions like "don't", "it's", "we're" should not be treated as quoted strings
+        let (text, refs) = extract_image_references("I don't see image.png it's missing");
+        assert_eq!(refs.len(), 1, "Should detect image despite contractions");
+        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "image.png"));
+        assert!(text.contains("don't"), "Should preserve don't");
+        assert!(text.contains("it's"), "Should preserve it's");
+
+        // Multiple contractions
+        let (text, refs) =
+            extract_image_references("We're viewing photo.jpg and it's nice but there's more");
+        assert_eq!(refs.len(), 1);
+        assert!(text.contains("We're"));
+        assert!(text.contains("it's"));
+        assert!(text.contains("there's"));
     }
 }
