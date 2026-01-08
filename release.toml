@@ -10,9 +10,7 @@ tag-name = "v{{version}}"
 tag-message = "Release {{version}}"
 
 # Publish configuration
-# Note: Using pre-release-hook for custom publish command
-publish = false
-# registry = "crates-io"
+publish = true
 
 # Push configuration
 push = true
@@ -24,17 +22,16 @@ consolidate-commits = false
 # Skip verification checks (set to true to skip tests/formatting)
 verify = true
 
-# Pre-release hook to run your custom publish command
-# This executes BEFORE creating the git commit and tag
-pre-release-hook = "cargo publish -p sofos"
-
 # Pre-release replacements for updating version references in other files
 [[pre-release-replacements]]
 file = "CHANGELOG.md"
-search = "## \\[Unreleased\\]"
+search = "## \\[Unreleased\\]\n\n## "
 replace = """## [Unreleased]
 
-## [{{version}}] - {{date}}"""
+## [{{version}}] - {{date}}
+
+## """
+exactly = 1
 
 # Example: Update version in README
 # [[pre-release-replacements]]
