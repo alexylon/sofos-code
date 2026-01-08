@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-01-08
+
 ### Changed
 - Simplified cargo-release configuration to use built-in publishing
 
