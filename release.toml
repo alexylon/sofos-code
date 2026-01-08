@@ -25,13 +25,12 @@ verify = true
 # Pre-release replacements for updating version references in other files
 [[pre-release-replacements]]
 file = "CHANGELOG.md"
-search = "## \\[Unreleased\\]\n\n## "
+search = "(?m)^## \\[Unreleased\\]\\n\\n"
 replace = """## [Unreleased]
 
 ## [{{version}}] - {{date}}
 
-## """
-exactly = 1
+"""
 
 # Example: Update version in README
 # [[pre-release-replacements]]
