@@ -1,0 +1,43 @@
+# Cargo-release configuration
+# Automates versioning, tagging, and publishing
+# Reference: https://rust-lang.github.io/cargo-release/
+
+# Pre-release commit message
+pre-release-commit-message = "Release {{version}}"
+
+# Tag configuration
+tag-name = "v{{version}}"
+tag-message = "Release {{version}}"
+
+# Publish configuration
+# Note: Using pre-release-hook for custom publish command
+publish = false
+# registry = "crates-io"
+
+# Push configuration
+push = true
+push-remote = "origin"
+
+# Consolidate commits before release
+consolidate-commits = false
+
+# Skip verification checks (set to true to skip tests/formatting)
+verify = true
+
+# Pre-release hook to run your custom publish command
+# This executes BEFORE creating the git commit and tag
+pre-release-hook = "cargo publish -p sofos"
+
+# Pre-release replacements for updating version references in other files
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "## \\[Unreleased\\]"
+replace = """## [Unreleased]
+
+## [{{version}}] - {{date}}"""
+
+# Example: Update version in README
+# [[pre-release-replacements]]
+# file = "README.md"
+# search = "sofos v[0-9.]+(-[a-zA-Z0-9]+)?"
+# replace = "sofos v{{version}}"
