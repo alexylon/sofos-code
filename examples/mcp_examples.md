@@ -5,7 +5,7 @@ Common MCP server configurations for Sofos.
 ## Filesystem
 
 ```toml
-[mcpServers.filesystem]
+[mcp-servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
 ```
@@ -15,7 +15,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/directory"]
 ### PostgreSQL
 
 ```toml
-[mcpServers.postgres]
+[mcp-servers.postgres]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
 ```
@@ -23,7 +23,7 @@ args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/m
 ### PostgreSQL with credentials
 
 ```toml
-[mcpServers.postgres]
+[mcp-servers.postgres]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://user@localhost/mydb"]
 env = { "PGPASSWORD" = "secret123" }
@@ -32,7 +32,7 @@ env = { "PGPASSWORD" = "secret123" }
 ### SQLite
 
 ```toml
-[mcpServers.sqlite]
+[mcp-servers.sqlite]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"]
 ```
@@ -42,7 +42,7 @@ args = ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"]
 ### GitHub
 
 ```toml
-[mcpServers.github]
+[mcp-servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }
@@ -53,7 +53,7 @@ Get token: https://github.com/settings/tokens
 ### GitLab
 
 ```toml
-[mcpServers.gitlab]
+[mcp-servers.gitlab]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-gitlab"]
 env = { "GITLAB_TOKEN" = "glpat_YOUR_TOKEN" }
@@ -62,7 +62,7 @@ env = { "GITLAB_TOKEN" = "glpat_YOUR_TOKEN" }
 ### Slack
 
 ```toml
-[mcpServers.slack]
+[mcp-servers.slack]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-slack"]
 env = { "SLACK_BOT_TOKEN" = "xoxb-YOUR-TOKEN", "SLACK_TEAM_ID" = "T1234567890" }
@@ -73,7 +73,7 @@ env = { "SLACK_BOT_TOKEN" = "xoxb-YOUR-TOKEN", "SLACK_TEAM_ID" = "T1234567890" }
 ### Google Drive
 
 ```toml
-[mcpServers.gdrive]
+[mcp-servers.gdrive]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-google-drive"]
 env = { "GOOGLE_APPLICATION_CREDENTIALS" = "/path/to/credentials.json" }
@@ -84,7 +84,7 @@ env = { "GOOGLE_APPLICATION_CREDENTIALS" = "/path/to/credentials.json" }
 ### HTTP Server
 
 ```toml
-[mcpServers.custom]
+[mcp-servers.custom]
 url = "https://api.example.com/mcp"
 headers = { "Authorization" = "Bearer YOUR_TOKEN" }
 ```
@@ -92,7 +92,7 @@ headers = { "Authorization" = "Bearer YOUR_TOKEN" }
 ### Python Server
 
 ```toml
-[mcpServers.python]
+[mcp-servers.python]
 command = "python"
 args = ["-m", "my_mcp_server"]
 env = { "API_KEY" = "YOUR_KEY" }
@@ -101,7 +101,7 @@ env = { "API_KEY" = "YOUR_KEY" }
 ### Custom Binary with Environment
 
 ```toml
-[mcpServers.company-internal]
+[mcp-servers.company-internal]
 command = "/usr/local/bin/company-mcp-server"
 args = ["--config", "/etc/company/mcp-config.json"]
 env = { "COMPANY_API_URL" = "https://internal.company.com", "LOG_LEVEL" = "debug" }
@@ -110,15 +110,15 @@ env = { "COMPANY_API_URL" = "https://internal.company.com", "LOG_LEVEL" = "debug
 ## Multiple Servers
 
 ```toml
-[mcpServers.docs]
+[mcp-servers.docs]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Documents"]
 
-[mcpServers.projects]
+[mcp-servers.projects]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Projects"]
 
-[mcpServers.github]
+[mcp-servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }

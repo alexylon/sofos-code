@@ -20,7 +20,7 @@ brew install node
 Create `~/.sofos/config.toml`:
 
 ```toml
-[mcpServers.filesystem]
+[mcp-servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/yourusername/Documents"]
 ```
@@ -48,7 +48,7 @@ The AI will use tools like `filesystem_list_directory` and `filesystem_read_file
 ### GitHub
 
 ```toml
-[mcpServers.github]
+[mcp-servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }
@@ -59,7 +59,7 @@ Get token: https://github.com/settings/tokens
 ### PostgreSQL
 
 ```toml
-[mcpServers.postgres]
+[mcp-servers.postgres]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
 ```
@@ -67,7 +67,7 @@ args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/m
 ### SQLite
 
 ```toml
-[mcpServers.sqlite]
+[mcp-servers.sqlite]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"]
 ```

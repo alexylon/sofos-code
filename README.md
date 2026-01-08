@@ -245,17 +245,17 @@ ask = [
   "Bash(unknown_tool)",
 ]
 
-[mcpServers.company-internal]
+[mcp-servers.company-internal]
 command = "/usr/local/bin/company-mcp-server"
 args = ["--config", "/etc/company/mcp-config.json"]
 env = { "COMPANY_API_URL" = "https://internal.company.com" }
 
-[mcpServers.github]
+[mcp-servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }
 
-[mcpServers.api]
+[mcp-servers.api]
 url = "https://api.example.com/mcp"
 headers = { "Authorization" = "Bearer token123" }
 ```

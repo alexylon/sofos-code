@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpConfig {
-    #[serde(rename = "mcpServers", default)]
+    #[serde(rename = "mcp-servers", default)]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn test_parse_stdio_server() {
         let toml_content = r#"
-[mcpServers.test-server]
+[mcp-servers.test-server]
 command = "/path/to/server"
 args = ["--port", "8080"]
 env = { "API_KEY" = "secret" }
@@ -117,7 +117,7 @@ env = { "API_KEY" = "secret" }
     #[test]
     fn test_parse_http_server() {
         let toml_content = r#"
-[mcpServers.http-server]
+[mcp-servers.http-server]
 url = "https://example.com/mcp"
 headers = { "Authorization" = "Bearer token" }
 "#;

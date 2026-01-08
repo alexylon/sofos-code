@@ -14,7 +14,7 @@ impl Default for SofosConfig {
     fn default() -> Self {
         Self {
             max_messages: 500,
-            max_context_tokens: 180_000,
+            max_context_tokens: 165_000,
             max_tool_iterations: 200,
             max_file_size: 10 * 1024 * 1024,
             max_bash_output: 50 * 1024 * 1024,

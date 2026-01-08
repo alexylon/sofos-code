@@ -4,24 +4,24 @@
 # Configure external tools via Model Context Protocol
 
 # Filesystem server
-[mcpServers.filesystem]
+[mcp-servers.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Documents"]
 
 # Company internal server with environment variables
-[mcpServers.company-internal]
+[mcp-servers.company-internal]
 command = "/usr/local/bin/company-mcp-server"
 args = ["--config", "/etc/company/mcp-config.json"]
 env = { "COMPANY_API_URL" = "https://internal.company.com" }
 
 # Database with credentials
-[mcpServers.postgres]
+[mcp-servers.postgres]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
 env = { "PGPASSWORD" = "secret123" }
 
 # Remote API server (HTTP)
-[mcpServers.api]
+[mcp-servers.api]
 url = "https://api.example.com/mcp"
 headers = { "Authorization" = "Bearer token123" }
 
