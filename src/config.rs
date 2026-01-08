@@ -73,7 +73,7 @@ mod tests {
     fn test_default_config() {
         let config = SofosConfig::default();
         assert_eq!(config.max_messages, 500);
-        assert_eq!(config.max_context_tokens, 180_000);
+        assert_eq!(config.max_context_tokens, 165_000);
         assert_eq!(config.max_tool_iterations, 200);
         assert_eq!(config.max_file_size, 10 * 1024 * 1024);
         assert_eq!(config.max_bash_output, 50 * 1024 * 1024);
