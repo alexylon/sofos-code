@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-01-08
+
 ## [0.1.17] - 2026-01-08
 
 ### Changed
