@@ -341,25 +341,25 @@ This project uses **cargo-release** for automated versioning and publishing.
 **Quick commands:**
 
 ```bash
-# Preview the release (dry run)
-cargo release --dry-run
+# Preview the release
+cargo release patch
 
-# Execute the release (full workflow)
-cargo release
+# Execute the release
+cargo release patch --execute
 
 # Release specific version
-cargo release [major|minor|patch]
+cargo release [patch|minor|major] --execute
 ```
 
 The release workflow automatically:
 1. Bumps version in `Cargo.toml`
 2. Runs tests and formatting checks
 3. Updates `CHANGELOG.md`
-4. Creates release commit and Git tag (`v0.1.18`)
-5. Pushes to remote repository
-6. Publishes to crates.io
+4. Publishes to crates.io
+5. Creates release commit and Git tag
+6. Pushes to remote repository
 
-**For detailed instructions** (including setup, troubleshooting, and advanced options), see [RELEASE.md](RELEASE.md).
+**For detailed instructions**, see [RELEASE.md](RELEASE.md).
 
 ## Troubleshooting
 

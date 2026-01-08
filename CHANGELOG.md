@@ -4,9 +4,16 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Simplified cargo-release configuration to use built-in publishing
+
 ## [0.1.18] - 2026-01-08
 
-## [0.1.17] - 2026-01-08
+### Added
+- cargo-release automation for versioning and publishing
+- Comprehensive release documentation
+
+## [0.1.17] - 2026-01-05
 
 ### Changed
 - Renamed `mcpServers` to `mcp-servers` in config

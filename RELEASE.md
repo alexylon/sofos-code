@@ -12,7 +12,7 @@ Cargo-release is already installed. The configuration is in `release.toml`.
 Preview what will happen without making changes:
 
 ```bash
-cargo release --dry-run
+cargo release patch
 ```
 
 This shows:
@@ -25,15 +25,15 @@ This shows:
 Execute the full release workflow:
 
 ```bash
-cargo release
+cargo release patch --execute
 ```
 
 This automatically:
 1. ✅ Bumps version in `Cargo.toml`
 2. ✅ Runs tests: `cargo test`
 3. ✅ Runs formatting check: `cargo fmt --check`
-4. ✅ Updates `CHANGELOG.md` (if configured)
-5. ✅ Runs: `cargo publish -p sofos` (custom publish command)
+4. ✅ Updates `CHANGELOG.md`
+5. ✅ Publishes to crates.io
 6. ✅ Creates release commit: `"Release v0.1.18"`
 7. ✅ Creates Git tag: `v0.1.18`
 8. ✅ Pushes commits and tags to remote
@@ -43,29 +43,29 @@ Bump to a specific version (major, minor, patch):
 
 ```bash
 # Patch release (0.1.17 → 0.1.18)
-cargo release patch
+cargo release patch --execute
 
 # Minor release (0.1.17 → 0.2.0)
-cargo release minor
+cargo release minor --execute
 
 # Major release (0.1.17 → 1.0.0)
-cargo release major
+cargo release major --execute
 ```
+
+**Note:** Always specify a version level (patch/minor/major). Running `cargo release` without a level will try to re-release the current version.
 
 ### 4. Release Without Publishing to crates.io
-To skip the custom publish command (useful for testing):
+If you want to skip publishing:
 
 ```bash
-cargo release --allow-dirty --no-verify
+cargo release patch --execute --no-publish
 ```
-
-Or if you want to run the release but skip the publish hook entirely, you can temporarily comment out the `pre-release-hook` line in `release.toml`.
 
 ### 5. Release Without Pushing to Git
 For testing/staging:
 
 ```bash
-cargo release --no-push
+cargo release patch --execute --no-push
 ```
 
 ## What Gets Updated
@@ -95,8 +95,6 @@ Ensure:
 
 ## crates.io Publishing Setup
 
-The project uses a custom publish command `cargo publish -p sofos` via a pre-release hook. 
-
 If this is your first time publishing to crates.io:
 
 ```bash
@@ -106,16 +104,14 @@ cargo login
 # This creates/updates ~/.cargo/credentials.toml
 ```
 
-The custom publish command is configured in `release.toml` as a `pre-release-hook`, which runs before creating the git commit and tag.
-
 ## Configuration
 
 The release process is configured in `release.toml`:
 
-- **pre-release-hook**: Runs custom publish command: `cargo publish -p sofos`
 - **changelog**: Automatically update CHANGELOG.md
 - **git.push**: Push commits and tags to remote
 - **git.tag-name**: Tag format (v{{version}})
+- **publish**: Publish to crates.io
 
 ## Example Release Workflow
 
@@ -130,12 +126,12 @@ $ cargo release --dry-run
 Prepared release of sofos v0.1.18
 
 # Step 3: Execute release
-$ cargo release
+$ cargo release patch --execute
 Releasing sofos v0.1.18
 - Bump version in Cargo.toml
 - Run pre-release checks
 - Update CHANGELOG.md
-- Run: cargo publish -p sofos
+- Publish to crates.io
 - Create release commit
 - Create git tag v0.1.18
 - Push to remote
