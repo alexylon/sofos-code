@@ -275,6 +275,11 @@ Show imperial units only when the user explicitly asks for them."#,
         self.trim_if_needed();
     }
 
+    /// Remove the last message from the conversation (used for error recovery)
+    pub fn remove_last_message(&mut self) {
+        self.messages.pop();
+    }
+
     pub fn _len(&self) -> usize {
         self.messages.len()
     }

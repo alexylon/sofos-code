@@ -4,6 +4,12 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Increase `MAX_TOOL_OUTPUT_TOKENS`
+
+### Fixed
+- Gracefully handle invalid image URLs in conversations and resumed sessions
+
 ## [0.1.19] - 2026-01-08
 
 ### Changed

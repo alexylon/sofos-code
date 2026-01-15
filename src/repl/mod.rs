@@ -382,6 +382,7 @@ impl Repl {
         });
 
         let client = self.client.clone();
+        let client_for_retry = client.clone();
         let req = initial_request;
         let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
 
@@ -408,7 +409,95 @@ impl Repl {
             return Ok(());
         }
 
-        let response = response_result?;
+        // Handle API errors, especially those related to invalid images
+        let response = match response_result {
+            Ok(resp) => resp,
+            Err(e) => {
+                // Check if this is an image-related API error
+                if let SofosError::Api(ref msg) = e {
+                    let is_400_error = msg.contains("400");
+                    let is_image_error = msg.contains("Unable to download") 
+                        || msg.contains("invalid_request_error")
+                        || msg.contains("verify the URL");
+                    
+                    // Check if current message OR conversation has images
+                    let current_has_images = !image_refs.is_empty();
+                    let conversation_has_images = self.session_state.conversation.messages()
+                        .iter()
+                        .any(|msg| {
+                            use crate::api::{MessageContent, MessageContentBlock};
+                            if let MessageContent::Blocks { content } = &msg.content {
+                                content.iter().any(|block| matches!(block, MessageContentBlock::Image { .. }))
+                            } else {
+                                false
+                            }
+                        });
+                    
+                    let has_images = current_has_images || conversation_has_images;
+                    
+                    if is_400_error && is_image_error && has_images {
+                        println!(
+                            "\n{} {}\n",
+                            "⚠️  Image loading error:".bright_yellow().bold(),
+                            "One or more image URLs in the conversation could not be loaded by the API"
+                        );
+                        
+                        self.session_state.conversation.remove_last_message();
+                        
+                        // Remove ALL images from conversation
+                        let messages = self.session_state.conversation.messages();
+                        let mut cleaned_messages = Vec::new();
+                        
+                        for msg in messages {
+                            use crate::api::{Message, MessageContent, MessageContentBlock};
+                            let cleaned_msg = match &msg.content {
+                                MessageContent::Blocks { content } => {
+                                    let filtered_blocks: Vec<MessageContentBlock> = content
+                                        .iter()
+                                        .filter(|block| !matches!(block, MessageContentBlock::Image { .. }))
+                                        .cloned()
+                                        .collect();
+                                    
+                                    if filtered_blocks.is_empty() {
+                                        continue;
+                                    } else {
+                                        Message {
+                                            role: msg.role.clone(),
+                                            content: MessageContent::Blocks { content: filtered_blocks },
+                                        }
+                                    }
+                                }
+                                _ => msg.clone(),
+                            };
+                            cleaned_messages.push(cleaned_msg);
+                        }
+                        
+                        self.session_state.conversation.clear();
+                        self.session_state.conversation.restore_messages(cleaned_messages);
+                        
+                        let error_message = if !image_refs.is_empty() {
+                            "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
+                        } else {
+                            "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
+                        }.to_string();
+                        
+                        self.session_state.conversation.add_user_message(error_message);
+                        let new_request = self.build_initial_request();
+                        
+                        println!("{}", "Retrying request without images...".dimmed());
+                        println!();
+                        
+                        runtime.block_on(async {
+                            client_for_retry.create_message(new_request).await
+                        })?
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
         self.session_state
             .add_tokens(response.usage.input_tokens, response.usage.output_tokens);

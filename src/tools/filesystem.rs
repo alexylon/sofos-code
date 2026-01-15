@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
-const MAX_TOOL_OUTPUT_TOKENS: usize = 8_000; // ~28KB, prevents excessive context usage
+const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive context usage
 
 /// Truncate file content if it exceeds token limit for context efficiency
 fn truncate_for_context(content: &str, max_tokens: usize) -> String {

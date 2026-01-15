@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
-const MAX_TOOL_OUTPUT_TOKENS: usize = 8_000; // ~28KB, prevents excessive context usage
+const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive context usage
 
 /// Truncate bash output if it exceeds token limit for context efficiency
 fn truncate_for_context(content: &str, max_tokens: usize) -> String {
