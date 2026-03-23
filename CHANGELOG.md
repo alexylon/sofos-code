@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-03-23
+
 ### Added
 - Conversation compaction: replaces naive message trimming with intelligent context preservation
   - Two-phase approach: truncates large tool results first, then summarizes older messages via the LLM
