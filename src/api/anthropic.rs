@@ -186,7 +186,7 @@ mod tests {
     fn test_request_with_thinking() {
         let thinking = Some(Thinking::enabled(3000));
         let request = CreateMessageRequest {
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             max_tokens: 8192,
             messages: vec![],
             system: None,

@@ -47,3 +47,8 @@ pub fn normal_mode_command(repl: &mut Repl) -> Result<CommandResult> {
     repl.disable_safe_mode();
     Ok(CommandResult::Continue)
 }
+
+pub fn compact_command(repl: &mut Repl) -> Result<CommandResult> {
+    repl.handle_compact_command()?;
+    Ok(CommandResult::Continue)
+}

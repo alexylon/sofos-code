@@ -8,6 +8,12 @@ pub struct SofosConfig {
     pub max_file_size: usize,
     #[allow(dead_code)]
     pub max_bash_output: usize,
+    /// Auto-compact when token usage exceeds this ratio of max_context_tokens
+    pub compaction_trigger_ratio: f64,
+    /// Number of recent messages to preserve during compaction
+    pub compaction_preserve_recent: usize,
+    /// Truncate tool results longer than this (chars) during compaction
+    pub tool_result_truncate_threshold: usize,
 }
 
 impl Default for SofosConfig {
@@ -18,6 +24,9 @@ impl Default for SofosConfig {
             max_tool_iterations: 200,
             max_file_size: 10 * 1024 * 1024,
             max_bash_output: 50 * 1024 * 1024,
+            compaction_trigger_ratio: 0.80,
+            compaction_preserve_recent: 20,
+            tool_result_truncate_threshold: 2000,
         }
     }
 }
@@ -77,5 +86,8 @@ mod tests {
         assert_eq!(config.max_tool_iterations, 200);
         assert_eq!(config.max_file_size, 10 * 1024 * 1024);
         assert_eq!(config.max_bash_output, 50 * 1024 * 1024);
+        assert!((config.compaction_trigger_ratio - 0.80).abs() < f64::EPSILON);
+        assert_eq!(config.compaction_preserve_recent, 20);
+        assert_eq!(config.tool_result_truncate_threshold, 2000);
     }
 }

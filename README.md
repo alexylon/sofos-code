@@ -48,6 +48,7 @@ Tested on macOS but should work on Linux and Windows as well.
 - **MCP Integration** - Connect to external tools via Model Context Protocol
 - **Visual Diffs** - Colored change display
 - **Iterative Tools** - Up to 200 tool calls per request
+- **Context Compaction** - Summarizes older messages instead of dropping them
 - **Cost Tracking** - Session token usage and cost estimates
 - **Safe Mode** - Read-only operation mode
 
@@ -95,6 +96,7 @@ sofos
 - `/resume` - Resume previous session
 - `/clear` - Clear conversation history
 - `/think [on|off]` - Toggle extended thinking (shows status if no arg)
+- `/compact` - Compress conversation history to free up context (also triggers automatically at 80% token usage)
 - `/s` - Safe mode (read-only, prompt: **`λ:`**, blinking underscore (`_`) cursor)
 - `/n` - Normal mode (all tools, prompt: **`λ>`**, default cursor)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
@@ -133,7 +135,7 @@ Exit summary shows token usage and estimated cost (based on official API pricing
     --api-key <KEY>          Anthropic API key (overrides env var)
     --openai-api-key <KEY>   OpenAI API key (overrides env var)
     --morph-api-key <KEY>    Morph API key (overrides env var)
-    --model <MODEL>          Model to use (default: claude-sonnet-4-5)
+    --model <MODEL>          Model to use (default: claude-sonnet-4-6)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
     --max-tokens <N>         Max response tokens (default: 8192)
 -t, --enable-thinking        Enable extended thinking (default: false)

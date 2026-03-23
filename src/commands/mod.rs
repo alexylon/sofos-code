@@ -23,6 +23,7 @@ pub enum Command {
     ThinkStatus,
     SafeMode,
     NormalMode,
+    Compact,
 }
 
 impl Command {
@@ -36,6 +37,7 @@ impl Command {
             "/think" => Some(Command::ThinkStatus),
             "/s" => Some(Command::SafeMode),
             "/n" => Some(Command::NormalMode),
+            "/compact" => Some(Command::Compact),
             _ => None,
         }
     }
@@ -50,6 +52,7 @@ impl Command {
             Command::ThinkStatus => builtin::think_status_command(repl),
             Command::SafeMode => builtin::safe_mode_command(repl),
             Command::NormalMode => builtin::normal_mode_command(repl),
+            Command::Compact => builtin::compact_command(repl),
         }
     }
 }
@@ -66,4 +69,5 @@ pub static COMMANDS: &[&str] = &[
     "/think",
     "/s",
     "/n",
+    "/compact",
 ];

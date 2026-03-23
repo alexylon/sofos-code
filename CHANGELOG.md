@@ -4,6 +4,15 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Conversation compaction: replaces naive message trimming with intelligent context preservation
+  - Two-phase approach: truncates large tool results first, then summarizes older messages via the LLM
+  - Works with both Anthropic and OpenAI providers
+  - Auto-triggers at 80% of token budget before sending the next request
+  - `/compact` command for manual compaction
+  - Shows "Compacting conversation..." animation during summarization
+  - Falls back to trimming on failure or ESC interrupt
+
 ### Changed
 - Increase `MAX_TOOL_OUTPUT_TOKENS`
 

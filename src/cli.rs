@@ -30,7 +30,7 @@ pub struct Cli {
     #[arg(long)]
     pub check_connection: bool,
 
-    #[arg(long, default_value = "claude-sonnet-4-5")]
+    #[arg(long, default_value = "claude-sonnet-4-6")]
     pub model: String,
 
     #[arg(long, default_value = "morph-v3-fast")]

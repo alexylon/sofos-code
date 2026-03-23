@@ -363,7 +363,7 @@ This prints:
 
 ### Anthropic API
 - Uses Claude Messages API (not legacy Completions)
-- Model: claude-sonnet-4-5 (default)
+- Model: claude-sonnet-4-6 (default)
 - Supports tool calling and server-side tools (web_search)
 - API version: 2023-06-01
 - Usage tracking: Automatic token counting and cost calculation

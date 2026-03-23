@@ -361,6 +361,10 @@ impl Repl {
                 content: user_input.to_string(),
             });
 
+        if self.session_state.conversation.needs_compaction() {
+            let _ = self.compact_conversation(false);
+        }
+
         let initial_request = self.build_initial_request();
 
         let runtime = tokio::runtime::Runtime::new()
@@ -416,54 +420,63 @@ impl Repl {
                 // Check if this is an image-related API error
                 if let SofosError::Api(ref msg) = e {
                     let is_400_error = msg.contains("400");
-                    let is_image_error = msg.contains("Unable to download") 
+                    let is_image_error = msg.contains("Unable to download")
                         || msg.contains("invalid_request_error")
                         || msg.contains("verify the URL");
-                    
+
                     // Check if current message OR conversation has images
                     let current_has_images = !image_refs.is_empty();
-                    let conversation_has_images = self.session_state.conversation.messages()
+                    let conversation_has_images = self
+                        .session_state
+                        .conversation
+                        .messages()
                         .iter()
                         .any(|msg| {
                             use crate::api::{MessageContent, MessageContentBlock};
                             if let MessageContent::Blocks { content } = &msg.content {
-                                content.iter().any(|block| matches!(block, MessageContentBlock::Image { .. }))
+                                content
+                                    .iter()
+                                    .any(|block| matches!(block, MessageContentBlock::Image { .. }))
                             } else {
                                 false
                             }
                         });
-                    
+
                     let has_images = current_has_images || conversation_has_images;
-                    
+
                     if is_400_error && is_image_error && has_images {
                         println!(
                             "\n{} {}\n",
                             "⚠️  Image loading error:".bright_yellow().bold(),
                             "One or more image URLs in the conversation could not be loaded by the API"
                         );
-                        
+
                         self.session_state.conversation.remove_last_message();
-                        
+
                         // Remove ALL images from conversation
                         let messages = self.session_state.conversation.messages();
                         let mut cleaned_messages = Vec::new();
-                        
+
                         for msg in messages {
                             use crate::api::{Message, MessageContent, MessageContentBlock};
                             let cleaned_msg = match &msg.content {
                                 MessageContent::Blocks { content } => {
                                     let filtered_blocks: Vec<MessageContentBlock> = content
                                         .iter()
-                                        .filter(|block| !matches!(block, MessageContentBlock::Image { .. }))
+                                        .filter(|block| {
+                                            !matches!(block, MessageContentBlock::Image { .. })
+                                        })
                                         .cloned()
                                         .collect();
-                                    
+
                                     if filtered_blocks.is_empty() {
                                         continue;
                                     } else {
                                         Message {
                                             role: msg.role.clone(),
-                                            content: MessageContent::Blocks { content: filtered_blocks },
+                                            content: MessageContent::Blocks {
+                                                content: filtered_blocks,
+                                            },
                                         }
                                     }
                                 }
@@ -471,22 +484,26 @@ impl Repl {
                             };
                             cleaned_messages.push(cleaned_msg);
                         }
-                        
+
                         self.session_state.conversation.clear();
-                        self.session_state.conversation.restore_messages(cleaned_messages);
-                        
+                        self.session_state
+                            .conversation
+                            .restore_messages(cleaned_messages);
+
                         let error_message = if !image_refs.is_empty() {
                             "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
                         } else {
                             "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
                         }.to_string();
-                        
-                        self.session_state.conversation.add_user_message(error_message);
+
+                        self.session_state
+                            .conversation
+                            .add_user_message(error_message);
                         let new_request = self.build_initial_request();
-                        
+
                         println!("{}", "Retrying request without images...".dimmed());
                         println!();
-                        
+
                         runtime.block_on(async {
                             client_for_retry.create_message(new_request).await
                         })?
@@ -745,6 +762,173 @@ impl Repl {
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {
         self.available_tools.clone()
+    }
+
+    /// Compact the conversation by truncating tool results and summarizing older messages.
+    /// Returns Ok(true) if compaction was performed, Ok(false) if skipped.
+    pub fn compact_conversation(&mut self, force: bool) -> Result<bool> {
+        if !force && !self.session_state.conversation.needs_compaction() {
+            return Ok(false);
+        }
+
+        let tokens_before = self.session_state.conversation.estimate_total_tokens();
+
+        // Phase 1: Truncate large tool results in older messages
+        let split_point = self.session_state.conversation.compaction_split_point();
+        if split_point == 0 {
+            if force {
+                println!("\n{}\n", "Not enough messages to compact.".bright_yellow());
+            }
+            return Ok(false);
+        }
+
+        self.session_state
+            .conversation
+            .truncate_tool_results(split_point);
+
+        if !force && !self.session_state.conversation.needs_compaction() {
+            let tokens_after = self.session_state.conversation.estimate_total_tokens();
+            println!(
+                "\n{} {} -> {} tokens (tool results truncated)\n",
+                "Compacted:".bright_green(),
+                tokens_before,
+                tokens_after
+            );
+            return Ok(true);
+        }
+
+        // Phase 2: Summarize older messages via the LLM
+        let older_messages: Vec<_> =
+            self.session_state.conversation.messages()[..split_point].to_vec();
+        let serialized = ConversationHistory::serialize_messages_for_summary(&older_messages);
+
+        let summary_system = vec![crate::api::SystemPrompt::new_cached_with_ttl(
+            "You are a conversation summarizer. Produce a detailed but concise summary of the following \
+             coding assistant conversation. Preserve:\n\
+             1. All file paths mentioned or modified\n\
+             2. Key decisions made and their rationale\n\
+             3. Current state of any ongoing task\n\
+             4. Any errors encountered and how they were resolved\n\n\
+             Format as structured sections. Do NOT include raw file contents or verbose tool output — \
+             just what was done and decided."
+                .to_string(),
+            None,
+        )];
+
+        let summary_request = CreateMessageRequest {
+            model: self.model_config.model.clone(),
+            max_tokens: 4096,
+            messages: vec![crate::api::Message::user(serialized)],
+            system: Some(summary_system),
+            tools: None,
+            stream: None,
+            thinking: None,
+            reasoning: None,
+        };
+
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
+
+        let running = Arc::new(AtomicBool::new(true));
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let running_clone = Arc::clone(&running);
+        let interrupted_clone = Arc::clone(&interrupted);
+
+        let ui_handle = std::thread::spawn(move || {
+            UI::run_animation_with_interrupt(
+                "Compacting conversation...".to_string(),
+                "(Press ESC to cancel) ".to_string(),
+                running_clone,
+                interrupted_clone,
+            )
+        });
+
+        let client = self.client.clone();
+        let mut request_handle =
+            runtime.spawn(async move { client.create_message(summary_request).await });
+
+        let response_result = runtime.block_on(async {
+            tokio::select! {
+                res = &mut request_handle => {
+                    match res {
+                        Ok(inner) => inner,
+                        Err(e) => Err(SofosError::Join(format!("{}", e)))
+                    }
+                }
+                _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
+                    request_handle.abort();
+                    Err(SofosError::Interrupted)
+                }
+            }
+        });
+
+        running.store(false, Ordering::Relaxed);
+        let _ = ui_handle.join();
+
+        match response_result {
+            Ok(response) => {
+                let summary_text: String = response
+                    .content
+                    .iter()
+                    .filter_map(|block| {
+                        if let crate::api::ContentBlock::Text { text } = block {
+                            Some(text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                if summary_text.len() < 50 {
+                    UI::print_warning(
+                        "Compaction produced an insufficient summary. Falling back to trimming.",
+                    );
+                    self.session_state.conversation.fallback_trim();
+                    return Ok(false);
+                }
+
+                self.session_state
+                    .conversation
+                    .replace_with_summary(summary_text, split_point);
+
+                self.session_state
+                    .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
+
+                let tokens_after = self.session_state.conversation.estimate_total_tokens();
+                println!(
+                    "{} {} -> {} tokens (saved {}%)",
+                    "Compacted:".bright_green(),
+                    tokens_before,
+                    tokens_after,
+                    if tokens_before > 0 {
+                        100 - (tokens_after * 100 / tokens_before)
+                    } else {
+                        0
+                    }
+                );
+
+                Ok(true)
+            }
+            Err(SofosError::Interrupted) => {
+                UI::print_warning("Compaction interrupted. Falling back to trimming.");
+                self.session_state.conversation.fallback_trim();
+                Ok(false)
+            }
+            Err(e) => {
+                UI::print_warning(&format!(
+                    "Compaction failed: {}. Falling back to trimming.",
+                    e
+                ));
+                self.session_state.conversation.fallback_trim();
+                Ok(false)
+            }
+        }
+    }
+
+    pub fn handle_compact_command(&mut self) -> Result<()> {
+        self.compact_conversation(true)?;
+        Ok(())
     }
 
     /// Await the interrupt flag in an async-friendly loop (50ms poll).

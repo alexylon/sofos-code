@@ -113,7 +113,7 @@ Show imperial units only when the user explicitly asks for them."#,
     }
 
     /// Estimate token count for a string
-    fn estimate_tokens(text: &str) -> usize {
+    pub fn estimate_tokens(text: &str) -> usize {
         // Conservative: 1 token per 3.5 chars (accounts for code/JSON being token-heavy)
         (text.len() as f64 / 3.5).ceil() as usize
     }
@@ -203,7 +203,7 @@ Show imperial units only when the user explicitly asks for them."#,
     }
 
     /// Calculate total estimated tokens for current conversation
-    fn estimate_total_tokens(&self) -> usize {
+    pub fn estimate_total_tokens(&self) -> usize {
         let system_tokens = self.estimate_system_tokens();
         let message_tokens: usize = self
             .messages
@@ -235,6 +235,148 @@ Show imperial units only when the user explicitly asks for them."#,
                 total_tokens
             );
         }
+    }
+
+    /// Check if conversation needs compaction (token usage > trigger ratio)
+    pub fn needs_compaction(&self) -> bool {
+        let threshold =
+            (self.config.max_context_tokens as f64 * self.config.compaction_trigger_ratio) as usize;
+        self.estimate_total_tokens() > threshold
+    }
+
+    /// Find a clean split point for compaction, keeping at least `preserve_recent` messages.
+    /// Returns the index where "recent" messages start (split on user-message boundary).
+    pub fn compaction_split_point(&self) -> usize {
+        let preserve = self.config.compaction_preserve_recent;
+        if self.messages.len() <= preserve + 5 {
+            return 0;
+        }
+
+        let mut split = self.messages.len().saturating_sub(preserve);
+
+        // Walk backward to land on a user-role message boundary
+        while split > 0 && self.messages[split].role != "user" {
+            split -= 1;
+        }
+        // Avoid orphaning tool results: if this user message contains tool_result blocks,
+        // walk back further to include the preceding assistant tool_use
+        while split > 0 {
+            if let crate::api::MessageContent::Blocks { content } = &self.messages[split].content {
+                let has_tool_result = content.iter().any(|b| {
+                    matches!(
+                        b,
+                        crate::api::MessageContentBlock::ToolResult { .. }
+                            | crate::api::MessageContentBlock::WebSearchToolResult { .. }
+                    )
+                });
+                if has_tool_result {
+                    split -= 1;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        split
+    }
+
+    /// Truncate large tool results in messages[0..up_to] to save tokens cheaply.
+    pub fn truncate_tool_results(&mut self, up_to: usize) {
+        let threshold = self.config.tool_result_truncate_threshold;
+        let keep_chars = 500;
+
+        for msg in self.messages[..up_to].iter_mut() {
+            if let crate::api::MessageContent::Blocks { content } = &mut msg.content {
+                for block in content.iter_mut() {
+                    if let crate::api::MessageContentBlock::ToolResult {
+                        content: result_text,
+                        ..
+                    } = block
+                    {
+                        if result_text.len() > threshold {
+                            let original_len = result_text.len();
+                            let actual_keep = keep_chars.min(original_len / 3);
+                            let start = &result_text[..actual_keep];
+                            let end = &result_text[result_text.len() - actual_keep..];
+                            *result_text = format!(
+                                "{}\n...[truncated {} chars]...\n{}",
+                                start, original_len, end
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Serialize older messages into a text representation for the summarization prompt.
+    pub fn serialize_messages_for_summary(messages: &[Message]) -> String {
+        let mut parts = Vec::new();
+
+        for msg in messages {
+            let role_label = if msg.role == "user" {
+                "User"
+            } else {
+                "Assistant"
+            };
+
+            match &msg.content {
+                crate::api::MessageContent::Text { content } => {
+                    parts.push(format!("{}: {}", role_label, content));
+                }
+                crate::api::MessageContent::Blocks { content } => {
+                    for block in content {
+                        match block {
+                            crate::api::MessageContentBlock::Text { text, .. } => {
+                                parts.push(format!("{}: {}", role_label, text));
+                            }
+                            crate::api::MessageContentBlock::ToolUse { name, input, .. } => {
+                                let input_str = serde_json::to_string(input).unwrap_or_default();
+                                let input_preview = if input_str.len() > 200 {
+                                    format!("{}...", &input_str[..200])
+                                } else {
+                                    input_str
+                                };
+                                parts.push(format!("[Tool call: {}({})]", name, input_preview));
+                            }
+                            crate::api::MessageContentBlock::ToolResult { content, .. } => {
+                                let preview = if content.len() > 300 {
+                                    format!("{}...", &content[..300])
+                                } else {
+                                    content.clone()
+                                };
+                                parts.push(format!("[Tool result: {}]", preview));
+                            }
+                            crate::api::MessageContentBlock::Image { .. } => {
+                                parts.push("[Image attached]".to_string());
+                            }
+                            // Skip thinking, summary, server tool use, web search results
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        parts.join("\n\n")
+    }
+
+    /// Replace messages[0..split_point] with a single summary message.
+    pub fn replace_with_summary(&mut self, summary: String, split_point: usize) {
+        if split_point == 0 || split_point > self.messages.len() {
+            return;
+        }
+        self.messages.drain(0..split_point);
+        let summary_msg = Message::user(format!(
+            "[Conversation Summary]\n\nThe following is a summary of our earlier conversation:\n\n{}",
+            summary
+        ));
+        self.messages.insert(0, summary_msg);
+    }
+
+    /// Fallback trim used when compaction fails
+    pub fn fallback_trim(&mut self) {
+        self.trim_if_needed();
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -369,5 +511,112 @@ mod tests {
 
         let tokens = ConversationHistory::estimate_tokens("");
         assert_eq!(tokens, 0);
+    }
+
+    #[test]
+    fn test_needs_compaction() {
+        let mut history = ConversationHistory::new();
+        // Use a large token limit so the system prompt alone doesn't trigger it
+        history.config.max_context_tokens = 100_000;
+        history.config.compaction_trigger_ratio = 0.80;
+
+        // Should not need compaction with small messages
+        history.add_user_message("hello".to_string());
+        assert!(!history.needs_compaction());
+
+        // Add enough messages to exceed 80% of 100k
+        let large_content = "x".repeat(10_000);
+        for _ in 0..30 {
+            history.messages.push(Message::user(large_content.clone()));
+        }
+        assert!(history.needs_compaction());
+    }
+
+    #[test]
+    fn test_compaction_split_point() {
+        let mut history = ConversationHistory::new();
+        history.config.compaction_preserve_recent = 4;
+
+        for i in 0..10 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+
+        let split = history.compaction_split_point();
+        assert_eq!(split, 6); // 10 - 4 = 6
+    }
+
+    #[test]
+    fn test_compaction_split_too_few_messages() {
+        let mut history = ConversationHistory::new();
+        history.config.compaction_preserve_recent = 20;
+
+        for i in 0..10 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+
+        let split = history.compaction_split_point();
+        assert_eq!(split, 0); // not enough to compact
+    }
+
+    #[test]
+    fn test_truncate_tool_results() {
+        let mut history = ConversationHistory::new();
+        history.config.tool_result_truncate_threshold = 100;
+
+        let large_content = "x".repeat(500);
+        history.messages.push(Message::user_with_tool_results(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "id1".to_string(),
+                content: large_content,
+                cache_control: None,
+            },
+        ]));
+
+        history.truncate_tool_results(1);
+
+        if let crate::api::MessageContent::Blocks { content } = &history.messages()[0].content {
+            if let MessageContentBlock::ToolResult { content, .. } = &content[0] {
+                assert!(content.contains("truncated"));
+                assert!(content.len() < 500); // keep 500/3=166 each side + marker < 500
+            } else {
+                panic!("Expected ToolResult");
+            }
+        } else {
+            panic!("Expected Blocks");
+        }
+    }
+
+    #[test]
+    fn test_replace_with_summary() {
+        let mut history = ConversationHistory::new();
+
+        for i in 0..10 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+
+        history.replace_with_summary("This is the summary".to_string(), 7);
+
+        // 7 removed, 1 summary inserted, 3 remaining = 4
+        assert_eq!(history.messages().len(), 4);
+
+        if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
+            assert!(content.contains("Conversation Summary"));
+            assert!(content.contains("This is the summary"));
+        }
+    }
+
+    #[test]
+    fn test_serialize_messages_for_summary() {
+        let messages = vec![
+            Message::user("Hello, help me with code".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::Text {
+                text: "Sure, let me look at the files.".to_string(),
+                cache_control: None,
+            }]),
+        ];
+
+        let serialized = ConversationHistory::serialize_messages_for_summary(&messages);
+        assert!(serialized.contains("User: Hello, help me with code"));
+        assert!(serialized.contains("Assistant: Sure, let me look at the files."));
     }
 }
