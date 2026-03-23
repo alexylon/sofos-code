@@ -1,6 +1,6 @@
 use crate::error::{Result, SofosError};
 use colored::Colorize;
-use rand::Rng;
+use rand::RngExt;
 use std::future::Future;
 use std::time::Duration;
 

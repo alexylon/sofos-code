@@ -21,7 +21,7 @@ tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+toml = "1"
 thiserror = "2"
 colored = "3"
 syntect = "5"
@@ -30,9 +30,9 @@ pulldown-cmark = "0.12"
 pulldown-cmark-mdcat = "2.7"
 similar = "2"
 crossterm = "0.29"
-reedline = "0.44"
+reedline = "0.46"
 globset = "0.4"
-rand = "0.9"
+rand = "0.10"
 base64 = "0.22"
 
 # Utilities
