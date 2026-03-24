@@ -53,7 +53,7 @@ impl SyntaxHighlighter {
         result.trim_end().to_string()
     }
 
-    fn highlight_code(&self, code: &str, language: &str) -> String {
+    pub fn highlight_code(&self, code: &str, language: &str) -> String {
         let syntax = if language.is_empty() {
             self.syntax_set.find_syntax_plain_text()
         } else {

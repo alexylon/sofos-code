@@ -24,6 +24,7 @@ pub struct ResponseHandler {
     thinking_budget: u32,
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
+    use_streaming: bool,
 }
 
 impl ResponseHandler {
@@ -36,6 +37,7 @@ impl ResponseHandler {
         enable_thinking: bool,
         thinking_budget: u32,
         available_tools: Vec<crate::api::Tool>,
+        use_streaming: bool,
     ) -> Self {
         Self {
             client,
@@ -48,6 +50,7 @@ impl ResponseHandler {
             thinking_budget,
             config: SofosConfig::default(),
             available_tools,
+            use_streaming,
         }
     }
 
@@ -85,9 +88,11 @@ impl ResponseHandler {
                 self.process_content_blocks(&content_blocks);
 
             if !text_output.is_empty() {
-                println!("{}", "Assistant:".bright_blue().bold());
-                for text in &text_output {
-                    self.ui.print_assistant_text(text)?;
+                if !self.use_streaming {
+                    println!("{}", "Assistant:".bright_blue().bold());
+                    for text in &text_output {
+                        self.ui.print_assistant_text(text)?;
+                    }
                 }
 
                 let combined_text = text_output.join("\n");
@@ -203,11 +208,15 @@ impl ResponseHandler {
                     }
                 }
                 ContentBlock::Thinking { thinking, .. } => {
-                    self.ui.print_thinking(thinking);
+                    if !self.use_streaming {
+                        self.ui.print_thinking(thinking);
+                    }
                     had_reasoning = true;
                 }
                 ContentBlock::Summary { summary } => {
-                    self.ui.print_thinking(summary);
+                    if !self.use_streaming {
+                        self.ui.print_thinking(summary);
+                    }
                     had_reasoning = true;
                 }
                 ContentBlock::ToolUse { id, name, input } => {
@@ -375,6 +384,27 @@ impl ResponseHandler {
                 eprintln!("Message {}: role={}, content={}", i, msg.role, content_desc);
             }
             eprintln!("===========================================\n");
+        }
+
+        if self.use_streaming {
+            let printer = Arc::new(crate::ui::StreamPrinter::new());
+            let p_text = printer.clone();
+            let p_think = printer.clone();
+            let interrupt = Arc::new(AtomicBool::new(false));
+
+            let request = self.build_request();
+            let response_result = self
+                .client
+                .create_message_streaming(
+                    request,
+                    move |t| p_text.on_text_delta(t),
+                    move |t| p_think.on_thinking_delta(t),
+                    interrupt,
+                )
+                .await;
+
+            printer.finish();
+            return response_result;
         }
 
         let processing = Arc::new(AtomicBool::new(true));

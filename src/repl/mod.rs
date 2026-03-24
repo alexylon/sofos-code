@@ -370,48 +370,74 @@ impl Repl {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-        // Start interruptible animation and API call
-        let running = Arc::new(AtomicBool::new(true));
-        let interrupted = Arc::new(AtomicBool::new(false));
+        let use_streaming = false;
+        let client_for_retry = self.client.clone();
 
-        let running_clone = Arc::clone(&running);
-        let interrupted_clone = Arc::clone(&interrupted);
-        let ui_handle = std::thread::spawn(move || {
-            UI::run_animation_with_interrupt(
-                "Awaiting response...".to_string(),
-                "(Press ESC to interrupt) ".to_string(),
-                running_clone,
-                interrupted_clone,
-            )
-        });
+        let response_result: Result<_> = if use_streaming {
+            let printer = Arc::new(crate::ui::StreamPrinter::new());
+            let p_text = printer.clone();
+            let p_think = printer.clone();
+            let interrupt = Arc::new(AtomicBool::new(false));
 
-        let client = self.client.clone();
-        let client_for_retry = client.clone();
-        let req = initial_request;
-        let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
+            let client = self.client.clone();
+            let req = initial_request;
+            let result = runtime.block_on(async move {
+                client
+                    .create_message_streaming(
+                        req,
+                        move |t| p_text.on_text_delta(t),
+                        move |t| p_think.on_thinking_delta(t),
+                        interrupt,
+                    )
+                    .await
+            });
 
-        let response_result = runtime.block_on(async {
-            tokio::select! {
-                res = &mut request_handle => {
-                    match res {
-                        Ok(inner) => inner,
-                        Err(e) => Err(SofosError::Join(format!("{}", e)))
+            printer.finish();
+            result
+        } else {
+            let running = Arc::new(AtomicBool::new(true));
+            let interrupted = Arc::new(AtomicBool::new(false));
+
+            let running_clone = Arc::clone(&running);
+            let interrupted_clone = Arc::clone(&interrupted);
+            let ui_handle = std::thread::spawn(move || {
+                UI::run_animation_with_interrupt(
+                    "Awaiting response...".to_string(),
+                    "(Press ESC to interrupt) ".to_string(),
+                    running_clone,
+                    interrupted_clone,
+                )
+            });
+
+            let client = self.client.clone();
+            let req = initial_request;
+            let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
+
+            let result = runtime.block_on(async {
+                tokio::select! {
+                    res = &mut request_handle => {
+                        match res {
+                            Ok(inner) => inner,
+                            Err(e) => Err(SofosError::Join(format!("{}", e)))
+                        }
+                    }
+                    _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
+                        request_handle.abort();
+                        Err(SofosError::Interrupted)
                     }
                 }
-                _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
-                    request_handle.abort();
-                    Err(SofosError::Interrupted)
-                }
+            });
+
+            running.store(false, Ordering::Relaxed);
+            let _ = ui_handle.join();
+
+            if interrupted.load(Ordering::Relaxed) {
+                self.handle_initial_interrupt();
+                return Ok(());
             }
-        });
 
-        running.store(false, Ordering::Relaxed);
-        let _ = ui_handle.join();
-
-        if interrupted.load(Ordering::Relaxed) {
-            self.handle_initial_interrupt();
-            return Ok(());
-        }
+            result
+        };
 
         // Handle API errors, especially those related to invalid images
         let response = match response_result {
@@ -528,6 +554,7 @@ impl Repl {
             self.model_config.enable_thinking,
             self.model_config.thinking_budget,
             self.available_tools.clone(),
+            use_streaming,
         );
 
         match runtime.block_on(handler.handle_response(

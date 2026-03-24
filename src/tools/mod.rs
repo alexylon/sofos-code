@@ -259,7 +259,7 @@ impl ToolExecutor {
 
                 // If file existed before, show diff
                 if let Some(original) = original_content {
-                    let diff_output = diff::generate_compact_diff(&original, content);
+                    let diff_output = diff::generate_compact_diff(&original, content, path);
                     Ok(format!(
                         "Successfully wrote to file '{}'\n\nChanges:\n{}",
                         path, diff_output
@@ -416,7 +416,7 @@ impl ToolExecutor {
                 self.fs_tool.write_file(path, &merged_code)?;
 
                 // Generate diff for display
-                let diff_output = diff::generate_compact_diff(&original_code, &merged_code);
+                let diff_output = diff::generate_compact_diff(&original_code, &merged_code, path);
 
                 Ok(format!(
                     "Successfully applied Morph edit to '{}'\n\nChanges:\n{}",

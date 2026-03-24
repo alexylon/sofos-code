@@ -14,15 +14,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use pulldown_cmark::{Options, Parser};
-use pulldown_cmark_mdcat::{
-    push_tty,
-    resources::NoopResourceHandler,
-    terminal::{TerminalProgram, TerminalSize},
-    Environment, Settings, Theme,
-};
-use syntect::parsing::SyntaxSet;
-
 /// Message severity levels for consistent UI feedback
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
@@ -359,31 +350,128 @@ impl UI {
     }
 
     pub fn print_tool_output(&self, tool_output: &str) {
-        println!("{}\n", tool_output.dimmed());
+        if tool_output.contains('\x1b') {
+            println!("{}\n", tool_output);
+        } else {
+            println!("{}\n", tool_output.dimmed());
+        }
     }
 
-    /// Render Markdown to the current terminal with ANSI styling + syntax-highlighted fenced code blocks.
     pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
+        use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+
         let parser = Parser::new_ext(md, Options::all());
-
-        // Required by the API; current_dir is just a convenient absolute base.
-        let environment = Environment::for_local_directory(&std::env::current_dir()?)?;
-
-        let settings = Settings {
-            terminal_capabilities: TerminalProgram::detect().capabilities(),
-            terminal_size: TerminalSize::detect().unwrap_or_default(),
-            syntax_set: &SyntaxSet::load_defaults_newlines(),
-            theme: Theme::default(),
-        };
-
         let mut out = stdout().lock();
-        push_tty(
-            &settings,
-            &environment,
-            &NoopResourceHandler,
-            &mut out,
-            parser,
-        )?;
+
+        let mut in_code_block = false;
+        let mut code_lang = String::new();
+        let mut code_buf = String::new();
+        let mut bold = false;
+        let mut italic = false;
+        let mut in_heading = false;
+
+        for event in parser {
+            match event {
+                Event::Start(Tag::Heading { .. }) => {
+                    in_heading = true;
+                    write!(out, "\x1b[1;36m")?;
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    in_heading = false;
+                    writeln!(out, "\x1b[0m")?;
+                }
+                Event::Start(Tag::Strong) => {
+                    bold = true;
+                    write!(out, "\x1b[1m")?;
+                }
+                Event::End(TagEnd::Strong) => {
+                    bold = false;
+                    write!(out, "\x1b[22m")?;
+                    if italic {
+                        write!(out, "\x1b[3m")?;
+                    }
+                }
+                Event::Start(Tag::Emphasis) => {
+                    italic = true;
+                    write!(out, "\x1b[3m")?;
+                }
+                Event::End(TagEnd::Emphasis) => {
+                    italic = false;
+                    write!(out, "\x1b[23m")?;
+                }
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    in_code_block = true;
+                    code_buf.clear();
+                    code_lang = match kind {
+                        CodeBlockKind::Fenced(lang) => lang.to_string(),
+                        _ => String::new(),
+                    };
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    in_code_block = false;
+                    let highlighted = self.highlighter.highlight_code(&code_buf, &code_lang);
+                    writeln!(out, "{}", highlighted)?;
+                }
+                Event::Code(code) => {
+                    write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
+                    if bold {
+                        write!(out, "\x1b[1m")?;
+                    }
+                    if italic {
+                        write!(out, "\x1b[3m")?;
+                    }
+                    if in_heading {
+                        write!(out, "\x1b[36m")?;
+                    }
+                }
+                Event::Text(text) => {
+                    if in_code_block {
+                        code_buf.push_str(&text);
+                    } else {
+                        write!(out, "{}", text)?;
+                    }
+                }
+                Event::SoftBreak => {
+                    if !in_code_block {
+                        writeln!(out)?;
+                    }
+                }
+                Event::HardBreak => {
+                    writeln!(out)?;
+                }
+                Event::Start(Tag::Paragraph) => {}
+                Event::End(TagEnd::Paragraph) => {
+                    writeln!(out)?;
+                    writeln!(out)?;
+                }
+                Event::Start(Tag::List(_)) => {}
+                Event::End(TagEnd::List(_)) => {}
+                Event::Start(Tag::Item) => {
+                    write!(out, "  {} ", "•".dimmed())?;
+                }
+                Event::End(TagEnd::Item) => {
+                    writeln!(out)?;
+                }
+                Event::Start(Tag::BlockQuote(_)) => {
+                    write!(out, "\x1b[2m> ")?;
+                }
+                Event::End(TagEnd::BlockQuote(_)) => {
+                    writeln!(out, "\x1b[0m")?;
+                }
+                Event::Start(Tag::Link { dest_url, .. }) => {
+                    write!(out, "\x1b[4;34m")?;
+                    let _ = dest_url;
+                }
+                Event::End(TagEnd::Link) => {
+                    write!(out, "\x1b[0m")?;
+                }
+                Event::Rule => {
+                    writeln!(out, "{}", "─".repeat(40).dimmed())?;
+                }
+                _ => {}
+            }
+        }
+
         out.flush()
     }
 
@@ -548,6 +636,50 @@ impl UI {
             result.push(c);
         }
         result.chars().rev().collect()
+    }
+}
+
+/// Handles real-time output during response streaming
+pub struct StreamPrinter {
+    thinking_started: AtomicBool,
+    text_started: AtomicBool,
+}
+
+impl StreamPrinter {
+    pub fn new() -> Self {
+        Self {
+            thinking_started: AtomicBool::new(false),
+            text_started: AtomicBool::new(false),
+        }
+    }
+
+    pub fn on_thinking_delta(&self, delta: &str) {
+        if !self.thinking_started.swap(true, Ordering::SeqCst) {
+            print!(
+                "\n{}\n",
+                "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
+            );
+        }
+        print!("{}", delta.dimmed());
+        let _ = stdout().flush();
+    }
+
+    pub fn on_text_delta(&self, delta: &str) {
+        if !self.text_started.swap(true, Ordering::SeqCst) {
+            if self.thinking_started.load(Ordering::SeqCst) {
+                println!();
+            }
+            println!("{}", "Assistant:".bright_blue().bold());
+        }
+        print!("{}", delta);
+        let _ = stdout().flush();
+    }
+
+    pub fn finish(&self) {
+        if self.text_started.load(Ordering::SeqCst) || self.thinking_started.load(Ordering::SeqCst)
+        {
+            println!();
+        }
     }
 }
 
