@@ -32,6 +32,8 @@ reedline = "0.46"
 globset = "0.4"
 rand = "0.10"
 base64 = "0.22"
+arboard = "3"
+png = "0.18"
 
 # Utilities
 futures = "0.3"

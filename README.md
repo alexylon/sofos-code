@@ -37,7 +37,7 @@ Tested on macOS but should work on Linux and Windows as well.
 
 - **Interactive REPL** - Multi-turn conversations with Claude or GPT
 - **Markdown Formatting** - AI responses with syntax highlighting for code blocks
-- **Image Vision** - Analyze local or web images
+- **Image Vision** - Analyze local or web images, paste from clipboard with Ctrl+V
 - **Session History** - Auto-save and resume conversations
 - **Custom Instructions** - Project and personal context files
 - **File Operations** - Read, write, edit, list, create (sandboxed)
@@ -109,9 +109,13 @@ sofos
 
 ### Image Vision
 
-Include image paths or URLs directly in your message:
+Include image paths or URLs directly in your message, or paste images from clipboard:
 
 ```bash
+# Paste from clipboard
+Ctrl+V                        # Shows ① marker, paste multiple for ①②③
+                               # Delete a marker to remove that image
+
 # Local images
 What's in this screenshot.png?
 Describe ./images/diagram.jpg
@@ -123,7 +127,7 @@ What do you see in "/Users/alex/Documents/my image.png"?
 Analyze https://example.com/chart.png
 ```
 
-**Formats:** JPEG, PNG, GIF, WebP (max 20MB local) | **Spaces:** Wrap in quotes `"path/with space.png"` | **Permissions:** Outside workspace requires config
+**Formats:** JPEG, PNG, GIF, WebP (max 20MB local) | **Clipboard:** Ctrl+V pastes images on macOS, Linux, and Windows | **Spaces:** Wrap in quotes `"path/with space.png"` | **Permissions:** Outside workspace requires config
 
 ### Cost Tracking
 
@@ -292,30 +296,31 @@ RUST_LOG=debug sofos          # Debug logging
 src/
 ├── main.rs              # Entry point
 ├── cli.rs               # CLI argument parsing
+├── clipboard.rs         # Clipboard image paste (Ctrl+V)
 ├── error.rs             # Error types
 ├── error_ext.rs         # Error extensions
-├── config.rs            # Configuration (SofosConfig, ModelConfig)
+├── config.rs            # Configuration
 │
 ├── api/                 # API clients
-│   ├── anthropic.rs     # Claude API client
+│   ├── anthropic.rs     # Claude API client (+ streaming)
 │   ├── openai.rs        # OpenAI API client
 │   ├── morph.rs         # Morph Apply API client
 │   ├── types.rs         # Message types and serialization
-│   └── utils.rs         # API utilities
+│   └── utils.rs         # Retries, error handling
 │
-├── mcp/                 # MCP (Model Context Protocol) integration
-│   ├── mod.rs           # MCP module exports
-│   ├── config.rs        # MCP server configuration loading
-│   ├── protocol.rs      # MCP protocol types (JSON-RPC, tools)
-│   ├── client.rs        # MCP client implementations (stdio, HTTP)
-│   └── manager.rs       # MCP server connection management
+├── mcp/                 # MCP (Model Context Protocol)
+│   ├── config.rs        # Server configuration loading
+│   ├── protocol.rs      # Protocol types (JSON-RPC)
+│   ├── client.rs        # Client implementations (stdio, HTTP)
+│   └── manager.rs       # Server connection management
 │
 ├── repl/                # REPL components
 │   ├── mod.rs           # Main REPL loop
-│   ├── conversation.rs  # Message history management
+│   ├── clipboard_edit_mode.rs # Ctrl+V interception via custom EditMode
+│   ├── conversation.rs  # Message history and compaction
 │   ├── prompt.rs        # Prompt rendering
 │   ├── request_builder.rs   # API request construction
-│   └── response_handler.rs  # Response processing
+│   └── response_handler.rs  # Response and tool iteration
 │
 ├── session/             # Session management
 │   ├── history.rs       # Session persistence
@@ -328,13 +333,14 @@ src/
 │   ├── codesearch.rs    # Code search (ripgrep)
 │   ├── image.rs         # Image handling
 │   ├── permissions.rs   # Permission system
+│   ├── tool_name.rs     # Type-safe tool name enum
 │   ├── types.rs         # Tool definitions
-│   └── utils.rs         # Tool utilities
+│   └── utils.rs         # Confirmations, HTML-to-text
 │
 ├── ui/                  # UI components
-│   ├── mod.rs           # Main UI utilities
+│   ├── mod.rs           # UI utilities, markdown renderer
 │   ├── syntax.rs        # Syntax highlighting
-│   └── diff.rs          # Diff generation
+│   └── diff.rs          # Syntax-highlighted diffs with line numbers
 │
 └── commands/            # Built-in commands
     └── builtin.rs       # Command implementations

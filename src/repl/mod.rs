@@ -1,3 +1,4 @@
+mod clipboard_edit_mode;
 pub mod conversation;
 mod prompt;
 mod request_builder;
@@ -67,6 +68,8 @@ pub struct Repl {
     session_state: SessionState,
     safe_mode: bool,
     available_tools: Vec<crate::api::Tool>,
+    pasted_images: std::sync::Arc<std::sync::Mutex<Vec<crate::clipboard::PastedImage>>>,
+    paste_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Repl {
@@ -153,8 +156,11 @@ impl Repl {
             KeyCode::BackTab,
             ReedlineEvent::MenuPrevious,
         );
-
-        let edit_mode = Box::new(Emacs::new(keybindings));
+        let emacs = Emacs::new(keybindings);
+        let clipboard_mode = clipboard_edit_mode::ClipboardEditMode::new(emacs);
+        let pasted_images = clipboard_mode.images_handle();
+        let paste_counter = clipboard_mode.counter_handle();
+        let edit_mode: Box<dyn reedline::EditMode> = Box::new(clipboard_mode);
 
         let editor = Reedline::create()
             .use_bracketed_paste(true)
@@ -187,6 +193,8 @@ impl Repl {
             session_state,
             safe_mode: config.safe_mode,
             available_tools: Vec::new(),
+            pasted_images,
+            paste_counter,
         };
 
         // Initialize available tools (needs async)
@@ -213,11 +221,39 @@ impl Repl {
                         .replace("^[[200~", "")
                         .replace("^[[201~", "");
 
+                    let (stripped, image_indices) = crate::clipboard::strip_paste_markers(&line);
+                    let pasted_images: Vec<crate::clipboard::PastedImage> = if !image_indices
+                        .is_empty()
+                    {
+                        let mut imgs = self.pasted_images.lock().unwrap_or_else(|e| e.into_inner());
+                        let result: Vec<_> = image_indices
+                            .iter()
+                            .filter_map(|&idx| imgs.get(idx).cloned())
+                            .collect();
+                        println!(
+                            "{} Pasted {} image(s) from clipboard",
+                            "📋".bright_cyan(),
+                            result.len()
+                        );
+                        imgs.clear();
+                        self.paste_counter
+                            .store(0, std::sync::atomic::Ordering::SeqCst);
+                        result
+                    } else {
+                        self.pasted_images
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .clear();
+                        self.paste_counter
+                            .store(0, std::sync::atomic::Ordering::SeqCst);
+                        vec![]
+                    };
+                    line = stripped;
+
                     if line.is_empty() {
                         continue;
                     }
 
-                    // Check if this is a command
                     if let Some(command) = Command::from_str(&line) {
                         match command.execute(self) {
                             Ok(CommandResult::Continue) => continue,
@@ -234,7 +270,7 @@ impl Repl {
                     }
 
                     // Not a command, process as regular message
-                    if let Err(e) = self.process_message(&line) {
+                    if let Err(e) = self.process_message(&line, pasted_images) {
                         if e.is_blocked() {
                             UI::print_blocked_with_hint(&e);
                         } else {
@@ -267,8 +303,14 @@ impl Repl {
         Ok(())
     }
 
-    fn process_message(&mut self, user_input: &str) -> Result<()> {
+    fn process_message(
+        &mut self,
+        user_input: &str,
+        pasted_images: Vec<crate::clipboard::PastedImage>,
+    ) -> Result<()> {
         let (remaining_text, image_refs) = extract_image_references(user_input);
+
+        let has_images = !image_refs.is_empty() || !pasted_images.is_empty();
 
         if !image_refs.is_empty() {
             println!(
@@ -278,8 +320,18 @@ impl Repl {
             );
         }
 
-        let content_blocks = if !image_refs.is_empty() {
+        let content_blocks = if has_images {
             let mut blocks: Vec<MessageContentBlock> = Vec::new();
+
+            for pasted in &pasted_images {
+                blocks.push(MessageContentBlock::Image {
+                    source: ImageSource::Base64 {
+                        media_type: pasted.media_type.clone(),
+                        data: pasted.base64_data.clone(),
+                    },
+                    cache_control: None,
+                });
+            }
             let mut failed_images: Vec<String> = Vec::new();
 
             // Load images first (Claude recommends images before text)
@@ -595,7 +647,7 @@ impl Repl {
         let symbol = if self.safe_mode { "λ:" } else { "λ>" };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
-        self.process_message(prompt)?;
+        self.process_message(prompt, vec![])?;
         self.save_current_session()?;
         UI::display_session_summary(
             &self.model_config.model,

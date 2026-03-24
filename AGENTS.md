@@ -65,6 +65,7 @@ src/
 │
 ├── repl/                # REPL components
 │   ├── mod.rs           # Main REPL loop and Repl struct
+│   ├── clipboard_edit_mode.rs # Custom EditMode wrapping Emacs to intercept Ctrl+V
 │   ├── conversation.rs  # Message history management
 │   ├── prompt.rs        # Prompt rendering
 │   ├── request_builder.rs   # API request construction
@@ -75,14 +76,17 @@ src/
 │   ├── state.rs         # Runtime session state
 │   └── selector.rs      # Session selection TUI
 │
+├── clipboard.rs         # Clipboard image paste (Ctrl+V) with numbered markers
+│
 ├── tools/               # Tool implementations
 │   ├── filesystem.rs    # File operations (read, write, list, etc)
 │   ├── bashexec.rs      # Sandboxed bash execution
 │   ├── codesearch.rs    # Ripgrep integration
-│   ├── image.rs         # Image handling
+│   ├── image.rs         # Image handling (local paths, URLs)
 │   ├── permissions.rs   # 3-tier command permission system
+│   ├── tool_name.rs     # Type-safe tool name enum
 │   ├── types.rs         # Tool definitions for API
-│   └── utils.rs         # Tool utilities
+│   └── utils.rs         # Tool utilities (confirmations, HTML-to-text)
 │
 ├── ui/                  # UI components
 │   ├── mod.rs           # Main UI utilities and display logic
