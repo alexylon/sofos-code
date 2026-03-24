@@ -16,6 +16,7 @@ pub enum ToolName {
     EditFile,
     GlobFiles,
     MorphEditFile,
+    WebFetch,
     WebSearch,
 }
 
@@ -35,6 +36,7 @@ impl ToolName {
             ToolName::EditFile => "edit_file",
             ToolName::GlobFiles => "glob_files",
             ToolName::MorphEditFile => "morph_edit_file",
+            ToolName::WebFetch => "web_fetch",
             ToolName::WebSearch => "web_search",
         }
     }
@@ -54,6 +56,7 @@ impl ToolName {
             "edit_file" => Ok(ToolName::EditFile),
             "glob_files" => Ok(ToolName::GlobFiles),
             "morph_edit_file" => Ok(ToolName::MorphEditFile),
+            "web_fetch" => Ok(ToolName::WebFetch),
             "web_search" => Ok(ToolName::WebSearch),
             _ => Err(SofosError::ToolExecution(format!("Unknown tool: {}", s))),
         }

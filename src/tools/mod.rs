@@ -584,6 +584,58 @@ impl ToolExecutor {
                 let result = self.bash_executor.execute(command)?;
                 Ok(result)
             }
+            ToolName::WebFetch => {
+                let url = input["url"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'url' parameter".to_string())
+                })?;
+
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err(SofosError::ToolExecution(
+                        "URL must start with http:// or https://".to_string(),
+                    ));
+                }
+
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                    .map_err(|e| SofosError::ToolExecution(format!("HTTP client error: {}", e)))?;
+
+                let response = client
+                    .get(url)
+                    .header("User-Agent", "Sofos/1.0")
+                    .send()
+                    .await
+                    .map_err(|e| SofosError::ToolExecution(format!("Fetch failed: {}", e)))?;
+
+                let status = response.status();
+                if !status.is_success() {
+                    return Err(SofosError::ToolExecution(format!(
+                        "HTTP {} for {}",
+                        status, url
+                    )));
+                }
+
+                let body = response
+                    .text()
+                    .await
+                    .map_err(|e| SofosError::ToolExecution(format!("Read body failed: {}", e)))?;
+
+                let text = utils::html_to_text(&body);
+
+                let max_chars = 64_000;
+                let truncated = if text.len() > max_chars {
+                    format!(
+                        "{}\n\n[TRUNCATED: showing first ~{} chars of {}]",
+                        &text[..max_chars],
+                        max_chars,
+                        text.len()
+                    )
+                } else {
+                    text
+                };
+
+                Ok(format!("Content from {}:\n\n{}", url, truncated))
+            }
             ToolName::WebSearch => Err(SofosError::ToolExecution(
                 "web_search is handled server-side by the API and should not be executed locally"
                     .to_string(),

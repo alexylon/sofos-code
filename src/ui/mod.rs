@@ -603,6 +603,11 @@ impl UI {
                     format!("Found {} items in {}", item_count, path.bright_cyan())
                 }
             }
+            "web_fetch" => {
+                let url = tool_input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let char_count = output.len();
+                format!("Fetched {} ({} chars)", url.bright_cyan(), char_count)
+            }
             "morph_edit_file" => output.to_string(),
             _ => output.to_string(),
         }

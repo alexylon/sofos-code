@@ -250,6 +250,24 @@ fn glob_files_tool() -> Tool {
     }
 }
 
+fn web_fetch_tool() -> Tool {
+    Tool::Regular {
+        name: "web_fetch".to_string(),
+        description: "Fetch a URL and return its content as readable text. Use this to read documentation pages, API references, or any web content. For searching the web by query, use web_search instead.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The URL to fetch (e.g., 'https://docs.rs/serde/latest/serde/')"
+                }
+            },
+            "required": ["url"]
+        }),
+        cache_control: None,
+    }
+}
+
 fn morph_edit_file_tool() -> Tool {
     Tool::Regular {
         name: "morph_edit_file".to_string(),
@@ -290,6 +308,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         move_file_tool(),
         copy_file_tool(),
         execute_bash_tool(),
+        web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
     ]
@@ -309,6 +328,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         copy_file_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),
+        web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
     ]
@@ -319,6 +339,7 @@ pub fn get_read_only_tools() -> Vec<Tool> {
         list_directory_tool(),
         read_file_tool(),
         glob_files_tool(),
+        web_fetch_tool(),
         // Anthropic web search tool
         anthropic_web_search_tool(),
         // OpenAI web search tool
