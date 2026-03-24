@@ -50,7 +50,7 @@ fn write_file_tool(has_morph: bool) -> Tool {
 fn list_directory_tool() -> Tool {
     Tool::Regular {
         name: "list_directory".to_string(),
-        description: "List all files and directories in a given path. Only works within the current project directory unless the path is explicitly allowed via Read permissions in the config.".to_string(),
+        description: "List files and directories in a single directory (non-recursive). Use this to explore a specific folder's contents. For finding files across multiple directories by pattern, use glob_files instead.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -228,6 +228,28 @@ fn edit_file_tool() -> Tool {
     }
 }
 
+fn glob_files_tool() -> Tool {
+    Tool::Regular {
+        name: "glob_files".to_string(),
+        description: "Find files recursively by glob pattern. Use this when you need to find files across the codebase by name or extension (e.g., '**/*.rs', 'src/**/test_*.py'). For listing a single directory's contents, use list_directory instead.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern (e.g., '**/*.rs', 'src/**/mod.rs', '*.toml', 'tests/**/*.py')"
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search in, relative to workspace root. Default: '.' (entire workspace)"
+                }
+            },
+            "required": ["pattern"]
+        }),
+        cache_control: None,
+    }
+}
+
 fn morph_edit_file_tool() -> Tool {
     Tool::Regular {
         name: "morph_edit_file".to_string(),
@@ -261,6 +283,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         read_file_tool(),
         write_file_tool(false),
         edit_file_tool(),
+        glob_files_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
@@ -278,6 +301,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         read_file_tool(),
         write_file_tool(true),
         edit_file_tool(),
+        glob_files_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
@@ -294,6 +318,7 @@ pub fn get_read_only_tools() -> Vec<Tool> {
     vec![
         list_directory_tool(),
         read_file_tool(),
+        glob_files_tool(),
         // Anthropic web search tool
         anthropic_web_search_tool(),
         // OpenAI web search tool

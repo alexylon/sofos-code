@@ -389,6 +389,57 @@ impl ToolExecutor {
                 let results = code_search.search(pattern, file_type, max_results)?;
                 Ok(format!("Code search results:\n\n{}", results))
             }
+            ToolName::GlobFiles => {
+                let pattern = input["pattern"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'pattern' parameter".to_string())
+                })?;
+                let base = input["path"].as_str().unwrap_or(".");
+
+                let search_dir = self.fs_tool._workspace().join(base);
+                if !search_dir.exists() {
+                    return Err(SofosError::FileNotFound(base.to_string()));
+                }
+
+                let glob = globset::GlobBuilder::new(pattern)
+                    .literal_separator(false)
+                    .build()
+                    .map_err(|e| SofosError::ToolExecution(format!("Invalid glob pattern: {}", e)))?
+                    .compile_matcher();
+
+                let mut matches = Vec::new();
+                let mut stack = vec![search_dir.clone()];
+
+                while let Some(dir) = stack.pop() {
+                    let entries = match std::fs::read_dir(&dir) {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if let Ok(rel) = path.strip_prefix(&search_dir) {
+                            let rel_str = rel.to_string_lossy();
+                            if path.is_dir() {
+                                stack.push(path);
+                            } else if glob.is_match(rel_str.as_ref()) {
+                                matches.push(rel_str.to_string());
+                            }
+                        }
+                    }
+                }
+
+                matches.sort();
+
+                if matches.is_empty() {
+                    Ok(format!("No files matching '{}' in '{}'", pattern, base))
+                } else {
+                    Ok(format!(
+                        "Found {} file(s) matching '{}':\n{}",
+                        matches.len(),
+                        pattern,
+                        matches.join("\n")
+                    ))
+                }
+            }
             ToolName::EditFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
