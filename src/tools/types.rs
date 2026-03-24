@@ -198,6 +198,36 @@ fn copy_file_tool() -> Tool {
     }
 }
 
+fn edit_file_tool() -> Tool {
+    Tool::Regular {
+        name: "edit_file".to_string(),
+        description: "Make targeted edits to a file by replacing exact string matches. Preferred over write_file for modifying existing files — safer and more efficient since only the changed portion is specified.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The relative path to the file (e.g., 'src/main.rs')"
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "The exact text to find and replace. Must match the file content exactly, including whitespace and indentation."
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The replacement text. Use an empty string to delete the matched text."
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "If true, replace all occurrences. Default: false (replace first match only)."
+                }
+            },
+            "required": ["path", "old_string", "new_string"]
+        }),
+        cache_control: None,
+    }
+}
+
 fn morph_edit_file_tool() -> Tool {
     Tool::Regular {
         name: "morph_edit_file".to_string(),
@@ -230,15 +260,14 @@ pub fn get_all_tools() -> Vec<Tool> {
         list_directory_tool(),
         read_file_tool(),
         write_file_tool(false),
+        edit_file_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
         move_file_tool(),
         copy_file_tool(),
         execute_bash_tool(),
-        // Anthropic web search tool
         anthropic_web_search_tool(),
-        // OpenAI web search tool
         openai_web_search_tool(),
     ]
 }
@@ -248,6 +277,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         list_directory_tool(),
         read_file_tool(),
         write_file_tool(true),
+        edit_file_tool(),
         create_directory_tool(),
         delete_file_tool(),
         delete_directory_tool(),
@@ -255,9 +285,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         copy_file_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),
-        // Anthropic web search tool
         anthropic_web_search_tool(),
-        // OpenAI web search tool
         openai_web_search_tool(),
     ]
 }

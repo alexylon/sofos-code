@@ -389,6 +389,43 @@ impl ToolExecutor {
                 let results = code_search.search(pattern, file_type, max_results)?;
                 Ok(format!("Code search results:\n\n{}", results))
             }
+            ToolName::EditFile => {
+                let path = input["path"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'path' parameter".to_string())
+                })?;
+                let old_string = input["old_string"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'old_string' parameter".to_string())
+                })?;
+                let new_string = input["new_string"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'new_string' parameter".to_string())
+                })?;
+                let replace_all = input["replace_all"].as_bool().unwrap_or(false);
+
+                let original = self.fs_tool.read_file(path)?;
+
+                if !original.contains(old_string) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "old_string not found in '{}'. Make sure it matches the file content exactly, \
+                         including whitespace and indentation.",
+                        path
+                    )));
+                }
+
+                let modified = if replace_all {
+                    original.replace(old_string, new_string)
+                } else {
+                    original.replacen(old_string, new_string, 1)
+                };
+
+                self.fs_tool.write_file(path, &modified)?;
+
+                let diff_output = diff::generate_compact_diff(&original, &modified, path);
+
+                Ok(format!(
+                    "Successfully edited '{}'\n\nChanges:\n{}",
+                    path, diff_output
+                ))
+            }
             ToolName::MorphEditFile => {
                 let morph = self.morph_client.as_ref().ok_or_else(|| {
                     SofosError::ToolExecution(

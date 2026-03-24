@@ -13,6 +13,7 @@ pub enum ToolName {
     CopyFile,
     ExecuteBash,
     SearchCode,
+    EditFile,
     MorphEditFile,
     WebSearch,
 }
@@ -30,6 +31,7 @@ impl ToolName {
             ToolName::CopyFile => "copy_file",
             ToolName::ExecuteBash => "execute_bash",
             ToolName::SearchCode => "search_code",
+            ToolName::EditFile => "edit_file",
             ToolName::MorphEditFile => "morph_edit_file",
             ToolName::WebSearch => "web_search",
         }
@@ -47,6 +49,7 @@ impl ToolName {
             "copy_file" => Ok(ToolName::CopyFile),
             "execute_bash" => Ok(ToolName::ExecuteBash),
             "search_code" => Ok(ToolName::SearchCode),
+            "edit_file" => Ok(ToolName::EditFile),
             "morph_edit_file" => Ok(ToolName::MorphEditFile),
             "web_search" => Ok(ToolName::WebSearch),
             _ => Err(SofosError::ToolExecution(format!("Unknown tool: {}", s))),
