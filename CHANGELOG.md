@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-03-24
+
 ### Added
 - Clipboard image paste with Ctrl+V: numbered markers (①②③), multi-image support, per-image deletion
 
