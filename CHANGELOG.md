@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-03-24
+
 ### Added
 - `edit_file` tool for targeted string replacement edits (no external API required)
 - `glob_files` tool for recursive file pattern matching (`**/*.rs`, `src/**/mod.rs`)
