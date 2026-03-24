@@ -229,7 +229,7 @@ impl HistoryManager {
     }
 
     pub fn load_custom_instructions(&self) -> Result<Option<String>> {
-        let project_rc = self.workspace.join(".sofosrc");
+        let project_rc = self.workspace.join("AGENTS.md");
         let personal_instructions = self.workspace.join(".sofos/instructions.md");
 
         let mut combined = String::new();

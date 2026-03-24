@@ -4,6 +4,19 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `edit_file` tool for targeted string replacement edits (no external API required)
+- `glob_files` tool for recursive file pattern matching (`**/*.rs`, `src/**/mod.rs`)
+- `web_fetch` tool for fetching URL content as readable text
+- Syntax highlighting inside diffs with line numbers
+- Streaming infrastructure for Anthropic SSE API (disabled pending incremental markdown rendering)
+
+### Changed
+- Renamed project instructions file from `.sofosrc` to `AGENTS.md` per the [AGENTS.md](https://agents.md) convention for providing project context to AI agents
+- Replaced yanked `pulldown-cmark-mdcat` with `pulldown-cmark` + custom ANSI markdown renderer
+- Improved diff display: darker backgrounds (#5e0000 / #00005f), syntax-colored code, line numbers
+- Tool output with ANSI formatting (diffs) no longer dimmed
+
 ## [0.1.20] - 2026-03-23
 
 ### Added

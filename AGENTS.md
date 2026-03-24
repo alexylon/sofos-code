@@ -26,7 +26,7 @@ Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API.
    - **Loop-based handling** allows Claude to use multiple tools in sequence iteratively
 
 3. **Two-Level Instructions** (src/session/history.rs)
-   - `.sofosrc`: Project-level, version controlled
+   - `AGENTS.md`: Project-level, version controlled
    - `.sofos/instructions.md`: Personal, gitignored
    - Both appended to system prompt at startup
 
@@ -101,11 +101,11 @@ src/
 - Supports both regular and server-side tools (like web_search)
 
 **src/ui/diff.rs**
-- Generate contextual diffs showing only changed code blocks
-- Uses `similar` crate for accurate line-by-line diffing
-- Formats output with colored backgrounds (red for deletions, blue for additions)
+- Generate contextual diffs with syntax highlighting and line numbers
+- Uses `similar` crate for diffing, `syntect` for syntax coloring
+- Dark backgrounds (#5e0000 deletions, #00005f additions) with syntax-colored code
 - Context lines (default: 2) show unchanged code around changes
-- Used by morph_edit_file tool to display what changed
+- Used by edit_file, write_file, and morph_edit_file tools
 
 **src/session/history.rs**
 - SessionMetadata: Preview and timestamps for session list
@@ -315,10 +315,10 @@ cargo test -- --nocapture     # Show println output
 
 ### Adding a New Tool
 
-1. Define tool in `src/tools/types.rs` (get_tools or get_tools_with_morph)
-2. Implement execution in appropriate file (filesystem.rs, bashexec.rs, etc)
-3. Add match arm in `src/tools/mod.rs` (ToolExecutor::execute)
-4. Test the new tool thoroughly
+1. Add variant to `src/tools/tool_name.rs` (ToolName enum, as_str, from_str)
+2. Define tool schema in `src/tools/types.rs` and add to tool lists
+3. Implement execution in `src/tools/mod.rs` (ToolExecutor::execute match arm)
+4. Add tests in `src/tools/tests.rs`
 5. Update README.md with tool description
 
 ### Modifying Bash Command Permissions
@@ -392,7 +392,7 @@ This prints:
 
 **Always:**
 - Test security features when making changes to filesystem or bash tools
-- Update both README.md and this .sofosrc when adding features
+- Update both README.md and this CLAUDE.md when adding features
 - Run `cargo test` before committing
 - Add helpful error messages for user-facing errors
 

@@ -6,7 +6,7 @@ A blazingly fast, interactive AI coding assistant powered by Claude or GPT, impl
 
 Tested on macOS but should work on Linux and Windows as well.
 
-<div align="center"><img src="/assets/sofos_code.png" style="width: 800px;" alt="Sofos Code"></div>
+<div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code"></div>
 
 ## Table of Contents
 
@@ -40,13 +40,16 @@ Tested on macOS but should work on Linux and Windows as well.
 - **Image Vision** - Analyze local or web images
 - **Session History** - Auto-save and resume conversations
 - **Custom Instructions** - Project and personal context files
-- **File Operations** - Read, write, list, create (sandboxed)
+- **File Operations** - Read, write, edit, list, create (sandboxed)
+- **Targeted Edits** - Diff-based `edit_file` for precise string replacements
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec)
+- **File Search** - Find files by glob pattern (`**/*.rs`)
 - **Code Search** - Fast regex search with ripgrep
 - **Web Search** - Real-time info via Claude's/OpenAI's native search
+- **Web Fetch** - Read documentation and web pages
 - **Bash Execution** - Run tests and builds (read-only, sandboxed)
 - **MCP Integration** - Connect to external tools via Model Context Protocol
-- **Visual Diffs** - Colored change display
+- **Visual Diffs** - Syntax-highlighted diffs with line numbers
 - **Iterative Tools** - Up to 200 tool calls per request
 - **Context Compaction** - Summarizes older messages instead of dropping them
 - **Cost Tracking** - Session token usage and cost estimates
@@ -72,7 +75,7 @@ git clone https://github.com/alexylon/sofos-code.git
 cd sofos-code && cargo install --path .
 ```
 
-**Important:** Add `.sofos/` to `.gitignore` (contains session history and personal settings). Keep `.sofosrc` (team-wide instructions).
+**Important:** Add `.sofos/` to `.gitignore` (contains session history and personal settings). Keep `AGENTS.md` (team-wide instructions).
 
 ## Usage
 
@@ -157,9 +160,9 @@ For Claude, it enables the thinking protocol and `--thinking-budget` controls to
 For OpenAI (gpt-5 models), `/think on` sets high reasoning effort and `/think off` sets low reasoning effort. 
 The `--thinking-budget` parameter only applies to Claude models.
 
-## Custom Instructions
+## Custom Instructions/Context
 
-**`.sofosrc`** (project root, version controlled) - Team-wide conventions, architecture (see this project's `.sofosrc` for example)
+**[`AGENTS.md`](https://agents.md)** (project root, version controlled) - Project context for AI agents, team-wide conventions, architecture
 **`.sofos/instructions.md`** (gitignored) - Personal preferences
 
 Both loaded at startup and appended to system prompt.
@@ -173,13 +176,16 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 **File Operations:**
 - `read_file` - Read file contents
 - `write_file` - Create or overwrite files
+- `edit_file` - Targeted string replacement edits (no API key needed)
 - `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
-- `list_directory` - List directory contents
+- `list_directory` - List a single directory's contents
+- `glob_files` - Find files recursively by glob pattern (`**/*.rs`, `src/**/test_*.py`)
 - `create_directory`, `delete_file`, `delete_directory`, `move_file`, `copy_file` - Standard file ops
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
 - `web_search` - Real-time web information via Claude's/OpenAI's native search
+- `web_fetch` - Fetch URL content as readable text (documentation, APIs)
 - `execute_bash` - Run tests and build commands (read-only, sandboxed)
 
 **Image Vision:**
@@ -190,7 +196,7 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 
 **Note:** Only `read_file`, `list_directory`, and `image` can access paths outside workspace when explicitly allowed in config. All other operations are workspace-only.
 
-Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `web_search`, `image`.
+Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `glob_files`, `web_search`, `web_fetch`, `image`.
 
 ## MCP Servers
 
@@ -334,7 +340,7 @@ src/
     └── builtin.rs       # Command implementations
 ```
 
-See `.sofosrc` for detailed conventions.
+See `AGENTS.md` for detailed conventions.
 
 ## Release
 
