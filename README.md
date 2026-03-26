@@ -11,7 +11,7 @@ Tested on macOS but should work on Linux and Windows as well.
 ## Table of Contents
 
 - [Features](#features)
-- [Installation](#installation)
+- [Install](#install)
 - [Usage](#usage)
   - [Quick Start](#quick-start)
   - [Commands](#commands)
@@ -55,34 +55,38 @@ Tested on macOS but should work on Linux and Windows as well.
 - **Cost Tracking** - Session token usage and cost estimates
 - **Safe Mode** - Read-only operation mode
 
-## Installation
+## Install
 
 **Requirements:** Anthropic API key ([get one](https://console.anthropic.com/)) or OpenAI API key ([get one](https://platform.openai.com/))
 
 **Optional** (but highly recommended): `ripgrep` for code search ([install](https://github.com/BurntSushi/ripgrep#installation)), Morph API key for ultra-fast editing ([get one](https://morphllm.com/))
 
-**Install:**
+### Prebuilt binary
+
+Download from [GitHub Releases](https://github.com/alexylon/sofos-code/releases/latest) (macOS, Linux, Windows):
 
 ```bash
-# Prebuilt binary — download from GitHub Releases:
-# https://github.com/alexylon/sofos-code/releases/latest
-
 # macOS / Linux
 tar xzf sofos-*.tar.gz
 sudo mv sofos /usr/local/bin/
 
-# Homebrew
-brew tap alexylon/tap && brew install sofos
-
-# Cargo (requires Rust 1.70+)
-cargo install sofos
-
-# From source
-git clone https://github.com/alexylon/sofos-code.git
-cd sofos-code && cargo install --path .
+# Windows — extract the .zip, then add the folder to your PATH
 ```
 
 > **macOS:** On first run, macOS may block the binary. Go to System Settings → Privacy & Security and click *Allow Anyway*.
+
+### With Rust
+
+```bash
+cargo install sofos
+```
+
+### From source
+
+```bash
+git clone https://github.com/alexylon/sofos-code.git
+cd sofos-code && cargo install --path .
+```
 
 **Important:** Add `.sofos/` to `.gitignore` (contains session history and personal settings). Keep `AGENTS.md` (team-wide instructions).
 
