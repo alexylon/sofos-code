@@ -64,7 +64,14 @@ Tested on macOS but should work on Linux and Windows as well.
 **Install:**
 
 ```bash
-# Homebrew (could be behind `cargo install`)
+# Prebuilt binary — download from GitHub Releases:
+# https://github.com/alexylon/sofos-code/releases/latest
+
+# macOS / Linux
+tar xzf sofos-*.tar.gz
+sudo mv sofos /usr/local/bin/
+
+# Homebrew
 brew tap alexylon/tap && brew install sofos
 
 # Cargo (requires Rust 1.70+)
@@ -74,6 +81,8 @@ cargo install sofos
 git clone https://github.com/alexylon/sofos-code.git
 cd sofos-code && cargo install --path .
 ```
+
+> **macOS:** On first run, macOS may block the binary. Go to System Settings → Privacy & Security and click *Allow Anyway*.
 
 **Important:** Add `.sofos/` to `.gitignore` (contains session history and personal settings). Keep `AGENTS.md` (team-wide instructions).
 
