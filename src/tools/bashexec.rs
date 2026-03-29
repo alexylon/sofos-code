@@ -16,9 +16,7 @@ fn truncate_for_context(content: &str, max_tokens: usize) -> String {
         let truncated_content = &content[..truncate_at.min(content.len())];
         format!(
             "{}...\n\n[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
-            truncated_content,
-            estimated_tokens,
-            max_tokens
+            truncated_content, estimated_tokens, max_tokens
         )
     } else {
         content.to_string()
@@ -753,8 +751,10 @@ ask = []
         assert!(
             !executor.is_safe_command_structure("git remote add origin https://evil.com/repo.git")
         );
-        assert!(!executor
-            .is_safe_command_structure("git remote set-url origin https://evil.com/repo.git"));
+        assert!(
+            !executor
+                .is_safe_command_structure("git remote set-url origin https://evil.com/repo.git")
+        );
         assert!(!executor.is_safe_command_structure("git remote remove origin"));
 
         // Submodules (can fetch from remote)

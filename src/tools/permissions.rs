@@ -872,11 +872,13 @@ mod tests {
 
         // Load again and verify
         let manager = PermissionManager::new(workspace).unwrap();
-        assert!(manager
-            .settings
-            .permissions
-            .allow
-            .contains(&"Bash(custom:*)".to_string()));
+        assert!(
+            manager
+                .settings
+                .permissions
+                .allow
+                .contains(&"Bash(custom:*)".to_string())
+        );
     }
 
     #[test]
@@ -1061,14 +1063,18 @@ ask = []
         assert_eq!(global.permissions.allow[2], "Bash(global_cmd)");
 
         assert_eq!(global.permissions.deny.len(), 2);
-        assert!(global
-            .permissions
-            .deny
-            .contains(&"Read(./local_secret)".to_string()));
-        assert!(global
-            .permissions
-            .deny
-            .contains(&"Read(./global_secret)".to_string()));
+        assert!(
+            global
+                .permissions
+                .deny
+                .contains(&"Read(./local_secret)".to_string())
+        );
+        assert!(
+            global
+                .permissions
+                .deny
+                .contains(&"Read(./global_secret)".to_string())
+        );
     }
 
     #[test]
@@ -1125,21 +1131,27 @@ ask = []
             None => std::env::remove_var("HOME"),
         }
 
-        assert!(manager
-            .settings
-            .permissions
-            .allow
-            .contains(&"Bash(local_allowed)".to_string()));
-        assert!(manager
-            .settings
-            .permissions
-            .allow
-            .contains(&"Bash(global_allowed)".to_string()));
-        assert!(manager
-            .settings
-            .permissions
-            .deny
-            .contains(&"Read(./global_denied)".to_string()));
+        assert!(
+            manager
+                .settings
+                .permissions
+                .allow
+                .contains(&"Bash(local_allowed)".to_string())
+        );
+        assert!(
+            manager
+                .settings
+                .permissions
+                .allow
+                .contains(&"Bash(global_allowed)".to_string())
+        );
+        assert!(
+            manager
+                .settings
+                .permissions
+                .deny
+                .contains(&"Read(./global_denied)".to_string())
+        );
     }
 
     #[test]

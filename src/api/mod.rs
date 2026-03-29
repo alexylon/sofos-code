@@ -9,8 +9,8 @@ pub use morph::MorphClient;
 pub use openai::OpenAIClient;
 pub use types::*;
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 #[derive(Clone)]
 pub enum LlmClient {

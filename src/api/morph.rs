@@ -1,6 +1,6 @@
 use super::utils::{self, REQUEST_TIMEOUT};
 use crate::error::{Result, SofosError};
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 const MORPH_BASE_URL: &str = "https://api.morphllm.com/v1";

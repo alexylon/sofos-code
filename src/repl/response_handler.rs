@@ -8,9 +8,9 @@ use crate::tools::ToolExecutor;
 use crate::ui::UI;
 use colored::Colorize;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::{Duration, sleep};
 
 /// Handles AI's responses and manages tool execution iteration
 pub struct ResponseHandler {

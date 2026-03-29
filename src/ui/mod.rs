@@ -1,16 +1,16 @@
 pub mod diff;
 pub mod syntax;
 
-use crate::session::history::Session;
 use crate::session::DisplayMessage;
+use crate::session::history::Session;
 use crate::ui::syntax::SyntaxHighlighter;
 use colored::Colorize;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::execute;
-use std::io::{self, stdout, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{self, Write, stdout};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 

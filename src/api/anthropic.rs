@@ -2,9 +2,9 @@ use super::types::*;
 use super::utils::{self, REQUEST_TIMEOUT};
 use crate::error::{Result, SofosError};
 use futures::stream::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
-use std::sync::atomic::{AtomicBool, Ordering};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";

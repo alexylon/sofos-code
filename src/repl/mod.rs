@@ -16,19 +16,19 @@ use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{DisplayMessage, HistoryManager, SessionState};
-use crate::tools::image::{extract_image_references, ImageLoader, ImageReference};
 use crate::tools::ToolExecutor;
-use crate::ui::{set_safe_mode_cursor_style, UI};
+use crate::tools::image::{ImageLoader, ImageReference, extract_image_references};
+use crate::ui::{UI, set_safe_mode_cursor_style};
 use colored::Colorize;
 use crossterm::event::{KeyCode, KeyModifiers};
 use reedline::{
-    default_emacs_keybindings, ColumnarMenu, DefaultCompleter, Emacs, MenuBuilder, Reedline,
-    ReedlineEvent, ReedlineMenu, Signal,
+    ColumnarMenu, DefaultCompleter, Emacs, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Signal, default_emacs_keybindings,
 };
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::time::{Duration, sleep};
 
 pub struct ReplConfig {
     pub model: String,

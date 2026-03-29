@@ -1,7 +1,7 @@
 use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
-use base64::{engine::general_purpose::STANDARD, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use std::path::PathBuf;
 
 const MAX_IMAGE_SIZE: u64 = 20 * 1024 * 1024;

@@ -14,9 +14,7 @@ fn truncate_for_context(content: &str, max_tokens: usize) -> String {
         let truncated_content = &content[..truncate_at.min(content.len())];
         format!(
             "{}...\n\n[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
-            truncated_content,
-            estimated_tokens,
-            max_tokens
+            truncated_content, estimated_tokens, max_tokens
         )
     } else {
         content.to_string()
