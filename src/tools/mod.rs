@@ -13,9 +13,11 @@ use crate::mcp::McpManager;
 use crate::ui::diff;
 use bashexec::BashExecutor;
 use codesearch::CodeSearchTool;
+use colored::Colorize;
 use filesystem::FileSystemTool;
 use permissions::PermissionManager;
 use serde_json::Value;
+use std::time::Duration;
 use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
@@ -452,12 +454,37 @@ impl ToolExecutor {
                 })?;
                 let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
+                // Guard against truncation markers from conversation history compaction
+                let truncation_markers = [
+                    "...[truncated",
+                    "// ... existing code ...",
+                    "/* ... existing code ... */",
+                    "# ... existing code ...",
+                ];
+                for marker in &truncation_markers {
+                    if old_string.contains(marker) {
+                        return Err(SofosError::ToolExecution(format!(
+                            "old_string contains a truncation marker '{}'. This is not real file content. \
+                             Use read_file to get the actual current content of '{}' before editing.",
+                            marker, path
+                        )));
+                    }
+                    if new_string.contains(marker) {
+                        return Err(SofosError::ToolExecution(format!(
+                            "new_string contains a truncation marker '{}'. You must provide the complete \
+                             replacement text, not abbreviated content. Use read_file to get the current \
+                             content of '{}' if needed.",
+                            marker, path
+                        )));
+                    }
+                }
+
                 let original = self.fs_tool.read_file(path)?;
 
                 if !original.contains(old_string) {
                     return Err(SofosError::ToolExecution(format!(
                         "old_string not found in '{}'. Make sure it matches the file content exactly, \
-                         including whitespace and indentation.",
+                         including whitespace and indentation. Use read_file first to see the current content.",
                         path
                     )));
                 }
@@ -495,11 +522,54 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'code_edit' parameter".to_string())
                 })?;
 
+                // Guard against truncation markers from conversation history compaction
+                if code_edit.contains("...[truncated") {
+                    return Err(SofosError::ToolExecution(format!(
+                        "code_edit contains a truncation marker '...[truncated'. This is not real code. \
+                         Use read_file to get the actual current content of '{}' before editing.",
+                        path
+                    )));
+                }
+
                 let original_code = self.fs_tool.read_file(path)?;
 
-                let merged_code = morph
-                    .apply_edit(instruction, &original_code, code_edit)
-                    .await?;
+                // Wrap morph API call with a timeout; fall back to edit_file on timeout/network errors
+                let morph_timeout = Duration::from_secs(30);
+                let merged_code = match tokio::time::timeout(
+                    morph_timeout,
+                    morph.apply_edit(instruction, &original_code, code_edit),
+                )
+                .await
+                {
+                    Ok(Ok(code)) => code,
+                    Ok(Err(SofosError::NetworkError(msg))) => {
+                        eprintln!(
+                            "  {} Morph API failed ({}), use edit_file instead",
+                            "⚠".bright_yellow(),
+                            msg
+                        );
+                        return Ok(ToolExecutionResult::Text(format!(
+                            "morph_edit_file failed ({}). The file '{}' was NOT modified. \
+                             Please use read_file to get the current file content, then use edit_file \
+                             with exact old_string/new_string to make this change.",
+                            msg, path
+                        )));
+                    }
+                    Err(_elapsed) => {
+                        eprintln!(
+                            "  {} Morph API timed out after {}s, use edit_file instead",
+                            "⚠".bright_yellow(),
+                            morph_timeout.as_secs()
+                        );
+                        return Ok(ToolExecutionResult::Text(format!(
+                            "morph_edit_file timed out after {}s. The file '{}' was NOT modified. \
+                             Please use read_file to get the current file content, then use edit_file \
+                             with exact old_string/new_string to make this change.",
+                            morph_timeout.as_secs(), path
+                        )));
+                    }
+                    Ok(Err(e)) => return Err(e),
+                };
 
                 self.fs_tool.write_file(path, &merged_code)?;
 
