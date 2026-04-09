@@ -481,10 +481,8 @@ impl PermissionManager {
         if result == CommandPermission::Denied || result == CommandPermission::Ask {
             return result;
         }
-        if result == CommandPermission::Allowed {
-            if self.is_read_explicit_allow(original) {
-                return CommandPermission::Allowed;
-            }
+        if result == CommandPermission::Allowed && self.is_read_explicit_allow(original) {
+            return CommandPermission::Allowed;
         }
 
         let canonical_result = self.check_read_permission(canonical);

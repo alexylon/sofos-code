@@ -524,9 +524,8 @@ impl Repl {
 
                     if is_400_error && is_image_error && has_images {
                         println!(
-                            "\n{} {}\n",
-                            "⚠️  Image loading error:".bright_yellow().bold(),
-                            "One or more image URLs in the conversation could not be loaded by the API"
+                            "\n{} One or more image URLs in the conversation could not be loaded by the API\n",
+                            "⚠️  Image loading error:".bright_yellow().bold()
                         );
 
                         self.session_state.conversation.remove_last_message();

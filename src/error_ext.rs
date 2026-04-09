@@ -73,7 +73,7 @@ mod tests {
     fn test_with_context() {
         let result: std::io::Result<()> = Err(io::Error::new(io::ErrorKind::NotFound, "test"));
         let err = result
-            .with_context(|| format!("Failed to read file: test.txt"))
+            .with_context(|| "Failed to read file: test.txt".to_string())
             .unwrap_err();
 
         assert!(matches!(err, SofosError::Context { .. }));

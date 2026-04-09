@@ -208,7 +208,7 @@ Show imperial units only when the user explicitly asks for them."#,
         let message_tokens: usize = self
             .messages
             .iter()
-            .map(|m| Self::estimate_message_tokens(m))
+            .map(Self::estimate_message_tokens)
             .sum();
 
         system_tokens + message_tokens

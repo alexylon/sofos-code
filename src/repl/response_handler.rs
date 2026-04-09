@@ -28,6 +28,7 @@ pub struct ResponseHandler {
 }
 
 impl ResponseHandler {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: LlmClient,
         tool_executor: ToolExecutor,

@@ -45,12 +45,11 @@ pub fn detect_image_reference(text: &str) -> Option<ImageReference> {
     let trimmed = text.trim();
 
     // Strip common trailing punctuation that might be attached to paths in sentences
-    let cleaned = trimmed.trim_end_matches(|c| matches!(c, '.' | ',' | ';' | ':' | '!' | '?'));
+    let cleaned = trimmed.trim_end_matches(['.', ',', ';', ':', '!', '?']);
 
-    if cleaned.starts_with("http://") || cleaned.starts_with("https://") {
-        if is_image_url(cleaned) {
-            return Some(ImageReference::WebUrl(cleaned.to_string()));
-        }
+    if (cleaned.starts_with("http://") || cleaned.starts_with("https://")) && is_image_url(cleaned)
+    {
+        return Some(ImageReference::WebUrl(cleaned.to_string()));
     }
 
     if has_image_extension(cleaned) {
@@ -239,12 +238,12 @@ impl ImageLoader {
 pub fn extract_image_references(input: &str) -> (String, Vec<ImageReference>) {
     let mut remaining_text = String::new();
     let mut references = Vec::new();
-    let mut chars = input.chars().peekable();
+    let chars = input.chars();
     let mut current_word = String::new();
     let mut in_quotes = false;
     let mut quote_char = ' ';
 
-    while let Some(ch) = chars.next() {
+    for ch in chars {
         match ch {
             // Only treat quotes as delimiters if we're at a word boundary (current_word is empty)
             // This prevents apostrophes in contractions like "don't" from being treated as quotes

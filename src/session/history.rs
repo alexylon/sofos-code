@@ -331,7 +331,12 @@ mod tests {
             SystemPrompt::new_cached_with_ttl("Test system prompt".to_string(), None);
 
         manager
-            .save_session(&session_id, &messages, &[], &[system_prompt.clone()])
+            .save_session(
+                &session_id,
+                &messages,
+                &[],
+                std::slice::from_ref(&system_prompt),
+            )
             .unwrap();
 
         let loaded = manager.load_session(&session_id).unwrap();
@@ -353,7 +358,7 @@ mod tests {
                 &session_id1,
                 &[Message::user("First session")],
                 &[],
-                &[system_prompt.clone()],
+                std::slice::from_ref(&system_prompt),
             )
             .unwrap();
 

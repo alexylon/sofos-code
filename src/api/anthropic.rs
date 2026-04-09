@@ -163,7 +163,7 @@ impl AnthropicClient {
 
                 let line = line.trim_end();
                 let json_str = match line.strip_prefix("data: ") {
-                    Some(s) if s == "[DONE]" => continue,
+                    Some("[DONE]") => continue,
                     Some(s) => s,
                     None => continue,
                 };
