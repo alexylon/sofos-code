@@ -512,9 +512,20 @@ impl ToolExecutor {
                     )
                 })?;
 
-                let path = input["path"].as_str().ok_or_else(|| {
-                    SofosError::ToolExecution("Missing 'path' parameter".to_string())
-                })?;
+                let path = input["path"]
+                    .as_str()
+                    .or_else(|| input["file_path"].as_str())
+                    .or_else(|| input["file"].as_str())
+                    .ok_or_else(|| {
+                        SofosError::ToolExecution(format!(
+                            "Missing 'path' parameter. Got keys: {:?}. \
+                             Please retry with the 'path' parameter set to the file path.",
+                            input
+                                .as_object()
+                                .map(|o| o.keys().collect::<Vec<_>>())
+                                .unwrap_or_default()
+                        ))
+                    })?;
                 let instruction = input["instruction"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'instruction' parameter".to_string())
                 })?;
@@ -565,7 +576,8 @@ impl ToolExecutor {
                             "morph_edit_file timed out after {}s. The file '{}' was NOT modified. \
                              Please use read_file to get the current file content, then use edit_file \
                              with exact old_string/new_string to make this change.",
-                            morph_timeout.as_secs(), path
+                            morph_timeout.as_secs(),
+                            path
                         )));
                     }
                     Ok(Err(e)) => return Err(e),

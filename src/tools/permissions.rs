@@ -307,6 +307,19 @@ impl PermissionManager {
                         ))
                     })?;
                     builder.add(glob);
+
+                    // For patterns ending with /**, also allow the base directory itself.
+                    // e.g. Read(/some/path/**) should also match /some/path for list_directory.
+                    if expanded_pattern.ends_with("/**") {
+                        let base = &expanded_pattern[..expanded_pattern.len() - 3];
+                        let base_glob = Glob::new(base).map_err(|e| {
+                            SofosError::ToolExecution(format!(
+                                "Invalid Read glob base pattern '{}': {}",
+                                base, e
+                            ))
+                        })?;
+                        builder.add(base_glob);
+                    }
                 }
             }
             Ok(())
@@ -698,6 +711,26 @@ mod tests {
 
         assert!(manager.is_read_explicit_allow("/outside/secret.txt"));
         assert!(!manager.is_read_explicit_allow("/other/secret.txt"));
+    }
+
+    #[test]
+    fn test_is_read_explicit_allow_glob_matches_base_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/outside/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        // /** should match the base directory itself (for list_directory)
+        assert!(manager.is_read_explicit_allow("/outside"));
+        // and still match children
+        assert!(manager.is_read_explicit_allow("/outside/secret.txt"));
+        assert!(manager.is_read_explicit_allow("/outside/sub/deep.txt"));
+        // but not unrelated paths
+        assert!(!manager.is_read_explicit_allow("/other"));
     }
 
     #[test]
