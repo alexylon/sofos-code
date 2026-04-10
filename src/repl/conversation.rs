@@ -1,4 +1,4 @@
-use crate::api::{Message, SystemPrompt};
+use crate::api::{Message, SystemPrompt, utils::truncate_at_char_boundary};
 use crate::config::SofosConfig;
 
 /// Manages conversation history for the REPL
@@ -296,17 +296,15 @@ Show imperial units only when the user explicitly asks for them."#,
                         if result_text.len() > threshold {
                             let original_len = result_text.len();
                             let actual_keep = keep_chars.min(original_len / 3);
-                            // Snap to char boundaries to avoid panicking on multi-byte chars
-                            let mut start_end = actual_keep;
-                            while start_end < original_len
-                                && !result_text.is_char_boundary(start_end)
-                            {
-                                start_end += 1;
-                            }
-                            let mut end_start = original_len.saturating_sub(actual_keep);
-                            while end_start > 0 && !result_text.is_char_boundary(end_start) {
-                                end_start -= 1;
-                            }
+                            let start_end = truncate_at_char_boundary(result_text, actual_keep);
+                            let end_start = {
+                                let target = original_len.saturating_sub(actual_keep);
+                                let mut i = target;
+                                while i > 0 && !result_text.is_char_boundary(i) {
+                                    i -= 1;
+                                }
+                                i
+                            };
                             let start = &result_text[..start_end];
                             let end = &result_text[end_start..];
                             *result_text = format!(
@@ -446,18 +444,6 @@ Show imperial units only when the user explicitly asks for them."#,
     pub fn _is_empty(&self) -> bool {
         self.messages.is_empty()
     }
-}
-
-/// Find the largest byte index <= `max_bytes` that is a char boundary.
-fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
-    if max_bytes >= s.len() {
-        return s.len();
-    }
-    let mut i = max_bytes;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
 }
 
 impl Default for ConversationHistory {

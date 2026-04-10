@@ -4,7 +4,6 @@ use crate::error::{Result, SofosError};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Duration;
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 
@@ -33,25 +32,13 @@ impl OpenAIClient {
     }
 
     pub async fn check_connectivity(&self) -> Result<()> {
-        match tokio::time::timeout(
-            Duration::from_secs(5),
-            self.client.head(OPENAI_API_BASE).send(),
+        utils::check_api_connectivity(
+            &self.client,
+            OPENAI_API_BASE,
+            "OpenAI",
+            "https://status.openai.com",
         )
         .await
-        {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => Err(SofosError::NetworkError(format!(
-                "Cannot reach OpenAI API. Please check:\n  \
-                 1. Your internet connection\n  \
-                 2. Firewall/proxy settings\n  \
-                 3. API status at https://status.openai.com\n\
-                 Original error: {}",
-                e
-            ))),
-            Err(_) => Err(SofosError::NetworkError(
-                "Connection timeout. Please check your network connection.".into(),
-            )),
-        }
     }
 
     pub async fn create_openai_message(
@@ -288,9 +275,10 @@ fn parse_tool_arguments(args: &str) -> serde_json::Value {
         }
     }
 
+    let preview_end = utils::truncate_at_char_boundary(args, 200);
     eprintln!(
         "  \x1b[33m⚠\x1b[0m Failed to parse tool arguments as JSON: {}",
-        &args[..args.len().min(200)]
+        &args[..preview_end]
     );
     json!({"raw_arguments": args})
 }
@@ -321,6 +309,8 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
         };
 
         let mut parts = Vec::new();
+        // Collect function_call and function_call_output items to emit after the message
+        let mut deferred_items: Vec<serde_json::Value> = Vec::new();
 
         match &msg.content {
             MessageContent::Text { content } => {
@@ -344,23 +334,27 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                             input: tool_input,
                             ..
                         } => {
-                            // Responses API doesn't support tool_use in content; encode as text for context
+                            // Use native function_call items so the model doesn't
+                            // learn to emit tool-call syntax as plain text.
                             let tool_args = serde_json::to_string(tool_input)
                                 .unwrap_or_else(|_| "{}".to_string());
-                            parts.push(text_part(
-                                "output_text",
-                                &format!("Tool call {} -> {} with args: {}", id, name, tool_args),
-                            ));
+                            deferred_items.push(json!({
+                                "type": "function_call",
+                                "name": name,
+                                "arguments": tool_args,
+                                "call_id": id,
+                            }));
                         }
                         MessageContentBlock::ToolResult {
                             tool_use_id,
                             content: tool_content,
                             ..
                         } => {
-                            parts.push(text_part(
-                                text_type,
-                                &format!("Tool result for {}:\n{}", tool_use_id, tool_content),
-                            ));
+                            deferred_items.push(json!({
+                                "type": "function_call_output",
+                                "call_id": tool_use_id,
+                                "output": tool_content,
+                            }));
                         }
                         MessageContentBlock::ServerToolUse {
                             name,
@@ -411,6 +405,9 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                 "content": parts,
             }));
         }
+
+        // Emit function_call / function_call_output as top-level input items
+        input.extend(deferred_items);
     }
 
     input

@@ -9,6 +9,41 @@ pub const MAX_RETRIES: u32 = 2;
 pub const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const JITTER_FACTOR: f64 = 0.3; // Add 0-30% random jitter
 
+/// Check connectivity to an API endpoint with a 5-second timeout.
+pub async fn check_api_connectivity(
+    client: &reqwest::Client,
+    base_url: &str,
+    provider_name: &str,
+    status_url: &str,
+) -> Result<()> {
+    match tokio::time::timeout(Duration::from_secs(5), client.head(base_url).send()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(SofosError::NetworkError(format!(
+            "Cannot reach {} API. Please check:\n  \
+             1. Your internet connection\n  \
+             2. Firewall/proxy settings\n  \
+             3. API status at {}\n\
+             Original error: {}",
+            provider_name, status_url, e
+        ))),
+        Err(_) => Err(SofosError::NetworkError(
+            "Connection timeout. Please check your network connection.".into(),
+        )),
+    }
+}
+
+/// Find the largest byte index <= `max_bytes` that is a valid UTF-8 char boundary.
+pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
+    if max_bytes >= s.len() {
+        return s.len();
+    }
+    let mut i = max_bytes;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 pub async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
     if !response.status().is_success() {
         let status = response.status();

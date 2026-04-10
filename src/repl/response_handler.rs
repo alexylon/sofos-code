@@ -124,6 +124,11 @@ impl ResponseHandler {
                 *total_output_tokens += response.usage.output_tokens;
 
                 if response.content.is_empty() {
+                    println!(
+                        "{}",
+                        "Assistant returned reasoning but no visible response.".dimmed()
+                    );
+                    println!();
                     break;
                 }
 
@@ -132,6 +137,10 @@ impl ResponseHandler {
             }
 
             if tool_uses.is_empty() {
+                if text_output.is_empty() && !had_reasoning {
+                    println!("{}", "Assistant returned an empty response.".dimmed());
+                    println!();
+                }
                 break;
             }
 
@@ -535,7 +544,8 @@ impl ResponseHandler {
                 }
             }
             Err(e) => {
-                UI::print_error(&format!("Failed to get response after interruption: {}", e));
+                UI::print_error(&format!("Failed to get summary after interruption: {}", e));
+                return Err(e);
             }
         }
 

@@ -719,10 +719,7 @@ impl ToolExecutor {
 
                 let max_bytes = 64_000;
                 let truncated = if text.len() > max_bytes {
-                    let mut end = max_bytes;
-                    while end > 0 && !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
+                    let end = crate::api::utils::truncate_at_char_boundary(&text, max_bytes);
                     format!(
                         "{}\n\n[TRUNCATED: showing first ~{} chars of {}]",
                         &text[..end],

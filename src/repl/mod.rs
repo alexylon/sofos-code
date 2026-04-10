@@ -276,7 +276,9 @@ impl Repl {
                         } else {
                             UI::print_error_with_hint(&e);
                         }
-                    } else if let Err(e) = self.save_current_session() {
+                    }
+                    // Always save session (even after errors) to preserve conversation context
+                    if let Err(e) = self.save_current_session() {
                         UI::print_warning(&format!("Failed to save session: {}", e));
                     }
 
@@ -528,6 +530,10 @@ impl Repl {
                             "⚠️  Image loading error:".bright_yellow().bold()
                         );
 
+                        // Backup conversation before mutating, in case the retry also fails
+                        let conversation_backup =
+                            self.session_state.conversation.messages().to_vec();
+
                         self.session_state.conversation.remove_last_message();
 
                         // Remove ALL images from conversation
@@ -581,13 +587,58 @@ impl Repl {
                         println!("{}", "Retrying request without images...".dimmed());
                         println!();
 
-                        runtime.block_on(async {
-                            client_for_retry.create_message(new_request).await
-                        })?
+                        match runtime
+                            .block_on(async { client_for_retry.create_message(new_request).await })
+                        {
+                            Ok(resp) => resp,
+                            Err(retry_err) => {
+                                // Restore original conversation on retry failure
+                                self.session_state.conversation.clear();
+                                self.session_state
+                                    .conversation
+                                    .restore_messages(conversation_backup);
+                                // Add error context instead of removing user message
+                                self.session_state
+                                    .conversation
+                                    .add_assistant_with_blocks(vec![
+                                        crate::api::MessageContentBlock::Text {
+                                            text: format!(
+                                                "[Image loading failed and retry also failed: {}. \
+                                             Your message is preserved above.]",
+                                                retry_err
+                                            ),
+                                            cache_control: None,
+                                        },
+                                    ]);
+                                return Err(retry_err);
+                            }
+                        }
                     } else {
+                        // Add error context so the AI knows what happened on next turn
+                        self.session_state
+                            .conversation
+                            .add_assistant_with_blocks(vec![
+                                crate::api::MessageContentBlock::Text {
+                                    text: format!(
+                                        "[API error: {}. I was unable to process your request.]",
+                                        msg
+                                    ),
+                                    cache_control: None,
+                                },
+                            ]);
                         return Err(e);
                     }
                 } else {
+                    // Add error context so the AI knows what happened on next turn
+                    self.session_state
+                        .conversation
+                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
+                            text: format!(
+                                "[System error: {}. I was unable to process your request.]",
+                                e
+                            ),
+                            cache_control: None,
+                        }]);
                     return Err(e);
                 }
             }
@@ -608,23 +659,48 @@ impl Repl {
             use_streaming,
         );
 
-        match runtime.block_on(handler.handle_response(
+        let result = runtime.block_on(handler.handle_response(
             response.content,
             &mut self.session_state.display_messages,
             &mut self.session_state.total_input_tokens,
             &mut self.session_state.total_output_tokens,
-        )) {
-            Ok(_) => {
-                // Update conversation from handler
-                self.session_state.conversation = handler.conversation().clone();
-                Ok(())
+        ));
+
+        // Always preserve conversation state so the AI retains context on retry
+        self.session_state.conversation = handler.conversation().clone();
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(SofosError::Interrupted) => Ok(()),
+            Err(e) => {
+                // Add error context so the AI knows what happened on next turn.
+                // Check last message role to maintain proper alternation —
+                // the conversation could end on either role depending on where
+                // the error occurred (e.g. after assistant reasoning vs after tool results).
+                let error_text = format!(
+                    "[System error during processing: {}. Previous actions are preserved above.]",
+                    e
+                );
+                let last_role = self
+                    .session_state
+                    .conversation
+                    .messages()
+                    .last()
+                    .map(|m| m.role.as_str());
+                if last_role == Some("assistant") {
+                    // Last message is assistant — add user error context
+                    self.session_state.conversation.add_user_message(error_text);
+                } else {
+                    // Last message is user (tool results) or empty — add assistant error context
+                    self.session_state
+                        .conversation
+                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
+                            text: error_text,
+                            cache_control: None,
+                        }]);
+                }
+                Err(e)
             }
-            Err(SofosError::Interrupted) => {
-                // Update conversation even on interrupt
-                self.session_state.conversation = handler.conversation().clone();
-                Ok(())
-            }
-            Err(e) => Err(e),
         }
     }
 

@@ -12,10 +12,7 @@ const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive conte
 fn truncate_for_context(content: &str, max_tokens: usize) -> String {
     let estimated_tokens = content.len() / 4;
     if estimated_tokens > max_tokens {
-        let mut truncate_at = (max_tokens * 4).min(content.len());
-        while truncate_at > 0 && !content.is_char_boundary(truncate_at) {
-            truncate_at -= 1;
-        }
+        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
         let truncated_content = &content[..truncate_at];
         format!(
             "{}...\n\n[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",

@@ -80,6 +80,17 @@ fn main() -> Result<()> {
 
     println!("{} {}", "Model:".bright_green(), cli.model);
 
+    if matches!(client, LlmClient::OpenAI(_)) {
+        let effort = if cli.enable_thinking { "high" } else { "low" };
+        println!("{} {}", "Reasoning effort:".bright_green(), effort);
+    } else if cli.enable_thinking {
+        println!(
+            "{} (budget: {} tokens)",
+            "Extended thinking: enabled".bright_green(),
+            cli.thinking_budget
+        );
+    }
+
     let morph_client = cli.morph_api_key.as_ref().and_then(|key| {
         match MorphClient::new(key.clone(), Some(cli.morph_model.clone())) {
             Ok(client) => {

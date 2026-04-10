@@ -41,21 +41,13 @@ impl AnthropicClient {
 
     /// Check if we can reach the API endpoint
     pub async fn check_connectivity(&self) -> Result<()> {
-        match tokio::time::timeout(Duration::from_secs(5), self.client.head(API_BASE).send()).await
-        {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(e)) => Err(SofosError::NetworkError(format!(
-                "Cannot reach Anthropic API. Please check:\n  \
-                 1. Your internet connection\n  \
-                 2. Firewall/proxy settings\n  \
-                 3. API status at https://status.anthropic.com\n\
-                 Original error: {}",
-                e
-            ))),
-            Err(_) => Err(SofosError::NetworkError(
-                "Connection timeout. Please check your network connection.".into(),
-            )),
-        }
+        utils::check_api_connectivity(
+            &self.client,
+            API_BASE,
+            "Anthropic",
+            "https://status.anthropic.com",
+        )
+        .await
     }
 
     fn prepare_request(mut request: CreateMessageRequest) -> CreateMessageRequest {
