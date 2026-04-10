@@ -624,7 +624,11 @@ pub enum CommandPermission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Tests that mutate HOME must not run in parallel
+    static HOME_MUTEX: Mutex<()> = Mutex::new(());
 
     fn create_test_manager(settings: PermissionSettings, temp_dir: &TempDir) -> PermissionManager {
         let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
@@ -986,23 +990,32 @@ ask = []
 
     #[test]
     fn test_tilde_expansion_in_permissions() {
+        let _lock = HOME_MUTEX.lock().unwrap();
         let _temp_dir = TempDir::new().unwrap();
 
+        let original_home = std::env::var_os("HOME");
         std::env::set_var("HOME", "/home/testuser");
 
         let expanded = PermissionManager::expand_tilde_pub("~/file.txt");
-        assert_eq!(expanded, "/home/testuser/file.txt");
-
         let expanded_dir = PermissionManager::expand_tilde_pub("~");
-        assert_eq!(expanded_dir, "/home/testuser");
-
         let not_tilde = PermissionManager::expand_tilde_pub("./file.txt");
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(expanded, "/home/testuser/file.txt");
+        assert_eq!(expanded_dir, "/home/testuser");
         assert_eq!(not_tilde, "./file.txt");
     }
 
     #[test]
     fn test_tilde_in_allow_rules() {
+        let _lock = HOME_MUTEX.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
+
+        let original_home = std::env::var_os("HOME");
         std::env::set_var("HOME", "/home/testuser");
 
         let mut settings = PermissionSettings::default();
@@ -1013,8 +1026,17 @@ ask = []
 
         let manager = create_test_manager(settings, &temp_dir);
 
-        assert!(manager.is_read_explicit_allow("~/.zshrc"));
-        assert!(manager.is_read_explicit_allow("/home/testuser/.zshrc"));
+        // HOME must still be /home/testuser for expand_tilde in is_read_explicit_allow
+        let check_tilde = manager.is_read_explicit_allow("~/.zshrc");
+        let check_abs = manager.is_read_explicit_allow("/home/testuser/.zshrc");
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(check_tilde);
+        assert!(check_abs);
     }
 
     #[test]
@@ -1125,6 +1147,7 @@ ask = []
 
     #[test]
     fn test_global_config_supplements_local() {
+        let _lock = HOME_MUTEX.lock().unwrap();
         use std::fs;
         let temp_dir = TempDir::new().unwrap();
 
@@ -1187,6 +1210,7 @@ ask = []
 
     #[test]
     fn test_rule_source_detection() {
+        let _lock = HOME_MUTEX.lock().unwrap();
         use std::fs;
         let temp_dir = TempDir::new().unwrap();
 

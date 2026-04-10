@@ -145,3 +145,40 @@ where
         |e| SofosError::NetworkError(format!("Failed after {} retries: {}", MAX_RETRIES, e)),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_at_char_boundary_ascii() {
+        assert_eq!(truncate_at_char_boundary("hello world", 5), 5);
+        assert_eq!(truncate_at_char_boundary("hello", 10), 5);
+        assert_eq!(truncate_at_char_boundary("hello", 0), 0);
+        assert_eq!(truncate_at_char_boundary("", 5), 0);
+    }
+
+    #[test]
+    fn test_truncate_at_char_boundary_multibyte() {
+        // '─' is 3 bytes (U+2500)
+        let s = "ab─cd";
+        assert_eq!(s.len(), 7); // 2 + 3 + 2
+        // Slicing at byte 3 lands inside '─' — should snap to 2
+        assert_eq!(truncate_at_char_boundary(s, 3), 2);
+        assert_eq!(truncate_at_char_boundary(s, 4), 2);
+        // Byte 5 is right after '─'
+        assert_eq!(truncate_at_char_boundary(s, 5), 5);
+    }
+
+    #[test]
+    fn test_truncate_at_char_boundary_emoji() {
+        // '🦀' is 4 bytes
+        let s = "a🦀b";
+        assert_eq!(s.len(), 6); // 1 + 4 + 1
+        assert_eq!(truncate_at_char_boundary(s, 1), 1);
+        assert_eq!(truncate_at_char_boundary(s, 2), 1);
+        assert_eq!(truncate_at_char_boundary(s, 3), 1);
+        assert_eq!(truncate_at_char_boundary(s, 4), 1);
+        assert_eq!(truncate_at_char_boundary(s, 5), 5);
+    }
+}

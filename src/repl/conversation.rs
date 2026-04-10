@@ -1,7 +1,6 @@
 use crate::api::{Message, SystemPrompt, utils::truncate_at_char_boundary};
 use crate::config::SofosConfig;
 
-/// Manages conversation history for the REPL
 #[derive(Clone)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
@@ -112,13 +111,11 @@ Show imperial units only when the user explicitly asks for them."#,
         }
     }
 
-    /// Estimate token count for a string
     pub fn estimate_tokens(text: &str) -> usize {
         // Conservative: 1 token per 3.5 chars (accounts for code/JSON being token-heavy)
         (text.len() as f64 / 3.5).ceil() as usize
     }
 
-    /// Estimate total tokens in system prompt
     fn estimate_system_tokens(&self) -> usize {
         self.system_prompt
             .iter()
@@ -126,7 +123,6 @@ Show imperial units only when the user explicitly asks for them."#,
             .sum()
     }
 
-    /// Estimate tokens for a single message
     fn estimate_message_tokens(msg: &Message) -> usize {
         use crate::api::{MessageContent, MessageContentBlock};
 
@@ -202,7 +198,6 @@ Show imperial units only when the user explicitly asks for them."#,
         }
     }
 
-    /// Calculate total estimated tokens for current conversation
     pub fn estimate_total_tokens(&self) -> usize {
         let system_tokens = self.estimate_system_tokens();
         let message_tokens: usize = self
@@ -214,7 +209,7 @@ Show imperial units only when the user explicitly asks for them."#,
         system_tokens + message_tokens
     }
 
-    /// Trim messages to stay within token budget
+    /// Trim messages to stay within token budget.
     fn trim_if_needed(&mut self) {
         if self.messages.len() > self.config.max_messages {
             let remove_count = self.messages.len() - self.config.max_messages;
@@ -235,6 +230,75 @@ Show imperial units only when the user explicitly asks for them."#,
                 total_tokens
             );
         }
+    }
+
+    /// Build a brief summary of messages about to be dropped (no LLM, just key facts).
+    fn build_drop_summary(messages: &[Message]) -> String {
+        let mut tools_used = Vec::new();
+        let mut files_mentioned = Vec::new();
+        let mut user_topics = Vec::new();
+
+        let text_preview = |text: &str| -> Option<String> {
+            let preview = if text.len() > 100 {
+                format!("{}...", &text[..truncate_at_char_boundary(text, 100)])
+            } else {
+                text.to_string()
+            };
+            if preview.trim().is_empty() {
+                None
+            } else {
+                Some(preview)
+            }
+        };
+
+        for msg in messages {
+            let is_user = msg.role == "user";
+            match &msg.content {
+                crate::api::MessageContent::Blocks { content } => {
+                    for block in content {
+                        match block {
+                            crate::api::MessageContentBlock::ToolUse { name, input, .. } => {
+                                if !tools_used.contains(name) {
+                                    tools_used.push(name.clone());
+                                }
+                                if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                                    let p = path.to_string();
+                                    if !files_mentioned.contains(&p) {
+                                        files_mentioned.push(p);
+                                    }
+                                }
+                            }
+                            crate::api::MessageContentBlock::Text { text, .. } if is_user => {
+                                if let Some(preview) = text_preview(text) {
+                                    user_topics.push(preview);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                crate::api::MessageContent::Text { content } if is_user => {
+                    if let Some(preview) = text_preview(content) {
+                        user_topics.push(preview);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut parts = Vec::new();
+        if !user_topics.is_empty() {
+            let topics: Vec<_> = user_topics.into_iter().take(5).collect();
+            parts.push(format!("User requests: {}", topics.join(" | ")));
+        }
+        if !tools_used.is_empty() {
+            parts.push(format!("Tools used: {}", tools_used.join(", ")));
+        }
+        if !files_mentioned.is_empty() {
+            let files: Vec<_> = files_mentioned.into_iter().take(20).collect();
+            parts.push(format!("Files: {}", files.join(", ")));
+        }
+        parts.join("\n")
     }
 
     /// Check if conversation needs compaction (token usage > trigger ratio)
@@ -318,7 +382,6 @@ Show imperial units only when the user explicitly asks for them."#,
         }
     }
 
-    /// Serialize older messages into a text representation for the summarization prompt.
     pub fn serialize_messages_for_summary(messages: &[Message]) -> String {
         let mut parts = Vec::new();
 
@@ -376,7 +439,6 @@ Show imperial units only when the user explicitly asks for them."#,
         parts.join("\n\n")
     }
 
-    /// Replace messages[0..split_point] with a single summary message.
     pub fn replace_with_summary(&mut self, summary: String, split_point: usize) {
         if split_point == 0 || split_point > self.messages.len() {
             return;
@@ -389,9 +451,48 @@ Show imperial units only when the user explicitly asks for them."#,
         self.messages.insert(0, summary_msg);
     }
 
-    /// Fallback trim used when compaction fails
+    /// Fallback trim used when compaction fails.
+    /// Builds a mechanical summary of dropped messages before trimming.
     pub fn fallback_trim(&mut self) {
+        let msg_count_before = self.messages.len();
+        if msg_count_before <= 10 {
+            self.trim_if_needed();
+            return;
+        }
+
+        // Simulate trim_if_needed to find which messages will be dropped
+        let max_msg_drop = self.messages.len().saturating_sub(self.config.max_messages);
+        let mut token_drop = 0;
+        let mut simulated_tokens = self.estimate_total_tokens();
+        for msg in self.messages.iter().take(max_msg_drop) {
+            simulated_tokens -= Self::estimate_message_tokens(msg);
+        }
+        let remaining = self.messages.len() - max_msg_drop;
+        for i in 0..remaining.saturating_sub(10) {
+            if simulated_tokens <= self.config.max_context_tokens {
+                break;
+            }
+            simulated_tokens -= Self::estimate_message_tokens(&self.messages[max_msg_drop + i]);
+            token_drop += 1;
+        }
+        let total_drop = max_msg_drop + token_drop;
+
+        let summary = if total_drop >= 5 {
+            Self::build_drop_summary(&self.messages[..total_drop])
+        } else {
+            String::new()
+        };
+
         self.trim_if_needed();
+
+        if !summary.is_empty() {
+            let dropped = msg_count_before - self.messages.len();
+            let summary_msg = Message::user(format!(
+                "[Context trimmed — {} earlier messages dropped]\n\n{}",
+                dropped, summary
+            ));
+            self.messages.insert(0, summary_msg);
+        }
     }
 
     pub fn add_user_message(&mut self, content: String) {
@@ -399,7 +500,6 @@ Show imperial units only when the user explicitly asks for them."#,
         self.trim_if_needed();
     }
 
-    /// Add a user message with content blocks (text and/or images)
     pub fn add_user_with_blocks(&mut self, blocks: Vec<crate::api::MessageContentBlock>) {
         self.messages.push(Message::user_with_blocks(blocks));
         self.trim_if_needed();
@@ -633,5 +733,138 @@ mod tests {
         let serialized = ConversationHistory::serialize_messages_for_summary(&messages);
         assert!(serialized.contains("User: Hello, help me with code"));
         assert!(serialized.contains("Assistant: Sure, let me look at the files."));
+    }
+
+    #[test]
+    fn test_build_drop_summary_extracts_tools_and_files() {
+        let messages = vec![
+            Message::user("fix the bug in auth".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "1".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "/src/auth.rs"}),
+                cache_control: None,
+            }]),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "2".to_string(),
+                name: "edit_file".to_string(),
+                input: serde_json::json!({"path": "/src/auth.rs", "old_string": "a", "new_string": "b"}),
+                cache_control: None,
+            }]),
+            Message::user("now fix the tests".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "3".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "/src/tests.rs"}),
+                cache_control: None,
+            }]),
+        ];
+
+        let summary = ConversationHistory::build_drop_summary(&messages);
+        assert!(summary.contains("read_file"));
+        assert!(summary.contains("edit_file"));
+        assert!(summary.contains("/src/auth.rs"));
+        assert!(summary.contains("/src/tests.rs"));
+        assert!(summary.contains("fix the bug"));
+        assert!(summary.contains("fix the tests"));
+    }
+
+    #[test]
+    fn test_build_drop_summary_empty_messages() {
+        let summary = ConversationHistory::build_drop_summary(&[]);
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_build_drop_summary_limits_topics_and_files() {
+        let mut messages = Vec::new();
+        for i in 0..10 {
+            messages.push(Message::user(format!("request {}", i)));
+        }
+        for i in 0..25 {
+            messages.push(Message::assistant_with_blocks(vec![
+                MessageContentBlock::ToolUse {
+                    id: format!("id{}", i),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": format!("/file{}.rs", i)}),
+                    cache_control: None,
+                },
+            ]));
+        }
+
+        let summary = ConversationHistory::build_drop_summary(&messages);
+        // User topics capped at 5 (+ 1 in "User requests:" header)
+        let topic_line = summary
+            .lines()
+            .find(|l| l.starts_with("User requests:"))
+            .unwrap();
+        let topic_count = topic_line.matches("request ").count();
+        assert_eq!(topic_count, 5);
+        // Files capped at 20
+        let file_count = summary.matches("/file").count();
+        assert_eq!(file_count, 20);
+    }
+
+    #[test]
+    fn test_build_drop_summary_skips_assistant_text() {
+        let messages = vec![
+            Message::user("user question".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::Text {
+                text: "assistant answer".to_string(),
+                cache_control: None,
+            }]),
+        ];
+
+        let summary = ConversationHistory::build_drop_summary(&messages);
+        assert!(summary.contains("user question"));
+        assert!(!summary.contains("assistant answer"));
+    }
+
+    #[test]
+    fn test_fallback_trim_inserts_summary() {
+        let mut history = ConversationHistory::new();
+        history.config.max_context_tokens = 3000;
+
+        // Add enough large messages to trigger token-based trimming
+        for i in 0..30 {
+            let content = format!("request {} {}", i, "x".repeat(500));
+            history.messages.push(Message::user(content));
+        }
+
+        history.fallback_trim();
+
+        // Should have trimmed and inserted a summary at position 0
+        assert!(history.messages().len() < 30);
+        if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
+            assert!(content.starts_with("[Context trimmed"));
+        } else {
+            panic!("Expected text summary message at position 0");
+        }
+    }
+
+    #[test]
+    fn test_fallback_trim_no_summary_for_small_drop() {
+        let mut history = ConversationHistory::new();
+        // max_messages = 500 by default, so adding 502 drops only 2
+        for i in 0..502 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+
+        history.fallback_trim();
+
+        // Only 2 dropped — no summary should be inserted
+        if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
+            assert!(!content.starts_with("[Context trimmed"));
+        }
+    }
+
+    #[test]
+    fn test_fallback_trim_few_messages_no_panic() {
+        let mut history = ConversationHistory::new();
+        for i in 0..5 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+        history.fallback_trim();
+        assert_eq!(history.messages().len(), 5);
     }
 }
