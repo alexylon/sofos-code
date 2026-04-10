@@ -137,6 +137,19 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<ToolExecutionResult> {
+        // Recover from raw_arguments fallback (malformed JSON from model)
+        let recovered;
+        let input = if let Some(raw) = input.get("raw_arguments").and_then(|v| v.as_str()) {
+            if input.as_object().is_none_or(|o| o.len() == 1) {
+                recovered = serde_json::from_str::<Value>(raw.trim()).unwrap_or(input.clone());
+                &recovered
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name).await {
@@ -704,12 +717,16 @@ impl ToolExecutor {
 
                 let text = utils::html_to_text(&body);
 
-                let max_chars = 64_000;
-                let truncated = if text.len() > max_chars {
+                let max_bytes = 64_000;
+                let truncated = if text.len() > max_bytes {
+                    let mut end = max_bytes;
+                    while end > 0 && !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
                     format!(
                         "{}\n\n[TRUNCATED: showing first ~{} chars of {}]",
-                        &text[..max_chars],
-                        max_chars,
+                        &text[..end],
+                        max_bytes,
                         text.len()
                     )
                 } else {

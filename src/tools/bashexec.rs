@@ -12,8 +12,11 @@ const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive conte
 fn truncate_for_context(content: &str, max_tokens: usize) -> String {
     let estimated_tokens = content.len() / 4;
     if estimated_tokens > max_tokens {
-        let truncate_at = max_tokens * 4;
-        let truncated_content = &content[..truncate_at.min(content.len())];
+        let mut truncate_at = (max_tokens * 4).min(content.len());
+        while truncate_at > 0 && !content.is_char_boundary(truncate_at) {
+            truncate_at -= 1;
+        }
+        let truncated_content = &content[..truncate_at];
         format!(
             "{}...\n\n[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
             truncated_content, estimated_tokens, max_tokens
@@ -426,7 +429,7 @@ impl BashExecutor {
         {
             return format!(
                 "Command '{}' contains output redirection ('>' or '>>')\n\
-                 Hint: Use write_file tool to create or modify files. Note: '2>&1' is allowed.",
+                 Hint: Use write_file tool to create or edit_file/morph_edit_file to modify files. Note: '2>&1' is allowed.",
                 command
             );
         }
