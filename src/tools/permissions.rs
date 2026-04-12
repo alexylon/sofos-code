@@ -85,6 +85,10 @@ pub struct PermissionManager {
     forbidden_commands: HashSet<String>,
     read_allow_set: GlobSet,
     read_deny_set: GlobSet,
+    write_allow_set: GlobSet,
+    write_deny_set: GlobSet,
+    bash_path_allow_set: GlobSet,
+    bash_path_deny_set: GlobSet,
     global_rules: HashSet<String>,
 }
 
@@ -115,7 +119,12 @@ impl PermissionManager {
         let local_settings = Self::load_settings(&local_settings_path)?;
         settings.merge(local_settings);
 
-        let (read_allow_set, read_deny_set) = Self::build_read_globs(&settings)?;
+        let (read_allow_set, read_deny_set) =
+            Self::build_scope_globs(&settings, Self::extract_read_pattern)?;
+        let (write_allow_set, write_deny_set) =
+            Self::build_scope_globs(&settings, Self::extract_write_pattern)?;
+        let (bash_path_allow_set, bash_path_deny_set) =
+            Self::build_scope_globs(&settings, Self::extract_bash_path_pattern)?;
 
         let allowed_commands = [
             // Build tools
@@ -280,6 +289,10 @@ impl PermissionManager {
             forbidden_commands,
             read_allow_set,
             read_deny_set,
+            write_allow_set,
+            write_deny_set,
+            bash_path_allow_set,
+            bash_path_deny_set,
             global_rules,
         })
     }
@@ -292,17 +305,20 @@ impl PermissionManager {
         }
     }
 
-    fn build_read_globs(settings: &PermissionSettings) -> Result<(GlobSet, GlobSet)> {
+    fn build_scope_globs(
+        settings: &PermissionSettings,
+        extract_fn: fn(&str) -> Option<&str>,
+    ) -> Result<(GlobSet, GlobSet)> {
         let mut allow_builder = GlobSetBuilder::new();
         let mut deny_builder = GlobSetBuilder::new();
 
         let add_patterns = |builder: &mut GlobSetBuilder, entries: &[String]| -> Result<()> {
             for entry in entries {
-                if let Some(pattern) = Self::extract_read_pattern(entry) {
+                if let Some(pattern) = extract_fn(entry) {
                     let expanded_pattern = Self::expand_tilde(pattern);
                     let glob = Glob::new(&expanded_pattern).map_err(|e| {
                         SofosError::ToolExecution(format!(
-                            "Invalid Read glob pattern '{}': {}",
+                            "Invalid glob pattern '{}': {}",
                             pattern, e
                         ))
                     })?;
@@ -314,7 +330,7 @@ impl PermissionManager {
                         let base = &expanded_pattern[..expanded_pattern.len() - 3];
                         let base_glob = Glob::new(base).map_err(|e| {
                             SofosError::ToolExecution(format!(
-                                "Invalid Read glob base pattern '{}': {}",
+                                "Invalid glob base pattern '{}': {}",
                                 base, e
                             ))
                         })?;
@@ -364,6 +380,32 @@ impl PermissionManager {
         None
     }
 
+    fn extract_write_pattern(entry: &str) -> Option<&str> {
+        let trimmed = entry.trim();
+        if let Some(rest) = trimmed.strip_prefix("Write(") {
+            if let Some(end) = rest.rfind(')') {
+                return Some(&rest[..end]);
+            }
+        }
+        None
+    }
+
+    /// Extract path patterns from Bash() entries.
+    /// Only treats entries as path grants if the content starts with / or ~ AND contains a glob char.
+    /// Plain commands like Bash(npm test) are not path patterns.
+    fn extract_bash_path_pattern(entry: &str) -> Option<&str> {
+        let trimmed = entry.trim();
+        if let Some(rest) = trimmed.strip_prefix("Bash(") {
+            if let Some(end) = rest.rfind(')') {
+                let content = &rest[..end];
+                if (content.starts_with('/') || content.starts_with('~')) && content.contains('*') {
+                    return Some(content);
+                }
+            }
+        }
+        None
+    }
+
     fn save_settings(&self) -> Result<()> {
         if let Some(parent) = self.local_settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -387,6 +429,10 @@ impl PermissionManager {
 
     fn normalize_read(path: &str) -> String {
         format!("Read({})", path.trim())
+    }
+
+    fn normalize_write(path: &str) -> String {
+        format!("Write({})", path.trim())
     }
 
     fn extract_base_command(command: &str) -> &str {
@@ -459,44 +505,82 @@ impl PermissionManager {
     }
 
     pub fn check_read_permission(&self, path: &str) -> CommandPermission {
-        let expanded = Self::expand_tilde(path);
-        let trimmed = expanded.trim();
-        let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
-        let with_prefix = if stripped.starts_with("./") {
-            stripped.to_string()
-        } else {
-            format!("./{}", stripped)
-        };
-
-        self.check_read_permission_with_candidates(trimmed, stripped, Some(with_prefix))
+        self.check_scope_permission(
+            path,
+            Self::normalize_read,
+            &self.read_allow_set,
+            &self.read_deny_set,
+        )
     }
 
     #[allow(dead_code)]
-    pub fn check_read_permission_both_forms(
-        &self,
-        original: &str,
-        canonical: &str,
-    ) -> CommandPermission {
-        let result = self.check_read_permission(original);
-        if result == CommandPermission::Denied || result == CommandPermission::Ask {
-            return result;
-        }
-        if result == CommandPermission::Allowed && self.is_read_explicit_allow(original) {
-            return CommandPermission::Allowed;
-        }
-
-        let canonical_result = self.check_read_permission(canonical);
-        if canonical_result == CommandPermission::Denied
-            || canonical_result == CommandPermission::Ask
-        {
-            return canonical_result;
-        }
-
-        CommandPermission::Allowed
+    pub fn check_write_permission(&self, path: &str) -> CommandPermission {
+        self.check_scope_permission(
+            path,
+            Self::normalize_write,
+            &self.write_allow_set,
+            &self.write_deny_set,
+        )
     }
 
     /// Returns true only if path is explicitly in allow list (not default allow)
     pub fn is_read_explicit_allow(&self, path: &str) -> bool {
+        self.is_scope_explicit_allow(path, Self::normalize_read, &self.read_allow_set)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_read_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
+        self.is_read_explicit_allow(original) || self.is_read_explicit_allow(canonical)
+    }
+
+    pub fn is_write_explicit_allow(&self, path: &str) -> bool {
+        self.is_scope_explicit_allow(path, Self::normalize_write, &self.write_allow_set)
+    }
+
+    #[allow(dead_code)]
+    pub fn is_write_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
+        self.is_write_explicit_allow(original) || self.is_write_explicit_allow(canonical)
+    }
+
+    /// Check if a path is covered by a Bash(/path/**) grant
+    pub fn is_bash_path_allowed(&self, path: &str) -> bool {
+        self.is_scope_explicit_allow(path, Self::normalize_command, &self.bash_path_allow_set)
+    }
+
+    /// Check if a path is blocked by a Bash(/path/**) deny rule
+    pub fn is_bash_path_denied(&self, path: &str) -> bool {
+        let expanded = Self::expand_tilde(path);
+        let trimmed = expanded.trim();
+        let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+
+        // Check exact deny entries
+        let candidates = [trimmed, stripped];
+        for candidate in &candidates {
+            let normalized = Self::normalize_command(candidate);
+            if self.settings.permissions.deny.contains(&normalized) {
+                return true;
+            }
+        }
+
+        // Check glob deny
+        for candidate in &candidates {
+            if !self.bash_path_deny_set.is_empty() && self.bash_path_deny_set.is_match(*candidate) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    // --- Generic scope helpers ---
+
+    fn check_scope_permission(
+        &self,
+        path: &str,
+        normalize_fn: fn(&str) -> String,
+        allow_set: &GlobSet,
+        deny_set: &GlobSet,
+    ) -> CommandPermission {
         let expanded = Self::expand_tilde(path);
         let trimmed = expanded.trim();
         let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
@@ -508,54 +592,66 @@ impl PermissionManager {
 
         let candidates = [trimmed, stripped, with_prefix.as_str()];
 
-        for candidate in candidates.iter() {
-            let normalized = Self::normalize_read(candidate);
-            if self.settings.permissions.allow.contains(&normalized) {
-                return true;
-            }
-            if !self.read_allow_set.is_empty() && self.read_allow_set.is_match(candidate) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    pub fn is_read_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
-        self.is_read_explicit_allow(original) || self.is_read_explicit_allow(canonical)
-    }
-
-    fn check_read_permission_with_candidates(
-        &self,
-        trimmed: &str,
-        stripped: &str,
-        prefixed: Option<String>,
-    ) -> CommandPermission {
-        let mut candidates: Vec<&str> = vec![trimmed, stripped];
-        if let Some(pref) = prefixed.as_ref() {
-            candidates.push(pref);
-        }
-
-        for candidate in candidates.iter() {
-            let normalized = Self::normalize_read(candidate);
-            if self.settings.permissions.allow.contains(&normalized) {
-                return CommandPermission::Allowed;
-            }
+        // Exact deny takes highest priority
+        for candidate in &candidates {
+            let normalized = normalize_fn(candidate);
             if self.settings.permissions.deny.contains(&normalized) {
                 return CommandPermission::Denied;
             }
         }
 
-        for candidate in candidates.iter() {
-            if !self.read_allow_set.is_empty() && self.read_allow_set.is_match(candidate) {
+        // Exact allow next
+        for candidate in &candidates {
+            let normalized = normalize_fn(candidate);
+            if self.settings.permissions.allow.contains(&normalized) {
                 return CommandPermission::Allowed;
             }
-            if !self.read_deny_set.is_empty() && self.read_deny_set.is_match(candidate) {
+        }
+
+        // Glob deny before glob allow (deny is more specific/important)
+        for candidate in &candidates {
+            if !deny_set.is_empty() && deny_set.is_match(*candidate) {
                 return CommandPermission::Denied;
             }
         }
 
+        for candidate in &candidates {
+            if !allow_set.is_empty() && allow_set.is_match(*candidate) {
+                return CommandPermission::Allowed;
+            }
+        }
+
         CommandPermission::Allowed
+    }
+
+    fn is_scope_explicit_allow(
+        &self,
+        path: &str,
+        normalize_fn: fn(&str) -> String,
+        allow_set: &GlobSet,
+    ) -> bool {
+        let expanded = Self::expand_tilde(path);
+        let trimmed = expanded.trim();
+        let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
+        let with_prefix = if stripped.starts_with("./") {
+            stripped.to_string()
+        } else {
+            format!("./{}", stripped)
+        };
+
+        let candidates = [trimmed, stripped, with_prefix.as_str()];
+
+        for candidate in &candidates {
+            let normalized = normalize_fn(candidate);
+            if self.settings.permissions.allow.contains(&normalized) {
+                return true;
+            }
+            if !allow_set.is_empty() && allow_set.is_match(*candidate) {
+                return true;
+            }
+        }
+
+        false
     }
 
     pub fn check_command_permission(&mut self, command: &str) -> Result<CommandPermission> {
@@ -605,12 +701,46 @@ impl PermissionManager {
                 self.settings.permissions.deny.push(normalized);
             }
             self.save_settings()?;
-            let (allow_set, deny_set) = Self::build_read_globs(&self.settings)?;
-            self.read_allow_set = allow_set;
-            self.read_deny_set = deny_set;
+            self.rebuild_all_globs()?;
         }
 
         Ok((confirmed, remember))
+    }
+
+    /// Ask user for path-scoped permission (Read, Write, or Bash access to a directory).
+    /// `scope` is "Read", "Write", or "Bash". `dir` is the directory to grant access to.
+    /// Returns (allowed, remembered).
+    pub fn ask_user_path_permission(&mut self, scope: &str, dir: &str) -> Result<(bool, bool)> {
+        let grant = format!("{}({}/**)", scope, dir);
+
+        let prompt = format!("Allow {} access to `{}/**`?", scope.to_lowercase(), dir);
+        let confirmed = confirm_permission(&prompt)?;
+        let remember = confirm_action("Remember this decision?")?;
+
+        if remember {
+            if confirmed {
+                self.settings.permissions.allow.push(grant);
+            } else {
+                self.settings.permissions.deny.push(grant);
+            }
+            self.save_settings()?;
+            self.rebuild_all_globs()?;
+        }
+
+        Ok((confirmed, remember))
+    }
+
+    fn rebuild_all_globs(&mut self) -> Result<()> {
+        let (ra, rd) = Self::build_scope_globs(&self.settings, Self::extract_read_pattern)?;
+        self.read_allow_set = ra;
+        self.read_deny_set = rd;
+        let (wa, wd) = Self::build_scope_globs(&self.settings, Self::extract_write_pattern)?;
+        self.write_allow_set = wa;
+        self.write_deny_set = wd;
+        let (ba, bd) = Self::build_scope_globs(&self.settings, Self::extract_bash_path_pattern)?;
+        self.bash_path_allow_set = ba;
+        self.bash_path_deny_set = bd;
+        Ok(())
     }
 }
 
@@ -631,7 +761,21 @@ mod tests {
     static HOME_MUTEX: Mutex<()> = Mutex::new(());
 
     fn create_test_manager(settings: PermissionSettings, temp_dir: &TempDir) -> PermissionManager {
-        let (allow_set, deny_set) = PermissionManager::build_read_globs(&settings).unwrap();
+        let (read_allow, read_deny) = PermissionManager::build_scope_globs(
+            &settings,
+            PermissionManager::extract_read_pattern,
+        )
+        .unwrap();
+        let (write_allow, write_deny) = PermissionManager::build_scope_globs(
+            &settings,
+            PermissionManager::extract_write_pattern,
+        )
+        .unwrap();
+        let (bash_allow, bash_deny) = PermissionManager::build_scope_globs(
+            &settings,
+            PermissionManager::extract_bash_path_pattern,
+        )
+        .unwrap();
 
         PermissionManager {
             settings,
@@ -639,8 +783,12 @@ mod tests {
             global_settings_path: None,
             allowed_commands: HashSet::new(),
             forbidden_commands: HashSet::new(),
-            read_allow_set: allow_set,
-            read_deny_set: deny_set,
+            read_allow_set: read_allow,
+            read_deny_set: read_deny,
+            write_allow_set: write_allow,
+            write_deny_set: write_deny,
+            bash_path_allow_set: bash_allow,
+            bash_path_deny_set: bash_deny,
             global_rules: HashSet::new(),
         }
     }
@@ -1253,5 +1401,216 @@ ask = []
 
         let local_rule_source = manager.get_rule_source("Read(./local_denied)");
         assert_eq!(local_rule_source, ".sofos/config.local.toml");
+    }
+
+    // --- Write scope tests ---
+
+    #[test]
+    fn test_write_explicit_allow_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Write(/tmp/output/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert!(manager.is_write_explicit_allow("/tmp/output/file.txt"));
+        assert!(manager.is_write_explicit_allow("/tmp/output/sub/deep.txt"));
+        // Base directory itself
+        assert!(manager.is_write_explicit_allow("/tmp/output"));
+        // Not allowed outside the grant
+        assert!(!manager.is_write_explicit_allow("/tmp/other/file.txt"));
+        assert!(!manager.is_write_explicit_allow("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_write_scope_independent_of_read() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        // Only Read grant, no Write
+        settings
+            .permissions
+            .allow
+            .push("Read(/data/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert!(manager.is_read_explicit_allow("/data/file.txt"));
+        assert!(!manager.is_write_explicit_allow("/data/file.txt"));
+    }
+
+    // --- Bash path scope tests ---
+
+    #[test]
+    fn test_bash_path_allowed_with_glob() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Bash(/var/log/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert!(manager.is_bash_path_allowed("/var/log/syslog"));
+        assert!(manager.is_bash_path_allowed("/var/log/nginx/access.log"));
+        // Base directory
+        assert!(manager.is_bash_path_allowed("/var/log"));
+        // Not allowed
+        assert!(!manager.is_bash_path_allowed("/var/other/file"));
+        assert!(!manager.is_bash_path_allowed("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_bash_path_pattern_requires_glob_char() {
+        // Bash(/tmp/) without * should NOT be treated as a path pattern
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(/tmp/**)").is_some());
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(~/docs/*)").is_some());
+        // No glob char — treated as command, not path
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(/tmp/)").is_none());
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(/usr/bin/ls)").is_none());
+        // Not a path (no / or ~)
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(npm test)").is_none());
+        assert!(PermissionManager::extract_bash_path_pattern("Bash(cargo:*)").is_none());
+    }
+
+    #[test]
+    fn test_bash_path_independent_of_read_and_write() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/data/**)".to_string());
+        settings
+            .permissions
+            .allow
+            .push("Write(/data/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        // Read and Write allowed, but Bash path is NOT
+        assert!(manager.is_read_explicit_allow("/data/file.txt"));
+        assert!(manager.is_write_explicit_allow("/data/file.txt"));
+        assert!(!manager.is_bash_path_allowed("/data/file.txt"));
+    }
+
+    #[test]
+    fn test_extract_write_pattern() {
+        assert_eq!(
+            PermissionManager::extract_write_pattern("Write(/tmp/**)"),
+            Some("/tmp/**")
+        );
+        assert_eq!(
+            PermissionManager::extract_write_pattern("Write(~/docs/file.txt)"),
+            Some("~/docs/file.txt")
+        );
+        // Not a Write pattern
+        assert!(PermissionManager::extract_write_pattern("Read(/tmp/**)").is_none());
+        assert!(PermissionManager::extract_write_pattern("Bash(ls)").is_none());
+    }
+
+    #[test]
+    fn test_glob_deny_overrides_glob_allow() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/data/**)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Read(/data/secret/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        // Allowed by broad glob
+        assert_eq!(
+            manager.check_read_permission("/data/public/file.txt"),
+            CommandPermission::Allowed
+        );
+        // Denied by narrower deny glob even though broad allow also matches
+        assert_eq!(
+            manager.check_read_permission("/data/secret/passwords.txt"),
+            CommandPermission::Denied
+        );
+    }
+
+    #[test]
+    fn test_write_glob_deny_overrides_glob_allow() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Write(/tmp/**)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Write(/tmp/protected/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert_eq!(
+            manager.check_write_permission("/tmp/safe/file.txt"),
+            CommandPermission::Allowed
+        );
+        assert_eq!(
+            manager.check_write_permission("/tmp/protected/file.txt"),
+            CommandPermission::Denied
+        );
+    }
+
+    #[test]
+    fn test_bash_path_deny_overrides_allow() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Bash(/data/**)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Bash(/data/secret/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert!(manager.is_bash_path_allowed("/data/public/file.txt"));
+        assert!(manager.is_bash_path_denied("/data/secret/file.txt"));
+        // Also verify that allowed still reports true for the broad pattern
+        // (is_bash_path_allowed doesn't check deny — that's done separately in the handler)
+        assert!(manager.is_bash_path_allowed("/data/secret/file.txt"));
+    }
+
+    #[test]
+    fn test_exact_allow_still_overrides_glob_deny() {
+        // Critical: if you specifically allow a file, it should override a glob deny
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("Read(/data/secret/exception.txt)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("Read(/data/secret/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        // Exact allow beats glob deny
+        assert_eq!(
+            manager.check_read_permission("/data/secret/exception.txt"),
+            CommandPermission::Allowed
+        );
+        // But other files under secret are still denied
+        assert_eq!(
+            manager.check_read_permission("/data/secret/other.txt"),
+            CommandPermission::Denied
+        );
     }
 }

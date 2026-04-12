@@ -45,17 +45,25 @@ fn signal_name(sig: i32) -> &'static str {
 #[derive(Clone)]
 pub struct BashExecutor {
     workspace: PathBuf,
+    /// Whether interactive prompts (stdin) are available
+    interactive: bool,
     /// Session-scoped temporary permissions (not persisted to config)
     session_allowed: Arc<Mutex<HashSet<String>>>,
     session_denied: Arc<Mutex<HashSet<String>>>,
+    /// Session-scoped Bash path grants for external directories
+    bash_path_session_allowed: Arc<Mutex<HashSet<String>>>,
+    bash_path_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 impl BashExecutor {
-    pub fn new(workspace: PathBuf) -> Result<Self> {
+    pub fn new(workspace: PathBuf, interactive: bool) -> Result<Self> {
         Ok(Self {
             workspace,
+            interactive,
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
+            bash_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            bash_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -117,17 +125,20 @@ impl BashExecutor {
     }
 
     fn execute_after_permission_check(&self, command: &str) -> Result<String> {
-        let permission_manager = PermissionManager::new(self.workspace.clone())?;
+        let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
 
         // Enforce read permissions on paths referenced in the command
         self.enforce_read_permissions(&permission_manager, command)?;
 
-        // Additional safety checks (absolute paths, parent traversal, git restrictions)
+        // Non-path structural safety checks (parent traversal, redirection, git restrictions)
         if !self.is_safe_command_structure(command) {
             return Err(SofosError::ToolExecution(
                 self.get_rejection_reason(command),
             ));
         }
+
+        // Check external paths in command — ask user for paths not covered by Bash path grants
+        self.check_bash_external_paths(command, &mut permission_manager)?;
 
         let output = Command::new("sh")
             .arg("-c")
@@ -200,17 +211,129 @@ impl BashExecutor {
         Ok(truncate_for_context(&result, MAX_TOOL_OUTPUT_TOKENS))
     }
 
+    /// Check all external paths (absolute or tilde) in a command against Bash path grants.
+    /// Asks the user interactively for any paths not yet covered.
+    fn check_bash_external_paths(
+        &self,
+        command: &str,
+        permission_manager: &mut PermissionManager,
+    ) -> Result<()> {
+        for token in command.split_whitespace() {
+            let cleaned = token
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_matches(';')
+                .trim();
+
+            if cleaned.is_empty() || cleaned.starts_with('-') {
+                continue;
+            }
+
+            if cleaned.starts_with('/') {
+                self.check_bash_external_path(cleaned, permission_manager)?;
+            } else if cleaned.starts_with("~/") || cleaned == "~" {
+                let expanded = PermissionManager::expand_tilde_pub(cleaned);
+                self.check_bash_external_path(&expanded, permission_manager)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check a single external path against Bash path grants; ask user if not covered.
+    fn check_bash_external_path(
+        &self,
+        path: &str,
+        permission_manager: &mut PermissionManager,
+    ) -> Result<()> {
+        // Canonicalize to resolve symlinks (e.g. /var/folders -> /private/var/folders on macOS)
+        let resolved = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| path.to_string());
+        let check_path = resolved.as_str();
+
+        // Enforce deny rules first (takes priority over allow)
+        if permission_manager.is_bash_path_denied(check_path) {
+            return Err(SofosError::ToolExecution(format!(
+                "Bash access denied for path '{}'\n\
+                 Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
+                check_path
+            )));
+        }
+
+        // Already allowed by config?
+        if permission_manager.is_bash_path_allowed(check_path) {
+            return Ok(());
+        }
+
+        let path_obj = std::path::Path::new(check_path);
+
+        // Session allowed?
+        if let Ok(allowed_dirs) = self.bash_path_session_allowed.lock() {
+            for dir in allowed_dirs.iter() {
+                if path_obj.starts_with(std::path::Path::new(dir)) {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Session denied?
+        if let Ok(denied_dirs) = self.bash_path_session_denied.lock() {
+            for dir in denied_dirs.iter() {
+                if path_obj.starts_with(std::path::Path::new(dir)) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Bash access denied for path '{}' (denied earlier this session)",
+                        check_path
+                    )));
+                }
+            }
+        }
+
+        let parent = std::path::Path::new(check_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or(check_path);
+
+        // Non-interactive mode (tests, piped input): deny with a config hint
+        if !self.interactive {
+            return Err(SofosError::ToolExecution(format!(
+                "Command references path '{}' outside workspace\n\
+                 Hint: Add Bash({}/**) to 'allow' list in .sofos/config.local.toml",
+                check_path, parent
+            )));
+        }
+
+        // Ask user interactively
+        let (allowed, remember) = permission_manager.ask_user_path_permission("Bash", parent)?;
+
+        if allowed {
+            if !remember {
+                if let Ok(mut dirs) = self.bash_path_session_allowed.lock() {
+                    dirs.insert(parent.to_string());
+                }
+            }
+            Ok(())
+        } else {
+            if !remember {
+                if let Ok(mut dirs) = self.bash_path_session_denied.lock() {
+                    dirs.insert(parent.to_string());
+                }
+            }
+            Err(SofosError::ToolExecution(format!(
+                "Bash access denied by user for path '{}'",
+                check_path
+            )))
+        }
+    }
+
     fn enforce_read_permissions(
         &self,
         permission_manager: &PermissionManager,
         command: &str,
     ) -> Result<()> {
-        // Heuristic-based detection of file paths in commands:
-        // - Paths with '/' or starting with '.' or '~'
-        // - Simple filenames (no shell metacharacters like '$', '`', '*', '?', '[')
-        //
-        // IMPORTANT: Bash commands are ALWAYS restricted to workspace, even if
-        // paths are in the Read allow list. Allow list only applies to read_file tool.
+        // Heuristic-based detection of file paths in commands.
+        // Checks paths against Read deny rules (regardless of Bash path grants).
+        // External path access is handled separately by check_bash_external_paths.
         for token in command.split_whitespace().skip(1) {
             let cleaned = token
                 .trim_matches('"')
@@ -264,30 +387,13 @@ impl BashExecutor {
     }
 
     fn is_safe_command_structure(&self, command: &str) -> bool {
+        // Parent directory traversal — always blocked (use absolute paths for external access)
         if command.contains("..") {
             return false;
         }
 
-        // Check for absolute paths
-        if command.starts_with('/') {
-            return false;
-        }
-
-        if command.contains(" /") {
-            return false;
-        }
-
-        if command.contains("|/")
-            || command.contains(";/")
-            || command.contains("&&/")
-            || command.contains("||/")
-        {
-            return false;
-        }
-
-        if command.contains("~/") || command.starts_with('~') {
-            return false;
-        }
+        // Note: absolute paths (/...) and tilde paths (~/) are now handled by
+        // check_bash_external_paths which asks the user interactively.
 
         // Allow "2>&1" (stderr to stdout redirection) but block file output redirection
         let command_without_stderr_redirect = command.replace("2>&1", "");
@@ -389,29 +495,7 @@ impl BashExecutor {
         if command.contains("..") {
             return format!(
                 "Command '{}' contains '..' (parent directory traversal)\n\
-                 Hint: All operations must stay within the current workspace directory.",
-                command
-            );
-        }
-
-        if command.starts_with('/')
-            || command.contains(" /")
-            || command.contains("|/")
-            || command.contains(";/")
-            || command.contains("&&/")
-            || command.contains("||/")
-        {
-            return format!(
-                "Command '{}' contains absolute paths (starting with '/')\n\
-                 Hint: Only relative paths within the workspace are allowed.",
-                command
-            );
-        }
-
-        if command.contains("~/") || command.starts_with('~') {
-            return format!(
-                "Command '{}' contains tilde paths ('~')\n\
-                 Hint: Bash commands are restricted to workspace. Use read_file/list_directory for outside access.",
+                 Hint: Use absolute paths for external directory access instead of '..'.",
                 command
             );
         }
@@ -572,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_safe_commands() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Note: These tests check the command structure safety only
         // Actual permission checking is done by PermissionManager
@@ -593,7 +677,7 @@ mod tests {
 
     #[test]
     fn test_unsafe_command_structures() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Test structural safety issues (not permission-based)
         assert!(!executor.is_safe_command_structure("echo hello > file.txt"));
@@ -606,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_path_traversal_blocked() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         assert!(!executor.is_safe_command_structure("cat ../file.txt"));
         assert!(!executor.is_safe_command_structure("ls ../../etc"));
@@ -616,18 +700,15 @@ mod tests {
     }
 
     #[test]
-    fn test_absolute_paths_blocked() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+    fn test_absolute_paths_pass_structural_check() {
+        // Absolute paths are no longer blocked by is_safe_command_structure.
+        // They are handled by check_bash_external_paths which asks the user.
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
-        assert!(!executor.is_safe_command_structure("/bin/ls"));
-        assert!(!executor.is_safe_command_structure("/etc/passwd"));
-        assert!(!executor.is_safe_command_structure("cat /etc/passwd"));
-        assert!(!executor.is_safe_command_structure("ls /tmp"));
-        assert!(!executor.is_safe_command_structure("cat /home/user/secret"));
-        assert!(!executor.is_safe_command_structure("ls && cat /etc/passwd"));
-        assert!(!executor.is_safe_command_structure("echo test || cat /etc/passwd"));
-        assert!(!executor.is_safe_command_structure("ls | grep /etc/passwd"));
-        assert!(!executor.is_safe_command_structure("true;/bin/bash"));
+        assert!(executor.is_safe_command_structure("/bin/ls"));
+        assert!(executor.is_safe_command_structure("cat /etc/passwd"));
+        assert!(executor.is_safe_command_structure("ls /tmp"));
+        assert!(executor.is_safe_command_structure("cat /home/user/file"));
     }
 
     #[test]
@@ -635,7 +716,7 @@ mod tests {
         use tempfile;
 
         let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf()).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
 
         let result = executor.execute("seq 1 2000000");
 
@@ -668,7 +749,7 @@ ask = []
         )
         .unwrap();
 
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf()).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
 
         // Even without creating the file, permission check should block before execution
         let result = executor.execute("cat ./test/secret.txt");
@@ -683,7 +764,7 @@ ask = []
 
     #[test]
     fn test_safe_git_commands() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Safe read-only git commands
         assert!(executor.is_safe_command_structure("git status"));
@@ -711,7 +792,7 @@ ask = []
 
     #[test]
     fn test_dangerous_git_commands() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Remote operations (data leakage risk)
         assert!(!executor.is_safe_command_structure("git push"));
@@ -775,7 +856,7 @@ ask = []
 
     #[test]
     fn test_git_commands_in_chains() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Safe commands in chains
         assert!(executor.is_safe_command_structure("git status && git log"));
@@ -791,36 +872,28 @@ ask = []
 
     #[test]
     fn test_error_messages_are_informative() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         let reason = executor.get_git_rejection_reason("git push origin main");
         assert!(reason.contains("git push origin main"));
         assert!(reason.contains("remote repositories"));
         assert!(reason.contains("git status"));
-
-        let reason = executor.get_rejection_reason("cd /tmp");
-        assert!(reason.contains("cd /tmp"));
-        assert!(reason.contains("absolute paths"));
     }
 
     #[test]
-    fn test_tilde_paths_blocked_in_bash() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+    fn test_tilde_paths_pass_structural_check() {
+        // Tilde paths are no longer blocked by is_safe_command_structure.
+        // They are handled by check_bash_external_paths which asks the user.
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
-        assert!(!executor.is_safe_command_structure("ls ~/tmp"));
-        assert!(!executor.is_safe_command_structure("cat ~/file.txt"));
-        assert!(!executor.is_safe_command_structure("grep pattern ~/docs/file.txt"));
-        assert!(!executor.is_safe_command_structure("echo test && ls ~/dir"));
-
-        let reason = executor.get_rejection_reason("ls ~/tmp/allowed");
-        assert!(reason.contains("tilde paths"));
-        assert!(reason.contains("read_file"));
-        assert!(reason.contains("workspace"));
+        assert!(executor.is_safe_command_structure("ls ~/tmp"));
+        assert!(executor.is_safe_command_structure("cat ~/file.txt"));
+        assert!(executor.is_safe_command_structure("grep pattern ~/docs/file.txt"));
     }
 
     #[test]
     fn test_session_scoped_permissions_persist() {
-        let executor = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
 
         // Simulate adding a command to session_allowed
         {
@@ -849,7 +922,7 @@ ask = []
 
     #[test]
     fn test_session_permissions_shared_across_clones() {
-        let executor1 = BashExecutor::new(PathBuf::from(".")).unwrap();
+        let executor1 = BashExecutor::new(PathBuf::from("."), false).unwrap();
         let executor2 = executor1.clone();
 
         // Add permission via executor1

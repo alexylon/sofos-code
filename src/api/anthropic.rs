@@ -277,8 +277,7 @@ impl AnthropicClient {
                                 });
                             }
                             Some("tool_use") => {
-                                let input = serde_json::from_str(&current_tool_json)
-                                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                                let input = utils::parse_tool_arguments(&current_tool_json);
                                 content_blocks.push(ContentBlock::ToolUse {
                                     id: current_tool_id.clone(),
                                     name: current_tool_name.clone(),
@@ -286,8 +285,7 @@ impl AnthropicClient {
                                 });
                             }
                             Some("server_tool_use") => {
-                                let input = serde_json::from_str(&current_tool_json)
-                                    .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                                let input = utils::parse_tool_arguments(&current_tool_json);
                                 content_blocks.push(ContentBlock::ServerToolUse {
                                     id: current_tool_id.clone(),
                                     name: current_tool_name.clone(),

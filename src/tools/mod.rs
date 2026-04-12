@@ -24,6 +24,9 @@ use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::confirm_destructive;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
+
 // Re-export MCP tool result types for use in response handler
 pub use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
 
@@ -75,6 +78,13 @@ pub struct ToolExecutor {
     morph_client: Option<MorphClient>,
     mcp_manager: Option<McpManager>,
     safe_mode: bool,
+    /// Whether interactive prompts (stdin) are available (false in tests/pipes)
+    interactive: bool,
+    // Session-scoped path permissions for external directory access (not persisted)
+    read_path_session_allowed: Arc<Mutex<HashSet<String>>>,
+    read_path_session_denied: Arc<Mutex<HashSet<String>>>,
+    write_path_session_allowed: Arc<Mutex<HashSet<String>>>,
+    write_path_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ToolExecutor {
@@ -83,6 +93,7 @@ impl ToolExecutor {
         morph_client: Option<MorphClient>,
         mcp_manager: Option<McpManager>,
         safe_mode: bool,
+        interactive: bool,
     ) -> Result<Self> {
         let code_search_tool = match CodeSearchTool::new(workspace.clone()) {
             Ok(tool) => Some(tool),
@@ -95,10 +106,15 @@ impl ToolExecutor {
         Ok(Self {
             fs_tool: FileSystemTool::new(workspace.clone())?,
             code_search_tool,
-            bash_executor: BashExecutor::new(workspace)?,
+            bash_executor: BashExecutor::new(workspace, interactive)?,
             morph_client,
             mcp_manager,
             safe_mode,
+            interactive,
+            read_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            read_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
+            write_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            write_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -112,6 +128,190 @@ impl ToolExecutor {
 
     pub fn set_safe_mode(&mut self, safe_mode: bool) {
         self.safe_mode = safe_mode;
+    }
+
+    /// Check read permissions on a path (both original and canonical forms),
+    /// and verify external access. Returns Ok if allowed, Err if denied.
+    fn check_read_access(
+        &self,
+        path: &str,
+        canonical: &std::path::Path,
+        canonical_str: &str,
+        is_inside_workspace: bool,
+    ) -> Result<()> {
+        let permission_manager = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+
+        let (perm_original, matched_rule_original) =
+            permission_manager.check_read_permission_with_source(path);
+        let (perm_canonical, matched_rule_canonical) =
+            permission_manager.check_read_permission_with_source(canonical_str);
+
+        let (final_perm, matched_rule) = if perm_original == permissions::CommandPermission::Denied
+        {
+            (perm_original, matched_rule_original)
+        } else if perm_canonical == permissions::CommandPermission::Denied {
+            (perm_canonical, matched_rule_canonical)
+        } else if perm_original == permissions::CommandPermission::Ask {
+            (perm_original, None)
+        } else if perm_canonical == permissions::CommandPermission::Ask {
+            (perm_canonical, None)
+        } else {
+            (permissions::CommandPermission::Allowed, None)
+        };
+
+        match final_perm {
+            permissions::CommandPermission::Denied => {
+                let config_source = if let Some(ref rule) = matched_rule {
+                    permission_manager.get_rule_source(rule)
+                } else {
+                    ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                };
+                return Err(SofosError::ToolExecution(format!(
+                    "Read access denied for path '{}'\n\
+                     Hint: Blocked by deny rule in {}",
+                    path, config_source
+                )));
+            }
+            permissions::CommandPermission::Ask => {
+                return Err(SofosError::ToolExecution(format!(
+                    "Path '{}' is in 'ask' list\n\
+                     Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for Read permissions.",
+                    path
+                )));
+            }
+            permissions::CommandPermission::Allowed => {}
+        }
+
+        if !is_inside_workspace {
+            // Use ONLY the canonical (symlink-resolved) path for permission checks
+            // to prevent symlink escape attacks
+            let is_explicit_allow = permission_manager.is_read_explicit_allow(canonical_str);
+            if !is_explicit_allow {
+                let dir_to_grant = if canonical.is_dir() {
+                    canonical_str.to_string()
+                } else {
+                    canonical
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or(canonical_str)
+                        .to_string()
+                };
+                self.check_external_path_access(
+                    "Read",
+                    canonical_str,
+                    &dir_to_grant,
+                    &self.read_path_session_allowed,
+                    &self.read_path_session_denied,
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check Write permissions for an external path: enforce deny rules, then check allow/ask.
+    fn check_write_access(
+        &self,
+        path: &str,
+        canonical_str: &str,
+        canonical: &std::path::Path,
+    ) -> Result<()> {
+        let permission_manager = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+
+        // Enforce Write deny rules first
+        if permission_manager.check_write_permission(canonical_str)
+            == permissions::CommandPermission::Denied
+        {
+            return Err(SofosError::ToolExecution(format!(
+                "Write access denied for path '{}'\n\
+                 Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
+                path
+            )));
+        }
+
+        // Check explicit allow (canonical only, for symlink safety)
+        let is_explicit_allow = permission_manager.is_write_explicit_allow(canonical_str);
+        if !is_explicit_allow {
+            let dir_to_grant = canonical
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or(canonical_str);
+            self.check_external_path_access(
+                "Write",
+                canonical_str,
+                dir_to_grant,
+                &self.write_path_session_allowed,
+                &self.write_path_session_denied,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Check if an external path is allowed for the given scope, asking the user if needed.
+    /// Returns Ok(()) if access is granted, Err if denied.
+    fn check_external_path_access(
+        &self,
+        scope: &str,
+        canonical_path: &str,
+        dir_to_grant: &str,
+        session_allowed: &Arc<Mutex<HashSet<String>>>,
+        session_denied: &Arc<Mutex<HashSet<String>>>,
+    ) -> Result<()> {
+        let path_obj = std::path::Path::new(canonical_path);
+
+        // Check session allowed
+        if let Ok(allowed_dirs) = session_allowed.lock() {
+            for dir in allowed_dirs.iter() {
+                if path_obj.starts_with(std::path::Path::new(dir)) {
+                    return Ok(());
+                }
+            }
+        }
+
+        // Check session denied
+        if let Ok(denied_dirs) = session_denied.lock() {
+            for dir in denied_dirs.iter() {
+                if path_obj.starts_with(std::path::Path::new(dir)) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "{} access denied for '{}' (denied earlier this session)",
+                        scope, canonical_path
+                    )));
+                }
+            }
+        }
+
+        // Non-interactive mode (tests, piped input): deny with a config hint
+        if !self.interactive {
+            return Err(SofosError::ToolExecution(format!(
+                "Path '{}' is outside workspace and not explicitly allowed\n\
+                 Hint: Add {}({}/**) to 'allow' list in .sofos/config.local.toml",
+                canonical_path, scope, dir_to_grant
+            )));
+        }
+
+        // Ask user interactively
+        let mut pm = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+        let (allowed, remember) = pm.ask_user_path_permission(scope, dir_to_grant)?;
+
+        if allowed {
+            if !remember {
+                if let Ok(mut dirs) = session_allowed.lock() {
+                    dirs.insert(dir_to_grant.to_string());
+                }
+            }
+            Ok(())
+        } else {
+            if !remember {
+                if let Ok(mut dirs) = session_denied.lock() {
+                    dirs.insert(dir_to_grant.to_string());
+                }
+            }
+            Err(SofosError::ToolExecution(format!(
+                "{} access denied by user for '{}'",
+                scope, canonical_path
+            )))
+        }
     }
 
     pub async fn get_available_tools(&self) -> Vec<crate::api::Tool> {
@@ -137,19 +337,6 @@ impl ToolExecutor {
     }
 
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<ToolExecutionResult> {
-        // Recover from raw_arguments fallback (malformed JSON from model)
-        let recovered;
-        let input = if let Some(raw) = input.get("raw_arguments").and_then(|v| v.as_str()) {
-            if input.as_object().is_none_or(|o| o.len() == 1) {
-                recovered = serde_json::from_str::<Value>(raw.trim()).unwrap_or(input.clone());
-                &recovered
-            } else {
-                input
-            }
-        } else {
-            input
-        };
-
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name).await {
@@ -166,10 +353,6 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                let permission_manager =
-                    PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
-
-                // Canonicalize to resolve symlinks and normalize relative paths
                 let full_path = if path.starts_with('/') || path.starts_with('~') {
                     std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
                 } else {
@@ -193,59 +376,7 @@ impl ToolExecutor {
                 let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
                 let canonical_str = canonical.to_str().unwrap_or(path);
 
-                // Check permissions on both original and canonical forms
-                let (perm_original, matched_rule_original) =
-                    permission_manager.check_read_permission_with_source(path);
-                let (perm_canonical, matched_rule_canonical) =
-                    permission_manager.check_read_permission_with_source(canonical_str);
-
-                // Use the denied result if either check failed
-                let (final_perm, matched_rule) =
-                    if perm_original == permissions::CommandPermission::Denied {
-                        (perm_original, matched_rule_original)
-                    } else if perm_canonical == permissions::CommandPermission::Denied {
-                        (perm_canonical, matched_rule_canonical)
-                    } else if perm_original == permissions::CommandPermission::Ask {
-                        (perm_original, None)
-                    } else if perm_canonical == permissions::CommandPermission::Ask {
-                        (perm_canonical, None)
-                    } else {
-                        (permissions::CommandPermission::Allowed, None)
-                    };
-
-                match final_perm {
-                    permissions::CommandPermission::Denied => {
-                        let config_source = if let Some(ref rule) = matched_rule {
-                            permission_manager.get_rule_source(rule)
-                        } else {
-                            ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
-                        };
-                        return Err(SofosError::ToolExecution(format!(
-                            "Read access denied for path '{}'\n\
-                             Hint: Blocked by deny rule in {}",
-                            path, config_source
-                        )));
-                    }
-                    permissions::CommandPermission::Ask => {
-                        return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' is in 'ask' list\n\
-                             Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for Read permissions.",
-                            path
-                        )));
-                    }
-                    permissions::CommandPermission::Allowed => {}
-                }
-
-                let is_explicit_allow =
-                    permission_manager.is_read_explicit_allow_both_forms(path, canonical_str);
-
-                if !is_inside_workspace && !is_explicit_allow {
-                    return Err(SofosError::ToolExecution(format!(
-                        "Path '{}' is outside workspace and not explicitly allowed\n\
-                         Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
-                        path, path
-                    )));
-                }
+                self.check_read_access(path, &canonical, canonical_str, is_inside_workspace)?;
 
                 if is_inside_workspace {
                     match self.fs_tool.read_file(path) {
@@ -267,12 +398,62 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'content' parameter".to_string())
                 })?;
 
-                // Check if file exists and read original content for diff
-                let original_content = self.fs_tool.read_file(path).ok();
+                // Check if path is outside workspace
+                let full_path = if path.starts_with('/') || path.starts_with('~') {
+                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
+                } else {
+                    self.fs_tool._workspace().join(path)
+                };
 
-                self.fs_tool.write_file(path, content)?;
+                // For new files, canonicalize parent; for existing files, canonicalize directly
+                let (is_inside_workspace, canonical_str_owned) = if full_path.exists() {
+                    let canonical = std::fs::canonicalize(&full_path).map_err(|e| {
+                        SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
+                    })?;
+                    let inside = canonical.starts_with(self.fs_tool._workspace());
+                    let cs = canonical.to_string_lossy().to_string();
+                    (inside, cs)
+                } else if let Some(parent) = full_path.parent() {
+                    if parent.exists() {
+                        let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                            SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
+                        })?;
+                        let inside = canonical_parent.starts_with(self.fs_tool._workspace());
+                        let filename = full_path
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let cs = format!("{}/{}", canonical_parent.display(), filename);
+                        (inside, cs)
+                    } else {
+                        // Parent doesn't exist — assume outside if path is absolute
+                        let inside = !path.starts_with('/') && !path.starts_with('~');
+                        (inside, full_path.to_string_lossy().to_string())
+                    }
+                } else {
+                    (true, full_path.to_string_lossy().to_string())
+                };
 
-                // If file existed before, show diff
+                if !is_inside_workspace {
+                    let canonical_path = std::path::Path::new(&canonical_str_owned);
+                    self.check_write_access(path, &canonical_str_owned, canonical_path)?;
+                }
+
+                let original_content = if is_inside_workspace {
+                    self.fs_tool.read_file(path).ok()
+                } else {
+                    self.fs_tool
+                        .read_file_with_outside_access(&canonical_str_owned)
+                        .ok()
+                };
+
+                if is_inside_workspace {
+                    self.fs_tool.write_file(path, content)?;
+                } else {
+                    self.fs_tool
+                        .write_file_with_outside_access(&canonical_str_owned, content)?;
+                }
+
                 if let Some(original) = original_content {
                     let diff_output = diff::generate_compact_diff(&original, content, path);
                     Ok(format!(
@@ -287,9 +468,6 @@ impl ToolExecutor {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
-
-                let permission_manager =
-                    PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
 
                 // Expand tilde and canonicalize
                 let full_path = if path.starts_with('/') || path.starts_with('~') {
@@ -308,58 +486,7 @@ impl ToolExecutor {
                 let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
                 let canonical_str = canonical.to_str().unwrap_or(path);
 
-                // Check permissions
-                let (perm_original, matched_rule_original) =
-                    permission_manager.check_read_permission_with_source(path);
-                let (perm_canonical, matched_rule_canonical) =
-                    permission_manager.check_read_permission_with_source(canonical_str);
-
-                let (final_perm, matched_rule) =
-                    if perm_original == permissions::CommandPermission::Denied {
-                        (perm_original, matched_rule_original)
-                    } else if perm_canonical == permissions::CommandPermission::Denied {
-                        (perm_canonical, matched_rule_canonical)
-                    } else if perm_original == permissions::CommandPermission::Ask {
-                        (perm_original, None)
-                    } else if perm_canonical == permissions::CommandPermission::Ask {
-                        (perm_canonical, None)
-                    } else {
-                        (permissions::CommandPermission::Allowed, None)
-                    };
-
-                match final_perm {
-                    permissions::CommandPermission::Denied => {
-                        let config_source = if let Some(ref rule) = matched_rule {
-                            permission_manager.get_rule_source(rule)
-                        } else {
-                            ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
-                        };
-                        return Err(SofosError::ToolExecution(format!(
-                            "Read access denied for path '{}'\n\
-                             Hint: Blocked by deny rule in {}",
-                            path, config_source
-                        )));
-                    }
-                    permissions::CommandPermission::Ask => {
-                        return Err(SofosError::ToolExecution(format!(
-                            "Path '{}' is in 'ask' list\n\
-                             Hint: 'ask' only works for Bash commands. Use 'allow' or 'deny' for Read permissions.",
-                            path
-                        )));
-                    }
-                    permissions::CommandPermission::Allowed => {}
-                }
-
-                let is_explicit_allow =
-                    permission_manager.is_read_explicit_allow_both_forms(path, canonical_str);
-
-                if !is_inside_workspace && !is_explicit_allow {
-                    return Err(SofosError::ToolExecution(format!(
-                        "Path '{}' is outside workspace and not explicitly allowed\n\
-                         Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
-                        path, path
-                    )));
-                }
+                self.check_read_access(path, &canonical, canonical_str, is_inside_workspace)?;
 
                 // Use canonical path for the actual operation
                 let entries = if is_inside_workspace {
@@ -492,7 +619,31 @@ impl ToolExecutor {
                     }
                 }
 
-                let original = self.fs_tool.read_file(path)?;
+                // Check if path is outside workspace
+                let full_path = if path.starts_with('/') || path.starts_with('~') {
+                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
+                } else {
+                    self.fs_tool._workspace().join(path)
+                };
+
+                let canonical = std::fs::canonicalize(&full_path).map_err(|_| {
+                    SofosError::ToolExecution(format!(
+                        "File not found: '{}'. The file must exist to edit it.",
+                        path
+                    ))
+                })?;
+                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+                let canonical_str = canonical.to_string_lossy().to_string();
+
+                if !is_inside_workspace {
+                    self.check_write_access(path, &canonical_str, &canonical)?;
+                }
+
+                let original = if is_inside_workspace {
+                    self.fs_tool.read_file(path)?
+                } else {
+                    self.fs_tool.read_file_with_outside_access(&canonical_str)?
+                };
 
                 if !original.contains(old_string) {
                     return Err(SofosError::ToolExecution(format!(
@@ -508,10 +659,14 @@ impl ToolExecutor {
                     original.replacen(old_string, new_string, 1)
                 };
 
-                self.fs_tool.write_file(path, &modified)?;
+                if is_inside_workspace {
+                    self.fs_tool.write_file(path, &modified)?;
+                } else {
+                    self.fs_tool
+                        .write_file_with_outside_access(&canonical_str, &modified)?;
+                }
 
                 let diff_output = diff::generate_compact_diff(&original, &modified, path);
-
                 Ok(format!(
                     "Successfully edited '{}'\n\nChanges:\n{}",
                     path, diff_output
@@ -525,23 +680,31 @@ impl ToolExecutor {
                     )
                 })?;
 
-                let path = input["path"]
+                // Canonical schema (Morph docs) is `target_filepath` /
+                // `instructions` / `code_edit`. Accept legacy `path` /
+                // `instruction` (and a few common typos) so older
+                // conversation history and models that diverge keep working.
+                let path = input["target_filepath"]
                     .as_str()
+                    .or_else(|| input["path"].as_str())
                     .or_else(|| input["file_path"].as_str())
                     .or_else(|| input["file"].as_str())
                     .ok_or_else(|| {
                         SofosError::ToolExecution(format!(
-                            "Missing 'path' parameter. Got keys: {:?}. \
-                             Please retry with the 'path' parameter set to the file path.",
+                            "Missing 'target_filepath' parameter. Got keys: {:?}. \
+                             Please retry with the 'target_filepath' parameter set to the file path.",
                             input
                                 .as_object()
                                 .map(|o| o.keys().collect::<Vec<_>>())
                                 .unwrap_or_default()
                         ))
                     })?;
-                let instruction = input["instruction"].as_str().ok_or_else(|| {
-                    SofosError::ToolExecution("Missing 'instruction' parameter".to_string())
-                })?;
+                let instruction = input["instructions"]
+                    .as_str()
+                    .or_else(|| input["instruction"].as_str())
+                    .ok_or_else(|| {
+                        SofosError::ToolExecution("Missing 'instructions' parameter".to_string())
+                    })?;
                 let code_edit = input["code_edit"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'code_edit' parameter".to_string())
                 })?;
@@ -555,7 +718,30 @@ impl ToolExecutor {
                     )));
                 }
 
-                let original_code = self.fs_tool.read_file(path)?;
+                // Check if path is outside workspace for external access
+                let full_path = if path.starts_with('/') || path.starts_with('~') {
+                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
+                } else {
+                    self.fs_tool._workspace().join(path)
+                };
+                let canonical = std::fs::canonicalize(&full_path).map_err(|_| {
+                    SofosError::ToolExecution(format!(
+                        "File not found: '{}'. The file must exist for morph_edit_file.",
+                        path
+                    ))
+                })?;
+                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+                let canonical_str = canonical.to_string_lossy().to_string();
+
+                if !is_inside_workspace {
+                    self.check_write_access(path, &canonical_str, &canonical)?;
+                }
+
+                let original_code = if is_inside_workspace {
+                    self.fs_tool.read_file(path)?
+                } else {
+                    self.fs_tool.read_file_with_outside_access(&canonical_str)?
+                };
 
                 // Wrap morph API call with a timeout; fall back to edit_file on timeout/network errors
                 let morph_timeout = Duration::from_secs(30);
@@ -596,7 +782,12 @@ impl ToolExecutor {
                     Ok(Err(e)) => return Err(e),
                 };
 
-                self.fs_tool.write_file(path, &merged_code)?;
+                if is_inside_workspace {
+                    self.fs_tool.write_file(path, &merged_code)?;
+                } else {
+                    self.fs_tool
+                        .write_file_with_outside_access(&canonical_str, &merged_code)?;
+                }
 
                 // Generate diff for display
                 let diff_output = diff::generate_compact_diff(&original_code, &merged_code, path);

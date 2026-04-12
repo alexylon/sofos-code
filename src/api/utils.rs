@@ -32,6 +32,15 @@ pub async fn check_api_connectivity(
     }
 }
 
+/// Parse tool-call arguments emitted by an LLM provider into a JSON value.
+///
+/// Both Anthropic and OpenAI deliver function/tool arguments as a JSON
+/// string. On parse failure we fall back to an empty object so callers can
+/// surface a per-tool "missing parameter" error rather than crashing.
+pub fn parse_tool_arguments(args: &str) -> serde_json::Value {
+    serde_json::from_str(args).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+}
+
 /// Find the largest byte index <= `max_bytes` that is a valid UTF-8 char boundary.
 pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
     if max_bytes >= s.len() {
@@ -180,5 +189,29 @@ mod tests {
         assert_eq!(truncate_at_char_boundary(s, 3), 1);
         assert_eq!(truncate_at_char_boundary(s, 4), 1);
         assert_eq!(truncate_at_char_boundary(s, 5), 5);
+    }
+
+    #[test]
+    fn parse_tool_arguments_valid_object() {
+        let v = parse_tool_arguments(
+            r#"{"target_filepath":"src/lib.rs","instructions":"add fn","code_edit":"// ... existing code ...\nfn x() {}"}"#,
+        );
+        assert_eq!(v["target_filepath"], "src/lib.rs");
+        assert_eq!(v["instructions"], "add fn");
+        assert_eq!(v["code_edit"], "// ... existing code ...\nfn x() {}");
+    }
+
+    #[test]
+    fn parse_tool_arguments_empty_string_is_empty_object() {
+        let v = parse_tool_arguments("");
+        assert!(v.is_object());
+        assert_eq!(v.as_object().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn parse_tool_arguments_invalid_json_is_empty_object() {
+        let v = parse_tool_arguments("not json");
+        assert!(v.is_object());
+        assert_eq!(v.as_object().unwrap().len(), 0);
     }
 }

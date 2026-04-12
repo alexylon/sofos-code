@@ -159,6 +159,23 @@ impl FileSystemTool {
             .with_context(|| format!("Failed to write file: {}", path))
     }
 
+    /// Write a file that may be outside the workspace.
+    /// Only used when explicitly allowed by user — does not enforce workspace prefix.
+    pub fn write_file_with_outside_access(&self, path: &str, content: &str) -> Result<()> {
+        let full_path = if PathBuf::from(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            self.workspace.join(path)
+        };
+
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directories for: {}", path))?;
+        }
+
+        fs::write(&full_path, content).with_context(|| format!("Failed to write file: {}", path))
+    }
+
     pub fn _append_file(&self, path: &str, content: &str) -> Result<()> {
         let full_path = self.validate_path(path)?;
 

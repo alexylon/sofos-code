@@ -4,6 +4,30 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Interactive permission prompts for external directory access with three separate scopes:
+  - `Read(/path/**)` — read/list files outside workspace
+  - `Write(/path/**)` — write/edit files outside workspace
+  - `Bash(/path/**)` — bash commands referencing external paths
+  - User is prompted to allow or deny, with option to remember the decision in config
+  - Session-scoped caching for non-persisted decisions
+- GitHub Actions release workflow for prebuilt binaries (macOS, Linux, Windows)
+
+### Changed
+- Morph edit falls back to `edit_file` on timeout instead of failing; added truncation marker guards for `edit_file` and `morph_edit_file`
+- `Read(/path/**)` glob now also matches the base directory itself (for `list_directory`)
+- `morph_edit_file` tool schema now matches the official Morph Fast Apply schema (`target_filepath`, `instructions`, `code_edit`); legacy `path`/`instruction`/`file_path`/`file` names are still accepted as fallbacks
+- Bash commands with absolute or tilde paths now trigger interactive path grant instead of hard block
+- Show reasoning config at startup
+- `write_file`, `edit_file`, and `morph_edit_file` now support external paths (with Write scope permission)
+
+- `morph_edit_file` `Missing 'path' parameter` errors on OpenAI: root cause was field-name divergence from the official Morph Fast Apply schema (we used `path`/`instruction`; the canonical schema is `target_filepath`/`instructions`), which models trained on Morph's schema would emit, leading to mismatched parameters. The tool schema is now aligned with Morph's docs and both providers parse tool-call arguments with the same simple `serde_json::from_str` path.
+- UTF-8 panics in string truncation when cutting multi-byte characters
+- OpenAI tool call argument parsing for malformed/incremental JSON
+- OpenAI tool call encoding issues
+- Conversation preservation on API errors
+- Preserve context summary when fallback trim drops messages during failed compaction
+
 ## [0.1.22] - 2026-03-24
 
 ### Added

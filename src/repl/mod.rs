@@ -9,6 +9,8 @@ pub use prompt::ReplPrompt;
 pub use request_builder::RequestBuilder;
 pub use response_handler::ResponseHandler;
 
+use std::io::IsTerminal;
+
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlock, MorphClient};
 use crate::commands::{Command, CommandResult};
@@ -98,6 +100,7 @@ impl Repl {
             morph_client,
             mcp_manager,
             config.safe_mode,
+            std::io::stdin().is_terminal(),
         )?;
 
         let has_morph = tool_executor.has_morph();

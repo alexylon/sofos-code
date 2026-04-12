@@ -1,11 +1,11 @@
-# Sofos - AI Coding Assistant Project Context
+and anthropi# Sofos - AI Coding Assistant Project Context
 
 ## Project Overview
 
-Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API. It's built in Rust for maximum performance and security. The assistant can read/write files, search code, execute bash commands, and search the web - all within a sandboxed environment.
+Sofos is a terminal-based AI coding assistant powered by Anthropic's Claude API. It's built in Rust for maximum performance and security. The assistant can read/write files, search code, execute bash commands, and search the web - within the workspace by default, with interactive permission prompts for external paths.
 
 **Core Philosophy:**
-- Security first: All operations are sandboxed to the workspace directory
+- Security first: Workspace-sandboxed by default, with interactive user-approved access to external paths via three independent scopes (Read, Write, Bash)
 - Fast and efficient: Native Rust implementation with optional ultra-fast editing via Morph API
 - Developer-friendly: Interactive REPL with session persistence and custom instructions
 - Transparent: All tool executions are visible to the user
@@ -414,6 +414,24 @@ This prints:
 - [ ] Tests: Added tests for new functionality?
 - [ ] Docs: Updated README if user-visible change?
 - [ ] UX: Error messages clear and actionable?
+
+## Non-Negotiable Rules
+
+- Use idiomatic Rust and repository naming conventions.
+- Keep code DRY and focused.
+- Avoid magic strings and numbers.
+- Do not add self-explanatory comments.
+- Do not leave `unwrap()` or `expect()` in normal code paths.
+- Use strong types where possible.
+- Add or update important tests and keep them self-contained.
+- After each important change, update if needed:
+    - `README.md`
+    - `CHANGELOG.md` under `[Unreleased]`
+- Run:
+    - `cargo fmt --all`
+    - `cargo clippy --all-targets -- -D warnings`
+    - `cargo test --all`
+- Before finishing, review the change for bugs and corner cases.
 
 ---
 

@@ -211,7 +211,7 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 **MCP Tools:**
 - Tools from configured MCP servers (prefixed with server name, e.g., `filesystem_read_file`)
 
-**Note:** Only `read_file`, `list_directory`, and `image` can access paths outside workspace when explicitly allowed in config. All other operations are workspace-only.
+**Note:** Tools can access paths outside workspace when allowed via interactive prompt or config. Three separate scopes control access: `Read` (read/list), `Write` (write/edit), and `Bash` (command execution). Each scope is granted independently.
 
 Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `glob_files`, `web_search`, `web_fetch`, `image`.
 
@@ -227,9 +227,9 @@ Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`).
 
 **Sandboxing (by default):**
 - ✅ Full access to workspace files/directories
-- ✅ Read-only access to outside workspace (requires explicit config)
-- ❌ No writes, moves, or deletes outside workspace
-- ❌ Bash always sandboxed to workspace
+- ✅ External access via interactive prompts — user is asked to allow/deny, with option to remember in config
+- Three separate scopes: `Read` (read/list), `Write` (write/edit), `Bash` (commands with external paths)
+- Each scope is independently granted — Read access does not imply Write or Bash access
 
 **Bash Permissions (3-Tier System):**
 
@@ -246,14 +246,20 @@ Permissions are stored in `.sofos/config.local.toml` (workspace-specific, gitign
 ```toml
 [permissions]
 allow = [
-  # Read permissions - for accessing files/directories outside workspace
+  # Read permissions - for reading/listing files outside workspace
   "Read(~/.zshrc)",           # Specific file
   "Read(~/.config/**)",       # Recursive
   "Read(/etc/hosts)",         # Absolute path
   
-  # Bash permissions - for command execution
-  "Bash(custom_command)",
-  "Bash(pattern:*)",
+  # Write permissions - for writing/editing files outside workspace
+  "Write(/tmp/output/**)",    # Allow writes to specific external dir
+  
+  # Bash path permissions - for commands referencing external paths
+  "Bash(/var/log/**)",        # Allow bash commands to access this dir
+  
+  # Bash command permissions - for command execution
+  "Bash(custom_command)",     # Specific command
+  "Bash(pattern:*)",          # Wildcard pattern
 ]
 
 deny = [
@@ -288,10 +294,12 @@ headers = { "Authorization" = "Bearer token123" }
 
 **Rules\*:**
 - Workspace files: allowed by default unless in `deny` list
-- Outside workspace: denied by default unless in `allow` list
+- Outside workspace: prompts interactively on first access, or pre-configure in `allow` list
+- Three scopes: `Read(path)` for reading, `Write(path)` for writing, `Bash(path)` for bash access — each independent
+- `Bash(path)` entries with globs (e.g. `Bash(/tmp/**)`) grant path access; plain entries (e.g. `Bash(npm test)`) grant command access
 - Glob patterns supported: `*` (single level), `**` (recursive)
 - Tilde expansion: `~` → home directory
-- `ask` only works for Bash commands, not Read permissions
+- `ask` only works for Bash commands
 
 \* These rules do not restrict MCP server command paths
 
@@ -391,7 +399,7 @@ The release workflow automatically:
 ## Troubleshooting
 
 - **API errors:** Check connection and API key
-- **Path errors:** Use relative paths for workspace, or add `Read(path)` to config for outside access
+- **Path errors:** Use relative paths for workspace; external paths prompt interactively or can be pre-allowed with `Read`/`Write`/`Bash` entries in config
 - **Build errors:** `rustup update && cargo clean && cargo build`
 - **Images with spaces:** Wrap path in quotes
 

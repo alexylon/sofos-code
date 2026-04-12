@@ -4,13 +4,13 @@ use serde_json::json;
 fn read_file_tool() -> Tool {
     Tool::Regular {
         name: "read_file".to_string(),
-        description: "Read the contents of a file in the current workspace. Can also read files outside the workspace if explicitly allowed via Read permissions in the config.".to_string(),
+        description: "Read the contents of a file. Works within the workspace by default. Can also read files outside the workspace — the user will be prompted to allow access if not already configured.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md'). Can also be absolute or ~/ paths if allowed in config."
+                    "description": "The relative path to the file (e.g., 'src/main.rs'). Can also be absolute or ~/ paths for external files (user will be prompted for Read access)."
                 }
             },
             "required": ["path"]
@@ -21,9 +21,9 @@ fn read_file_tool() -> Tool {
 
 fn write_file_tool(has_morph: bool) -> Tool {
     let description = if has_morph {
-        "Create a new file with the given content. For editing existing files, use morph_edit_file instead. Only works within the current project directory."
+        "Create a new file with the given content. For editing existing files, use morph_edit_file instead. Works within the workspace by default; can also write to external absolute or ~/ paths (user will be prompted for Write access)."
     } else {
-        "Create a new file or overwrite an existing file with the given content. Only works within the current project directory."
+        "Create a new file or overwrite an existing file with the given content. Works within the workspace by default; can also write to external absolute or ~/ paths (user will be prompted for Write access)."
     };
 
     Tool::Regular {
@@ -34,7 +34,7 @@ fn write_file_tool(has_morph: bool) -> Tool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the file (e.g., 'src/main.rs' or 'README.md')"
+                    "description": "The relative path to the file (e.g., 'src/main.rs'). Can also be absolute or ~/ paths for external files (user will be prompted for Write access)."
                 },
                 "content": {
                     "type": "string",
@@ -56,7 +56,7 @@ fn list_directory_tool() -> Tool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the directory (e.g., 'src' or '.'). Can also be absolute or ~/ paths if allowed in config."
+                    "description": "The relative path to the directory (e.g., 'src' or '.'). Can also be absolute or ~/ paths for external directories (user will be prompted for Read access)."
                 }
             },
             "required": ["path"]
@@ -103,13 +103,13 @@ fn openai_web_search_tool() -> Tool {
 fn execute_bash_tool() -> Tool {
     Tool::Regular {
         name: "execute_bash".to_string(),
-        description: "Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services). Do not modify or delete files outside the working directory. Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.".to_string(),
+        description: "Execute a bash command in the workspace. Commands can reference external absolute or ~/ paths — the user will be prompted for Bash path access. Parent directory traversal (..) is always blocked. Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services). Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The bash command to execute (e.g., 'cargo test', 'ls -la', 'cat file.txt')"
+                    "description": "The bash command to execute (e.g., 'cargo test', 'ls -la', 'cat /path/to/file')"
                 }
             },
             "required": ["command"]
@@ -201,13 +201,13 @@ fn copy_file_tool() -> Tool {
 fn edit_file_tool() -> Tool {
     Tool::Regular {
         name: "edit_file".to_string(),
-        description: "Make targeted edits to a file by replacing exact string matches. Preferred over write_file for modifying existing files — safer and more efficient since only the changed portion is specified.".to_string(),
+        description: "Make targeted edits to a file by replacing exact string matches. Preferred over write_file for modifying existing files — safer and more efficient since only the changed portion is specified. Works within the workspace by default; can also edit external files at absolute or ~/ paths (user will be prompted for Write access).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the file (e.g., 'src/main.rs')"
+                    "description": "The relative path to the file (e.g., 'src/main.rs'). Can also be absolute or ~/ paths for external files."
                 },
                 "old_string": {
                     "type": "string",
@@ -269,26 +269,40 @@ fn web_fetch_tool() -> Tool {
 }
 
 fn morph_edit_file_tool() -> Tool {
+    // Schema matches the official Morph Fast Apply tool definition:
+    // https://docs.morphllm.com/sdk/components/fast-apply
+    // Field names (`target_filepath`, `instructions`, `code_edit`) and the
+    // description are kept aligned with Morph's canonical schema so models
+    // trained on it call the tool consistently across providers.
     Tool::Regular {
         name: "morph_edit_file".to_string(),
-        description: "**PREFERRED FOR EDITING FILES** - Ultra-fast file editing using Morph Apply API (10,500+ tokens/sec, 96-98% accuracy). Use this for ALL modifications to existing files. Provide the instruction, original code, and your proposed changes with '// ... existing code ...' markers for unchanged sections. Much more efficient than write_file.".to_string(),
+        description: "Edit an existing file by showing only the changed lines. \
+            Use // ... existing code ... to represent unchanged sections. \
+            Include just enough surrounding context to locate each edit precisely. \
+            ALWAYS use the marker for unchanged sections (omitting it will cause deletions). \
+            Preserve exact indentation. For deletions, show context before and after. \
+            Batch multiple edits to the same file in one call. \
+            Backed by the Morph Fast Apply API (10,500+ tokens/sec). \
+            Supports absolute or ~/ paths for files outside the workspace \
+            (user will be prompted for Write access)."
+            .to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
-                "path": {
+                "target_filepath": {
                     "type": "string",
-                    "description": "The relative path to the file (e.g., 'src/main.rs')"
+                    "description": "Path of the file to modify"
                 },
-                "instruction": {
+                "instructions": {
                     "type": "string",
-                    "description": "Brief first-person description of what you're changing (e.g., 'I will add error handling')"
+                    "description": "A single sentence written in the first person describing what the agent is changing. Used to help disambiguate uncertainty in the edit."
                 },
                 "code_edit": {
                     "type": "string",
-                    "description": "The updated code showing only changes, using '// ... existing code ...' for unchanged sections"
+                    "description": "Specify ONLY the precise lines of code that you wish to edit. Use // ... existing code ... for unchanged sections."
                 }
             },
-            "required": ["path", "instruction", "code_edit"]
+            "required": ["target_filepath", "instructions", "code_edit"]
         }),
         cache_control: None,
     }

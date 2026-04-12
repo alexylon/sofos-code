@@ -169,9 +169,10 @@ impl ImageLoader {
             CommandPermission::Allowed => {}
         }
 
+        // Use ONLY canonical (symlink-resolved) path for permission checks
         let is_explicit_allow = self
             .permission_manager
-            .is_read_explicit_allow_both_forms(path, canonical_str);
+            .is_read_explicit_allow(canonical_str);
 
         if !is_inside_workspace && !is_explicit_allow {
             return Err(SofosError::ToolExecution(format!(

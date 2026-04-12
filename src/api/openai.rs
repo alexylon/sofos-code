@@ -181,7 +181,7 @@ impl OpenAIClient {
 
                     if let Some(tool_calls) = item.tool_calls {
                         for call in tool_calls {
-                            let input = parse_tool_arguments(&call.arguments);
+                            let input = utils::parse_tool_arguments(&call.arguments);
                             content_blocks.push(ContentBlock::ToolUse {
                                 id: call.id,
                                 name: call.name,
@@ -194,7 +194,7 @@ impl OpenAIClient {
                     if let (Some(name), Some(arguments), Some(call_id)) =
                         (item.name, item.arguments, item.call_id)
                     {
-                        let input = parse_tool_arguments(&arguments);
+                        let input = utils::parse_tool_arguments(&arguments);
                         content_blocks.push(ContentBlock::ToolUse {
                             id: call_id,
                             name,
@@ -242,45 +242,6 @@ impl OpenAIClient {
             },
         })
     }
-}
-
-/// Try to parse tool call arguments as JSON, with recovery for common issues.
-fn parse_tool_arguments(args: &str) -> serde_json::Value {
-    // Try normal parsing first
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-        return v;
-    }
-
-    // Try trimming whitespace
-    let trimmed = args.trim();
-    if trimmed != args {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            return v;
-        }
-    }
-
-    // Try removing trailing commas before } or ]
-    let fixed = trimmed.replace(",}", "}").replace(",]", "]");
-    if fixed != trimmed {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&fixed) {
-            return v;
-        }
-    }
-
-    // Try adding missing closing brace
-    if trimmed.starts_with('{') && !trimmed.ends_with('}') {
-        let braced = format!("{}}}", trimmed.trim_end_matches(','));
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&braced) {
-            return v;
-        }
-    }
-
-    let preview_end = utils::truncate_at_char_boundary(args, 200);
-    eprintln!(
-        "  \x1b[33m⚠\x1b[0m Failed to parse tool arguments as JSON: {}",
-        &args[..preview_end]
-    );
-    json!({"raw_arguments": args})
 }
 
 fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
