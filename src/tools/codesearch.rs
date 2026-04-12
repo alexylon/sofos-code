@@ -2,6 +2,9 @@ use crate::error::{Result, SofosError};
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Shared so the UI display layer can strip it without duplicating the literal.
+pub const SEARCH_RESULTS_PREFIX: &str = "Code search results:\n\n";
+
 #[derive(Clone)]
 pub struct CodeSearchTool {
     workspace: PathBuf,

@@ -529,7 +529,7 @@ impl ToolExecutor {
                 let max_results = input["max_results"].as_u64().map(|n| n as usize);
 
                 let results = code_search.search(pattern, file_type, max_results)?;
-                Ok(format!("Code search results:\n\n{}", results))
+                Ok(format!("{}{}", codesearch::SEARCH_RESULTS_PREFIX, results))
             }
             ToolName::GlobFiles => {
                 let pattern = input["pattern"].as_str().ok_or_else(|| {

@@ -609,6 +609,52 @@ impl UI {
                 format!("Fetched {} ({} chars)", url.bright_cyan(), char_count)
             }
             "morph_edit_file" => output.to_string(),
+            "search_code" => {
+                let pattern = tool_input
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let body = output
+                    .strip_prefix(crate::tools::codesearch::SEARCH_RESULTS_PREFIX)
+                    .unwrap_or(output);
+
+                // ripgrep --heading output groups matches under file headings
+                // separated by blank lines. Lines starting with `<digits>:` are
+                // matches; non-empty lines without that prefix are file
+                // headings.
+                let mut files = 0usize;
+                let mut matches = 0usize;
+                for line in body.lines() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line.starts_with("No matches found") {
+                        continue;
+                    }
+                    let is_match_line = line.split_once(':').is_some_and(|(prefix, _)| {
+                        !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())
+                    });
+                    if is_match_line {
+                        matches += 1;
+                    } else {
+                        files += 1;
+                    }
+                }
+
+                if matches == 0 {
+                    format!("No matches for {}", pattern.bright_cyan())
+                } else {
+                    format!(
+                        "Found {} match{} in {} file{} for {}",
+                        matches,
+                        if matches == 1 { "" } else { "es" },
+                        files,
+                        if files == 1 { "" } else { "s" },
+                        pattern.bright_cyan()
+                    )
+                }
+            }
             _ => output.to_string(),
         }
     }
@@ -701,4 +747,51 @@ pub fn set_safe_mode_cursor_style() -> io::Result<()> {
 
 pub fn set_normal_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::DefaultUserShape)
+}
+
+#[cfg(test)]
+mod tool_display_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for cc in chars.by_ref() {
+                    if cc.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn search_code_summarizes_matches_and_files() {
+        let output = "Code search results:\n\nsrc/foo.rs\n12:    let x = 1;\n34:    let y = 2;\n\nsrc/bar.rs\n7:    let z = 3;\n";
+        let msg =
+            UI::create_tool_display_message("search_code", &json!({"pattern": "let"}), output);
+        assert_eq!(strip_ansi(&msg), "Found 3 matches in 2 files for let");
+    }
+
+    #[test]
+    fn search_code_handles_single_match_singular() {
+        let output = "Code search results:\n\nsrc/foo.rs\n12:    let x = 1;\n";
+        let msg =
+            UI::create_tool_display_message("search_code", &json!({"pattern": "let"}), output);
+        assert_eq!(strip_ansi(&msg), "Found 1 match in 1 file for let");
+    }
+
+    #[test]
+    fn search_code_handles_no_matches() {
+        let output = "Code search results:\n\nNo matches found for pattern: 'foo'";
+        let msg =
+            UI::create_tool_display_message("search_code", &json!({"pattern": "foo"}), output);
+        assert_eq!(strip_ansi(&msg), "No matches for foo");
+    }
 }

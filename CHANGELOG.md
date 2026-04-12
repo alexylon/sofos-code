@@ -14,6 +14,7 @@ All notable changes to Sofos are documented in this file.
 - GitHub Actions release workflow for prebuilt binaries (macOS, Linux, Windows)
 
 ### Changed
+- `search_code` tool display now shows a one-line summary (`Found N matches in M files for <pattern>`) instead of dumping full ripgrep output to the terminal; the LLM still receives the full results
 - Morph edit falls back to `edit_file` on timeout instead of failing; added truncation marker guards for `edit_file` and `morph_edit_file`
 - `Read(/path/**)` glob now also matches the base directory itself (for `list_directory`)
 - `morph_edit_file` tool schema now matches the official Morph Fast Apply schema (`target_filepath`, `instructions`, `code_edit`); legacy `path`/`instruction`/`file_path`/`file` names are still accepted as fallbacks
