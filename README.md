@@ -113,12 +113,18 @@ sofos
 - `/clear` - Clear conversation history
 - `/think [on|off]` - Toggle extended thinking (shows status if no arg)
 - `/compact` - Compress conversation history to free up context (also triggers automatically at 80% token usage)
-- `/s` - Safe mode (read-only, prompt: **`λ:`**, blinking underscore (`_`) cursor)
-- `/n` - Normal mode (all tools, prompt: **`λ>`**, default cursor)
+- `/s` - Safe mode (read-only, prompt: **`λ:`**)
+- `/n` - Normal mode (all tools, prompt: **`>`**)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
-- `ESC` - Interrupt AI response
+- `ESC` or `Ctrl+C` (while busy) - Interrupt AI response
 
-**Tab completion:** Press Tab for command suggestions, Shift+Tab to navigate backwards.
+**Message queueing:** Keep typing while the AI is working. Pressing Enter queues the message; queued messages are sent automatically once the current turn finishes. The hint line shows the queue count.
+
+**Multi-line input:** `Shift+Enter` inserts a newline; `Enter` alone submits.
+
+**Scrollback:** Sofos runs as an inline viewport at the bottom of your terminal — the rest of the terminal is normal scrollback, so use your terminal emulator's own scrollbar, mouse wheel, and text selection / copy-paste.
+
+**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`thinking: <N> tok` / `effort: high`), and running token totals.
 
 ### Image Vision
 
@@ -336,12 +342,17 @@ src/
 │   └── manager.rs       # Server connection management
 │
 ├── repl/                # REPL components
-│   ├── mod.rs           # Main REPL loop
-│   ├── clipboard_edit_mode.rs # Ctrl+V interception via custom EditMode
+│   ├── mod.rs           # Core Repl state and process_message
 │   ├── conversation.rs  # Message history and compaction
-│   ├── prompt.rs        # Prompt rendering
 │   ├── request_builder.rs   # API request construction
-│   └── response_handler.rs  # Response and tool iteration
+│   ├── response_handler.rs  # Response and tool iteration
+│   └── tui/             # Ratatui front end
+│       ├── mod.rs       # Event loop and wiring
+│       ├── app.rs       # UI state (log, input, queue, picker)
+│       ├── ui.rs        # Rendering
+│       ├── event.rs     # Job / UiEvent channel payloads
+│       ├── worker.rs    # Background thread that owns the Repl
+│       └── output.rs    # Stdout/stderr capture via dup2
 │
 ├── session/             # Session management
 │   ├── history.rs       # Session persistence

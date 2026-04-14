@@ -32,6 +32,13 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Print the logo first thing so it sits at the top of the scrollback
+    // above workspace/model/custom-instructions lines. Skipped in
+    // one-shot prompt mode to keep piped output clean.
+    if cli.prompt.is_none() && !cli.check_connection {
+        UI::print_banner();
+    }
+
     let is_openai_model = cli.model.starts_with("gpt-");
 
     let client = if is_openai_model {

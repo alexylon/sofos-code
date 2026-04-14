@@ -5,7 +5,7 @@ pub mod image;
 pub mod permissions;
 pub mod tool_name;
 pub mod types;
-mod utils;
+pub mod utils;
 
 use crate::api::MorphClient;
 use crate::error::{Result, SofosError};

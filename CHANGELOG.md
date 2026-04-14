@@ -5,6 +5,13 @@ All notable changes to Sofos are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Ratatui-based TUI** replacing the reedline REPL loop. Claude Code-inspired layout with a rounded multi-line input box, a hint line with spinner / queue counter, and a live status line showing model / mode / reasoning config / running token totals.
+  - **Inline viewport** via ratatui's `Viewport::Inline(N)` — the TUI only owns a small region at the bottom of the terminal, and all captured stdout/stderr flows above it through `Terminal::insert_before`. That means the terminal emulator provides the scrollback, native scrollbar, mouse-wheel scrolling, and text selection / copy-paste — no reimplementation of any of those inside the app.
+  - **Message queueing while the AI is working**: keep typing during an AI turn; Enter pushes the message onto a FIFO queue that drains automatically when the worker becomes idle.
+  - **Background worker thread** owns the `Repl` and processes jobs sequentially; UI and worker communicate via `mpsc` / tokio `UnboundedSender`. State changes (`/s`, `/n`, `/think on|off`, `/clear`, `/resume`) push a fresh `StatusSnapshot` to the UI so the status line updates instantly.
+  - **Stdout/stderr capture**: fds 1 and 2 are redirected to `os_pipe` pipes at startup so every existing `println!`/`eprintln!`/`colored` call streams into the terminal scrollback via `insert_before`; rendering uses `/dev/tty` as a separate `CrosstermBackend` sink.
+  - **ESC / Ctrl+C** sets a shared `Arc<AtomicBool>` watched by the API request loops, replacing the old per-call raw-mode animation threads.
+  - **Resume picker** as a TUI overlay (arrow keys / j-k / Enter / Esc / Ctrl+C).
 - Interactive permission prompts for external directory access with three separate scopes:
   - `Read(/path/**)` — read/list files outside workspace
   - `Write(/path/**)` — write/edit files outside workspace
@@ -13,7 +20,16 @@ All notable changes to Sofos are documented in this file.
   - Session-scoped caching for non-persisted decisions
 - GitHub Actions release workflow for prebuilt binaries (macOS, Linux, Windows)
 
+### Removed
+- `reedline` dependency, `ReplPrompt`, `ClipboardEditMode`, and `UI::run_animation_with_interrupt` — all superseded by the ratatui TUI.
+
+### Fixed
+- **Thinking block lost its dim+italic styling after the first line** in the TUI. The pipe reader delivers the log one line at a time and `ansi-to-tui` parses each line in isolation, so multi-line SGR wrappers dropped on lines 2+. `UI::print_thinking` now wraps each line individually.
+- **Cursor-position query timing out on startup** (`Io(Custom { ... error: "The cursor position could not be read within a normal duration" })`). `crossterm::cursor::position()` writes its DSR to `io::stdout()`, not to the ratatui backend writer — so after `OutputCapture` redirected fd 1 to a pipe, the query was swallowed. The terminal is now constructed before `OutputCapture` is installed, and `OutputCapture::pause` / `resume` briefly swap fd 1 / fd 2 back to the real tty around resize-driven draws so `autoresize`'s cursor re-query can succeed.
+
 ### Changed
+### Changed
+- **Switched from fullscreen + alt screen to `Viewport::Inline`**. The TUI now owns a 7-row region at the bottom of the user's normal terminal (input + hint + status). All captured stdout/stderr flows above the viewport via `Terminal::insert_before`, so the terminal emulator provides native scrollback, scrollbar, mouse wheel, text selection, and copy-paste for sofos' output — no custom log buffer, no custom scrollbar widget.
 - `search_code` tool display now shows a one-line summary (`Found N matches in M files for <pattern>`) instead of dumping full ripgrep output to the terminal; the LLM still receives the full results
 - Morph edit falls back to `edit_file` on timeout instead of failing; added truncation marker guards for `edit_file` and `morph_edit_file`
 - `Read(/path/**)` glob now also matches the base directory itself (for `list_directory`)
@@ -22,7 +38,7 @@ All notable changes to Sofos are documented in this file.
 - Show reasoning config at startup
 - `write_file`, `edit_file`, and `morph_edit_file` now support external paths (with Write scope permission)
 
-- `morph_edit_file` `Missing 'path' parameter` errors on OpenAI: root cause was field-name divergence from the official Morph Fast Apply schema (we used `path`/`instruction`; the canonical schema is `target_filepath`/`instructions`), which models trained on Morph's schema would emit, leading to mismatched parameters. The tool schema is now aligned with Morph's docs and both providers parse tool-call arguments with the same simple `serde_json::from_str` path.
+- `morph_edit_file` `Missing 'path' parameter` errors on OpenAI: root cause was field-name divergence from the official Morph Fast Apply schema (we used `path`/`instruction`; the canonical schema is `target_filepath`/`instructions`), which models trained on Morph's schema would emit, leading to mismatched parameters. The tool schema is now aligned with Morph's docs. OpenAI tool-call arguments are parsed with a small repair ladder (trim → drop trailing commas → close missing brace, falling back to `{"raw_arguments": args}` so the model can self-correct), except `morph_edit_file` which uses strict `serde_json::from_str` to avoid silently merging truncated `code_edit` payloads into files.
 - UTF-8 panics in string truncation when cutting multi-byte characters
 - OpenAI tool call argument parsing for malformed/incremental JSON
 - OpenAI tool call encoding issues

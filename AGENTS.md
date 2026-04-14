@@ -424,7 +424,7 @@ This prints:
 - Do not leave `unwrap()` or `expect()` in normal code paths.
 - Use strong types where possible.
 - Add or update important tests and keep them self-contained.
-- After each important change, update if needed:
+- After each important change, but only when we are ready to commit, update if relevant:
     - `README.md`
     - `CHANGELOG.md` under `[Unreleased]`
 - Run:

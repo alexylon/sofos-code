@@ -57,7 +57,7 @@ impl Command {
     }
 }
 
-/// All available commands as strings (for autocomplete)
+/// All available commands as strings (for Tab autocomplete in the TUI)
 pub static COMMANDS: &[&str] = &[
     "/exit",
     "/quit",

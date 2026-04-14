@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use base64::{Engine, engine::general_purpose::STANDARD};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PastedImage {
     pub media_type: String,
     pub base64_data: String,

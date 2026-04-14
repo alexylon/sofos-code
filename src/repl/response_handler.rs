@@ -25,6 +25,7 @@ pub struct ResponseHandler {
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
     use_streaming: bool,
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 impl ResponseHandler {
@@ -39,6 +40,7 @@ impl ResponseHandler {
         thinking_budget: u32,
         available_tools: Vec<crate::api::Tool>,
         use_streaming: bool,
+        interrupt_flag: Arc<AtomicBool>,
     ) -> Self {
         Self {
             client,
@@ -52,6 +54,7 @@ impl ResponseHandler {
             config: SofosConfig::default(),
             available_tools,
             use_streaming,
+            interrupt_flag,
         }
     }
 
@@ -90,6 +93,12 @@ impl ResponseHandler {
 
             if !text_output.is_empty() {
                 if !self.use_streaming {
+                    // Separate consecutive assistant turns (e.g. a
+                    // continuation after a tool call) with a blank line so
+                    // they don't run into each other visually.
+                    if iteration > 1 {
+                        println!();
+                    }
                     println!("{}", "Assistant:".bright_blue().bold());
                     for text in &text_output {
                         self.ui.print_assistant_text(text)?;
@@ -400,7 +409,7 @@ impl ResponseHandler {
             let printer = Arc::new(crate::ui::StreamPrinter::new());
             let p_text = printer.clone();
             let p_think = printer.clone();
-            let interrupt = Arc::new(AtomicBool::new(false));
+            let interrupt = Arc::clone(&self.interrupt_flag);
 
             let request = self.build_request();
             let response_result = self
@@ -417,24 +426,12 @@ impl ResponseHandler {
             return response_result;
         }
 
-        let processing = Arc::new(AtomicBool::new(true));
-        let processing_interrupted = Arc::new(AtomicBool::new(false));
-        let processing_clone = Arc::clone(&processing);
-        let processing_interrupted_clone = Arc::clone(&processing_interrupted);
-        let ui_handle = std::thread::spawn(move || {
-            UI::run_animation_with_interrupt(
-                "Processing...".to_string(),
-                "(Press ESC to interrupt) ".to_string(),
-                processing_clone,
-                processing_interrupted_clone,
-            )
-        });
-
         let request = self.build_request();
         let client = self.client.clone();
         let req = request;
         let mut request_handle = tokio::spawn(async move { client.create_message(req).await });
 
+        let interrupt_flag = Arc::clone(&self.interrupt_flag);
         let response_result: Result<_> = tokio::select! {
             res = &mut request_handle => {
                 match res {
@@ -442,16 +439,13 @@ impl ResponseHandler {
                     Err(e) => Err(SofosError::Join(format!("{}", e))),
                 }
             }
-            _ = Self::wait_for_interrupt(Arc::clone(&processing_interrupted)) => {
+            _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
                 request_handle.abort();
                 Err(SofosError::Interrupted)
             }
         };
 
-        processing.store(false, Ordering::SeqCst);
-        ui_handle.join().ok();
-
-        if processing_interrupted.load(Ordering::SeqCst) {
+        if self.interrupt_flag.load(Ordering::SeqCst) {
             println!(
                 "\n{}",
                 "Processing interrupted by user. You can now provide additional guidance."

@@ -6,13 +6,22 @@ use crate::session::history::Session;
 use crate::ui::syntax::SyntaxHighlighter;
 use colored::Colorize;
 use crossterm::cursor::SetCursorStyle;
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use crossterm::execute;
 use std::io::{self, Write, stdout};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
+
+/// Accent colour used for the startup banner and other attention-grabbing
+/// highlights in the legacy (non-TUI) `colored` output path. Matches the
+/// ratatui `ACCENT` in `repl::tui::ui` so both code paths render sofos'
+/// orange identically.
+const ACCENT_RGB: (u8, u8, u8) = (0xFF, 0x99, 0x33);
+/// Purple used for thinking / reasoning labels — visually distinct from
+/// the orange accent so reasoning blocks stand out from regular output.
+const THINKING_RGB: (u8, u8, u8) = (0x77, 0x00, 0xFF);
+/// Orange used for the "Blocked:" prefix on permission-denied messages.
+/// Same hue as the accent but called out separately because its semantic
+/// meaning is "security restriction", not "highlight".
+const BLOCKED_RGB: (u8, u8, u8) = (0xFF, 0xA5, 0x00);
 
 /// Message severity levels for consistent UI feedback
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -33,8 +42,9 @@ pub enum MessageSeverity {
 
 impl MessageSeverity {
     pub fn prefix(&self) -> colored::ColoredString {
+        let (br, bg, bb) = BLOCKED_RGB;
         match self {
-            Self::Blocked => "Blocked:".truecolor(0xFF, 0xA5, 0x00).bold(), // Orange
+            Self::Blocked => "Blocked:".truecolor(br, bg, bb).bold(),
             Self::Warning => "Warning:".bright_yellow().bold(),
             Self::Error => "Error:".bright_red().bold(),
             Self::Info => "Info:".bright_cyan().bold(),
@@ -113,26 +123,6 @@ impl FormattedMessage {
     }
 }
 
-/// RAII guard that ensures raw mode is disabled when dropped.
-/// Prevents terminal corruption if a panic occurs while in raw mode.
-struct RawModeGuard;
-
-impl RawModeGuard {
-    fn new() -> Option<Self> {
-        if crossterm::terminal::enable_raw_mode().is_ok() {
-            Some(Self)
-        } else {
-            None
-        }
-    }
-}
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
 /// UI utilities for displaying messages, animations, and formatting
 #[allow(dead_code)]
 pub struct UI {
@@ -205,18 +195,35 @@ impl UI {
         Self::print_message(MessageSeverity::Info, message);
     }
 
+    /// Print the ASCII art banner. Call this at the very top of `main` so
+    /// it lands at the top of the terminal scrollback, before any workspace
+    /// / model / startup lines.
+    pub fn print_banner() {
+        // "SOFOS" rendered at 3 rows — half the height of the previous
+        // 6-row ANSI Shadow figlet. Each letter is 3 columns wide with no
+        // separator between letters so the word reads as a single unit.
+        const BANNER: [&str; 3] = [
+            r" ╭─╮╭─╮╭─╮╭─╮╭─╮",
+            r" ╰─╮│ │├─ │ │╰─╮",
+            r" ╰─╯╰─╯╵  ╰─╯╰─╯",
+        ];
+        let (r, g, b) = ACCENT_RGB;
+        println!();
+        for line in BANNER {
+            println!("{}", line.truecolor(r, g, b).bold());
+        }
+        println!(" {}", "AI Coding Assistant".truecolor(r, g, b));
+        println!();
+    }
+
     pub fn print_welcome() {
-        println!("{}", "Sofos - AI Coding Assistant".bright_cyan().bold());
-        println!("{}", "Type your message or 'exit' to quit.".dimmed());
-        println!("{}", "Type 'clear' to clear conversation history.".dimmed());
-        println!("{}", "Type 'resume' to load a previous session.".dimmed());
         println!(
-            "{}",
-            "Type 'think on/off' to toggle extended thinking.".dimmed()
+            "  {}",
+            "Enter to send  ·  Shift+Enter for newline  ·  ESC/Ctrl+C to interrupt".dimmed()
         );
         println!(
-            "{}",
-            "Press ESC while processing to interrupt and provide guidance.".dimmed()
+            "  {}",
+            "/exit  /clear  /resume  /compact  /think [on|off]  /s  /n".dimmed()
         );
         println!();
     }
@@ -321,13 +328,19 @@ impl UI {
     }
 
     pub fn print_thinking(&self, thinking: &str) {
-        if !thinking.trim().is_empty() {
-            println!(
-                "\n{}",
-                "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
-            );
-            println!("{}\n", thinking.dimmed().italic());
+        if thinking.trim().is_empty() {
+            return;
         }
+        let (tr, tg, tb) = THINKING_RGB;
+        println!("\n{}", "Thinking:".truecolor(tr, tg, tb).bold().dimmed());
+        // Style each line individually so every captured line carries its
+        // own SGR wrapper. The TUI pipe reader splits on '\n' and parses
+        // each line in isolation, which would drop the style from every
+        // line after the first if we wrapped the whole block at once.
+        for line in thinking.lines() {
+            println!("{}", line.dimmed().italic());
+        }
+        println!();
     }
 
     pub fn print_tool_header(&self, tool_name: &str, command: Option<&str>) {
@@ -473,73 +486,6 @@ impl UI {
         }
 
         out.flush()
-    }
-
-    pub fn run_animation_with_interrupt(
-        action_message: String,
-        interrupt_message: String,
-        running: Arc<AtomicBool>,
-        interrupted: Arc<AtomicBool>,
-    ) {
-        let running_anim = Arc::clone(&running);
-        let running_key = Arc::clone(&running);
-        let interrupted_clone = Arc::clone(&interrupted);
-
-        // Animation thread
-        let animation_handle = thread::spawn(move || {
-            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let mut frame_idx = 0;
-
-            print!("\n\x1B[?25l");
-            let _ = stdout().flush();
-
-            while running_anim.load(Ordering::SeqCst) {
-                print!(
-                    "\r{} {} {}",
-                    frames[frame_idx].truecolor(0xFF, 0x99, 0x33),
-                    action_message.truecolor(0xFF, 0x99, 0x33),
-                    interrupt_message.dimmed(),
-                );
-                let _ = stdout().flush();
-                frame_idx = (frame_idx + 1) % frames.len();
-                thread::sleep(Duration::from_millis(80));
-            }
-
-            print!("\r{}\r", " ".repeat(70));
-            print!("\x1B[?25h");
-            println!(); // Move to new line so next output doesn't conflict
-            let _ = stdout().flush();
-        });
-
-        let key_handle = thread::spawn(move || {
-            let _guard = match RawModeGuard::new() {
-                Some(g) => g,
-                None => return,
-            };
-
-            while running_key.load(Ordering::SeqCst) {
-                if event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                    if let Ok(Event::Key(KeyEvent {
-                        code: KeyCode::Esc, ..
-                    })) = event::read()
-                    {
-                        interrupted_clone.store(true, Ordering::SeqCst);
-                        running_key.store(false, Ordering::SeqCst);
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Wait for both threads to complete properly
-        // Don't use timeout - abandoning threads can corrupt terminal state
-        let _ = animation_handle.join();
-        let _ = key_handle.join();
-
-        // Final cleanup - ensure terminal is in a known good state
-        let _ = crossterm::terminal::disable_raw_mode();
-        print!("\x1B[?25h");
-        let _ = stdout().flush();
     }
 
     pub fn create_tool_display_message(
@@ -706,10 +652,8 @@ impl StreamPrinter {
 
     pub fn on_thinking_delta(&self, delta: &str) {
         if !self.thinking_started.swap(true, Ordering::SeqCst) {
-            print!(
-                "\n{}\n",
-                "Thinking:".truecolor(0x77, 0x00, 0xFF).bold().dimmed()
-            );
+            let (tr, tg, tb) = THINKING_RGB;
+            print!("\n{}\n", "Thinking:".truecolor(tr, tg, tb).bold().dimmed());
         }
         print!("{}", delta.dimmed());
         let _ = stdout().flush();
@@ -745,6 +689,7 @@ pub fn set_safe_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::BlinkingUnderScore)
 }
 
+#[allow(dead_code)]
 pub fn set_normal_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::DefaultUserShape)
 }

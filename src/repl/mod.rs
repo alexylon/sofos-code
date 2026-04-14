@@ -1,11 +1,9 @@
-mod clipboard_edit_mode;
 pub mod conversation;
-mod prompt;
 mod request_builder;
 mod response_handler;
+pub mod tui;
 
 pub use conversation::ConversationHistory;
-pub use prompt::ReplPrompt;
 pub use request_builder::RequestBuilder;
 pub use response_handler::ResponseHandler;
 
@@ -13,24 +11,19 @@ use std::io::IsTerminal;
 
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlock, MorphClient};
-use crate::commands::{Command, CommandResult};
 use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
-use crate::session::{DisplayMessage, HistoryManager, SessionState};
+use crate::session::{DisplayMessage, HistoryManager, SessionMetadata, SessionState};
 use crate::tools::ToolExecutor;
 use crate::tools::image::{ImageLoader, ImageReference, extract_image_references};
 use crate::ui::{UI, set_safe_mode_cursor_style};
 use colored::Colorize;
-use crossterm::event::{KeyCode, KeyModifiers};
-use reedline::{
-    ColumnarMenu, DefaultCompleter, Emacs, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
-    Signal, default_emacs_keybindings,
-};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::time::{Duration, sleep};
+use std::time::Duration;
+use tokio::time::sleep;
 
 pub struct ReplConfig {
     pub model: String,
@@ -64,14 +57,13 @@ pub struct Repl {
     history_manager: HistoryManager,
     image_loader: ImageLoader,
     ui: UI,
-    editor: Reedline,
-    prompt: ReplPrompt,
     model_config: ModelConfig,
     session_state: SessionState,
     safe_mode: bool,
     available_tools: Vec<crate::api::Tool>,
-    pasted_images: std::sync::Arc<std::sync::Mutex<Vec<crate::clipboard::PastedImage>>>,
-    paste_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Interrupt flag shared with the TUI. Set to `true` when the user presses
+    /// ESC/Ctrl+C during an AI turn; checked by the API request loop.
+    interrupt_flag: Arc<AtomicBool>,
 }
 
 impl Repl {
@@ -132,47 +124,6 @@ impl Repl {
             set_safe_mode_cursor_style()?;
         }
 
-        let commands: Vec<String> = crate::commands::COMMANDS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        let mut completer = DefaultCompleter::with_inclusions(&['/', '-', '_']);
-        completer = completer.set_min_word_len(1);
-        completer.insert(commands.clone());
-        let completer = Box::new(completer);
-
-        let completion_menu = ColumnarMenu::default().with_name("completion_menu");
-        let completion_menu = ReedlineMenu::EngineCompleter(Box::new(completion_menu));
-
-        let mut keybindings = default_emacs_keybindings();
-        keybindings.add_binding(
-            KeyModifiers::NONE,
-            KeyCode::Tab,
-            ReedlineEvent::UntilFound(vec![
-                ReedlineEvent::Menu("completion_menu".into()),
-                ReedlineEvent::MenuNext,
-            ]),
-        );
-        keybindings.add_binding(
-            KeyModifiers::SHIFT,
-            KeyCode::BackTab,
-            ReedlineEvent::MenuPrevious,
-        );
-        let emacs = Emacs::new(keybindings);
-        let clipboard_mode = clipboard_edit_mode::ClipboardEditMode::new(emacs);
-        let pasted_images = clipboard_mode.images_handle();
-        let paste_counter = clipboard_mode.counter_handle();
-        let edit_mode: Box<dyn reedline::EditMode> = Box::new(clipboard_mode);
-
-        let editor = Reedline::create()
-            .use_bracketed_paste(true)
-            .with_completer(completer)
-            .with_edit_mode(edit_mode)
-            .with_menu(completion_menu);
-
-        let prompt = ReplPrompt::new(config.safe_mode);
-
         let session_id = HistoryManager::generate_session_id();
         let session_state = SessionState::new(session_id, conversation);
         let model_config = ModelConfig::new(
@@ -190,14 +141,11 @@ impl Repl {
             history_manager,
             image_loader,
             ui,
-            editor,
-            prompt,
             model_config,
             session_state,
             safe_mode: config.safe_mode,
             available_tools: Vec::new(),
-            pasted_images,
-            paste_counter,
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
         };
 
         // Initialize available tools (needs async)
@@ -208,107 +156,52 @@ impl Repl {
         Ok(repl)
     }
 
-    pub fn run(&mut self) -> Result<()> {
-        UI::print_welcome();
-
-        loop {
-            match self.editor.read_line(&self.prompt) {
-                Ok(Signal::Success(mut line)) => {
-                    line = line.trim().to_string();
-
-                    // Strip bracketed paste mode markers (ESC[200~ and ESC[201~)
-                    // These can appear when pasting text in some terminals
-                    line = line
-                        .replace("\x1b[200~", "")
-                        .replace("\x1b[201~", "")
-                        .replace("^[[200~", "")
-                        .replace("^[[201~", "");
-
-                    let (stripped, image_indices) = crate::clipboard::strip_paste_markers(&line);
-                    let pasted_images: Vec<crate::clipboard::PastedImage> = if !image_indices
-                        .is_empty()
-                    {
-                        let mut imgs = self.pasted_images.lock().unwrap_or_else(|e| e.into_inner());
-                        let result: Vec<_> = image_indices
-                            .iter()
-                            .filter_map(|&idx| imgs.get(idx).cloned())
-                            .collect();
-                        println!(
-                            "{} Pasted {} image(s) from clipboard",
-                            "📋".bright_cyan(),
-                            result.len()
-                        );
-                        imgs.clear();
-                        self.paste_counter
-                            .store(0, std::sync::atomic::Ordering::SeqCst);
-                        result
-                    } else {
-                        self.pasted_images
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clear();
-                        self.paste_counter
-                            .store(0, std::sync::atomic::Ordering::SeqCst);
-                        vec![]
-                    };
-                    line = stripped;
-
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    if let Some(command) = Command::from_str(&line) {
-                        match command.execute(self) {
-                            Ok(CommandResult::Continue) => continue,
-                            Ok(CommandResult::Exit) => break,
-                            Err(e) => {
-                                if e.is_blocked() {
-                                    UI::print_blocked_with_hint(&e);
-                                } else {
-                                    UI::print_error_with_hint(&e);
-                                }
-                                continue;
-                            }
-                        }
-                    }
-
-                    // Not a command, process as regular message
-                    if let Err(e) = self.process_message(&line, pasted_images) {
-                        if e.is_blocked() {
-                            UI::print_blocked_with_hint(&e);
-                        } else {
-                            UI::print_error_with_hint(&e);
-                        }
-                    }
-                    // Always save session (even after errors) to preserve conversation context
-                    if let Err(e) = self.save_current_session() {
-                        UI::print_warning(&format!("Failed to save session: {}", e));
-                    }
-
-                    println!();
-                }
-                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {
-                    println!("\nExiting...");
-                    self.save_current_session()?;
-                    UI::display_session_summary(
-                        &self.model_config.model,
-                        self.session_state.total_input_tokens,
-                        self.session_state.total_output_tokens,
-                    );
-                    UI::print_goodbye();
-                    break;
-                }
-                Err(err) => {
-                    UI::print_error(&err.to_string());
-                    break;
-                }
-            }
-        }
-
-        Ok(())
+    pub fn run(self) -> Result<()> {
+        tui::run(self)
     }
 
-    fn process_message(
+    /// Install the interrupt flag used by the TUI to signal ESC/Ctrl+C during
+    /// an AI turn. Called once before the worker thread takes ownership.
+    pub fn install_interrupt_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt_flag = flag;
+    }
+
+    pub fn model_label(&self) -> String {
+        self.model_config.model.clone()
+    }
+
+    pub fn list_saved_sessions(&self) -> Result<Vec<SessionMetadata>> {
+        self.history_manager.list_sessions()
+    }
+
+    /// Snapshot of the user-facing state displayed in the TUI status line.
+    pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
+        let reasoning = if matches!(self.client, Anthropic(_)) {
+            if self.model_config.enable_thinking {
+                format!("thinking: {} tok", self.model_config.thinking_budget)
+            } else {
+                "thinking: off".to_string()
+            }
+        } else if self.model_config.enable_thinking {
+            "effort: high".to_string()
+        } else {
+            "effort: low".to_string()
+        };
+
+        tui::event::StatusSnapshot {
+            model: self.model_config.model.clone(),
+            mode: if self.safe_mode {
+                tui::event::Mode::Safe
+            } else {
+                tui::event::Mode::Normal
+            },
+            reasoning,
+            input_tokens: self.session_state.total_input_tokens,
+            output_tokens: self.session_state.total_output_tokens,
+        }
+    }
+
+    pub fn process_message(
         &mut self,
         user_input: &str,
         pasted_images: Vec<crate::clipboard::PastedImage>,
@@ -434,7 +327,7 @@ impl Repl {
             let printer = Arc::new(crate::ui::StreamPrinter::new());
             let p_text = printer.clone();
             let p_think = printer.clone();
-            let interrupt = Arc::new(AtomicBool::new(false));
+            let interrupt = Arc::clone(&self.interrupt_flag);
 
             let client = self.client.clone();
             let req = initial_request;
@@ -452,20 +345,7 @@ impl Repl {
             printer.finish();
             result
         } else {
-            let running = Arc::new(AtomicBool::new(true));
-            let interrupted = Arc::new(AtomicBool::new(false));
-
-            let running_clone = Arc::clone(&running);
-            let interrupted_clone = Arc::clone(&interrupted);
-            let ui_handle = std::thread::spawn(move || {
-                UI::run_animation_with_interrupt(
-                    "Awaiting response...".to_string(),
-                    "(Press ESC to interrupt) ".to_string(),
-                    running_clone,
-                    interrupted_clone,
-                )
-            });
-
+            let interrupt_flag = Arc::clone(&self.interrupt_flag);
             let client = self.client.clone();
             let req = initial_request;
             let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
@@ -478,17 +358,14 @@ impl Repl {
                             Err(e) => Err(SofosError::Join(format!("{}", e)))
                         }
                     }
-                    _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
+                    _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
                         request_handle.abort();
                         Err(SofosError::Interrupted)
                     }
                 }
             });
 
-            running.store(false, Ordering::Relaxed);
-            let _ = ui_handle.join();
-
-            if interrupted.load(Ordering::Relaxed) {
+            if self.interrupt_flag.load(Ordering::Relaxed) {
                 self.handle_initial_interrupt();
                 return Ok(());
             }
@@ -660,6 +537,7 @@ impl Repl {
             self.model_config.thinking_budget,
             self.available_tools.clone(),
             use_streaming,
+            Arc::clone(&self.interrupt_flag),
         );
 
         let result = runtime.block_on(handler.handle_response(
@@ -850,7 +728,6 @@ impl Repl {
             self.session_state
                 .conversation
                 .add_user_message(SAFE_MODE_MESSAGE.to_string());
-            self.prompt.set_safe_mode(true);
         }
     }
 
@@ -863,7 +740,6 @@ impl Repl {
             self.session_state
                 .conversation
                 .add_user_message(NORMAL_MODE_MESSAGE.to_string());
-            self.prompt.set_safe_mode(false);
         }
     }
 
@@ -986,20 +862,7 @@ impl Repl {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-        let running = Arc::new(AtomicBool::new(true));
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let running_clone = Arc::clone(&running);
-        let interrupted_clone = Arc::clone(&interrupted);
-
-        let ui_handle = std::thread::spawn(move || {
-            UI::run_animation_with_interrupt(
-                "Compacting conversation...".to_string(),
-                "(Press ESC to cancel) ".to_string(),
-                running_clone,
-                interrupted_clone,
-            )
-        });
-
+        let interrupt_flag = Arc::clone(&self.interrupt_flag);
         let client = self.client.clone();
         let mut request_handle =
             runtime.spawn(async move { client.create_message(summary_request).await });
@@ -1012,15 +875,12 @@ impl Repl {
                         Err(e) => Err(SofosError::Join(format!("{}", e)))
                     }
                 }
-                _ = Self::wait_for_interrupt(Arc::clone(&interrupted)) => {
+                _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
                     request_handle.abort();
                     Err(SofosError::Interrupted)
                 }
             }
         });
-
-        running.store(false, Ordering::Relaxed);
-        let _ = ui_handle.join();
 
         match response_result {
             Ok(response) => {

@@ -1,5 +1,5 @@
 use crate::error::{Result, SofosError};
-use crate::tools::utils::{confirm_action, confirm_permission};
+use crate::tools::utils::{ConfirmationType, confirm_multi_choice};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -688,11 +688,8 @@ impl PermissionManager {
 
     pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {
         let normalized = Self::normalize_command(command);
-
         let prompt = format!("Allow command `{}`?", command);
-
-        let confirmed = confirm_permission(&prompt)?;
-        let remember = confirm_action("Remember this decision?")?;
+        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
 
         if remember {
             if confirmed {
@@ -712,10 +709,8 @@ impl PermissionManager {
     /// Returns (allowed, remembered).
     pub fn ask_user_path_permission(&mut self, scope: &str, dir: &str) -> Result<(bool, bool)> {
         let grant = format!("{}({}/**)", scope, dir);
-
         let prompt = format!("Allow {} access to `{}/**`?", scope.to_lowercase(), dir);
-        let confirmed = confirm_permission(&prompt)?;
-        let remember = confirm_action("Remember this decision?")?;
+        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
 
         if remember {
             if confirmed {
@@ -728,6 +723,23 @@ impl PermissionManager {
         }
 
         Ok((confirmed, remember))
+    }
+
+    /// Ask the user a single permission question with four options — one
+    /// modal — instead of two sequential Y/N prompts. Returns
+    /// `(confirmed, remember)` so the two flags can be consumed the same
+    /// way as before. The "and remember" variants persist the decision
+    /// in the allow / deny lists for future commands.
+    fn ask_three_way(prompt: &str) -> Result<(bool, bool)> {
+        let choices = ["Yes", "Yes and remember", "No", "No and remember"];
+        // Default ("No") is the safe option used when the user cancels.
+        let idx = confirm_multi_choice(prompt, &choices, 2, ConfirmationType::Permission)?;
+        Ok(match idx {
+            0 => (true, false),
+            1 => (true, true),
+            2 => (false, false),
+            _ => (false, true),
+        })
     }
 
     fn rebuild_all_globs(&mut self) -> Result<()> {

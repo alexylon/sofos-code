@@ -1,6 +1,7 @@
 use colored::Colorize;
 use std::io;
 use std::io::Write;
+use std::sync::OnceLock;
 
 /// Confirmation dialog type determines styling and default behavior
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -12,6 +13,26 @@ pub enum ConfirmationType {
     /// Informational confirmation - defaults to No
     #[allow(dead_code)]
     Info,
+}
+
+/// Callback type for routing confirmation prompts through a UI instead of
+/// reading from stdin. Installed once at startup by front ends that own the
+/// terminal (the TUI) so prompts don't try to read from a raw-mode stdin
+/// the user can't reach.
+///
+/// Arguments: prompt text, list of choice labels, default index used when
+/// the user cancels (Esc), and a typed category for styling. Returns the
+/// selected choice index; must always be `< choices.len()`.
+pub type ConfirmHandler =
+    Box<dyn Fn(&str, &[String], usize, ConfirmationType) -> usize + Send + Sync>;
+
+static CONFIRM_HANDLER: OnceLock<ConfirmHandler> = OnceLock::new();
+
+/// Install a process-global confirmation handler. Can only be set once —
+/// subsequent calls are silently ignored. Returns `true` if the handler
+/// was installed, `false` if one was already registered.
+pub fn set_confirm_handler(handler: ConfirmHandler) -> bool {
+    CONFIRM_HANDLER.set(handler).is_ok()
 }
 
 impl ConfirmationType {
@@ -30,45 +51,75 @@ impl ConfirmationType {
             Self::Info => "Confirm".bright_cyan().bold(),
         }
     }
-
-    fn options(&self) -> &'static str {
-        // All default to No for safety
-        "[y/N]"
-    }
 }
 
-pub fn confirm_action_enhanced(
+/// Ask the user to pick one of `choices`. Returns the 0-based index of the
+/// selected choice. `default_index` is used when the user cancels (Esc /
+/// Ctrl+C in the TUI, empty line in stdin mode) and should point at the
+/// "safe" option — e.g. "No" for destructive actions.
+///
+/// In TUI mode the call routes through the registered `CONFIRM_HANDLER`
+/// and blocks the caller thread until the user answers. In non-TUI mode
+/// (one-shot `-p` runs, tests) it falls back to a numbered stdin prompt.
+pub fn confirm_multi_choice(
     prompt: &str,
+    choices: &[&str],
+    default_index: usize,
     confirmation_type: ConfirmationType,
-) -> crate::error::Result<bool> {
-    eprint!(
-        "{} {}: {} {}: ",
+) -> crate::error::Result<usize> {
+    if choices.is_empty() {
+        return Err(crate::error::SofosError::Config(
+            "confirm_multi_choice requires at least one choice".to_string(),
+        ));
+    }
+    let default_index = default_index.min(choices.len() - 1);
+
+    if let Some(handler) = CONFIRM_HANDLER.get() {
+        let choices_owned: Vec<String> = choices.iter().map(|s| s.to_string()).collect();
+        let selected = handler(prompt, &choices_owned, default_index, confirmation_type);
+        return Ok(selected.min(choices.len() - 1));
+    }
+
+    eprintln!();
+    eprintln!(
+        "{} {}: {}",
         confirmation_type.icon(),
         confirmation_type.prompt_style(),
-        prompt,
-        confirmation_type.options().dimmed()
+        prompt
+    );
+    for (i, choice) in choices.iter().enumerate() {
+        let marker = if i == default_index { "*" } else { " " };
+        eprintln!("  {} [{}] {}", marker.dimmed(), i + 1, choice);
+    }
+    eprint!(
+        "  {} ",
+        format!(
+            "Choose 1–{} (default {}): ",
+            choices.len(),
+            default_index + 1
+        )
+        .dimmed()
     );
     io::stderr().flush()?;
 
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
-
-    let answer = input.trim().to_lowercase();
-
-    // Default to No - only explicit "y" or "yes" confirms
-    Ok(answer == "y" || answer == "yes")
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(default_index);
+    }
+    match trimmed.parse::<usize>() {
+        Ok(n) if n >= 1 && n <= choices.len() => Ok(n - 1),
+        _ => Ok(default_index),
+    }
 }
 
-pub fn confirm_action(prompt: &str) -> crate::error::Result<bool> {
-    confirm_action_enhanced(prompt, ConfirmationType::Info)
-}
-
+/// Yes/No convenience over `confirm_multi_choice` for destructive actions
+/// (delete file, delete directory). Returns `true` when the user picks
+/// the first choice ("Yes"). `No` is the default / fail-safe on cancel.
 pub fn confirm_destructive(prompt: &str) -> crate::error::Result<bool> {
-    confirm_action_enhanced(prompt, ConfirmationType::Destructive)
-}
-
-pub fn confirm_permission(prompt: &str) -> crate::error::Result<bool> {
-    confirm_action_enhanced(prompt, ConfirmationType::Permission)
+    let idx = confirm_multi_choice(prompt, &["Yes", "No"], 1, ConfirmationType::Destructive)?;
+    Ok(idx == 0)
 }
 
 /// Strip HTML tags and convert common entities to produce readable plain text

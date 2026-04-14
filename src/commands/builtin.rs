@@ -4,10 +4,10 @@ use crate::repl::Repl;
 use crate::ui::UI;
 
 pub fn exit_command(repl: &mut Repl) -> Result<CommandResult> {
+    // The TUI layer is responsible for printing the session summary and
+    // goodbye banner after tearing down the alt screen — doing it here would
+    // either duplicate the output or trap it inside the alternate screen.
     repl.save_current_session()?;
-    let (model, input_tokens, output_tokens) = repl.get_session_summary();
-    UI::display_session_summary(&model, input_tokens, output_tokens);
-    UI::print_goodbye();
     Ok(CommandResult::Exit)
 }
 
