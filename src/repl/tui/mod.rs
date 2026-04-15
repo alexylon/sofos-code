@@ -323,12 +323,14 @@ async fn event_loop(
                         // tool-call boundary, or the user submitted after
                         // the last drain — are flushed here as a new
                         // `Job::Message` so they still reach the model.
-                        let residual: Vec<String> = {
-                            match steer_queue.lock() {
-                                Ok(mut q) => std::mem::take(&mut *q),
-                                Err(_) => Vec::new(),
-                            }
-                        };
+                        // Recover from lock poisoning via `into_inner`
+                        // so a panic elsewhere doesn't eat the user's
+                        // pending mid-turn messages.
+                        let residual: Vec<String> = std::mem::take(
+                            &mut *steer_queue
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        );
                         if !residual.is_empty() {
                             let _ = job_tx.send(Job::Message {
                                 text: residual.join("\n\n"),
@@ -920,9 +922,14 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
     }
 
     if will_steer {
-        if let Ok(mut queue) = steer_queue.lock() {
-            queue.push(cleaned);
-        }
+        // Recover from a poisoned lock rather than silently dropping
+        // the user's mid-turn message. `into_inner` returns the same
+        // `Vec` the panicking thread was holding; we're still the
+        // only writer on the UI side.
+        steer_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(cleaned);
         return;
     }
 

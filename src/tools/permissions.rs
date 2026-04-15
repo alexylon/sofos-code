@@ -229,14 +229,19 @@ impl PermissionManager {
         .collect();
 
         let forbidden_commands = [
-            // File deletion/modification
+            // File deletion/modification. `cp`, `mv`, `mkdir` are NOT on
+            // this list so the model can move files around for recovery
+            // and scaffolding. The source-path read check still applies
+            // via `enforce_read_permissions`; destination writes go
+            // unchecked, which is the conscious tradeoff for letting
+            // the model repair its own mistakes without interrupting
+            // the turn. `rm` / `rmdir` stay blocked because losing a
+            // file to an overzealous `rm` is strictly worse than a
+            // botched edit.
             "rm",
             "rmdir",
-            "mv",
-            "cp",
             "touch",
             "ln",
-            "mkdir",
             // Permissions
             "chmod",
             "chown",
@@ -1027,9 +1032,20 @@ mod tests {
             manager.check_command_permission("chmod 777 file").unwrap(),
             CommandPermission::Denied
         );
+        // `mv` / `cp` / `mkdir` are intentionally NOT forbidden — they
+        // fall through to `Ask` so the user is prompted, which lets the
+        // model recover corrupted files without blanket permission.
         assert_eq!(
             manager.check_command_permission("mv file1 file2").unwrap(),
-            CommandPermission::Denied
+            CommandPermission::Ask
+        );
+        assert_eq!(
+            manager.check_command_permission("cp file1 file2").unwrap(),
+            CommandPermission::Ask
+        );
+        assert_eq!(
+            manager.check_command_permission("mkdir subdir").unwrap(),
+            CommandPermission::Ask
         );
     }
 

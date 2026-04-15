@@ -230,15 +230,16 @@ Show imperial units only when the user explicitly asks for them."#,
         // assistant message. The OpenAI Responses API rejects this with
         // "No tool call found for function call output with call_id …".
         // Drop any leading messages that still carry orphaned tool
-        // results so the serialized history stays self-consistent.
+        // results so the serialized history stays self-consistent. The
+        // drop can move the total token count, so recompute before the
+        // "approaching limit" warning to avoid reporting stale numbers.
         self.drop_leading_orphaned_tool_results();
+        total_tokens = self.estimate_total_tokens();
 
-        if self.estimate_total_tokens() > self.config.max_context_tokens
-            && self.messages.len() <= 10
-        {
+        if total_tokens > self.config.max_context_tokens && self.messages.len() <= 10 {
             eprintln!(
                 "⚠️  Warning: Conversation approaching token limit ({} tokens). Consider starting a new session.",
-                self.estimate_total_tokens()
+                total_tokens
             );
         }
     }

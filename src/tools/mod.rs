@@ -87,6 +87,50 @@ pub struct ToolExecutor {
     write_path_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
+/// Thresholds for `validate_morph_output`. The "stub response" check
+/// only fires on files large enough that a near-empty merged output
+/// is almost certainly Morph returning garbage rather than a real
+/// deletion. Catching tail-truncation reliably would require language-
+/// aware structural analysis; we rely on `max_tokens` / `finish_reason`
+/// (upstream) and trailing-newline parity (below) for that.
+const MORPH_STUB_ORIGINAL_MIN: usize = 500;
+const MORPH_STUB_FLOOR_BYTES: usize = 50;
+
+/// Sanity-check a Morph-merged file against the original before committing
+/// it to disk. Returns `Err(reason)` if the merge looks like a truncated
+/// response (the exact failure mode that produced silently-corrupted
+/// files). Conservative: we only reject patterns that have no legitimate
+/// explanation, so a genuine large deletion still goes through.
+fn validate_morph_output(original: &str, merged: &str) -> std::result::Result<(), String> {
+    if merged.trim().is_empty() {
+        return Err("Morph returned an empty response".to_string());
+    }
+
+    // Reject the degenerate "Morph returned a stub" case on files large
+    // enough that a <50-byte response is almost certainly a bad merge.
+    // Larger stubs (50+ bytes) are allowed through so a legitimate
+    // delete-everything-except-`fn main(){}` edit still goes through.
+    if original.len() > MORPH_STUB_ORIGINAL_MIN && merged.len() < MORPH_STUB_FLOOR_BYTES {
+        return Err(format!(
+            "Morph response shrank from {} to {} bytes — likely truncated",
+            original.len(),
+            merged.len()
+        ));
+    }
+
+    // Trailing-newline parity: if the original ended with a newline and
+    // the merged output doesn't, the response was cut mid-line. This is
+    // a strong signal even when the byte count is plausible.
+    if original.ends_with('\n') && !merged.ends_with('\n') {
+        return Err(
+            "Morph response is missing the trailing newline — likely truncated mid-line"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 impl ToolExecutor {
     pub fn new(
         workspace: std::path::PathBuf,
@@ -781,6 +825,27 @@ impl ToolExecutor {
                     }
                     Ok(Err(e)) => return Err(e),
                 };
+
+                // Sanity-check the Morph output before committing it to
+                // disk. Morph has occasionally returned a valid-JSON
+                // response whose `content` string was silently truncated
+                // (the model stopped short without raising `finish_reason
+                // = length`), which then got written as a corrupted file.
+                // Reject the result instead — the caller still has the
+                // original on disk and can retry with `edit_file`.
+                if let Err(reason) = validate_morph_output(&original_code, &merged_code) {
+                    eprintln!(
+                        "  {} Morph output rejected ({}), use edit_file instead",
+                        "⚠".bright_yellow(),
+                        reason
+                    );
+                    return Ok(ToolExecutionResult::Text(format!(
+                        "morph_edit_file rejected Morph's response ({}). The file '{}' was NOT modified. \
+                         Please use read_file to get the current file content, then use edit_file \
+                         with exact old_string/new_string to make this change.",
+                        reason, path
+                    )));
+                }
 
                 if is_inside_workspace {
                     self.fs_tool.write_file(path, &merged_code)?;

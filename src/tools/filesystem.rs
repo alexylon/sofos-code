@@ -21,6 +21,60 @@ fn truncate_for_context(content: &str, max_tokens: usize) -> String {
     }
 }
 
+/// Write `content` to `path` atomically: stage a sibling `<name>.sofos.tmp`
+/// first, then rename it over the destination. On the same filesystem
+/// `rename` is a single inode swap, so a crash / OOM / interrupt partway
+/// through the write leaves the original file intact instead of corrupting
+/// it with a half-written replacement. If staging or renaming fails, the
+/// temp file is best-effort cleaned up so a stray `.sofos.tmp` doesn't
+/// accumulate next to the real file.
+///
+/// When `path` is a symlink we resolve it up front and stage the temp
+/// file next to the *real* file, so `rename` replaces the target and
+/// leaves the symlink itself pointing at the same inode. Without this,
+/// the rename would clobber the symlink with a regular file, silently
+/// breaking the link topology users set up on purpose.
+///
+/// On Unix we also copy the existing file's permission bits onto the
+/// temp file before the swap, so an executable script stays executable
+/// and private files (`0600`) stay private after the edit.
+fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+    // Resolve symlinks so we write to the real target. `canonicalize`
+    // errors for paths that don't exist yet — new files have no link
+    // to preserve, so fall back to the caller-supplied path.
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    let tmp_path = {
+        let mut s = target.as_os_str().to_os_string();
+        s.push(".sofos.tmp");
+        PathBuf::from(s)
+    };
+
+    if let Err(e) = fs::write(&tmp_path, content) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
+    // Preserve the existing file's permission bits. Best-effort: if
+    // `metadata` fails (new file, race) or `set_permissions` fails
+    // (unusual FS), we fall through to the default permissions the
+    // tmp file was created with rather than aborting the write.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&target) {
+            let mode = meta.permissions().mode();
+            let _ = fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode));
+        }
+    }
+
+    if let Err(e) = fs::rename(&tmp_path, &target) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// FileSystemTool provides secure file operations sandboxed to a workspace directory
 #[derive(Clone)]
 pub struct FileSystemTool {
@@ -155,7 +209,7 @@ impl FileSystemTool {
                 .with_context(|| format!("Failed to create parent directories for: {}", path))?;
         }
 
-        fs::write(&validated_path, content)
+        write_atomic(&validated_path, content)
             .with_context(|| format!("Failed to write file: {}", path))
     }
 
@@ -173,7 +227,7 @@ impl FileSystemTool {
                 .with_context(|| format!("Failed to create parent directories for: {}", path))?;
         }
 
-        fs::write(&full_path, content).with_context(|| format!("Failed to write file: {}", path))
+        write_atomic(&full_path, content).with_context(|| format!("Failed to write file: {}", path))
     }
 
     pub fn _append_file(&self, path: &str, content: &str) -> Result<()> {
@@ -346,6 +400,58 @@ mod tests {
         fs_tool.write_file("test.txt", "Hello, World!").unwrap();
         let content = fs_tool.read_file("test.txt").unwrap();
         assert_eq!(content, "Hello, World!");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_write_atomic_preserves_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("script.sh");
+
+        // Create the file with an executable mode — the property
+        // `write_atomic` has to preserve across the tmp+rename swap.
+        fs::write(&path, "#!/bin/sh\necho hello\n").unwrap();
+        fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        write_atomic(&path, "#!/bin/sh\necho updated\n").unwrap();
+
+        let mode_after = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode_after, 0o755,
+            "write_atomic must preserve the original file mode across the swap"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "#!/bin/sh\necho updated\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_write_atomic_preserves_symlink() {
+        use std::os::unix::fs::symlink;
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("real.txt");
+        let link = temp.path().join("link.txt");
+
+        fs::write(&target, "original content").unwrap();
+        symlink(&target, &link).unwrap();
+
+        // Writing through the symlink should update the real file and
+        // leave the link itself intact — the whole point of resolving
+        // via canonicalize before staging the tmp.
+        write_atomic(&link, "updated via link").unwrap();
+
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "link must still be a symlink after write_atomic"
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "updated via link");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "updated via link");
     }
 
     #[test]

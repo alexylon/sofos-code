@@ -65,9 +65,14 @@ impl ResponseHandler {
     /// Atomically drain all pending steer messages the user typed while
     /// this turn was running. Returns `None` if the queue is empty, or
     /// `Some(text)` with the messages joined by blank lines (preserving
-    /// the order they were submitted in).
+    /// the order they were submitted in). Poisoned locks are recovered
+    /// via `into_inner` so a panic in another thread never silently
+    /// swallows the user's mid-turn message.
     fn drain_steer_messages(&self) -> Option<String> {
-        let mut queue = self.steer_queue.lock().ok()?;
+        let mut queue = self
+            .steer_queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if queue.is_empty() {
             return None;
         }

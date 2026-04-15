@@ -23,6 +23,39 @@ fn truncate_for_context(content: &str, max_tokens: usize) -> String {
     }
 }
 
+/// Return true when a command argument looks like a parent-directory
+/// reference (`..`, `../foo`, `foo/..`, `foo/../bar`). Substring matches
+/// inside opaque tokens — like git revision ranges (`HEAD~5..HEAD`) or
+/// regex patterns (`\.\.\.`) — are intentionally NOT flagged: blocking
+/// them was what stopped the AI from running legitimate git diagnostics
+/// when a file ended up corrupted.
+///
+/// The command is split on whitespace and also on `=` / `:`, so that
+/// flag-embedded traversals (`--include=../secret.h`) and PATH-style
+/// assignments (`PATH=/usr/bin:../foo`) surface their `..` fragment as
+/// its own token rather than hiding inside an opaque `KEY=VALUE`
+/// string. Git range syntax (`HEAD~5..HEAD`, `HEAD^:path`) survives
+/// the split because neither `..` nor `^` are delimiters here.
+fn has_path_traversal(command: &str) -> bool {
+    let split = |c: char| c.is_whitespace() || matches!(c, '=' | ':');
+    for raw in command.split(split).filter(|t| !t.is_empty()) {
+        // Strip the common shell wrappers the parser would peel off
+        // anyway, so `"../foo"`, `` `../foo` ``, and `$(cat ../foo)`
+        // all still flag as traversal after the trailing `)`, quote,
+        // or backtick is removed.
+        let t = raw.trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\'' | '`' | '(' | ')' | '{' | '}' | '[' | ']' | ';' | ','
+            )
+        });
+        if t == ".." || t.starts_with("../") || t.ends_with("/..") || t.contains("/../") {
+            return true;
+        }
+    }
+    false
+}
+
 /// Convert Unix signal number to human-readable name
 #[cfg(unix)]
 fn signal_name(sig: i32) -> &'static str {
@@ -388,7 +421,7 @@ impl BashExecutor {
 
     fn is_safe_command_structure(&self, command: &str) -> bool {
         // Parent directory traversal — always blocked (use absolute paths for external access)
-        if command.contains("..") {
+        if has_path_traversal(command) {
             return false;
         }
 
@@ -431,7 +464,15 @@ impl BashExecutor {
             return true;
         }
 
-        // Dangerous git operations that are completely blocked
+        // Dangerous git operations that are completely blocked.
+        //
+        // File-recovery commands (`git restore <path>`, `git checkout --`)
+        // are intentionally NOT on this list any more: when `morph_edit_file`
+        // or `edit_file` corrupts a file, the model needs a way to roll back
+        // to HEAD without going through the write tools (which would just
+        // write whatever broken content the model already has). These
+        // commands only affect specified paths, so the blast radius is
+        // bounded by whichever path the model names.
         let dangerous_git_ops = [
             "git push",
             "git pull",
@@ -442,7 +483,6 @@ impl BashExecutor {
             "git reset --mixed",
             "git checkout -f",
             "git checkout -b",
-            "git checkout --",
             "git branch -d",
             "git branch -D",
             "git branch -m",
@@ -470,7 +510,6 @@ impl BashExecutor {
             "git add",
             "git rm",
             "git mv",
-            "git restore",
             "git switch",
         ];
 
@@ -492,10 +531,11 @@ impl BashExecutor {
     fn get_rejection_reason(&self, command: &str) -> String {
         let command_lower = command.to_lowercase();
 
-        if command.contains("..") {
+        if has_path_traversal(command) {
             return format!(
-                "Command '{}' contains '..' (parent directory traversal)\n\
-                 Hint: Use absolute paths for external directory access instead of '..'.",
+                "Command '{}' contains '..' as a path component (parent directory traversal)\n\
+                 Hint: Use absolute paths for external directory access instead of '..'. \
+                 Git revision ranges like `HEAD~5..HEAD` are allowed.",
                 command
             );
         }
@@ -788,6 +828,53 @@ ask = []
         assert!(executor.is_safe_command_structure("git stash list"));
         assert!(executor.is_safe_command_structure("git stash show"));
         assert!(executor.is_safe_command_structure("git stash show stash@{0}"));
+        // File-recovery commands — allowed so the model can roll back a
+        // botched edit without going through the write tools.
+        assert!(executor.is_safe_command_structure("git restore file.txt"));
+        assert!(executor.is_safe_command_structure("git restore src/foo.rs"));
+        assert!(executor.is_safe_command_structure("git checkout -- file.txt"));
+        assert!(executor.is_safe_command_structure("git checkout HEAD -- src/foo.rs"));
+        // Revision ranges (`HEAD~5..HEAD`) are not path traversal —
+        // they're opaque token substrings that used to be blocked by
+        // the old substring check on `..`.
+        assert!(executor.is_safe_command_structure("git log HEAD~5..HEAD"));
+        assert!(executor.is_safe_command_structure("git diff HEAD~1..HEAD"));
+        assert!(executor.is_safe_command_structure("git log HEAD~5..HEAD -- src/foo.rs"));
+    }
+
+    #[test]
+    fn test_path_traversal_token_detection() {
+        // Literal path-traversal tokens — all blocked.
+        assert!(has_path_traversal("cd .."));
+        assert!(has_path_traversal("cat ../file"));
+        assert!(has_path_traversal("ls ../../etc"));
+        assert!(has_path_traversal("cat /foo/..")); // ends_with /..
+        assert!(has_path_traversal("cat foo/../bar")); // contains /../
+        // Quoted / shell-wrapped variants — still blocked after the
+        // trailing paren, quote, or backtick is stripped.
+        assert!(has_path_traversal("cat \"../secret\""));
+        assert!(has_path_traversal("cat '../secret'"));
+        assert!(has_path_traversal("echo $(cat ../secret)"));
+        assert!(has_path_traversal("ls `../bin/tool`"));
+
+        // Flag-embedded / assignment-embedded traversal. These used
+        // to slip through the token-only split because the entire
+        // `KEY=VALUE` arg was a single opaque token.
+        assert!(has_path_traversal("clang --include=../secret.h file.c"));
+        assert!(has_path_traversal("PATH=/usr/bin:../foo cmd"));
+        assert!(has_path_traversal("FOO=.. cmd"));
+
+        // Opaque tokens that happen to contain `..` — allowed. These
+        // are the false positives the old `contains("..")` check
+        // produced and broke legitimate git diagnostics.
+        assert!(!has_path_traversal("git log HEAD~5..HEAD"));
+        assert!(!has_path_traversal("git diff HEAD~1..HEAD -- src/foo.rs"));
+        assert!(!has_path_traversal("grep '\\.\\.\\.' file.txt"));
+        assert!(!has_path_traversal("ls foo..bar")); // unusual filename, not traversal
+        // Git colon path syntax survives the `:` split because
+        // neither `HEAD` nor the path contain a traversal fragment.
+        assert!(!has_path_traversal("git show HEAD:src/foo.rs"));
+        assert!(!has_path_traversal("git show HEAD~5:src/foo.rs"));
     }
 
     #[test]
@@ -825,7 +912,6 @@ ask = []
         assert!(!executor.is_safe_command_structure("git rebase main"));
         assert!(!executor.is_safe_command_structure("git cherry-pick abc123"));
         assert!(!executor.is_safe_command_structure("git revert abc123"));
-        assert!(!executor.is_safe_command_structure("git restore file.txt"));
         assert!(!executor.is_safe_command_structure("git switch main"));
 
         // Remote configuration changes

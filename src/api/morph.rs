@@ -4,6 +4,10 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 const MORPH_BASE_URL: &str = "https://api.morphllm.com/v1";
+/// Cap on Morph's output length. Morph's server default is well below
+/// this for some model revisions, which silently truncated edits to
+/// large files. Set explicitly so we never inherit a smaller limit.
+const MORPH_MAX_TOKENS: u32 = 64_000;
 
 #[derive(Debug, Clone, Serialize)]
 struct MorphMessage {
@@ -15,6 +19,7 @@ struct MorphMessage {
 struct MorphRequest {
     model: String,
     messages: Vec<MorphMessage>,
+    max_tokens: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +30,8 @@ struct MorphResponse {
 #[derive(Debug, Deserialize)]
 struct MorphChoice {
     message: MorphMessageResponse,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +90,7 @@ impl MorphClient {
                 role: "user".to_string(),
                 content,
             }],
+            max_tokens: MORPH_MAX_TOKENS,
         };
 
         let url = format!("{}/chat/completions", MORPH_BASE_URL);
@@ -99,11 +107,27 @@ impl MorphClient {
         let response = utils::check_response_status(response).await?;
         let result: MorphResponse = response.json().await?;
 
-        result
+        let choice = result
             .choices
             .first()
-            .map(|c| c.message.content.clone())
-            .ok_or_else(|| SofosError::Api("No response from Morph API".to_string()))
+            .ok_or_else(|| SofosError::Api("No response from Morph API".to_string()))?;
+
+        // Reject responses Morph cut off at the max-tokens boundary —
+        // writing them to disk is exactly the scenario that produced
+        // silently-truncated files. "stop" / "eos" / absent all mean
+        // the model finished normally.
+        if let Some(reason) = choice.finish_reason.as_deref() {
+            if reason == "length" || reason == "max_tokens" {
+                return Err(SofosError::Api(format!(
+                    "Morph response was truncated at the token limit (finish_reason={}). \
+                     The edit was NOT applied. Use edit_file with explicit old_string / \
+                     new_string to make this change instead.",
+                    reason
+                )));
+            }
+        }
+
+        Ok(choice.message.content.clone())
     }
 }
 
