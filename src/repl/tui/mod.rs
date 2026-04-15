@@ -16,9 +16,9 @@ pub mod ui;
 pub mod worker;
 
 use std::fs::OpenOptions;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc as std_mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ use tokio::time::{Interval, interval};
 
 use crate::commands::{COMMANDS, Command};
 use crate::error::Result;
-use crate::repl::Repl;
+use crate::repl::{Repl, SteerQueue};
 use crate::ui::UI;
 
 use app::{App, Picker};
@@ -144,6 +144,13 @@ pub fn run(mut repl: Repl) -> Result<()> {
     let interrupt = Arc::new(AtomicBool::new(false));
     repl.install_interrupt_flag(Arc::clone(&interrupt));
 
+    // Shared steering buffer: the TUI pushes text onto this vec when the
+    // user types while a turn is already running, and the worker's tool
+    // loop drains it between iterations so the model can see the new
+    // message before its next API call.
+    let steer_queue: SteerQueue = Arc::new(Mutex::new(Vec::new()));
+    repl.install_steer_queue(Arc::clone(&steer_queue));
+
     let model_label = repl.model_label();
 
     let worker_handle = worker::spawn(repl, job_rx, ui_tx.clone(), Arc::clone(&interrupt))?;
@@ -162,6 +169,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
             ui_rx,
             job_tx.clone(),
             Arc::clone(&interrupt),
+            Arc::clone(&steer_queue),
         )
         .await
     });
@@ -194,6 +202,7 @@ async fn event_loop(
     mut ui_rx: UnboundedReceiver<UiEvent>,
     job_tx: std_mpsc::Sender<Job>,
     interrupt: Arc<AtomicBool>,
+    steer_queue: SteerQueue,
 ) -> Result<()> {
     let mut tick: Interval = interval(TICK_INTERVAL);
     // Track the last size we've rendered at so we can detect resizes *before*
@@ -276,7 +285,7 @@ async fn event_loop(
                     } else if app.picker.is_some() {
                         handle_picker_key(app, key, &job_tx);
                     } else {
-                        handle_idle_key(app, key, &job_tx, &interrupt);
+                        handle_idle_key(app, key, &job_tx, &interrupt, &steer_queue);
                     }
                     break;
                 }
@@ -309,7 +318,23 @@ async fn event_loop(
                     // open — the user hasn't committed to a choice yet and a
                     // queued message would race with the selection.
                     if app.picker.is_none() {
-                        if let Some(next) = app.queue.pop_front() {
+                        // Steer messages the tool loop didn't consume —
+                        // e.g. the turn ended without ever hitting a
+                        // tool-call boundary, or the user submitted after
+                        // the last drain — are flushed here as a new
+                        // `Job::Message` so they still reach the model.
+                        let residual: Vec<String> = {
+                            match steer_queue.lock() {
+                                Ok(mut q) => std::mem::take(&mut *q),
+                                Err(_) => Vec::new(),
+                            }
+                        };
+                        if !residual.is_empty() {
+                            let _ = job_tx.send(Job::Message {
+                                text: residual.join("\n\n"),
+                                images: Vec::new(),
+                            });
+                        } else if let Some(next) = app.queue.pop_front() {
                             let _ = job_tx.send(next);
                         }
                     }
@@ -333,9 +358,19 @@ async fn event_loop(
                     kind,
                     responder,
                 } => {
+                    // Permission prompts list "Yes" as the first choice and
+                    // we want that highlighted on open so a bare Enter
+                    // approves. The Esc/Ctrl+C fallback still resolves to
+                    // `default_index` ("No"), so cancelling stays safe.
+                    let initial_cursor =
+                        if matches!(kind, crate::tools::utils::ConfirmationType::Permission) {
+                            0
+                        } else {
+                            default_index.min(choices.len().saturating_sub(1))
+                        };
                     app.confirmation = Some(app::ConfirmationPrompt {
                         prompt,
-                        cursor: default_index.min(choices.len().saturating_sub(1)),
+                        cursor: initial_cursor,
                         default_index,
                         choices,
                         kind,
@@ -408,6 +443,7 @@ fn handle_idle_key(
     key: KeyEvent,
     job_tx: &std_mpsc::Sender<Job>,
     interrupt: &Arc<AtomicBool>,
+    steer_queue: &SteerQueue,
 ) {
     if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
         return;
@@ -456,7 +492,7 @@ fn handle_idle_key(
         // Plain Enter (no shift/alt/ctrl) submits. Shift+Enter inserts a
         // newline and falls through to the textarea.
         KeyCode::Enter if !shift && !alt && !ctrl => {
-            submit_input(app, job_tx);
+            submit_input(app, job_tx, steer_queue);
         }
         // Plain Tab on a `/…` line tries to complete the slash command;
         // otherwise it falls through to the textarea (indent).
@@ -799,7 +835,7 @@ fn handle_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc::Sender<Job
     }
 }
 
-fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>) {
+fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &SteerQueue) {
     let raw = app.input_text();
     // Strip the circled-number markers Ctrl+V inserted and recover the
     // image indices they referred to. `cleaned` is the plain text we'll
@@ -822,13 +858,42 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>) {
     // Remember the submitted text for Alt+Up / Alt+Down history navigation.
     app.remember_submitted(&cleaned);
 
+    // Decide up-front whether this submission qualifies as a mid-turn
+    // "steer" message. Steering only applies to plain-text messages sent
+    // while a turn is already running: commands still need to go through
+    // the job queue so they execute in their own context, and messages
+    // carrying images need the full `Job::Message` path so the image
+    // bytes reach the worker. Everything else is a candidate for the
+    // steer channel, which the tool loop drains between iterations and
+    // folds into the same user turn that carries tool results.
+    let is_command = images.is_empty() && Command::from_str(&cleaned).is_some();
+    let will_steer = app.busy && !is_command && images.is_empty();
+
     // Echo the submitted line into the log so the user sees what they
     // sent, even while the worker is still processing or the message is
-    // queued. Routing through stdout keeps the log as a single source of
-    // truth and applies the same ANSI parsing path as worker output.
-    let glyph = if app.is_safe_mode() { "λ:" } else { ">" };
+    // queued. Steered messages use a distinct glyph and a subtitle so
+    // the user knows they've been accepted but won't land until the
+    // next tool-call boundary.
     use colored::Colorize;
-    println!("{} {}", glyph.bright_green().bold(), cleaned);
+    let glyph = if will_steer {
+        "↑"
+    } else if app.is_safe_mode() {
+        "λ:"
+    } else {
+        ">"
+    };
+    let glyph_styled = if will_steer {
+        glyph.bright_magenta().bold()
+    } else {
+        glyph.bright_green().bold()
+    };
+    println!("{} {}", glyph_styled, cleaned);
+    if will_steer {
+        println!(
+            "  {}",
+            "queued for delivery before the next tool call".dimmed()
+        );
+    }
     if !images.is_empty() {
         println!(
             "{} {} image(s) from clipboard",
@@ -843,12 +908,22 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>) {
         if let Some(cmd) = Command::from_str(&cleaned) {
             let job = Job::Command(cmd);
             if app.busy {
+                // Commands can't be injected mid-turn — they need to run
+                // as their own job. Queue FIFO so they execute in the
+                // order the user typed them once the current job ends.
                 app.queue.push_back(job);
             } else {
                 let _ = job_tx.send(job);
             }
             return;
         }
+    }
+
+    if will_steer {
+        if let Ok(mut queue) = steer_queue.lock() {
+            queue.push(cleaned);
+        }
+        return;
     }
 
     let job = Job::Message {

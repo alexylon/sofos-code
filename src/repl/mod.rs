@@ -20,10 +20,16 @@ use crate::tools::image::{ImageLoader, ImageReference, extract_image_references}
 use crate::ui::{UI, set_safe_mode_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::sleep;
+
+/// Shared buffer used by the TUI to inject user messages mid-turn. The UI
+/// thread pushes text onto this vec when the worker is busy; the tool loop
+/// in [`ResponseHandler`] drains it between tool-call iterations and merges
+/// the accumulated text into the user turn that carries the tool results.
+pub type SteerQueue = Arc<Mutex<Vec<String>>>;
 
 pub struct ReplConfig {
     pub model: String,
@@ -64,6 +70,11 @@ pub struct Repl {
     /// Interrupt flag shared with the TUI. Set to `true` when the user presses
     /// ESC/Ctrl+C during an AI turn; checked by the API request loop.
     interrupt_flag: Arc<AtomicBool>,
+    /// Shared buffer of pending steering messages the user typed while a
+    /// turn was already running. Drained by the tool loop between
+    /// iterations so the user can redirect in-flight work without having
+    /// to interrupt it.
+    steer_queue: SteerQueue,
 }
 
 impl Repl {
@@ -146,6 +157,7 @@ impl Repl {
             safe_mode: config.safe_mode,
             available_tools: Vec::new(),
             interrupt_flag: Arc::new(AtomicBool::new(false)),
+            steer_queue: Arc::new(Mutex::new(Vec::new())),
         };
 
         // Initialize available tools (needs async)
@@ -164,6 +176,13 @@ impl Repl {
     /// an AI turn. Called once before the worker thread takes ownership.
     pub fn install_interrupt_flag(&mut self, flag: Arc<AtomicBool>) {
         self.interrupt_flag = flag;
+    }
+
+    /// Install the shared steer queue used by the TUI to inject mid-turn
+    /// user messages. Called once before the worker thread takes ownership
+    /// so UI and worker share the same buffer.
+    pub fn install_steer_queue(&mut self, queue: SteerQueue) {
+        self.steer_queue = queue;
     }
 
     pub fn model_label(&self) -> String {
@@ -538,6 +557,7 @@ impl Repl {
             self.available_tools.clone(),
             use_streaming,
             Arc::clone(&self.interrupt_flag),
+            Arc::clone(&self.steer_queue),
         );
 
         let result = runtime.block_on(handler.handle_response(

@@ -1,5 +1,5 @@
-//! Rendering for the inline-viewport TUI: a rounded input box, a hint
-//! line, and a live status line — nothing else. The rest of the terminal
+//! Rendering for the inline-viewport TUI: a hint line, a rounded input
+//! box, and a live status line — nothing else. The rest of the terminal
 //! above the viewport is the terminal emulator's own scrollback.
 
 use ratatui::Frame;
@@ -40,23 +40,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let input_height = input_box_height(app);
 
-    // Anchor input / hint / status at the bottom of the viewport and let
-    // the top row (`Min(0)`) absorb whatever height is left over. When the
-    // textarea is one line tall the filler is several rows of empty cells;
-    // as the user adds newlines with Shift+Enter the input grows upward and
-    // the filler shrinks. Removing a line collapses the input back down.
+    // Anchor hint / input / status at the bottom of the viewport and let
+    // the top row (`Min(0)`) absorb whatever height is left over. The hint
+    // line sits fixed directly above the prompt so transient state like
+    // "processing…" or "awaiting confirmation" stays visually pinned to
+    // the input box. As the textarea grows with Shift+Enter the hint and
+    // input migrate upward together and the filler shrinks.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(input_height),
             Constraint::Length(HINT_ROW_HEIGHT),
+            Constraint::Length(input_height),
             Constraint::Length(STATUS_ROW_HEIGHT),
         ])
         .split(area);
 
-    draw_input(frame, rows[1], app);
-    draw_hint(frame, rows[2], app);
+    draw_hint(frame, rows[1], app);
+    draw_input(frame, rows[2], app);
     draw_status(frame, rows[3], app);
 
     if let Some(picker) = &app.picker {
@@ -162,8 +163,13 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
             app.busy_label.as_str()
         };
         let elapsed = app.busy_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let elapsed_str = if elapsed >= 60 {
+            format!("{}m {}s", elapsed / 60, elapsed % 60)
+        } else {
+            format!("{}s", elapsed)
+        };
         spans.push(Span::styled(
-            format!("{}… {}s", label, elapsed),
+            format!("{}… {}", label, elapsed_str),
             Style::default().fg(ACCENT),
         ));
         spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));

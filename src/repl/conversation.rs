@@ -225,12 +225,46 @@ Show imperial units only when the user explicitly asks for them."#,
             total_tokens -= removed_tokens;
         }
 
-        if total_tokens > self.config.max_context_tokens && self.messages.len() <= 10 {
+        // Trimming from the front can strand a user message whose
+        // ToolResult blocks reference a ToolUse in an already-dropped
+        // assistant message. The OpenAI Responses API rejects this with
+        // "No tool call found for function call output with call_id …".
+        // Drop any leading messages that still carry orphaned tool
+        // results so the serialized history stays self-consistent.
+        self.drop_leading_orphaned_tool_results();
+
+        if self.estimate_total_tokens() > self.config.max_context_tokens
+            && self.messages.len() <= 10
+        {
             eprintln!(
                 "⚠️  Warning: Conversation approaching token limit ({} tokens). Consider starting a new session.",
-                total_tokens
+                self.estimate_total_tokens()
             );
         }
+    }
+
+    /// Drop leading messages whose content still references tool calls
+    /// that have been trimmed away. Called after any operation that
+    /// removes messages from the front of the history.
+    fn drop_leading_orphaned_tool_results(&mut self) {
+        while self
+            .messages
+            .first()
+            .is_some_and(Self::message_has_tool_result)
+        {
+            self.messages.remove(0);
+        }
+    }
+
+    fn message_has_tool_result(msg: &Message) -> bool {
+        matches!(
+            &msg.content,
+            crate::api::MessageContent::Blocks { content }
+                if content.iter().any(|b| matches!(
+                    b,
+                    crate::api::MessageContentBlock::ToolResult { .. }
+                ))
+        )
     }
 
     /// Build a brief summary of messages about to be dropped (no LLM, just key facts).
@@ -571,6 +605,56 @@ mod tests {
         if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
             assert_eq!(content, "Message 10");
         }
+    }
+
+    #[test]
+    fn test_trim_drops_orphaned_leading_tool_results() {
+        let mut history = ConversationHistory::new();
+        history.config.max_messages = 3;
+
+        // Shape the history so a naive trim would leave a user-with-
+        // ToolResult stranded at the front — the exact pattern the
+        // OpenAI Responses API rejects with "No tool call found for
+        // function call output with call_id …".
+        let messages = vec![
+            Message::user("initial query".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "call_abc".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "a.rs"}),
+                cache_control: None,
+            }]),
+            Message::user_with_tool_results(vec![MessageContentBlock::ToolResult {
+                tool_use_id: "call_abc".to_string(),
+                content: "file contents".to_string(),
+                cache_control: None,
+            }]),
+            Message::assistant_with_blocks(vec![MessageContentBlock::Text {
+                text: "done".to_string(),
+                cache_control: None,
+            }]),
+            Message::user("next".to_string()),
+        ];
+
+        history.restore_messages(messages);
+
+        // Both the original user query and the assistant ToolUse must
+        // be trimmed. The orphaned ToolResult that used to follow them
+        // should also be dropped, leaving the assistant's text reply
+        // as the new front.
+        let first = &history.messages()[0];
+        let first_has_tool_result = matches!(
+            &first.content,
+            crate::api::MessageContent::Blocks { content }
+                if content.iter().any(|b| matches!(
+                    b,
+                    crate::api::MessageContentBlock::ToolResult { .. }
+                ))
+        );
+        assert!(
+            !first_has_tool_result,
+            "front of history still references a trimmed tool call"
+        );
     }
 
     #[test]

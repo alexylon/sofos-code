@@ -1,6 +1,7 @@
 use crate::api::{ContentBlock, CreateMessageRequest, LlmClient};
 use crate::config::SofosConfig;
 use crate::error::{Result, SofosError};
+use crate::repl::SteerQueue;
 use crate::repl::conversation::ConversationHistory;
 use crate::repl::request_builder::RequestBuilder;
 use crate::session::DisplayMessage;
@@ -26,6 +27,7 @@ pub struct ResponseHandler {
     available_tools: Vec<crate::api::Tool>,
     use_streaming: bool,
     interrupt_flag: Arc<AtomicBool>,
+    steer_queue: SteerQueue,
 }
 
 impl ResponseHandler {
@@ -41,6 +43,7 @@ impl ResponseHandler {
         available_tools: Vec<crate::api::Tool>,
         use_streaming: bool,
         interrupt_flag: Arc<AtomicBool>,
+        steer_queue: SteerQueue,
     ) -> Self {
         Self {
             client,
@@ -55,7 +58,21 @@ impl ResponseHandler {
             available_tools,
             use_streaming,
             interrupt_flag,
+            steer_queue,
         }
+    }
+
+    /// Atomically drain all pending steer messages the user typed while
+    /// this turn was running. Returns `None` if the queue is empty, or
+    /// `Some(text)` with the messages joined by blank lines (preserving
+    /// the order they were submitted in).
+    fn drain_steer_messages(&self) -> Option<String> {
+        let mut queue = self.steer_queue.lock().ok()?;
+        if queue.is_empty() {
+            return None;
+        }
+        let messages: Vec<String> = std::mem::take(&mut *queue);
+        Some(messages.join("\n\n"))
     }
 
     pub async fn handle_response(
@@ -163,7 +180,30 @@ impl ResponseHandler {
                         tool_results.len()
                     );
                 }
-                self.conversation.add_tool_results(tool_results);
+                // Drain any messages the user typed while this turn was
+                // running and fold them into the same user turn that
+                // carries the tool results. The model sees the combined
+                // turn before the next API call and can course-correct
+                // without having to be interrupted.
+                if let Some(steer_text) = self.drain_steer_messages() {
+                    println!(
+                        "{} {}",
+                        "↑".bright_magenta().bold(),
+                        "mid-turn message delivered to the model".bright_magenta()
+                    );
+                    let mut blocks = tool_results;
+                    blocks.push(crate::api::MessageContentBlock::Text {
+                        text: format!(
+                            "[User sent this message while you were working on the current task. \
+                             Take it into account and adjust your plan if needed]:\n{}",
+                            steer_text
+                        ),
+                        cache_control: None,
+                    });
+                    self.conversation.add_user_with_blocks(blocks);
+                } else {
+                    self.conversation.add_tool_results(tool_results);
+                }
             }
 
             if user_cancelled {
