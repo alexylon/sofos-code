@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
-use tui_textarea::{Input, Key, TextArea};
+use tui_textarea::{Input, Key, TextArea, WrapMode};
 
 use crate::clipboard::PastedImage;
 use crate::session::SessionMetadata;
@@ -269,6 +269,11 @@ fn style_textarea(textarea: &mut TextArea<'_>) {
             .fg(Color::DarkGray)
             .add_modifier(Modifier::ITALIC),
     );
+    // Soft-wrap long lines at word boundaries (falling back to grapheme
+    // wrap for words longer than the viewport) instead of horizontally
+    // scrolling — the input box grows vertically up to
+    // `MAX_INPUT_CONTENT_ROWS` and then scrolls internally.
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
 }
 
 #[cfg(test)]
@@ -310,6 +315,28 @@ mod tests {
         assert!(!a.input_text().is_empty());
         a.clear_input();
         assert_eq!(a.input_text(), "");
+    }
+
+    #[test]
+    fn textarea_has_soft_wrap_enabled() {
+        let a = app();
+        assert_eq!(a.textarea.wrap_mode(), WrapMode::WordOrGlyph);
+    }
+
+    #[test]
+    fn wrap_mode_persists_after_clear_input() {
+        let mut a = app();
+        a.textarea.insert_str("one two three");
+        a.clear_input();
+        assert_eq!(a.textarea.wrap_mode(), WrapMode::WordOrGlyph);
+    }
+
+    #[test]
+    fn wrap_mode_persists_after_history_load() {
+        let mut a = app();
+        a.remember_submitted("hi");
+        a.history_prev();
+        assert_eq!(a.textarea.wrap_mode(), WrapMode::WordOrGlyph);
     }
 
     #[test]

@@ -36,9 +36,9 @@ const STATUS_ROW_HEIGHT: u16 = 1;
 pub const INLINE_VIEWPORT_ROWS: u16 =
     MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS + HINT_ROW_HEIGHT + STATUS_ROW_HEIGHT;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
-    let input_height = input_box_height(app);
+    let input_height = input_box_height(app, area.width);
 
     // Anchor hint / input / status at the bottom of the viewport and let
     // the top row (`Min(0)`) absorb whatever height is left over. The hint
@@ -69,10 +69,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 /// Compute the input box's rendered height (content rows clamped into the
-/// supported range, plus 2 for the rounded border).
-fn input_box_height(app: &App) -> u16 {
-    let content_lines = u16::try_from(app.textarea.lines().len()).unwrap_or(u16::MAX);
-    content_lines.clamp(1, MAX_INPUT_CONTENT_ROWS) + INPUT_BORDER_ROWS
+/// supported range, plus 2 for the rounded border). Uses the textarea's
+/// own measurement so soft-wrapped logical lines occupy multiple visual
+/// rows and the box grows to fit them.
+fn input_box_height(app: &mut App, area_width: u16) -> u16 {
+    // Borders::ALL reserves 1 column on each side; wrapping inside the
+    // textarea happens at the inner width.
+    let content_width = area_width.saturating_sub(2);
+    let measure = app.textarea.measure(content_width);
+    let content_rows = measure.content_rows.clamp(1, MAX_INPUT_CONTENT_ROWS);
+    content_rows + INPUT_BORDER_ROWS
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
@@ -389,4 +395,85 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
 
     let list = List::new(items).block(block);
     frame.render_widget(list, popup);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        App::new("test-model".into())
+    }
+
+    #[test]
+    fn empty_input_height_is_one_content_row_plus_border() {
+        let mut a = app();
+        assert_eq!(input_box_height(&mut a, 80), 1 + INPUT_BORDER_ROWS);
+    }
+
+    #[test]
+    fn long_line_grows_height_via_soft_wrap() {
+        let mut a = app();
+        // A 60-char line in a 20-col box wraps across multiple visual rows.
+        a.textarea.insert_str("a".repeat(60));
+        let h = input_box_height(&mut a, 20);
+        assert!(
+            h > 1 + INPUT_BORDER_ROWS,
+            "expected wrapped height > {}, got {}",
+            1 + INPUT_BORDER_ROWS,
+            h
+        );
+        assert!(
+            h <= MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS,
+            "expected height clamped to {}, got {}",
+            MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS,
+            h
+        );
+    }
+
+    #[test]
+    fn very_long_content_is_clamped_to_max() {
+        let mut a = app();
+        a.textarea.insert_str("x".repeat(10_000));
+        assert_eq!(
+            input_box_height(&mut a, 40),
+            MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS
+        );
+    }
+
+    #[test]
+    fn multi_logical_lines_count_each_row() {
+        let mut a = app();
+        a.textarea.insert_str("a\nb\nc");
+        // Three short logical lines in a wide box render as 3 rows.
+        assert_eq!(input_box_height(&mut a, 80), 3 + INPUT_BORDER_ROWS);
+    }
+
+    #[test]
+    fn tiny_width_does_not_panic() {
+        let mut a = app();
+        a.textarea.insert_str("hello world");
+        for w in [0u16, 1, 2, 3] {
+            let h = input_box_height(&mut a, w);
+            assert!(h > INPUT_BORDER_ROWS);
+            assert!(h <= MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS);
+        }
+    }
+
+    /// Simulated horizontal resize: a single long line that wraps in a
+    /// narrow terminal should re-flow to fewer rows (and potentially one
+    /// row) when the terminal grows wider, without stale cached values.
+    #[test]
+    fn height_reflows_when_width_changes() {
+        let mut a = app();
+        a.textarea.insert_str("a".repeat(50));
+        let narrow = input_box_height(&mut a, 20);
+        let wide = input_box_height(&mut a, 80);
+        assert!(
+            narrow > wide,
+            "expected narrower width to wrap to more rows: narrow={narrow}, wide={wide}"
+        );
+        // Growing past the content width collapses to a single visual row.
+        assert_eq!(input_box_height(&mut a, 200), 1 + INPUT_BORDER_ROWS);
+    }
 }

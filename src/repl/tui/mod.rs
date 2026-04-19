@@ -945,31 +945,41 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
 }
 
 fn spawn_input_reader(tx: UnboundedSender<UiEvent>) -> std::io::Result<()> {
+    // Poll with a short timeout instead of a blocking `event::read()`.
+    // Both calls take the process-global `INTERNAL_EVENT_READER` mutex
+    // inside crossterm; a blocking read holds it forever, which
+    // deadlocks the main thread's `cursor::position()` call (via
+    // `Terminal::draw → autoresize → compute_inline_size`) whenever the
+    // window is resized. That path has a 2-second `try_lock_for` and
+    // then errors with "The cursor position could not be read within a
+    // normal duration". Polling with a small timeout keeps the lock
+    // available between iterations so the main thread can grab it to
+    // issue the DSR query.
+    const POLL_TIMEOUT: Duration = Duration::from_millis(50);
     thread::Builder::new()
         .name("sofos-input".into())
         .spawn(move || {
             loop {
-                match crossterm::event::read() {
-                    Ok(Event::Key(k)) => {
-                        if tx.send(UiEvent::Key(k)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(Event::Resize(_, _)) => {
-                        if tx.send(UiEvent::Resize).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(Event::Paste(s)) => {
-                        // Forward the paste as an atomic unit. The event
-                        // loop decides whether to apply it based on the
-                        // current modal state.
-                        if tx.send(UiEvent::Paste(s)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
+                match crossterm::event::poll(POLL_TIMEOUT) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
                     Err(_) => break,
+                }
+                let event = match crossterm::event::read() {
+                    Ok(e) => e,
+                    Err(_) => break,
+                };
+                // Paste is forwarded as an atomic unit; the event loop
+                // decides whether to apply it based on the current modal
+                // state.
+                let ui_event = match event {
+                    Event::Key(k) => UiEvent::Key(k),
+                    Event::Resize(_, _) => UiEvent::Resize,
+                    Event::Paste(s) => UiEvent::Paste(s),
+                    _ => continue,
+                };
+                if tx.send(ui_event).is_err() {
+                    break;
                 }
             }
         })?;
