@@ -163,7 +163,7 @@ Exit summary shows token usage and estimated cost (based on official API pricing
     --morph-api-key <KEY>    Morph API key (overrides env var)
     --model <MODEL>          Model to use (default: claude-sonnet-4-6)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
-    --max-tokens <N>         Max response tokens (default: 8192)
+    --max-tokens <N>         Max response tokens (default: 32768)
 -t, --enable-thinking        Enable extended thinking (default: false)
     --thinking-budget <N>    Token budget for thinking (Claude only, default: 5120, must be < max-tokens)
 -v, --verbose                Verbose logging

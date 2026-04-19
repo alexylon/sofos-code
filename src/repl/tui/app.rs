@@ -340,6 +340,15 @@ mod tests {
     }
 
     #[test]
+    fn shift_enter_inserts_newline_through_textarea_handler() {
+        let mut a = app();
+        a.textarea.insert_str("hello");
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        a.handle_textarea_input(shift_enter);
+        assert_eq!(a.textarea.lines(), &["hello", ""]);
+    }
+
+    #[test]
     fn is_safe_mode_reads_from_status_snapshot() {
         use crate::repl::tui::event::{Mode, StatusSnapshot};
         let mut a = app();

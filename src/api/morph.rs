@@ -1,6 +1,6 @@
-use super::utils::{self, REQUEST_TIMEOUT};
+use super::utils;
 use crate::error::{Result, SofosError};
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 const MORPH_BASE_URL: &str = "https://api.morphllm.com/v1";
@@ -53,13 +53,8 @@ impl MorphClient {
             HeaderValue::from_str(&format!("Bearer {}", api_key))
                 .map_err(|e| SofosError::Config(format!("Invalid Morph API key: {}", e)))?,
         );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let client = utils::build_http_client(headers)?;
 
         Ok(Self {
             client,

@@ -20,15 +20,23 @@ fn read_file_tool() -> Tool {
 }
 
 fn write_file_tool(has_morph: bool) -> Tool {
-    let description = if has_morph {
-        "Create a new file with the given content. For editing existing files, use morph_edit_file instead. Works within the workspace by default; can also write to external absolute or ~/ paths (user will be prompted for Write access)."
+    let base = if has_morph {
+        "Create a new file with the given content. For editing existing files, use morph_edit_file instead."
     } else {
-        "Create a new file or overwrite an existing file with the given content. Works within the workspace by default; can also write to external absolute or ~/ paths (user will be prompted for Write access)."
+        "Create a new file or overwrite an existing file with the given content."
     };
+    let description = format!(
+        "{base} Works within the workspace by default; can also write to external absolute or \
+         ~/ paths (user will be prompted for Write access). \
+         For files too large to emit in a single response, set `append: true` on subsequent \
+         calls — the first call (append=false or omitted) creates/overwrites, and each \
+         later call appends. This lets you split a large document into multiple \
+         tool calls without hitting `max_output_tokens`."
+    );
 
     Tool::Regular {
         name: "write_file".to_string(),
-        description: description.to_string(),
+        description,
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -38,7 +46,12 @@ fn write_file_tool(has_morph: bool) -> Tool {
                 },
                 "content": {
                     "type": "string",
-                    "description": "The content to write to the file"
+                    "description": "The content to write (or append) to the file."
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "If true, append `content` to an existing file (creating it if missing) instead of overwriting. Use this to write a large document across several calls, each carrying a chunk of the final file.",
+                    "default": false
                 }
             },
             "required": ["path", "content"]

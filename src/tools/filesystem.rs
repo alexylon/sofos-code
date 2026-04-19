@@ -10,8 +10,11 @@ const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive conte
 fn truncate_for_context(content: &str, max_tokens: usize) -> String {
     let estimated_tokens = content.len() / 4;
     if estimated_tokens > max_tokens {
-        let truncate_at = max_tokens * 4;
-        let truncated_content = &content[..truncate_at.min(content.len())];
+        // Snap to the nearest char boundary — the raw byte-index target
+        // may land inside a multi-byte UTF-8 scalar (e.g. Cyrillic,
+        // CJK, emoji), which would panic on slicing.
+        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
+        let truncated_content = &content[..truncate_at];
         format!(
             "{}...\n\n[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
             truncated_content, estimated_tokens, max_tokens
@@ -73,6 +76,24 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Append `content` to `path`, creating the file if it doesn't exist.
+/// Unlike `write_atomic` we don't stage through a tmp file — `append` is
+/// inherently incremental (each call adds to whatever's already there),
+/// so an atomic swap would either lose earlier chunks or require
+/// reading the whole file back each time. Instead we use `OpenOptions`
+/// with `append(true)`, which the OS handles atomically for each
+/// write call on POSIX.
+fn append_bytes(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&target)?;
+    file.write_all(content.as_bytes())?;
+    file.flush()
 }
 
 /// FileSystemTool provides secure file operations sandboxed to a workspace directory
@@ -230,17 +251,40 @@ impl FileSystemTool {
         write_atomic(&full_path, content).with_context(|| format!("Failed to write file: {}", path))
     }
 
-    pub fn _append_file(&self, path: &str, content: &str) -> Result<()> {
-        let full_path = self.validate_path(path)?;
+    /// Append `content` to `path` inside the workspace. Creates the
+    /// file and any missing parent directories if it doesn't exist,
+    /// so the model can drive a "first-chunk / subsequent-chunks"
+    /// pattern for writing files larger than a single `max_tokens`
+    /// response can emit in one shot.
+    pub fn append_file(&self, path: &str, content: &str) -> Result<()> {
+        let validated_path = self.validate_path(path)?;
 
-        if !full_path.exists() {
-            return Err(SofosError::FileNotFound(path.to_string()));
+        if let Some(parent) = validated_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directories for: {}", path))?;
         }
 
-        let mut existing = self.read_file(path)?;
-        existing.push_str(content);
-        self.write_file(path, &existing)?;
-        Ok(())
+        append_bytes(&validated_path, content)
+            .with_context(|| format!("Failed to append to file: {}", path))
+    }
+
+    /// Append to a file that may be outside the workspace. Counterpart
+    /// to `write_file_with_outside_access` — used after the user has
+    /// explicitly granted Write access to the external path.
+    pub fn append_file_with_outside_access(&self, path: &str, content: &str) -> Result<()> {
+        let full_path = if PathBuf::from(path).is_absolute() {
+            PathBuf::from(path)
+        } else {
+            self.workspace.join(path)
+        };
+
+        if let Some(parent) = full_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directories for: {}", path))?;
+        }
+
+        append_bytes(&full_path, content)
+            .with_context(|| format!("Failed to append to file: {}", path))
     }
 
     pub fn create_directory(&self, path: &str) -> Result<()> {
@@ -373,6 +417,67 @@ mod tests {
 
         assert!(fs_tool.validate_path("../etc/passwd").is_err());
         assert!(fs_tool.validate_path("foo/../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn append_file_creates_then_appends_across_calls() {
+        let temp = TempDir::new().unwrap();
+        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        fs_tool.append_file("doc.md", "# Part 1\n").unwrap();
+        fs_tool.append_file("doc.md", "# Part 2\n").unwrap();
+        fs_tool.append_file("doc.md", "# Part 3\n").unwrap();
+        let contents = fs_tool.read_file("doc.md").unwrap();
+        assert_eq!(contents, "# Part 1\n# Part 2\n# Part 3\n");
+    }
+
+    #[test]
+    fn append_file_creates_missing_parent_dirs() {
+        let temp = TempDir::new().unwrap();
+        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        fs_tool
+            .append_file("nested/deep/file.txt", "hello")
+            .unwrap();
+        let contents = fs_tool.read_file("nested/deep/file.txt").unwrap();
+        assert_eq!(contents, "hello");
+    }
+
+    #[test]
+    fn append_preserves_multibyte_chunks() {
+        // Writing long Cyrillic/CJK content part-by-part shouldn't
+        // corrupt multi-byte sequences at the chunk boundary — each
+        // chunk is a complete UTF-8 string on its own.
+        let temp = TempDir::new().unwrap();
+        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        fs_tool
+            .append_file("bg.md", "# Синергията между Божия промисъл")
+            .unwrap();
+        fs_tool.append_file("bg.md", " и човешката воля").unwrap();
+        let contents = fs_tool.read_file("bg.md").unwrap();
+        assert_eq!(
+            contents,
+            "# Синергията между Божия промисъл и човешката воля"
+        );
+    }
+
+    #[test]
+    fn truncate_for_context_handles_multibyte_boundary() {
+        // Build a string whose natural byte-index cut (`max_tokens * 4`)
+        // lands inside a multi-byte UTF-8 scalar. Cyrillic 'ъ' is 2
+        // bytes, so 15 ASCII chars followed by 'ъ' puts the character
+        // at bytes 15..17 — byte 16 is in the middle. Without the
+        // char-boundary snap, slicing `content[..16]` would panic.
+        let max_tokens = 4;
+        let cut = max_tokens * 4; // 16
+        let mut s = "a".repeat(cut - 1);
+        s.push('ъ');
+        s.push_str(" and some trailing context to push past the limit");
+        assert!(
+            !s.is_char_boundary(cut),
+            "test setup: byte {} must be inside a multi-byte char",
+            cut
+        );
+        let out = truncate_for_context(&s, max_tokens);
+        assert!(out.contains("[TRUNCATED"));
     }
 
     #[test]

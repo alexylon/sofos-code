@@ -1,14 +1,15 @@
 use super::types::*;
-use super::utils::{self, REQUEST_TIMEOUT};
+use super::utils;
 use crate::error::{Result, SofosError};
 use futures::stream::StreamExt;
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
+const ANTHROPIC_BETA: &str = "token-efficient-tools-2025-02-19";
 
 #[derive(Clone)]
 pub struct AnthropicClient {
@@ -24,17 +25,9 @@ impl AnthropicClient {
                 .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
-        headers.insert(
-            "anthropic-beta",
-            HeaderValue::from_static("token-efficient-tools-2025-02-19"),
-        );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert("anthropic-beta", HeaderValue::from_static(ANTHROPIC_BETA));
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))?;
+        let client = utils::build_http_client(headers)?;
 
         Ok(Self { client })
     }
@@ -277,7 +270,10 @@ impl AnthropicClient {
                                 });
                             }
                             Some("tool_use") => {
-                                let input = utils::parse_tool_arguments(&current_tool_json);
+                                let input = utils::parse_tool_arguments(
+                                    &current_tool_name,
+                                    &current_tool_json,
+                                );
                                 content_blocks.push(ContentBlock::ToolUse {
                                     id: current_tool_id.clone(),
                                     name: current_tool_name.clone(),
@@ -285,7 +281,10 @@ impl AnthropicClient {
                                 });
                             }
                             Some("server_tool_use") => {
-                                let input = utils::parse_tool_arguments(&current_tool_json);
+                                let input = utils::parse_tool_arguments(
+                                    &current_tool_name,
+                                    &current_tool_json,
+                                );
                                 content_blocks.push(ContentBlock::ServerToolUse {
                                     id: current_tool_id.clone(),
                                     name: current_tool_name.clone(),
@@ -321,18 +320,14 @@ impl AnthropicClient {
             }
         }
 
-        Ok(CreateMessageResponse {
-            _id: message_id,
-            _response_type: "message".to_string(),
-            _role: "assistant".to_string(),
-            content: content_blocks,
-            _model: model_name,
+        Ok(utils::build_message_response(
+            message_id,
+            model_name,
+            content_blocks,
             stop_reason,
-            usage: Usage {
-                input_tokens,
-                output_tokens,
-            },
-        })
+            input_tokens,
+            output_tokens,
+        ))
     }
 }
 

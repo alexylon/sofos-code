@@ -25,7 +25,9 @@ use std::time::Duration;
 use ansi_to_tui::IntoText;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Cell;
+use ratatui::layout::{Position, Size};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::{TerminalOptions, Viewport};
@@ -98,6 +100,107 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// Wraps `CrosstermBackend` so that cursor-position queries stop
+/// hitting `crossterm::cursor::position()` once the input reader is
+/// running. That call writes a DSR to the terminal and waits up to 2 s
+/// for the response via crossterm's global `INTERNAL_EVENT_READER`
+/// mutex — the same mutex `event::read()` holds while blocked. If
+/// ratatui's `autoresize` triggers a cursor query while the input
+/// reader is parked in `read()`, the 2 s timeout fires and the app
+/// exits with "cursor position could not be read within a normal
+/// duration".
+///
+/// We let the real DSR run exactly once — during `Terminal::with_options`,
+/// before the input reader is spawned — so the viewport is placed
+/// correctly relative to the shell's scrollback on startup. From then
+/// on `skip_cursor_query` is flipped and we synthesize a cursor at
+/// `height - viewport_height` (the top row of the inline viewport).
+/// That position makes `compute_inline_size` emit just enough newlines
+/// to move the cursor down to the terminal's bottom without scrolling
+/// any rows into scrollback, and place the new viewport back at the
+/// bottom. Synthesizing `(0, bottom)` instead would make it append a
+/// full viewport-height of newlines, scrolling the previous viewport
+/// contents off-screen on every resize.
+struct SafeBackend<W: std::io::Write> {
+    inner: CrosstermBackend<W>,
+    skip_cursor_query: Arc<AtomicBool>,
+    viewport_height: u16,
+}
+
+impl<W: std::io::Write> SafeBackend<W> {
+    fn new(writer: W, skip_cursor_query: Arc<AtomicBool>, viewport_height: u16) -> Self {
+        Self {
+            inner: CrosstermBackend::new(writer),
+            skip_cursor_query,
+            viewport_height,
+        }
+    }
+}
+
+impl<W: std::io::Write> Backend for SafeBackend<W> {
+    type Error = std::io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        self.inner.draw(content)
+    }
+
+    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
+        self.inner.append_lines(n)
+    }
+
+    fn hide_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> std::io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
+        if self.skip_cursor_query.load(Ordering::SeqCst) {
+            // Report the top row of the inline viewport as the
+            // cursor. `compute_inline_size` will then emit exactly
+            // `viewport_height - 1` newlines to reach the terminal's
+            // bottom row without scrolling any visible rows into
+            // scrollback, and place the new viewport back at the
+            // bottom. Reporting the true bottom row would instead
+            // scroll a full viewport-height of content off-screen on
+            // every resize.
+            let size = self.inner.size()?;
+            let y = size.height.saturating_sub(self.viewport_height);
+            return Ok(Position { x: 0, y });
+        }
+        self.inner.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+
+    fn clear(&mut self) -> std::io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+
+    fn size(&self) -> std::io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> std::io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// Run the sofos-code REPL with the TUI front end. Takes ownership of the
 /// fully-initialized `Repl` and blocks until the user quits.
 pub fn run(mut repl: Repl) -> Result<()> {
@@ -120,7 +223,12 @@ pub fn run(mut repl: Repl) -> Result<()> {
     // `io::stdout()` — if fd 1 were already redirected into our pipe that
     // query would never reach the tty and the construction would hang.
     let _terminal_guard = TerminalGuard::install()?;
-    let backend = CrosstermBackend::new(tty_for_backend);
+    let skip_cursor_query = Arc::new(AtomicBool::new(false));
+    let backend = SafeBackend::new(
+        tty_for_backend,
+        Arc::clone(&skip_cursor_query),
+        INLINE_VIEWPORT_HEIGHT,
+    );
     let mut terminal = Terminal::with_options(
         backend,
         TerminalOptions {
@@ -128,6 +236,15 @@ pub fn run(mut repl: Repl) -> Result<()> {
         },
     )?;
     drop(tty);
+    // From this point on, any cursor::position DSR would race with the
+    // input reader's blocking `event::read()` for crossterm's global
+    // event-reader mutex. Flipping the flag makes the backend
+    // synthesize cursor positions instead — safe because the only
+    // caller is ratatui's `compute_inline_size` during autoresize, and
+    // our inline viewport is always anchored at the terminal's bottom
+    // anyway. The construction call above has already placed the
+    // viewport using the real cursor position.
+    skip_cursor_query.store(true, Ordering::SeqCst);
 
     let mut capture = OutputCapture::install(ui_tx.clone())?;
     // colored detects its output is a pipe after redirection and disables
@@ -196,7 +313,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
 }
 
 async fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
+    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
     app: &mut App,
     capture: &mut OutputCapture,
     mut ui_rx: UnboundedReceiver<UiEvent>,
@@ -420,7 +537,7 @@ async fn event_loop(
 /// (not to the backend writer). Without pausing, the DSR goes into our pipe
 /// and the 2-second poll times out.
 fn draw_with_capture_support(
-    terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
+    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
     app: &mut App,
     capture: &mut OutputCapture,
     last_size: &mut (u16, u16),
@@ -618,7 +735,7 @@ fn handle_clipboard_paste(app: &mut App) {
 /// The input slice preserves original line boundaries — each element is one
 /// captured line with its trailing newline already stripped.
 fn push_output_above_viewport(
-    terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
+    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
     texts: &[String],
 ) -> Result<()> {
     if texts.is_empty() {
@@ -868,7 +985,16 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
     // bytes reach the worker. Everything else is a candidate for the
     // steer channel, which the tool loop drains between iterations and
     // folds into the same user turn that carries tool results.
-    let is_command = images.is_empty() && Command::from_str(&cleaned).is_some();
+    // Match commands ignoring surrounding whitespace so "/exit", "/exit\n",
+    // or "  /exit  " all dispatch as the same command. Without this, a
+    // stray Shift+Enter or trailing space would turn a command into a
+    // plain message.
+    let command = if images.is_empty() {
+        Command::from_str(cleaned.trim())
+    } else {
+        None
+    };
+    let is_command = command.is_some();
     let will_steer = app.busy && !is_command && images.is_empty();
 
     // Echo the submitted line into the log so the user sees what they
@@ -905,20 +1031,20 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
     }
     println!();
 
-    // Commands don't take images and don't need the pool.
-    if images.is_empty() {
-        if let Some(cmd) = Command::from_str(&cleaned) {
-            let job = Job::Command(cmd);
-            if app.busy {
-                // Commands can't be injected mid-turn — they need to run
-                // as their own job. Queue FIFO so they execute in the
-                // order the user typed them once the current job ends.
-                app.queue.push_back(job);
-            } else {
-                let _ = job_tx.send(job);
-            }
-            return;
+    // Commands don't take images and don't need the pool. Reuse the
+    // already-parsed `command` from the is_command branch above so the
+    // trim rule only lives in one place.
+    if let Some(cmd) = command {
+        let job = Job::Command(cmd);
+        if app.busy {
+            // Commands can't be injected mid-turn — they need to run
+            // as their own job. Queue FIFO so they execute in the
+            // order the user typed them once the current job ends.
+            app.queue.push_back(job);
+        } else {
+            let _ = job_tx.send(job);
         }
+        return;
     }
 
     if will_steer {
@@ -945,30 +1071,10 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
 }
 
 fn spawn_input_reader(tx: UnboundedSender<UiEvent>) -> std::io::Result<()> {
-    // Poll with a short timeout instead of a blocking `event::read()`.
-    // Both calls take the process-global `INTERNAL_EVENT_READER` mutex
-    // inside crossterm; a blocking read holds it forever, which
-    // deadlocks the main thread's `cursor::position()` call (via
-    // `Terminal::draw → autoresize → compute_inline_size`) whenever the
-    // window is resized. That path has a 2-second `try_lock_for` and
-    // then errors with "The cursor position could not be read within a
-    // normal duration". Polling with a small timeout keeps the lock
-    // available between iterations so the main thread can grab it to
-    // issue the DSR query.
-    const POLL_TIMEOUT: Duration = Duration::from_millis(50);
     thread::Builder::new()
         .name("sofos-input".into())
         .spawn(move || {
-            loop {
-                match crossterm::event::poll(POLL_TIMEOUT) {
-                    Ok(true) => {}
-                    Ok(false) => continue,
-                    Err(_) => break,
-                }
-                let event = match crossterm::event::read() {
-                    Ok(e) => e,
-                    Err(_) => break,
-                };
+            while let Ok(event) = crossterm::event::read() {
                 // Paste is forwarded as an atomic unit; the event loop
                 // decides whether to apply it based on the current modal
                 // state.

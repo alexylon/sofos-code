@@ -36,7 +36,13 @@ pub struct Cli {
     #[arg(long, default_value = "morph-v3-fast")]
     pub morph_model: String,
 
-    #[arg(long, default_value = "8192")]
+    /// Maximum output tokens per API response. 8192 is too low for
+    /// modern frontier models writing long files — a `write_file` call
+    /// with multi-KB content hits this limit mid-stream and truncates
+    /// the tool-call JSON, surfacing as "Missing 'path' parameter".
+    /// Claude Sonnet 4 and GPT-4.1 both support 32k+; smaller models
+    /// cap at their own limit so this is safe as a default.
+    #[arg(long, default_value = "32768")]
     pub max_tokens: u32,
 
     /// Enable extended thinking for complex reasoning tasks

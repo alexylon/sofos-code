@@ -435,12 +435,62 @@ impl ToolExecutor {
                 }
             }
             ToolName::WriteFile => {
-                let path = input["path"].as_str().ok_or_else(|| {
-                    SofosError::ToolExecution("Missing 'path' parameter".to_string())
-                })?;
-                let content = input["content"].as_str().ok_or_else(|| {
-                    SofosError::ToolExecution("Missing 'content' parameter".to_string())
-                })?;
+                // Accept common parameter-name variations. OpenAI
+                // models occasionally emit `file_path` / `file` /
+                // `filename` (especially when the tool-argument JSON
+                // gets repaired from a truncated payload), and
+                // `text` / `body` / `data` in place of `content`.
+                // Failing the call with a bare "missing parameter"
+                // message forces the model to re-plan from scratch;
+                // accepting the aliases lets the call proceed, and
+                // when nothing matches we echo the keys that WERE
+                // supplied so the model can self-correct.
+                let path = input["path"]
+                    .as_str()
+                    .or_else(|| input["file_path"].as_str())
+                    .or_else(|| input["file"].as_str())
+                    .or_else(|| input["filepath"].as_str())
+                    .or_else(|| input["filename"].as_str())
+                    .ok_or_else(|| {
+                        let keys: Vec<&String> = input
+                            .as_object()
+                            .map(|o| o.keys().collect())
+                            .unwrap_or_default();
+                        // If `content` is the only populated field, the
+                        // model's previous response almost certainly got
+                        // cut off mid-tool-call by `max_output_tokens`
+                        // before it could emit `path`. Include a
+                        // concrete, actionable recovery hint so the
+                        // model doesn't just retry the same oversized
+                        // write and hit the same truncation again.
+                        let content_only = keys.len() == 1
+                            && keys.first().map(|s| s.as_str()) == Some("content");
+                        let hint = if content_only {
+                            " Your previous response was likely truncated mid-call (content was emitted but the tool-call JSON was cut off before `path`). Split the file into smaller pieces, or use `edit_file` to append in chunks, rather than writing the full body in one call."
+                        } else {
+                            ""
+                        };
+                        SofosError::ToolExecution(format!(
+                            "Missing 'path' parameter. Got keys: {:?}. \
+                             Please retry with 'path' set to the destination file path.{}",
+                            keys, hint
+                        ))
+                    })?;
+                let content = input["content"]
+                    .as_str()
+                    .or_else(|| input["text"].as_str())
+                    .or_else(|| input["body"].as_str())
+                    .or_else(|| input["data"].as_str())
+                    .ok_or_else(|| {
+                        SofosError::ToolExecution(format!(
+                            "Missing 'content' parameter. Got keys: {:?}. \
+                             Please retry with 'content' set to the file body.",
+                            input
+                                .as_object()
+                                .map(|o| o.keys().collect::<Vec<_>>())
+                                .unwrap_or_default()
+                        ))
+                    })?;
 
                 // Check if path is outside workspace
                 let full_path = if path.starts_with('/') || path.starts_with('~') {
@@ -483,7 +533,23 @@ impl ToolExecutor {
                     self.check_write_access(path, &canonical_str_owned, canonical_path)?;
                 }
 
-                let original_content = if is_inside_workspace {
+                // Append mode lets the model write a file larger than a
+                // single `max_output_tokens` response in multiple calls:
+                // first call (append=false or omitted) creates/
+                // overwrites, later calls append to the growing file.
+                // Default is false so `write_file` keeps its usual
+                // "create or overwrite" semantics for non-chunked
+                // writes.
+                let append = input["append"].as_bool().unwrap_or(false);
+
+                let original_content = if append {
+                    // In append mode we don't compute a diff: the
+                    // interesting delta is just the new chunk, which
+                    // the model already has in front of it. Reading
+                    // the whole file back for each chunk would scale
+                    // quadratically with the number of chunks.
+                    None
+                } else if is_inside_workspace {
                     self.fs_tool.read_file(path).ok()
                 } else {
                     self.fs_tool
@@ -491,14 +557,24 @@ impl ToolExecutor {
                         .ok()
                 };
 
-                if is_inside_workspace {
-                    self.fs_tool.write_file(path, content)?;
-                } else {
-                    self.fs_tool
-                        .write_file_with_outside_access(&canonical_str_owned, content)?;
+                match (append, is_inside_workspace) {
+                    (true, true) => self.fs_tool.append_file(path, content)?,
+                    (true, false) => self
+                        .fs_tool
+                        .append_file_with_outside_access(&canonical_str_owned, content)?,
+                    (false, true) => self.fs_tool.write_file(path, content)?,
+                    (false, false) => self
+                        .fs_tool
+                        .write_file_with_outside_access(&canonical_str_owned, content)?,
                 }
 
-                if let Some(original) = original_content {
+                if append {
+                    Ok(format!(
+                        "Successfully appended {} bytes to '{}'",
+                        content.len(),
+                        path
+                    ))
+                } else if let Some(original) = original_content {
                     let diff_output = diff::generate_compact_diff(&original, content, path);
                     Ok(format!(
                         "Successfully wrote to file '{}'\n\nChanges:\n{}",
