@@ -3,6 +3,61 @@ use std::io;
 use std::io::Write;
 use std::sync::OnceLock;
 
+/// Maximum tokens (≈ chars / 4, ≈ 56 KB) a single tool call is allowed
+/// to return before [`truncate_for_context`] clips it with an informational
+/// suffix. Keeps a single large bash output or file read from monopolising
+/// the model's context window.
+pub const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000;
+
+/// Which "kind" of tool output we're truncating — drives the suffix copy
+/// so the model sees a hint tuned to the actual recovery path (re-run
+/// with redirection for bash; request a range for file reads).
+#[derive(Copy, Clone, Debug)]
+pub enum TruncationKind {
+    /// `read_file` / `read_file_with_outside_access` — suffix suggests
+    /// `search_code` or a narrower line range.
+    File,
+    /// `execute_bash` stdout / stderr — suffix suggests redirecting the
+    /// full output to a file.
+    BashOutput,
+}
+
+impl TruncationKind {
+    fn suffix(&self, estimated_tokens: usize, shown_tokens: usize) -> String {
+        match self {
+            Self::File => format!(
+                "[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
+                estimated_tokens, shown_tokens
+            ),
+            Self::BashOutput => format!(
+                "[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
+                estimated_tokens, shown_tokens
+            ),
+        }
+    }
+}
+
+/// Truncate `content` to at most `max_tokens` token-equivalents
+/// (4 chars ≈ 1 token) and append an informational suffix describing the
+/// drop. The cut point is snapped to the nearest UTF-8 char boundary so
+/// multi-byte scalars (Cyrillic, CJK, emoji) never get split — raw byte
+/// slicing would panic on those. Consolidated from two near-identical
+/// copies that previously lived in `filesystem.rs` and `bashexec.rs`.
+pub fn truncate_for_context(content: &str, max_tokens: usize, kind: TruncationKind) -> String {
+    let estimated_tokens = content.len() / 4;
+    if estimated_tokens > max_tokens {
+        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
+        let truncated_content = &content[..truncate_at];
+        format!(
+            "{}...\n\n{}",
+            truncated_content,
+            kind.suffix(estimated_tokens, max_tokens)
+        )
+    } else {
+        content.to_string()
+    }
+}
+
 /// Confirmation dialog type determines styling and default behavior
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConfirmationType {
@@ -244,4 +299,40 @@ pub fn html_to_text(html: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_for_context_preserves_short_content() {
+        let short = "tiny";
+        assert_eq!(
+            truncate_for_context(short, 16_000, TruncationKind::File),
+            short
+        );
+        assert_eq!(
+            truncate_for_context(short, 16_000, TruncationKind::BashOutput),
+            short
+        );
+    }
+
+    #[test]
+    fn truncate_for_context_file_variant_hints_at_range_read() {
+        let big = "x".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::File);
+        assert!(out.contains("[TRUNCATED: File has"));
+        assert!(out.contains("search_code or request specific line ranges"));
+        assert!(!out.contains("output redirection"));
+    }
+
+    #[test]
+    fn truncate_for_context_bash_variant_hints_at_redirection() {
+        let big = "y".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::BashOutput);
+        assert!(out.contains("[TRUNCATED: Output has"));
+        assert!(out.contains("output redirection"));
+        assert!(!out.contains("search_code"));
+    }
 }

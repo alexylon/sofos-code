@@ -7,6 +7,12 @@ use std::future::Future;
 use std::time::Duration;
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// Per-request ceiling for streaming (SSE) endpoints. Larger than
+/// [`REQUEST_TIMEOUT`] because a single stream can legitimately run
+/// for several minutes while the model is producing a long reply plus
+/// extended-thinking tokens; the 300s non-streaming budget would clip
+/// those off mid-stream.
+pub const STREAMING_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 pub const MAX_RETRIES: u32 = 2;
 pub const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const JITTER_FACTOR: f64 = 0.3; // Add 0-30% random jitter

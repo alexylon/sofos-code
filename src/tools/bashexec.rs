@@ -1,27 +1,12 @@
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
+use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
-const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive context usage
-
-/// Truncate bash output if it exceeds token limit for context efficiency
-fn truncate_for_context(content: &str, max_tokens: usize) -> String {
-    let estimated_tokens = content.len() / 4;
-    if estimated_tokens > max_tokens {
-        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
-        let truncated_content = &content[..truncate_at];
-        format!(
-            "{}...\n\n[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
-            truncated_content, estimated_tokens, max_tokens
-        )
-    } else {
-        content.to_string()
-    }
-}
 
 /// Return true when a command argument looks like a parent-directory
 /// reference (`..`, `../foo`, `foo/..`, `foo/../bar`). Substring matches
@@ -221,7 +206,11 @@ impl BashExecutor {
                 "Command failed with {}\nSTDOUT:\n{}\nSTDERR:\n{}",
                 exit_info, stdout, stderr
             );
-            return Ok(truncate_for_context(&error_output, MAX_TOOL_OUTPUT_TOKENS));
+            return Ok(truncate_for_context(
+                &error_output,
+                MAX_TOOL_OUTPUT_TOKENS,
+                TruncationKind::BashOutput,
+            ));
         }
 
         let mut result = String::new();
@@ -241,7 +230,11 @@ impl BashExecutor {
             result = "Command executed successfully (no output)".to_string();
         }
 
-        Ok(truncate_for_context(&result, MAX_TOOL_OUTPUT_TOKENS))
+        Ok(truncate_for_context(
+            &result,
+            MAX_TOOL_OUTPUT_TOKENS,
+            TruncationKind::BashOutput,
+        ))
     }
 
     /// Check all external paths (absolute or tilde) in a command against Bash path grants.

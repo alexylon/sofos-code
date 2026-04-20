@@ -1,28 +1,10 @@
 use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
+use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
-const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000; // ~56KB, prevents excessive context usage
-
-/// Truncate file content if it exceeds token limit for context efficiency
-fn truncate_for_context(content: &str, max_tokens: usize) -> String {
-    let estimated_tokens = content.len() / 4;
-    if estimated_tokens > max_tokens {
-        // Snap to the nearest char boundary — the raw byte-index target
-        // may land inside a multi-byte UTF-8 scalar (e.g. Cyrillic,
-        // CJK, emoji), which would panic on slicing.
-        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
-        let truncated_content = &content[..truncate_at];
-        format!(
-            "{}...\n\n[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
-            truncated_content, estimated_tokens, max_tokens
-        )
-    } else {
-        content.to_string()
-    }
-}
 
 /// Write `content` to `path` atomically: stage a sibling `<name>.sofos.tmp`
 /// first, then rename it over the destination. On the same filesystem
@@ -181,7 +163,11 @@ impl FileSystemTool {
         let content = fs::read_to_string(&validated_path)
             .with_context(|| format!("Failed to read file: {}", path))?;
 
-        Ok(truncate_for_context(&content, MAX_TOOL_OUTPUT_TOKENS))
+        Ok(truncate_for_context(
+            &content,
+            MAX_TOOL_OUTPUT_TOKENS,
+            TruncationKind::File,
+        ))
     }
 
     /// Read a file that may be outside the workspace
@@ -219,7 +205,11 @@ impl FileSystemTool {
         let content = fs::read_to_string(&canonical)
             .with_context(|| format!("Failed to read file: {}", original))?;
 
-        Ok(truncate_for_context(&content, MAX_TOOL_OUTPUT_TOKENS))
+        Ok(truncate_for_context(
+            &content,
+            MAX_TOOL_OUTPUT_TOKENS,
+            TruncationKind::File,
+        ))
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {
@@ -476,7 +466,7 @@ mod tests {
             "test setup: byte {} must be inside a multi-byte char",
             cut
         );
-        let out = truncate_for_context(&s, max_tokens);
+        let out = truncate_for_context(&s, max_tokens, TruncationKind::File);
         assert!(out.contains("[TRUNCATED"));
     }
 

@@ -1,13 +1,13 @@
-/// Central configuration for Sofos
+/// Central configuration for Sofos. The actual file-size and bash-output
+/// caps live next to the code that enforces them — `MAX_FILE_SIZE` in
+/// `src/tools/filesystem.rs` (50 MB) and `MAX_OUTPUT_SIZE` in
+/// `src/tools/bashexec.rs` (10 MB) — not here, so this struct only
+/// carries config values that the rest of the crate actually reads.
 #[derive(Debug, Clone)]
 pub struct SofosConfig {
     pub max_messages: usize,
     pub max_context_tokens: usize,
     pub max_tool_iterations: u32,
-    #[allow(dead_code)]
-    pub max_file_size: usize,
-    #[allow(dead_code)]
-    pub max_bash_output: usize,
     /// Auto-compact when token usage exceeds this ratio of max_context_tokens
     pub compaction_trigger_ratio: f64,
     /// Number of recent messages to preserve during compaction
@@ -22,8 +22,6 @@ impl Default for SofosConfig {
             max_messages: 500,
             max_context_tokens: 165_000,
             max_tool_iterations: 200,
-            max_file_size: 10 * 1024 * 1024,
-            max_bash_output: 50 * 1024 * 1024,
             compaction_trigger_ratio: 0.80,
             compaction_preserve_recent: 20,
             tool_result_truncate_threshold: 2000,
@@ -84,8 +82,6 @@ mod tests {
         assert_eq!(config.max_messages, 500);
         assert_eq!(config.max_context_tokens, 165_000);
         assert_eq!(config.max_tool_iterations, 200);
-        assert_eq!(config.max_file_size, 10 * 1024 * 1024);
-        assert_eq!(config.max_bash_output, 50 * 1024 * 1024);
         assert!((config.compaction_trigger_ratio - 0.80).abs() < f64::EPSILON);
         assert_eq!(config.compaction_preserve_recent, 20);
         assert_eq!(config.tool_result_truncate_threshold, 2000);

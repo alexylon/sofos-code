@@ -133,7 +133,7 @@ src/
 **src/tools/filesystem.rs**
 - validate_path: Security-critical path validation
 - All operations check sandboxing before execution
-- File size limit: 10MB to prevent memory issues
+- File size limit: 50MB to prevent memory issues
 - User confirmation required for deletions
 
 **src/tools/bashexec.rs**
@@ -209,8 +209,8 @@ src/
      - Git operations limited to read-only
 
 3. **File Size Limits**
-   - Read operations: 10MB limit
-   - Bash output: 50MB limit
+   - Read operations: 50MB limit (full file loaded into memory)
+   - Bash output: 10MB limit (per stdout / stderr stream)
    - Prevents memory exhaustion attacks
 
 4. **User Confirmations**

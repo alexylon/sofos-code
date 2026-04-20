@@ -5,7 +5,6 @@ use futures::stream::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
@@ -106,7 +105,7 @@ impl AnthropicClient {
                 client
                     .post(&url)
                     .json(&request)
-                    .timeout(Duration::from_secs(600))
+                    .timeout(utils::STREAMING_REQUEST_TIMEOUT)
                     .send()
                     .await
             }
