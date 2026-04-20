@@ -64,13 +64,19 @@ pub struct InlineTui {
     /// viewport. Drained on every frame that finds them non-empty.
     pending_history_lines: Vec<String>,
     /// Every line ever queued for scrollback, capped at
-    /// [`HISTORY_LOG_CAPACITY`]. On resize we move the whole log into
-    /// `pending_history_lines` so a screen-wipe-and-repaint can
-    /// reconstruct the banner + startup info + tool output from
-    /// scratch. Needed because sofos operates on the terminal's
-    /// native scrollback, which emulators can (and do) reflow in
-    /// user-visible ways during drag-resize.
+    /// [`HISTORY_LOG_CAPACITY`]. On resize we emit the whole log so a
+    /// screen-wipe-and-repaint can reconstruct the banner + startup
+    /// info + tool output from scratch. Needed because sofos operates
+    /// on the terminal's native scrollback, which emulators can (and
+    /// do) reflow in user-visible ways during drag-resize.
     history_log: Vec<String>,
+    /// Set by [`compose_frame`](Self::compose_frame) when a resize is
+    /// detected; drives the flush step to emit `history_log` in full
+    /// rather than just `pending_history_lines`. Replaces an earlier
+    /// pattern of `pending = history_log.clone()`, which paid an O(n)
+    /// copy of up to [`HISTORY_LOG_CAPACITY`] owned strings on every
+    /// resize tick — and drag-resize fires the event per-tick.
+    replay_full_history: bool,
 }
 
 /// Upper bound on the retained history. Past that we drop from the
@@ -86,6 +92,7 @@ impl InlineTui {
             terminal,
             pending_history_lines: Vec::new(),
             history_log: Vec::new(),
+            replay_full_history: false,
         }
     }
 
@@ -158,23 +165,24 @@ impl InlineTui {
             // Nuke-and-replay path. ED2 (`\e[2J`) wipes every visible
             // row — including any residue the emulator painted when it
             // reflowed our viewport during the drag. We then reset the
-            // viewport to the screen origin (fresh slate) and move the
-            // whole retained `history_log` into `pending_history_lines`
-            // so the flush below repaints banner + welcome + tool
-            // output in order. `invalidate_viewport` marks the diff
-            // engine's back buffer stale so the bottom-pane paints in
-            // full rather than only the cells that changed.
+            // viewport to the screen origin (fresh slate) and set
+            // `replay_full_history` so the flush step below repaints
+            // banner + welcome + tool output from `history_log` in
+            // place. `invalidate_viewport` marks the diff engine's
+            // back buffer stale so the bottom-pane paints in full
+            // rather than only the cells that changed.
             //
-            // We overwrite `pending_history_lines` (rather than
-            // prepending the log to it) because `queue_history_lines`
-            // pushes every line into *both* buffers, so anything queued
-            // earlier this frame is already in `history_log`.
+            // Any lines queued this frame via `queue_history_lines`
+            // were already extended into `history_log`, so dropping
+            // `pending_history_lines` on the floor here is correct —
+            // the replay re-emits them via the log.
             self.terminal.clear_visible_screen()?;
             let live = self.terminal.backend().size()?;
             self.terminal
                 .set_viewport_area(Rect::new(0, 0, live.width, 0));
             self.terminal.invalidate_viewport();
-            self.pending_history_lines = self.history_log.clone();
+            self.pending_history_lines.clear();
+            self.replay_full_history = true;
         }
 
         // Re-size the inline viewport to the bottom-pane's desired
@@ -184,12 +192,26 @@ impl InlineTui {
         Self::fit_viewport_height(&mut self.terminal, desired_height)?;
 
         // Flush any queued history lines above the viewport. On a
-        // resize frame this is the full replay; on a steady-state
-        // frame it's whatever the event loop queued via
-        // `queue_history_lines`. No `clear()` / `invalidate_viewport`
+        // resize frame we borrow `history_log` directly for the full
+        // replay (no clone — drag-resize can fire per-tick, and the
+        // retained log is up to `HISTORY_LOG_CAPACITY` owned strings).
+        // On a steady-state frame we drain the incrementally-queued
+        // `pending_history_lines`. No `clear()` / `invalidate_viewport`
         // between flush and render — the next step's cell emits will
         // repaint the bottom pane in place.
-        if !self.pending_history_lines.is_empty() {
+        if self.replay_full_history {
+            scrollback::scroll_strings_above_viewport(&mut self.terminal, &self.history_log)?;
+            // `pending_history_lines` is always a tail-subset of
+            // `history_log` (every push via `queue_history_lines`
+            // extends both, and capacity eviction only removes entries
+            // that were already drained from pending on an earlier
+            // flush). Drop pending here so that if it got re-populated
+            // via `queue_history_lines` *between* a failed replay and
+            // this successful one, the subsequent steady-state frame
+            // doesn't emit those same lines a second time.
+            self.pending_history_lines.clear();
+            self.replay_full_history = false;
+        } else if !self.pending_history_lines.is_empty() {
             let batch = std::mem::take(&mut self.pending_history_lines);
             scrollback::scroll_strings_above_viewport(&mut self.terminal, &batch)?;
         }
