@@ -18,12 +18,22 @@
 use os_pipe::{PipeReader, PipeWriter};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::io::IntoRawFd;
+#[cfg(windows)]
+use std::os::windows::io::IntoRawHandle;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::repl::tui::event::{OutputKind, UiEvent};
+
+/// Standard-output and standard-error file descriptors. POSIX fixes these
+/// at 1 and 2; the Microsoft CRT matches. `libc` exposes `STDOUT_FILENO` /
+/// `STDERR_FILENO` on Unix but not on Windows, so we keep our own aliases
+/// to stay cfg-free at the call sites.
+const STDOUT_FD: libc::c_int = 1;
+const STDERR_FD: libc::c_int = 2;
 
 /// Env var that, when set to a writable file path, makes every byte
 /// read from the stdout/stderr capture pipes also get appended to
@@ -111,8 +121,8 @@ impl OutputCapture {
     /// Redirect fds 1 and 2 to pipes and spawn reader threads that forward
     /// complete lines to the UI event channel.
     pub fn install(tx: UnboundedSender<UiEvent>) -> std::io::Result<Self> {
-        let saved_stdout = dup_fd(libc::STDOUT_FILENO)?;
-        let saved_stderr = match dup_fd(libc::STDERR_FILENO) {
+        let saved_stdout = dup_fd(STDOUT_FD)?;
+        let saved_stderr = match dup_fd(STDERR_FD) {
             Ok(fd) => fd,
             Err(e) => {
                 unsafe { libc::close(saved_stdout) };
@@ -141,7 +151,7 @@ impl OutputCapture {
             }
         };
 
-        let pipe_stdout = match redirect(stdout_writer, libc::STDOUT_FILENO) {
+        let pipe_stdout = match redirect(stdout_writer, STDOUT_FD) {
             Ok(fd) => fd,
             Err(e) => {
                 unsafe {
@@ -151,11 +161,11 @@ impl OutputCapture {
                 return Err(e);
             }
         };
-        let pipe_stderr = match redirect(stderr_writer, libc::STDERR_FILENO) {
+        let pipe_stderr = match redirect(stderr_writer, STDERR_FD) {
             Ok(fd) => fd,
             Err(e) => {
                 unsafe {
-                    libc::dup2(saved_stdout, libc::STDOUT_FILENO);
+                    libc::dup2(saved_stdout, STDOUT_FD);
                     libc::close(saved_stdout);
                     libc::close(saved_stderr);
                     libc::close(pipe_stdout);
@@ -188,8 +198,8 @@ impl OutputCapture {
 impl Drop for OutputCapture {
     fn drop(&mut self) {
         unsafe {
-            libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
+            libc::dup2(self.saved_stdout, STDOUT_FD);
+            libc::dup2(self.saved_stderr, STDERR_FD);
             libc::close(self.saved_stdout);
             libc::close(self.saved_stderr);
             libc::close(self.pipe_stdout);
@@ -212,7 +222,7 @@ fn dup_fd(fd: libc::c_int) -> std::io::Result<libc::c_int> {
 /// the caller can dup2 it back over `target_fd` to resume redirection after
 /// a `pause`.
 fn redirect(writer: PipeWriter, target_fd: libc::c_int) -> std::io::Result<libc::c_int> {
-    let write_fd = writer.into_raw_fd();
+    let write_fd = pipe_writer_into_fd(writer)?;
     let rc = unsafe { libc::dup2(write_fd, target_fd) };
     if rc < 0 {
         let err = std::io::Error::last_os_error();
@@ -220,6 +230,28 @@ fn redirect(writer: PipeWriter, target_fd: libc::c_int) -> std::io::Result<libc:
         return Err(err);
     }
     Ok(write_fd)
+}
+
+/// Take ownership of a `PipeWriter` and return a C-style file descriptor
+/// suitable for `dup2`. On Unix the pipe is already an fd; on Windows
+/// `os_pipe` hands us a `HANDLE`, which we register with the MSVCRT via
+/// `_open_osfhandle` so the CRT's fd table knows about it. The fd then
+/// owns the underlying handle — closing the fd closes the handle.
+#[cfg(unix)]
+fn pipe_writer_into_fd(writer: PipeWriter) -> std::io::Result<libc::c_int> {
+    Ok(writer.into_raw_fd())
+}
+
+#[cfg(windows)]
+fn pipe_writer_into_fd(writer: PipeWriter) -> std::io::Result<libc::c_int> {
+    let handle = writer.into_raw_handle();
+    let fd =
+        unsafe { libc::open_osfhandle(handle as libc::intptr_t, libc::O_BINARY | libc::O_WRONLY) };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(fd)
+    }
 }
 
 fn spawn_reader(
