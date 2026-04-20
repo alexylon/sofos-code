@@ -473,22 +473,9 @@ impl ResponseHandler {
 
         let request = self.build_request();
         let client = self.client.clone();
-        let req = request;
-        let mut request_handle = tokio::spawn(async move { client.create_message(req).await });
-
-        let interrupt_flag = Arc::clone(&self.interrupt_flag);
-        let response_result: Result<_> = tokio::select! {
-            res = &mut request_handle => {
-                match res {
-                    Ok(inner) => inner,
-                    Err(e) => Err(SofosError::Join(format!("{}", e))),
-                }
-            }
-            _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
-                request_handle.abort();
-                Err(SofosError::Interrupted)
-            }
-        };
+        let response_result = self
+            .run_interruptible(async move { client.create_message(request).await })
+            .await;
 
         if self.interrupt_flag.load(Ordering::SeqCst) {
             println!(
@@ -542,6 +529,39 @@ impl ResponseHandler {
         }
     }
 
+    /// Race `fut` against the shared interrupt flag. Spawns the future
+    /// on the current runtime (so it keeps running even while we're
+    /// `.await`ing the select), and if ESC fires before the future
+    /// completes the spawned task is aborted and the function returns
+    /// `Err(SofosError::Interrupted)`. A tokio `JoinError` is wrapped
+    /// as `SofosError::Join` — `tokio::spawn` requires
+    /// `Send + 'static`, so the future's captures must be owned (or
+    /// `Arc`d).
+    ///
+    /// Shared by `get_next_response` and `handle_max_iterations`: both
+    /// want ESC to abort an in-flight HTTP request instead of blocking
+    /// the user until the server responds.
+    async fn run_interruptible<T>(
+        &self,
+        fut: impl std::future::Future<Output = Result<T>> + Send + 'static,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+    {
+        let mut handle = tokio::spawn(fut);
+        let interrupt_flag = Arc::clone(&self.interrupt_flag);
+        tokio::select! {
+            res = &mut handle => match res {
+                Ok(inner) => inner,
+                Err(e) => Err(SofosError::Join(format!("{}", e))),
+            },
+            _ = Self::wait_for_interrupt(interrupt_flag) => {
+                handle.abort();
+                Err(SofosError::Interrupted)
+            }
+        }
+    }
+
     async fn handle_max_iterations(
         &mut self,
         display_messages: &mut Vec<DisplayMessage>,
@@ -564,10 +584,19 @@ impl ResponseHandler {
             content: "[System: Maximum tool iterations reached]".to_string(),
         });
 
-        // Let AI respond to the interruption
+        // Let AI respond to the interruption. Route through
+        // `run_interruptible` so ESC during the MAX-iteration summary
+        // aborts the in-flight HTTP call instead of blocking the user
+        // until the server responds — previously this bare `.await`
+        // was the one remaining non-interruptible API call in the
+        // tool-loop path.
         let request = self.build_request();
+        let client = self.client.clone();
+        let response_result = self
+            .run_interruptible(async move { client.create_message(request).await })
+            .await;
 
-        match self.client.create_message(request).await {
+        match response_result {
             Ok(response) => {
                 *total_input_tokens += response.usage.input_tokens;
                 *total_output_tokens += response.usage.output_tokens;

@@ -148,7 +148,7 @@ pub fn parse_tool_arguments(name: &str, args: &str) -> serde_json::Value {
         }
     }
 
-    let no_trailing_commas = trimmed.replace(",}", "}").replace(",]", "]");
+    let no_trailing_commas = strip_trailing_commas_outside_strings(trimmed);
     if no_trailing_commas != trimmed {
         if let Some(v) = try_parse_json_object(&no_trailing_commas) {
             return v;
@@ -209,6 +209,46 @@ fn try_parse_json_object(s: &str) -> Option<serde_json::Value> {
     Some(v)
 }
 
+/// Drop `,` characters that immediately precede a closing `}` or `]` —
+/// the trailing-comma form that models sometimes emit — but only when
+/// the comma sits *outside* a JSON string literal. A pre-existing
+/// naive `String::replace(",}", "}")` pass would silently corrupt a
+/// user-provided string value whose content happened to contain the
+/// two-byte sequence `,}` (e.g. `{"note":"see ,}end"}`). The walker
+/// tracks quoting + backslash escapes so the transform only touches
+/// structural commas.
+fn strip_trailing_commas_outside_strings(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_string = false;
+    let mut prev_backslash = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if prev_backslash {
+                prev_backslash = false;
+            } else if ch == '\\' {
+                prev_backslash = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            ',' if matches!(chars.peek(), Some('}') | Some(']')) => {
+                // Drop the comma; the next iteration consumes and
+                // writes the brace / bracket itself.
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Rewrite raw `\n`, `\r`, `\t` bytes that appear *inside* JSON string
 /// literals into their escaped form (`\n`, `\r`, `\t`) while leaving
 /// bytes outside strings untouched. Tracks `"` nesting with backslash
@@ -220,7 +260,20 @@ fn escape_control_chars_in_json_strings(s: &str) -> String {
     for ch in s.chars() {
         if in_string {
             if prev_backslash {
-                out.push(ch);
+                // A backslash in a JSON string starts an escape
+                // sequence — `\"`, `\\`, `\n`, etc. The next byte is
+                // supposed to be a valid escape identifier. If it's
+                // instead a raw control char (the emitter forgot to
+                // escape it), re-encode it so the sequence becomes a
+                // valid escape (`\` + `n` for a raw LF) rather than
+                // passing through as `\` + LF, which is invalid JSON
+                // and would abort the rest of the repair ladder.
+                match ch {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    _ => out.push(ch),
+                }
                 prev_backslash = false;
                 continue;
             }
@@ -566,6 +619,40 @@ mod tests {
         );
         assert_eq!(v["target_filepath"], "src/lib.rs");
         assert_eq!(v["code_edit"], "fn x() {}");
+    }
+
+    #[test]
+    fn parse_args_trailing_comma_strip_respects_strings() {
+        // The source literally contains the two-byte sequence `,}` inside
+        // the `note` string value. A naive `String::replace(",}", "}")`
+        // would silently corrupt the user's note; the string-aware walker
+        // must leave in-string bytes untouched and only drop the
+        // structural trailing comma that precedes the outer `}`.
+        let raw = r#"{"note":"list ends ,} here","path":"x.rs",}"#;
+        let v = parse_tool_arguments("write_file", raw);
+        assert_eq!(v["note"], "list ends ,} here");
+        assert_eq!(v["path"], "x.rs");
+    }
+
+    #[test]
+    fn parse_args_escapes_raw_lf_after_escaped_backslash() {
+        // Scenario from the audit: model emits `\\` (2 source chars =
+        // escaped backslash = 1 backslash in the decoded value)
+        // followed by a raw LF inside a string literal. Before the fix,
+        // the `prev_backslash` branch pushed the LF through untouched,
+        // leaving invalid JSON that fell through to `raw_arguments`.
+        // With the fix, the raw LF gets rewritten to `\n` so the
+        // string stays parseable and the decoded value carries exactly
+        // `\` + newline (the likely model intent).
+        let raw = "{\"path\":\"a.md\",\"content\":\"pre\\\\\npost\"}";
+        //                                           ^^^^^^ two-backslash source (escaped) + raw LF
+        let v = parse_tool_arguments("write_file", raw);
+        assert_eq!(v["path"], "a.md");
+        let content = v["content"].as_str().unwrap();
+        assert_eq!(
+            content, "pre\\\npost",
+            "decoded value should be `pre` + backslash + LF + `post`"
+        );
     }
 
     #[test]

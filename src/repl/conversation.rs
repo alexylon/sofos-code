@@ -247,12 +247,31 @@ Show imperial units only when the user explicitly asks for them."#,
     /// Drop leading messages whose content still references tool calls
     /// that have been trimmed away. Called after any operation that
     /// removes messages from the front of the history.
+    ///
+    /// Preserves sibling `Text` / `Image` blocks in mixed user messages.
+    /// A user turn can legitimately carry `[ToolResult, Text]` — the
+    /// `Text` is a steer message that was folded into the tool-results
+    /// turn (see `response_handler::drain_steer_messages`). If trim
+    /// drops the preceding assistant `ToolUse`, the `ToolResult` is
+    /// orphaned but the `Text` isn't. Strip only the orphaned blocks;
+    /// remove the whole message only when nothing survives the strip.
     fn drop_leading_orphaned_tool_results(&mut self) {
-        while self
-            .messages
-            .first()
-            .is_some_and(Self::message_has_tool_result)
-        {
+        loop {
+            let head_has_orphan = self
+                .messages
+                .first()
+                .is_some_and(|m| m.role == "user" && Self::message_has_tool_result(m));
+            if !head_has_orphan {
+                return;
+            }
+
+            if let crate::api::MessageContent::Blocks { content } = &mut self.messages[0].content {
+                content
+                    .retain(|b| !matches!(b, crate::api::MessageContentBlock::ToolResult { .. }));
+                if !content.is_empty() {
+                    return;
+                }
+            }
             self.messages.remove(0);
         }
     }
@@ -688,6 +707,82 @@ mod tests {
         let mut history = ConversationHistory::new();
         let appended = history.append_text_to_last_user_blocks("text".to_string());
         assert!(!appended, "append should refuse on empty history");
+    }
+
+    #[test]
+    fn test_drop_orphaned_tool_results_preserves_mixed_text_block() {
+        // A user turn carrying `[ToolResult, Text]` models the mid-turn
+        // steer flow: drain_steer_messages folded the user's text into
+        // the tool-results turn. If trim severs the preceding ToolUse,
+        // the ToolResult is orphaned but the Text isn't — it should
+        // survive the orphan drop.
+        let mut history = ConversationHistory::new();
+        let messages = vec![Message::user_with_blocks(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "call_orphan".to_string(),
+                content: "doesn't matter".to_string(),
+                cache_control: None,
+            },
+            MessageContentBlock::Text {
+                text: "please reconsider".to_string(),
+                cache_control: None,
+            },
+        ])];
+        history.restore_messages(messages);
+        history.drop_leading_orphaned_tool_results();
+
+        assert_eq!(
+            history.messages().len(),
+            1,
+            "message should survive — it still has the Text block"
+        );
+        if let crate::api::MessageContent::Blocks { content } = &history.messages()[0].content {
+            assert_eq!(content.len(), 1, "only the Text block should remain");
+            assert!(
+                matches!(&content[0], MessageContentBlock::Text { text, .. } if text == "please reconsider")
+            );
+        } else {
+            panic!("expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_drop_orphaned_tool_results_removes_pure_tool_result_turn() {
+        let mut history = ConversationHistory::new();
+        let messages = vec![Message::user_with_tool_results(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "call_x".to_string(),
+                content: "orphaned".to_string(),
+                cache_control: None,
+            },
+        ])];
+        history.restore_messages(messages);
+        history.drop_leading_orphaned_tool_results();
+        assert_eq!(history.messages().len(), 0);
+    }
+
+    #[test]
+    fn test_drop_orphaned_tool_results_leaves_assistant_head_alone() {
+        // An assistant at the head carries ToolUse, not ToolResult. The
+        // orphan drop must not touch it — the ToolUse pairs with a
+        // user-tool-results turn deeper in the surviving history.
+        let mut history = ConversationHistory::new();
+        let messages = vec![
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "call_live".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "b.rs"}),
+                cache_control: None,
+            }]),
+            Message::user_with_tool_results(vec![MessageContentBlock::ToolResult {
+                tool_use_id: "call_live".to_string(),
+                content: "paired".to_string(),
+                cache_control: None,
+            }]),
+        ];
+        history.restore_messages(messages);
+        history.drop_leading_orphaned_tool_results();
+        assert_eq!(history.messages().len(), 2);
     }
 
     #[test]
