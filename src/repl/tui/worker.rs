@@ -5,6 +5,7 @@
 //! working unchanged. Communication is via an `mpsc` channel for jobs and a
 //! tokio `UnboundedSender` for UI events.
 
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -16,6 +17,19 @@ use crate::repl::Repl;
 use crate::ui::UI;
 
 use super::event::{ExitSummary, Job, UiEvent};
+
+/// Flush both stdout and stderr before signalling a turn is over.
+/// Stdout is fully buffered when fd 1 is redirected to a pipe (our
+/// `OutputCapture` setup) — writes from `println!` and the markdown
+/// renderer sit in libstd's 8 KB buffer until it fills or we flush
+/// explicitly. Without this, the last chunk of a response (especially
+/// a final code block from the markdown highlighter) can stay buffered
+/// past `UiEvent::WorkerIdle`, and the user sees the turn end with the
+/// final lines missing from history.
+fn flush_captured_streams() {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+}
 
 pub struct WorkerHandle {
     pub thread: JoinHandle<()>,
@@ -105,6 +119,7 @@ fn run(
                     UI::print_warning(&format!("Failed to save session: {}", e));
                 }
                 println!();
+                flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
@@ -129,6 +144,7 @@ fn run(
                         }
                     }
                 }
+                flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
@@ -138,12 +154,14 @@ fn run(
                 if let Err(e) = repl.load_session_by_id(&session_id) {
                     UI::print_error_with_hint(&e);
                 }
+                flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
             Job::ResumeSelected(None) => {
                 // User cancelled the picker — nothing to do besides
                 // signalling idle so the queue can resume draining.
+                flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
         }
@@ -153,6 +171,7 @@ fn run(
     if let Err(e) = repl.save_current_session() {
         UI::print_warning(&format!("Failed to save session: {}", e));
     }
+    flush_captured_streams();
     shutdown.set_summary(ExitSummary {
         model,
         input_tokens,

@@ -4,26 +4,107 @@
 //! and direct-to-stdout colored output from the worker thread flows into
 //! the terminal's scrollback via `Terminal::insert_before`.
 //!
-//! `pause` / `resume` temporarily swap fd 1 / fd 2 back to the real
-//! terminal so calls that bypass the ratatui backend and write directly to
-//! `io::stdout()` — notably `crossterm::cursor::position()` — can reach
-//! the tty and read its DSR response. Without this, any resize-driven
-//! viewport recomputation would time out against a closed pipe.
+//! Earlier versions of this module had `pause` / `resume` hooks that
+//! un-did the redirection for the duration of a render frame so
+//! `crossterm::cursor::position` could reach the tty. That had a
+//! nasty side-effect: during pause, `println!` from the streaming
+//! worker thread wrote *directly* onto the screen at whatever column
+//! the cursor happened to be parked at, racing the rendered viewport
+//! and landing as scattered text / orange fragments of "Assistant:".
+//! Current code never calls `cursor::position` during the draw loop
+//! (only once at startup, before this capture is installed), so the
+//! redirection stays active for the whole session.
 
 use os_pipe::{PipeReader, PipeWriter};
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::io::IntoRawFd;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::repl::tui::event::{OutputKind, UiEvent};
+
+/// Env var that, when set to a writable file path, makes every byte
+/// read from the stdout/stderr capture pipes also get appended to
+/// that file in a hex-escaped format. Intended purely for debugging
+/// pipe-side rendering bugs (scattered text, CSI fragments, etc.) —
+/// the file is ground truth for "what the UI actually received" and
+/// keeps that stream separate from the TUI itself.
+const RAW_LOG_ENV_VAR: &str = "SOFOS_RAW_LOG";
+
+/// Shared handle to an optional hex-log file. `spawn_reader` clones
+/// this across stdout and stderr reader threads so both streams land
+/// in the same log file, tagged with their kind, preserving arrival
+/// order between them via the mutex.
+type RawLogSink = Option<Arc<Mutex<std::fs::File>>>;
+
+fn open_raw_log() -> RawLogSink {
+    let path = std::env::var(RAW_LOG_ENV_VAR).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    // Truncate on first open so one `sofos` session gives one clean
+    // file; append mode would accumulate bytes from previous runs and
+    // make it harder to tell what came from *this* reproduction.
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+    {
+        Ok(file) => {
+            // Write a header line so the user can confirm the file
+            // is actually being created by *this* `sofos` binary
+            // (vs a cached install that ignores the env var).
+            let mut file = file;
+            let _ = writeln!(file, "[sofos raw pipe log — path={path}]");
+            let _ = file.flush();
+            Some(Arc::new(Mutex::new(file)))
+        }
+        Err(err) => {
+            // Surface the failure via stderr — which, at this point
+            // in startup, is still the real tty (OutputCapture is
+            // mid-install), so the user sees it on their terminal
+            // rather than it getting swallowed by the pipe we're
+            // about to wire up.
+            eprintln!(
+                "SOFOS_RAW_LOG: failed to open {path:?} for writing: {err}. \
+                 Raw-log capture disabled for this session."
+            );
+            None
+        }
+    }
+}
+
+/// Append one captured line's raw bytes to the hex log. Format is
+/// `[<kind>] <hex-escaped payload>\n` where printable ASCII is passed
+/// through verbatim and everything else (ESC, CSI params, control
+/// bytes, UTF-8 continuation bytes) appears as `\xNN`. That keeps
+/// the file readable in a plain editor while preserving byte
+/// boundaries exactly.
+fn write_raw_log(sink: &RawLogSink, kind: OutputKind, bytes: &[u8]) {
+    let Some(handle) = sink else { return };
+    let Ok(mut file) = handle.lock() else { return };
+    let mut rendered = format!("[{:?}] ", kind);
+    for &b in bytes {
+        if (0x20..=0x7e).contains(&b) && b != b'\\' {
+            rendered.push(b as char);
+        } else {
+            rendered.push_str(&format!("\\x{:02X}", b));
+        }
+    }
+    rendered.push('\n');
+    let _ = file.write_all(rendered.as_bytes());
+    let _ = file.flush();
+}
 
 pub struct OutputCapture {
     saved_stdout: libc::c_int,
     saved_stderr: libc::c_int,
     pipe_stdout: libc::c_int,
     pipe_stderr: libc::c_int,
-    paused: bool,
 }
 
 impl OutputCapture {
@@ -89,39 +170,18 @@ impl OutputCapture {
             saved_stderr,
             pipe_stdout,
             pipe_stderr,
-            paused: false,
         };
 
-        spawn_reader(stdout_reader, OutputKind::Stdout, tx.clone())?;
-        spawn_reader(stderr_reader, OutputKind::Stderr, tx)?;
+        let raw_log = open_raw_log();
+        spawn_reader(
+            stdout_reader,
+            OutputKind::Stdout,
+            tx.clone(),
+            raw_log.clone(),
+        )?;
+        spawn_reader(stderr_reader, OutputKind::Stderr, tx, raw_log)?;
 
         Ok(this)
-    }
-
-    /// Temporarily route fd 1 / fd 2 back to the real terminal. Calls that
-    /// go directly to `io::stdout()` (e.g. `crossterm::cursor::position`)
-    /// will reach the tty and read its DSR response. Idempotent.
-    pub fn pause(&mut self) {
-        if self.paused {
-            return;
-        }
-        unsafe {
-            libc::dup2(self.saved_stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.saved_stderr, libc::STDERR_FILENO);
-        }
-        self.paused = true;
-    }
-
-    /// Re-apply the pipe redirection after a `pause`. Idempotent.
-    pub fn resume(&mut self) {
-        if !self.paused {
-            return;
-        }
-        unsafe {
-            libc::dup2(self.pipe_stdout, libc::STDOUT_FILENO);
-            libc::dup2(self.pipe_stderr, libc::STDERR_FILENO);
-        }
-        self.paused = false;
     }
 }
 
@@ -166,6 +226,7 @@ fn spawn_reader(
     reader: PipeReader,
     kind: OutputKind,
     tx: UnboundedSender<UiEvent>,
+    raw_log: RawLogSink,
 ) -> std::io::Result<()> {
     thread::Builder::new()
         .name(format!("sofos-{:?}-reader", kind))
@@ -187,10 +248,31 @@ fn spawn_reader(
                 match buf.read_until(b'\n', &mut line) {
                     Ok(0) => break,
                     Ok(_) => {
+                        // Log the *raw* bytes — including the `\n` /
+                        // `\r` suffix — before any stripping. That
+                        // way the log shows exactly what arrived in
+                        // the pipe, not what we think we saw.
+                        write_raw_log(&raw_log, kind, &line);
                         while matches!(line.last(), Some(b'\n') | Some(b'\r')) {
                             line.pop();
                         }
-                        let text = String::from_utf8_lossy(&line).into_owned();
+                        let mut text = String::from_utf8_lossy(&line).into_owned();
+                        // Drop any trailing incomplete CSI sequence
+                        // (`\x1b[` + params with no final byte before
+                        // end-of-line). These arise when a writer
+                        // emits a multi-byte ANSI sequence that gets
+                        // split at `\n`, which `read_until` uses as
+                        // its terminator. Without stripping,
+                        // `ansi-to-tui` ignores the malformed prefix
+                        // but the parameter tail on the next line —
+                        // `110;192;197m` etc. — has no `\x1b[` to go
+                        // with it and renders as literal text. We
+                        // strip on this side because `state.apply`
+                        // already breaks out of its loop on the same
+                        // incomplete-sequence condition, so its
+                        // resolved-state prefix is still accurate
+                        // across the drop.
+                        strip_trailing_incomplete_csi(&mut text);
                         let prefix = state.to_ansi_prefix();
                         state.apply(&text);
                         let payload = if prefix.is_empty() {
@@ -216,6 +298,70 @@ fn spawn_reader(
             }
         })?;
     Ok(())
+}
+
+/// Truncate `text` so it does not end in an unterminated CSI
+/// sequence. A CSI here is `ESC [ P* I* F` per ECMA-48:
+/// - `ESC [` introducer (2 bytes)
+/// - any number of parameter bytes `0-9 ; :`
+/// - any number of intermediate bytes `0x20..=0x2F`
+/// - a final byte `0x40..=0x7E`
+///
+/// We walk forward from the *last* `ESC [` in the string. If the
+/// sequence that starts there has no final byte before the end of
+/// the input, every byte from that `ESC` onward is dropped. Any
+/// earlier, properly terminated CSIs are preserved untouched so the
+/// styling of the rest of the line still parses correctly.
+fn strip_trailing_incomplete_csi(text: &mut String) {
+    let bytes = text.as_bytes();
+    // Find the last `ESC [` in the input. Short-circuit when there's
+    // no `ESC` at all — the hot path for plain-text lines.
+    let esc_positions: Vec<usize> = bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &b)| (b == 0x1b).then_some(idx))
+        .collect();
+    for &start in esc_positions.iter().rev() {
+        if bytes.get(start + 1) != Some(&b'[') {
+            continue;
+        }
+        // Walk parameter bytes, then intermediate bytes.
+        let mut j = start + 2;
+        while let Some(&b) = bytes.get(j) {
+            if matches!(b, b'0'..=b'9' | b';' | b':' | b'?' | b'<' | b'=' | b'>') {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        while let Some(&b) = bytes.get(j) {
+            if (0x20..=0x2f).contains(&b) {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        match bytes.get(j) {
+            Some(&terminator) if (0x40..=0x7e).contains(&terminator) => {
+                // Terminated — this CSI is fine, and any earlier CSI
+                // must also be terminated (otherwise we'd be looking
+                // at *this* one's un-terminated form instead). Done.
+                return;
+            }
+            Some(_) => {
+                // A non-terminator, non-param, non-intermediate byte
+                // before end-of-string means the CSI is malformed but
+                // structurally over — we've already walked past it.
+                return;
+            }
+            None => {
+                // Reached end of string while still inside the CSI —
+                // this is the "trailing incomplete" case. Drop it.
+                text.truncate(start);
+                return;
+            }
+        }
+    }
 }
 
 /// Semantic Select Graphic Rendition state tracker. Parses SGR sequences
@@ -641,5 +787,53 @@ mod tests {
         let mut s = SgrState::default();
         s.apply("\x1b[31m\x1b[38;5m");
         assert_eq!(s.fg, SgrColor::Basic(31));
+    }
+
+    #[test]
+    fn strip_trailing_incomplete_csi_drops_unterminated_tail() {
+        // Classic syntect failure mode: the pipe reader's
+        // `read_until(b'\n')` caught the split in the middle of a
+        // truecolor sequence. Without stripping, `ansi-to-tui` would
+        // emit `110;192;197m…` as literal text on the next line.
+        let mut text = "text\x1b[38;2;".to_string();
+        strip_trailing_incomplete_csi(&mut text);
+        assert_eq!(text, "text");
+    }
+
+    #[test]
+    fn strip_trailing_incomplete_csi_preserves_terminated_tail() {
+        // A fully-terminated CSI at the end must survive intact so
+        // downstream parsers (or the emulator directly) can use it.
+        let mut text = "text\x1b[31mred".to_string();
+        let original = text.clone();
+        strip_trailing_incomplete_csi(&mut text);
+        assert_eq!(text, original);
+    }
+
+    #[test]
+    fn strip_trailing_incomplete_csi_keeps_earlier_sequences() {
+        // Only the *last* CSI is unterminated. Anything before it
+        // stays — we don't want to throw away valid styling because
+        // the writer happened to pipe-boundary after setting another
+        // color.
+        let mut text = "\x1b[31mred\x1b[38;2;".to_string();
+        strip_trailing_incomplete_csi(&mut text);
+        assert_eq!(text, "\x1b[31mred");
+    }
+
+    #[test]
+    fn strip_trailing_incomplete_csi_is_noop_on_plain_text() {
+        let mut text = "plain text with no escapes".to_string();
+        strip_trailing_incomplete_csi(&mut text);
+        assert_eq!(text, "plain text with no escapes");
+    }
+
+    #[test]
+    fn strip_trailing_incomplete_csi_tolerates_bare_esc() {
+        // `\x1b` alone (no `[`) isn't a CSI — leave the text alone.
+        let mut text = "text\x1ball".to_string();
+        let original = text.clone();
+        strip_trailing_incomplete_csi(&mut text);
+        assert_eq!(text, original);
     }
 }

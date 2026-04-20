@@ -195,10 +195,14 @@ impl UI {
         Self::print_message(MessageSeverity::Info, message);
     }
 
-    /// Print the ASCII art banner. Call this at the very top of `main` so
-    /// it lands at the top of the terminal scrollback, before any workspace
-    /// / model / startup lines.
-    pub fn print_banner() {
+    /// Return the ASCII-art banner as a ready-to-print string. The
+    /// interactive path collects this into `Repl::startup_banner` so
+    /// the TUI can emit it through `OutputCapture`, which in turn
+    /// places it above the inline viewport via the history-scroll
+    /// path — the only way to avoid the viewport overpainting the
+    /// banner on terminals that drop the cursor-position DSR
+    /// (notably Ghostty).
+    pub fn banner_text() -> String {
         // "SOFOS" rendered at 3 rows — half the height of the previous
         // 6-row ANSI Shadow figlet. Each letter is 3 columns wide with no
         // separator between letters so the word reads as a single unit.
@@ -208,12 +212,14 @@ impl UI {
             r" ╰─╯╰─╯╵  ╰─╯╰─╯",
         ];
         let (r, g, b) = ACCENT_RGB;
-        println!();
+        let mut out = String::new();
+        out.push('\n');
         for line in BANNER {
-            println!("{}", line.truecolor(r, g, b).bold());
+            out.push_str(&format!("{}\n", line.truecolor(r, g, b).bold()));
         }
-        println!(" {}", "AI Coding Assistant".truecolor(r, g, b));
-        println!();
+        out.push_str(&format!(" {}\n", "AI Coding Assistant".truecolor(r, g, b)));
+        out.push('\n');
+        out
     }
 
     pub fn print_welcome() {

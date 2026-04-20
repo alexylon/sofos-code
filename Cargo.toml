@@ -28,7 +28,7 @@ syntect = "5"
 pulldown-cmark = "0.13"
 similar = "3"
 crossterm = "0.29"
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info", "scrolling-regions"] }
 tui-textarea = { package = "tui-textarea-2", version = "0.10" }
 ansi-to-tui = "8"
 os_pipe = "1"
@@ -38,6 +38,7 @@ rand = "0.10"
 base64 = "0.22"
 arboard = "3"
 png = "0.18"
+unicode-width = "0.2"
 
 # Utilities
 futures = "0.3"

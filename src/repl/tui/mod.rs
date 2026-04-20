@@ -11,7 +11,11 @@
 
 pub mod app;
 pub mod event;
+pub mod inline_terminal;
+pub mod inline_tui;
 pub mod output;
+pub mod scrollback;
+pub mod sgr;
 pub mod ui;
 pub mod worker;
 
@@ -22,15 +26,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use ansi_to_tui::IntoText;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::Terminal;
-use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
-use ratatui::buffer::Cell;
-use ratatui::layout::{Position, Size};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Paragraph, Widget, Wrap};
-use ratatui::{TerminalOptions, Viewport};
+use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Interval, interval};
 
@@ -49,13 +46,6 @@ const TICK_INTERVAL: Duration = Duration::from_millis(90);
 /// text; a finite cap keeps one burst from monopolising the event loop and
 /// lets `Key` / interrupt events fire while a large log is being drained.
 const MAX_OUTPUT_BATCH: usize = 256;
-/// Height of the inline viewport — reserved at construction time and
-/// fixed for the life of the session. Sized to fit the input box at its
-/// maximum height plus the hint and status rows; see
-/// [`ui::INLINE_VIEWPORT_ROWS`] for the breakdown. The input itself grows
-/// and shrinks inside this region; unused rows render as blank cells
-/// (indistinguishable from normal terminal rows).
-const INLINE_VIEWPORT_HEIGHT: u16 = ui::INLINE_VIEWPORT_ROWS;
 
 /// RAII guard that restores the terminal on drop no matter how we exit
 /// (error, panic, early return).
@@ -78,11 +68,27 @@ impl TerminalGuard {
         // `Key` events. Without this, pasting "yes" while a confirmation
         // modal is open would auto-answer.
         //
+        // Also push the kitty keyboard protocol's
+        // `DISAMBIGUATE_ESCAPE_CODES` flag so terminals that implement it
+        // (Ghostty, kitty, Alacritty, WezTerm, foot, recent iTerm with
+        // the flag turned on in its profile) deliver Shift+Enter with
+        // the SHIFT modifier set, rather than as a bare `Enter` — which
+        // is what our newline binding needs to trigger. Terminals that
+        // don't implement the protocol (Apple Terminal.app) silently
+        // ignore the request, so the push is best-effort and harmless
+        // elsewhere.
+        //
         // We write through `stdout` rather than `/dev/tty` because
         // `OutputCapture` hasn't been installed yet at this point in
         // `tui::run`, so fd 1 is still the real tty.
         use std::io::Write;
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::EnableBracketedPaste,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES,
+            ),
+        );
         let _ = std::io::stdout().flush();
         Ok(Self { _private: () })
     }
@@ -94,110 +100,13 @@ impl Drop for TerminalGuard {
         // (the teardown order in `run` restores fds before this guard
         // drops), so writing to stdout reaches the real terminal again.
         use std::io::Write;
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::PopKeyboardEnhancementFlags,
+            crossterm::event::DisableBracketedPaste,
+        );
         let _ = std::io::stdout().flush();
         let _ = crossterm::terminal::disable_raw_mode();
-    }
-}
-
-/// Wraps `CrosstermBackend` so that cursor-position queries stop
-/// hitting `crossterm::cursor::position()` once the input reader is
-/// running. That call writes a DSR to the terminal and waits up to 2 s
-/// for the response via crossterm's global `INTERNAL_EVENT_READER`
-/// mutex — the same mutex `event::read()` holds while blocked. If
-/// ratatui's `autoresize` triggers a cursor query while the input
-/// reader is parked in `read()`, the 2 s timeout fires and the app
-/// exits with "cursor position could not be read within a normal
-/// duration".
-///
-/// We let the real DSR run exactly once — during `Terminal::with_options`,
-/// before the input reader is spawned — so the viewport is placed
-/// correctly relative to the shell's scrollback on startup. From then
-/// on `skip_cursor_query` is flipped and we synthesize a cursor at
-/// `height - viewport_height` (the top row of the inline viewport).
-/// That position makes `compute_inline_size` emit just enough newlines
-/// to move the cursor down to the terminal's bottom without scrolling
-/// any rows into scrollback, and place the new viewport back at the
-/// bottom. Synthesizing `(0, bottom)` instead would make it append a
-/// full viewport-height of newlines, scrolling the previous viewport
-/// contents off-screen on every resize.
-struct SafeBackend<W: std::io::Write> {
-    inner: CrosstermBackend<W>,
-    skip_cursor_query: Arc<AtomicBool>,
-    viewport_height: u16,
-}
-
-impl<W: std::io::Write> SafeBackend<W> {
-    fn new(writer: W, skip_cursor_query: Arc<AtomicBool>, viewport_height: u16) -> Self {
-        Self {
-            inner: CrosstermBackend::new(writer),
-            skip_cursor_query,
-            viewport_height,
-        }
-    }
-}
-
-impl<W: std::io::Write> Backend for SafeBackend<W> {
-    type Error = std::io::Error;
-
-    fn draw<'a, I>(&mut self, content: I) -> std::io::Result<()>
-    where
-        I: Iterator<Item = (u16, u16, &'a Cell)>,
-    {
-        self.inner.draw(content)
-    }
-
-    fn append_lines(&mut self, n: u16) -> std::io::Result<()> {
-        self.inner.append_lines(n)
-    }
-
-    fn hide_cursor(&mut self) -> std::io::Result<()> {
-        self.inner.hide_cursor()
-    }
-
-    fn show_cursor(&mut self) -> std::io::Result<()> {
-        self.inner.show_cursor()
-    }
-
-    fn get_cursor_position(&mut self) -> std::io::Result<Position> {
-        if self.skip_cursor_query.load(Ordering::SeqCst) {
-            // Report the top row of the inline viewport as the
-            // cursor. `compute_inline_size` will then emit exactly
-            // `viewport_height - 1` newlines to reach the terminal's
-            // bottom row without scrolling any visible rows into
-            // scrollback, and place the new viewport back at the
-            // bottom. Reporting the true bottom row would instead
-            // scroll a full viewport-height of content off-screen on
-            // every resize.
-            let size = self.inner.size()?;
-            let y = size.height.saturating_sub(self.viewport_height);
-            return Ok(Position { x: 0, y });
-        }
-        self.inner.get_cursor_position()
-    }
-
-    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> std::io::Result<()> {
-        self.inner.set_cursor_position(position)
-    }
-
-    fn clear(&mut self) -> std::io::Result<()> {
-        self.inner.clear()
-    }
-
-    fn clear_region(&mut self, clear_type: ClearType) -> std::io::Result<()> {
-        self.inner.clear_region(clear_type)
-    }
-
-    fn size(&self) -> std::io::Result<Size> {
-        self.inner.size()
-    }
-
-    fn window_size(&mut self) -> std::io::Result<WindowSize> {
-        self.inner.window_size()
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
     }
 }
 
@@ -217,36 +126,27 @@ pub fn run(mut repl: Repl) -> Result<()> {
         .build()
         .map_err(|e| crate::error::SofosError::Config(format!("runtime: {}", e)))?;
 
-    // Construct the terminal BEFORE installing output capture. Ratatui's
-    // inline viewport queries the cursor position during construction via
-    // `crossterm::cursor::position`, which writes its DSR to
-    // `io::stdout()` — if fd 1 were already redirected into our pipe that
-    // query would never reach the tty and the construction would hang.
+    // Construct the terminal BEFORE installing output capture. The
+    // custom `Terminal` queries `cursor::position` once at construction
+    // to anchor the initial viewport — if fd 1 were already redirected
+    // into our pipe, that DSR would never reach the tty.
     let _terminal_guard = TerminalGuard::install()?;
-    let skip_cursor_query = Arc::new(AtomicBool::new(false));
-    let backend = SafeBackend::new(
-        tty_for_backend,
-        Arc::clone(&skip_cursor_query),
-        INLINE_VIEWPORT_HEIGHT,
-    );
-    let mut terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Inline(INLINE_VIEWPORT_HEIGHT),
-        },
-    )?;
+    let backend = CrosstermBackend::new(tty_for_backend);
+    let terminal = inline_terminal::Terminal::new(backend)?;
     drop(tty);
-    // From this point on, any cursor::position DSR would race with the
-    // input reader's blocking `event::read()` for crossterm's global
-    // event-reader mutex. Flipping the flag makes the backend
-    // synthesize cursor positions instead — safe because the only
-    // caller is ratatui's `compute_inline_size` during autoresize, and
-    // our inline viewport is always anchored at the terminal's bottom
-    // anyway. The construction call above has already placed the
-    // viewport using the real cursor position.
-    skip_cursor_query.store(true, Ordering::SeqCst);
+    // Wrap the raw `Terminal` in `InlineTui` (based on Codex's `Tui`
+    // wrapper): every frame now runs inside a BSU/ESU bracket so the
+    // emulator applies viewport-fit + history-flush + render atomically,
+    // instead of painting them as three separate partial updates.
+    let mut inline_tui = inline_tui::InlineTui::new(terminal);
+    // The very first `inline_tui.draw` call (from `event_loop`) will
+    // size the viewport to the bottom-pane's desired height via
+    // `InlineTui::fit_viewport_height`, so we don't need an explicit
+    // initial placement here — `Terminal::new` leaves viewport_area
+    // anchored at `(0, cursor_pos.y, 0, 0)` and the first draw fills
+    // in width/height.
 
-    let mut capture = OutputCapture::install(ui_tx.clone())?;
+    let capture = OutputCapture::install(ui_tx.clone())?;
     // colored detects its output is a pipe after redirection and disables
     // styling — force it back on so ANSI reaches the log.
     colored::control::set_override(true);
@@ -269,20 +169,33 @@ pub fn run(mut repl: Repl) -> Result<()> {
     repl.install_steer_queue(Arc::clone(&steer_queue));
 
     let model_label = repl.model_label();
+    // Grab the deferred startup text (logo + workspace / model / etc.)
+    // before moving `repl` into the worker — we replay it through the
+    // capture pipe below so it lands above the viewport.
+    let startup_banner = repl.take_startup_banner();
 
     let worker_handle = worker::spawn(repl, job_rx, ui_tx.clone(), Arc::clone(&interrupt))?;
     spawn_input_reader(ui_tx.clone())?;
 
     let mut app = App::new(model_label);
+    // Everything we emit here rides the `OutputCapture` pipe (installed
+    // above) and is handed to `scrollback::scroll_strings_above_viewport`
+    // in the event loop — the same path every later tool/stdout line
+    // takes. Printing the banner here, rather than before the TUI
+    // started, is what guarantees it's visible on Ghostty / iTerm with
+    // slow DSR, where our cursor-position fallback would otherwise
+    // place the viewport on top of it.
+    if !startup_banner.is_empty() {
+        print!("{}", startup_banner);
+    }
     UI::print_welcome();
 
     drop(ui_tx);
 
     let result = runtime.block_on(async {
         event_loop(
-            &mut terminal,
+            &mut inline_tui,
             &mut app,
-            &mut capture,
             ui_rx,
             job_tx.clone(),
             Arc::clone(&interrupt),
@@ -313,25 +226,20 @@ pub fn run(mut repl: Repl) -> Result<()> {
 }
 
 async fn event_loop(
-    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
+    tui: &mut inline_tui::InlineTui,
     app: &mut App,
-    capture: &mut OutputCapture,
     mut ui_rx: UnboundedReceiver<UiEvent>,
     job_tx: std_mpsc::Sender<Job>,
     interrupt: Arc<AtomicBool>,
     steer_queue: SteerQueue,
 ) -> Result<()> {
     let mut tick: Interval = interval(TICK_INTERVAL);
-    // Track the last size we've rendered at so we can detect resizes *before*
-    // `Terminal::draw` runs `autoresize` and trips the captured-stdout path.
-    // Start at a sentinel so the very first draw always goes through the
-    // `pause → draw → resume` path: there's a window between
-    // `Terminal::with_options` and this point during which the user could
-    // resize, and ratatui's internal `last_known_area` would be stale —
-    // `autoresize` on that first draw would then route through
-    // `cursor::position` against the captured stdout and time out.
+    // Track the last size we've rendered at so we can detect resizes
+    // before the next draw so `scrollback` can operate on the
+    // current dimensions. Start at a sentinel so the very first draw
+    // always updates it.
     let mut last_size: (u16, u16) = (0, 0);
-    draw_with_capture_support(terminal, app, capture, &mut last_size)?;
+    render_frame(tui, app, &mut last_size)?;
 
     loop {
         let event = tokio::select! {
@@ -362,20 +270,19 @@ async fn event_loop(
                 }
                 UiEvent::Output { kind: _, text } => {
                     // If the terminal has been resized since the last
-                    // draw, ratatui's `last_known_area` is stale —
-                    // `insert_before` would compute scroll/viewport
-                    // positions against the old dimensions. Sync first
-                    // via a normal draw, which also picks up the size
-                    // change safely via `pause`/`resume`.
+                    // draw, flush first so the next history insert runs
+                    // against the current screen dimensions — otherwise
+                    // `scroll_strings_above_viewport` computes its
+                    // DECSTBM regions against the stale viewport rect.
                     if crossterm::terminal::size()? != last_size {
-                        draw_with_capture_support(terminal, app, capture, &mut last_size)?;
+                        render_frame(tui, app, &mut last_size)?;
                     }
                     // Batch-drain consecutive `Output` events so a tool
                     // that streams thousands of lines resolves in a
-                    // single `insert_before` call instead of one per
-                    // line. Non-Output events interrupt the drain so
-                    // keypresses (especially ESC / Ctrl+C) aren't stuck
-                    // behind an output backlog.
+                    // single `queue_history_lines` call instead of one
+                    // per line. Non-Output events interrupt the drain
+                    // so keypresses (especially ESC / Ctrl+C) aren't
+                    // stuck behind an output backlog.
                     let mut batch: Vec<String> = Vec::with_capacity(32);
                     batch.push(text);
                     let mut forwarded: Option<UiEvent> = None;
@@ -389,7 +296,10 @@ async fn event_loop(
                             Err(_) => break,
                         }
                     }
-                    push_output_above_viewport(terminal, &batch)?;
+                    // Queue the batch — it'll be flushed above the
+                    // viewport inside the next `InlineTui::draw`'s
+                    // synchronized-update bracket.
+                    tui.queue_history_lines(batch);
                     if let Some(next) = forwarded {
                         current = next;
                         continue;
@@ -419,10 +329,10 @@ async fn event_loop(
                     break;
                 }
                 UiEvent::Resize => {
-                    // Handled at draw time by `draw_with_capture_support`; the
-                    // variant is kept as a wake-up signal so a resize is
-                    // reflected immediately instead of waiting for the next
-                    // tick.
+                    // Handled at draw time by `render_frame`; the
+                    // variant is kept as a wake-up signal so a resize
+                    // is reflected immediately instead of waiting for
+                    // the next tick.
                     break;
                 }
                 UiEvent::WorkerBusy(label) => {
@@ -513,14 +423,14 @@ async fn event_loop(
                         }
                     }
                     if !pending_batch.is_empty() {
-                        push_output_above_viewport(terminal, &pending_batch)?;
+                        tui.queue_history_lines(pending_batch);
                     }
                     break;
                 }
             }
         }
 
-        draw_with_capture_support(terminal, app, capture, &mut last_size)?;
+        render_frame(tui, app, &mut last_size)?;
 
         if app.should_quit {
             break;
@@ -530,30 +440,37 @@ async fn event_loop(
     Ok(())
 }
 
-/// Run `terminal.draw(...)` with output capture temporarily paused whenever
-/// the terminal's size has changed since the last render. On a resize,
-/// `Terminal::draw` triggers `autoresize` → `compute_inline_size` →
-/// `crossterm::cursor::position`, which writes its DSR to `io::stdout()`
-/// (not to the backend writer). Without pausing, the DSR goes into our pipe
-/// and the 2-second poll times out.
-fn draw_with_capture_support(
-    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
+/// Drive one `InlineTui::draw` cycle (BSU → refit viewport → flush
+/// pending history → render → ESU → flush) with `OutputCapture`
+/// paused for its duration.
+///
+/// We pause capture while drawing because some of the bytes we emit
+/// (DECSTBM, reverse-index, BSU/ESU) must reach the real tty; if they
+/// got caught in the fd-1 pipe they'd arrive later, out of order, as
+/// visible garbage on the next screen redraw.
+///
+/// Historical footnote: we used to wrap this call in
+/// `capture.pause()` / `capture.resume()` so DSR bytes emitted by
+/// `cursor::position()` could reach the tty instead of the capture
+/// pipe. That had a nasty side-effect — during pause, fd 1/2 point
+/// back at the real tty, so any `println!` from the worker thread
+/// that landed mid-draw wrote *directly* onto the screen at whatever
+/// column the cursor was parked at, bypassing `scrollback` and
+/// the diff engine. That's where the orange-`A`-before-"Hello!" and
+/// the scattered code-block output were coming from: streaming text
+/// racing with our render. Current code never calls
+/// `cursor::position()` during the draw loop (only once at startup,
+/// before `OutputCapture::install`), so the pause is pure harm — we
+/// keep the pipe active the whole time.
+fn render_frame(
+    tui: &mut inline_tui::InlineTui,
     app: &mut App,
-    capture: &mut OutputCapture,
     last_size: &mut (u16, u16),
 ) -> Result<()> {
-    // `crossterm::terminal::size` uses ioctl, not DSR, so it's safe to call
-    // while stdout is captured.
     let current_size = crossterm::terminal::size()?;
-    if current_size != *last_size {
-        capture.pause();
-        let result = terminal.draw(|f| ui::draw(f, app));
-        capture.resume();
-        *last_size = current_size;
-        result?;
-    } else {
-        terminal.draw(|f| ui::draw(f, app))?;
-    }
+    let desired_height = ui::desired_viewport_height(app, current_size.0);
+    tui.draw(desired_height, |f| ui::draw(f, app))?;
+    *last_size = current_size;
     Ok(())
 }
 
@@ -608,8 +525,23 @@ fn handle_idle_key(
         KeyCode::Esc if app.busy => {
             interrupt.store(true, Ordering::SeqCst);
         }
-        // Plain Enter (no shift/alt/ctrl) submits. Shift+Enter inserts a
-        // newline and falls through to the textarea.
+        // Plain Enter (no shift/alt/ctrl) submits. Any *modified* Enter
+        // inserts a newline by falling through to the textarea handler.
+        // We accept multiple modifier combinations because terminal
+        // support for Shift+Enter varies wildly:
+        //   - Apple Terminal.app and many defaults do NOT distinguish
+        //     Shift+Enter from Enter — the shift modifier is dropped
+        //     and the keypress arrives here as a bare `Enter`, which
+        //     matches this arm and submits.
+        //   - Alt+Enter and Ctrl+Enter are reliably distinguishable on
+        //     essentially every terminal, so users on terminals
+        //     without Shift+Enter support can use those as a fallback
+        //     newline binding.
+        //   - Shift+Enter works on terminals that implement the kitty
+        //     keyboard protocol (Ghostty, kitty, Alacritty, WezTerm,
+        //     iTerm with the flag turned on). `TerminalGuard` pushes
+        //     the `DISAMBIGUATE_ESCAPE_CODES` flag so those terminals
+        //     start delivering Shift+Enter with the SHIFT modifier set.
         KeyCode::Enter if !shift && !alt && !ctrl => {
             submit_input(app, job_tx, steer_queue);
         }
@@ -723,57 +655,6 @@ fn handle_clipboard_paste(app: &mut App) {
             }
         }
     }
-}
-
-/// Push one or more captured stdout/stderr lines above the inline viewport
-/// in a single `insert_before` call. Combining a burst of captured lines
-/// into one call is critical for responsiveness: a tool streaming thousands
-/// of lines would otherwise issue thousands of individual `insert_before`
-/// calls, blocking the event loop long enough that keypresses and ESC
-/// appear unresponsive.
-///
-/// The input slice preserves original line boundaries — each element is one
-/// captured line with its trailing newline already stripped.
-fn push_output_above_viewport(
-    terminal: &mut Terminal<SafeBackend<std::fs::File>>,
-    texts: &[String],
-) -> Result<()> {
-    if texts.is_empty() {
-        return Ok(());
-    }
-
-    // Re-join with `\n` so `ansi-to-tui` parses all captured lines in a
-    // single pass and produces one `Text` with one `Line` per original
-    // line. That keeps SGR state across line boundaries correct *within*
-    // the batch — lines sent in the same batch inherit each other's
-    // style. The trailing `\n` ensures a batch ending with an empty
-    // line (e.g. a blank `println!()`) still yields its own row in the
-    // parsed text; without it, `join` would swallow the empty tail.
-    let mut joined = texts.join("\n");
-    joined.push('\n');
-    let parsed: Text<'static> = joined.as_bytes().into_text().unwrap_or_else(|_| {
-        // Fallback when ANSI parsing fails: build one `Line` per input
-        // string so `Span::raw` never contains a `\n` (Spans are
-        // single-line by construction).
-        Text::from(
-            texts
-                .iter()
-                .map(|t| Line::from(Span::raw(t.clone())))
-                .collect::<Vec<_>>(),
-        )
-    });
-
-    let width = terminal.size()?.width;
-    let height = {
-        let probe = Paragraph::new(parsed.clone()).wrap(Wrap { trim: false });
-        u16::try_from(probe.line_count(width).max(1)).unwrap_or(u16::MAX)
-    };
-    terminal.insert_before(height, |buf| {
-        Paragraph::new(parsed)
-            .wrap(Wrap { trim: false })
-            .render(buf.area, buf);
-    })?;
-    Ok(())
 }
 
 /// Ask the worker to shut down. The worker will reply with
@@ -1071,13 +952,33 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
 }
 
 fn spawn_input_reader(tx: UnboundedSender<UiEvent>) -> std::io::Result<()> {
+    // Poll with a short timeout rather than blocking indefinitely in
+    // `event::read()`. Both take crossterm's process-global
+    // `INTERNAL_EVENT_READER` mutex; a blocking read holds the lock
+    // forever, which deadlocks the main thread's `cursor::position()`
+    // call (via `Terminal::draw → autoresize → compute_inline_size`)
+    // on every resize and errors with "The cursor position could not
+    // be read within a normal duration". Polling with a small timeout
+    // keeps the lock available between iterations so the main thread
+    // can acquire it to issue the DSR, then we proceed to `read()`
+    // for whatever event made `poll` return true.
+    const POLL_TIMEOUT: Duration = Duration::from_millis(50);
     thread::Builder::new()
         .name("sofos-input".into())
         .spawn(move || {
-            while let Ok(event) = crossterm::event::read() {
+            loop {
+                match crossterm::event::poll(POLL_TIMEOUT) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(_) => break,
+                }
+                let event = match crossterm::event::read() {
+                    Ok(e) => e,
+                    Err(_) => break,
+                };
                 // Paste is forwarded as an atomic unit; the event loop
-                // decides whether to apply it based on the current modal
-                // state.
+                // decides whether to apply it based on the current
+                // modal state.
                 let ui_event = match event {
                     Event::Key(k) => UiEvent::Key(k),
                     Event::Resize(_, _) => UiEvent::Resize,

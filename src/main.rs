@@ -32,12 +32,14 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Print the logo first thing so it sits at the top of the scrollback
-    // above workspace/model/custom-instructions lines. Skipped in
-    // one-shot prompt mode to keep piped output clean.
-    if cli.prompt.is_none() && !cli.check_connection {
-        UI::print_banner();
-    }
+    // Historically the logo printed here, up front. It's now deferred:
+    // in interactive mode the banner text is collected into
+    // `startup_banner` below and replayed through the TUI's capture
+    // pipe after `OutputCapture` is installed, so the inline viewport
+    // can't paint over it on terminals whose cursor-position DSR
+    // doesn't answer (e.g. Ghostty). One-shot prompt mode and
+    // connectivity checks skip the banner entirely to keep piped
+    // output clean — matching the original behaviour.
 
     let is_openai_model = cli.model.starts_with("gpt-");
 
@@ -79,29 +81,45 @@ fn main() -> Result<()> {
         error::SofosError::Config(format!("Failed to get current directory: {}", e))
     })?;
 
-    println!(
-        "{} {}",
+    // Collect the startup lines (logo + workspace/model/reasoning/morph)
+    // into one string rather than `println!`-ing them. In interactive
+    // mode we hand the buffer to `Repl` so the TUI can replay it above
+    // its inline viewport; in one-shot mode we still print it directly.
+    // The indirection is what keeps the banner visible on terminals
+    // whose cursor-position DSR doesn't answer (Ghostty) — otherwise
+    // our `(0, 0)` fallback placed the viewport on top of the banner.
+    let interactive_mode = cli.prompt.is_none() && !cli.check_connection;
+    let mut startup_banner = String::new();
+    if interactive_mode {
+        startup_banner.push_str(&UI::banner_text());
+    }
+    startup_banner.push_str(&format!(
+        "{} {}\n",
         "Workspace:".bright_cyan(),
         workspace.display().to_string().dimmed()
-    );
-
-    println!("{} {}", "Model:".bright_green(), cli.model);
+    ));
+    startup_banner.push_str(&format!("{} {}\n", "Model:".bright_green(), cli.model));
 
     if matches!(client, LlmClient::OpenAI(_)) {
         let effort = if cli.enable_thinking { "high" } else { "low" };
-        println!("{} {}", "Reasoning effort:".bright_green(), effort);
+        startup_banner.push_str(&format!(
+            "{} {}\n",
+            "Reasoning effort:".bright_green(),
+            effort
+        ));
     } else if cli.enable_thinking {
-        println!(
-            "{} (budget: {} tokens)",
+        startup_banner.push_str(&format!(
+            "{} (budget: {} tokens)\n",
             "Extended thinking: enabled".bright_green(),
             cli.thinking_budget
-        );
+        ));
     }
 
     let morph_client = cli.morph_api_key.as_ref().and_then(|key| {
         match MorphClient::new(key.clone(), Some(cli.morph_model.clone())) {
             Ok(client) => {
-                println!("{}", "Morph Fast Apply: Enabled".bright_green());
+                startup_banner
+                    .push_str(&format!("{}\n", "Morph Fast Apply: Enabled".bright_green()));
                 Some(client)
             }
             Err(e) => {
@@ -111,7 +129,11 @@ fn main() -> Result<()> {
         }
     });
 
-    println!();
+    startup_banner.push('\n');
+
+    if !interactive_mode {
+        print!("{}", startup_banner);
+    }
 
     let config = ReplConfig::new(
         cli.model,
@@ -122,6 +144,9 @@ fn main() -> Result<()> {
     );
 
     let mut repl = Repl::new(client, config, workspace.clone(), morph_client)?;
+    if interactive_mode {
+        repl.set_startup_banner(startup_banner);
+    }
 
     if cli.resume {
         let history_manager = HistoryManager::new(workspace)?;

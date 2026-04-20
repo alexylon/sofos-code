@@ -2,7 +2,6 @@
 //! box, and a live status line — nothing else. The rest of the terminal
 //! above the viewport is the terminal emulator's own scrollback.
 
-use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -10,6 +9,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 
 use super::app::{App, ConfirmationPrompt, Picker};
 use super::event::Mode;
+use super::inline_terminal::Frame;
 use crate::tools::utils::ConfirmationType;
 
 const ACCENT: Color = Color::Rgb(0xFF, 0x99, 0x33);
@@ -29,36 +29,28 @@ pub const MAX_INPUT_CONTENT_ROWS: u16 = 6;
 const INPUT_BORDER_ROWS: u16 = 2;
 const HINT_ROW_HEIGHT: u16 = 1;
 const STATUS_ROW_HEIGHT: u16 = 1;
-/// Total rows reserved by the inline viewport: enough to fit the input box
-/// at its maximum height plus the hint and status rows. Shared with
-/// [`super::INLINE_VIEWPORT_HEIGHT`] so the viewport construction and the
-/// layout calculation agree.
-pub const INLINE_VIEWPORT_ROWS: u16 =
-    MAX_INPUT_CONTENT_ROWS + INPUT_BORDER_ROWS + HINT_ROW_HEIGHT + STATUS_ROW_HEIGHT;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let input_height = input_box_height(app, area.width);
 
-    // Anchor hint / input / status at the bottom of the viewport and let
-    // the top row (`Min(0)`) absorb whatever height is left over. The hint
-    // line sits fixed directly above the prompt so transient state like
-    // "processing…" or "awaiting confirmation" stays visually pinned to
-    // the input box. As the textarea grows with Shift+Enter the hint and
-    // input migrate upward together and the filler shrinks.
+    // [hint, input, status] — all rows painted, none left unpainted.
+    // An earlier revision reserved a blank spacer row at the top,
+    // but that row stayed invisible to the diff engine (default vs
+    // default = no-op) and could end up holding ghost residue from a
+    // previous viewport position.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),
             Constraint::Length(HINT_ROW_HEIGHT),
             Constraint::Length(input_height),
             Constraint::Length(STATUS_ROW_HEIGHT),
         ])
         .split(area);
 
-    draw_hint(frame, rows[1], app);
-    draw_input(frame, rows[2], app);
-    draw_status(frame, rows[3], app);
+    draw_hint(frame, rows[0], app);
+    draw_input(frame, rows[1], app);
+    draw_status(frame, rows[2], app);
 
     if let Some(picker) = &app.picker {
         draw_picker(frame, area, picker);
@@ -66,6 +58,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(frame, area, confirmation);
     }
+}
+
+/// Total viewport height: `HINT_ROW_HEIGHT` + `input_box_height` +
+/// `STATUS_ROW_HEIGHT`. Feeds `InlineTui::draw`'s `desired_height`
+/// each frame.
+pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
+    HINT_ROW_HEIGHT + input_box_height(app, area_width) + STATUS_ROW_HEIGHT
 }
 
 /// Compute the input box's rendered height (content rows clamped into the

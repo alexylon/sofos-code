@@ -75,6 +75,14 @@ pub struct Repl {
     /// iterations so the user can redirect in-flight work without having
     /// to interrupt it.
     steer_queue: SteerQueue,
+    /// Text the TUI should print through its captured-stdout pipe right
+    /// after `OutputCapture` is installed. Collected in `main.rs` (logo,
+    /// workspace, model, reasoning/thinking, morph availability) so the
+    /// same lines that used to go to the real tty before the TUI took
+    /// over now flow through the history pipeline — keeping the viewport
+    /// from overwriting them on terminals whose cursor-position DSR
+    /// doesn't answer (e.g. Ghostty), where our fallback was `(0, 0)`.
+    startup_banner: String,
 }
 
 impl Repl {
@@ -158,6 +166,7 @@ impl Repl {
             available_tools: Vec::new(),
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             steer_queue: Arc::new(Mutex::new(Vec::new())),
+            startup_banner: String::new(),
         };
 
         // Initialize available tools (needs async)
@@ -170,6 +179,18 @@ impl Repl {
 
     pub fn run(self) -> Result<()> {
         tui::run(self)
+    }
+
+    /// Hand the TUI the logo + workspace/model/morph lines that `main.rs`
+    /// used to `println!` straight to stdout. The TUI replays them through
+    /// its capture pipe after the alternate-output redirection is live so
+    /// they land above the viewport instead of being overdrawn by it.
+    pub fn set_startup_banner(&mut self, text: String) {
+        self.startup_banner = text;
+    }
+
+    pub(crate) fn take_startup_banner(&mut self) -> String {
+        std::mem::take(&mut self.startup_banner)
     }
 
     /// Install the interrupt flag used by the TUI to signal ESC/Ctrl+C during
