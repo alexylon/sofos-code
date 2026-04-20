@@ -28,17 +28,18 @@ Tested on macOS but should work on Linux and Windows as well.
 - [Development](#development)
 - [Release](#release)
 - [Troubleshooting](#troubleshooting)
-- [Morph Integration](#morph-integration)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
 - [Links & Resources](#links--resources)
 
 ## Features
 
-- **Interactive REPL** - Multi-turn conversations with Claude or GPT
+- **Interactive TUI** - Multi-turn conversations with Claude or GPT in an inline viewport at the bottom of your terminal; your emulator owns the scrollback, scrollbar, mouse wheel, and copy-paste
+- **Keep Typing During AI Turns** - Messages queue FIFO while the model works; mid tool-loop messages steer the current turn without interrupting
+- **Live Status Line** - Model, mode, reasoning config, and running token totals shown under the input
 - **Markdown Formatting** - AI responses with syntax highlighting for code blocks
 - **Image Vision** - Analyze local or web images, paste from clipboard with Ctrl+V
-- **Session History** - Auto-save and resume conversations
+- **Session History** - Auto-save with an in-TUI resume picker (`/resume` or `sofos -r`)
 - **Custom Instructions** - Project and personal context files
 - **File Operations** - Read, write, edit, list, create (sandboxed)
 - **Targeted Edits** - Diff-based `edit_file` for precise string replacements
@@ -47,7 +48,7 @@ Tested on macOS but should work on Linux and Windows as well.
 - **Code Search** - Fast regex search with ripgrep
 - **Web Search** - Real-time info via Claude's/OpenAI's native search
 - **Web Fetch** - Read documentation and web pages
-- **Bash Execution** - Run tests and builds (read-only, sandboxed)
+- **Bash Execution** - Run tests and builds, sandboxed behind a 3-tier permission system
 - **MCP Integration** - Connect to external tools via Model Context Protocol
 - **Visual Diffs** - Syntax-highlighted diffs with line numbers
 - **Iterative Tools** - Up to 200 tool calls per request
@@ -112,7 +113,7 @@ sofos
 - `/resume` - Resume previous session
 - `/clear` - Clear conversation history
 - `/think [on|off]` - Toggle extended thinking (shows status if no arg)
-- `/compact` - Compress conversation history to free up context (also triggers automatically at 80% token usage)
+- `/compact` - Summarize older messages via the LLM to reclaim context tokens (auto-triggers at 80% usage)
 - `/s` - Safe mode (read-only, prompt: **`λ:`**)
 - `/n` - Normal mode (all tools, prompt: **`>`**)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
@@ -156,8 +157,9 @@ Exit summary shows token usage and estimated cost (based on official API pricing
 
 ```
 -p, --prompt <TEXT>          One-shot mode
--s, --safe-mode              Start in read-only mode (only read/list/web-search/image tools; no writes or bash commands)
+-s, --safe-mode              Start in read-only mode (native writes and bash disabled; see Safe Mode note under Available Tools)
 -r, --resume                 Resume a previous session
+    --check-connection       Check API connectivity and exit
     --api-key <KEY>          Anthropic API key (overrides env var)
     --openai-api-key <KEY>   OpenAI API key (overrides env var)
     --morph-api-key <KEY>    Morph API key (overrides env var)
@@ -209,17 +211,16 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
 - `web_search` - Real-time web information via Claude's/OpenAI's native search
 - `web_fetch` - Fetch URL content as readable text (documentation, APIs)
-- `execute_bash` - Run tests and build commands (read-only, sandboxed)
-
-**Image Vision:**
-- `image` - View and analyze images (JPEG, PNG, GIF, WebP)
+- `execute_bash` - Run bash commands, sandboxed through the 3-tier permission system (safe commands auto-run, destructive ones blocked, unknown ones prompt)
 
 **MCP Tools:**
 - Tools from configured MCP servers (prefixed with server name, e.g., `filesystem_read_file`)
 
+**Image Vision:** not a tool — sofos detects image paths (JPEG, PNG, GIF, WebP, up to 20 MB local) in your user messages and loads them automatically as image content blocks. Clipboard paste (Ctrl+V) works the same way. See [Image Vision](#image-vision) under Usage.
+
 **Note:** Tools can access paths outside workspace when allowed via interactive prompt or config. Three separate scopes control access: `Read` (read/list), `Write` (write/edit), and `Bash` (command execution). Each scope is granted independently.
 
-Safe mode (`--safe-mode` or `/s`) restricts to: `list_directory`, `read_file`, `glob_files`, `web_search`, `web_fetch`, `image`.
+Safe mode (`--safe-mode` or `/s`) restricts the native tool set to: `list_directory`, `read_file`, `glob_files`, `web_fetch`, and `web_search` (Anthropic + OpenAI provider-native variants). MCP tools are **not** filtered by safe mode — if you've configured MCP servers with mutating tools, those remain available.
 
 ## MCP Servers
 
@@ -239,9 +240,9 @@ Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`).
 
 **Bash Permissions (3-Tier System):**
 
-1. **Allowed (auto-execute):** Build tools (cargo, npm, go), read-only commands (ls, cat, grep), system info (pwd, date), git read-only
-2. **Forbidden (always blocked):** rm, mv, cp, chmod, sudo, mkdir, cd, kill, shutdown
-3. **Ask (prompt user):** Unknown commands require approval; can be remembered in config
+1. **Allowed (auto-execute):** Build tools (cargo, npm, go), read-only commands (ls, cat, grep), system info (pwd, date), git read-only commands (`status`, `log`, `diff`, `show`, `branch`, …).
+2. **Forbidden (always blocked):** file destruction (`rm`, `rmdir`, `touch`, `ln`); permissions (`chmod`, `chown`, `chgrp`); disk / partition (`dd`, `mkfs`, `fdisk`, `parted`, `mkswap`, `mount`, `umount`); system control (`shutdown`, `reboot`, `halt`, `systemctl`, `service`); user management (`useradd`, `usermod`, `passwd`, …); process signals (`kill`, `killall`, `pkill`); privilege escalation (`sudo`, `su`); directory navigation (`cd`, `pushd`, `popd`); destructive git operations (`git push`, `git reset --hard`, `git clean`, `git checkout -f`, `git checkout -b`, `git switch`, `git rebase`, `git commit`, …).
+3. **Ask (prompt user):** `cp`, `mv`, `mkdir`, `git checkout <branch>` / `git checkout HEAD~N` / `git checkout -- <path>`, commands referencing paths outside the workspace, and any unknown command. Approvals can be session-scoped or remembered in config.
 
 ## Configuration
 
@@ -347,12 +348,16 @@ src/
 │   ├── request_builder.rs   # API request construction
 │   ├── response_handler.rs  # Response and tool iteration
 │   └── tui/             # Ratatui front end
-│       ├── mod.rs       # Event loop and wiring
-│       ├── app.rs       # UI state (log, input, queue, picker)
-│       ├── ui.rs        # Rendering
-│       ├── event.rs     # Job / UiEvent channel payloads
-│       ├── worker.rs    # Background thread that owns the Repl
-│       └── output.rs    # Stdout/stderr capture via dup2
+│       ├── mod.rs             # Event loop and wiring
+│       ├── app.rs             # UI state (log, input, queue, picker)
+│       ├── ui.rs              # Rendering
+│       ├── event.rs           # Job / UiEvent channel payloads
+│       ├── worker.rs          # Background thread that owns the Repl
+│       ├── output.rs          # Stdout/stderr capture via dup2
+│       ├── inline_terminal.rs # Custom ratatui Terminal (resize-safe)
+│       ├── inline_tui.rs      # Frame driver and history log
+│       ├── scrollback.rs      # DECSTBM-based insert-above-viewport
+│       └── sgr.rs             # SGR escape helpers
 │
 ├── session/             # Session management
 │   ├── history.rs       # Session persistence
@@ -360,14 +365,15 @@ src/
 │   └── selector.rs      # Session selection TUI
 │
 ├── tools/               # Tool implementations
-│   ├── filesystem.rs    # File operations
-│   ├── bashexec.rs      # Bash execution
+│   ├── filesystem.rs    # File operations (read, write, edit, chunked append)
+│   ├── bashexec.rs      # Bash execution + confirmation gate
 │   ├── codesearch.rs    # Code search (ripgrep)
-│   ├── image.rs         # Image handling
-│   ├── permissions.rs   # Permission system
+│   ├── image.rs         # Image detection + loading for message content
+│   ├── permissions.rs   # 3-tier permission system
 │   ├── tool_name.rs     # Type-safe tool name enum
-│   ├── types.rs         # Tool definitions
-│   └── utils.rs         # Confirmations, HTML-to-text
+│   ├── types.rs         # Tool definitions for the API
+│   ├── utils.rs         # Confirmations, truncation, HTML-to-text
+│   └── tests.rs         # Tool integration tests
 │
 ├── ui/                  # UI components
 │   ├── mod.rs           # UI utilities, markdown renderer
@@ -413,10 +419,6 @@ The release workflow automatically:
 - **Path errors:** Use relative paths for workspace; external paths prompt interactively or can be pre-allowed with `Read`/`Write`/`Bash` entries in config
 - **Build errors:** `rustup update && cargo clean && cargo build`
 - **Images with spaces:** Wrap path in quotes
-
-## Morph Integration
-
-Optional ultra-fast code editing via Morph Apply API (10,500+ tokens/sec, 96-98% accuracy). Enable with `MORPH_API_KEY`.
 
 ## License
 
