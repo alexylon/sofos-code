@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-04-20
+
 ### Fixed
 
 - **Windows release build** is no longer broken, so the `x86_64-pc-windows-msvc` binary is produced again.
