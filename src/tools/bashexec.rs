@@ -258,14 +258,28 @@ impl BashExecutor {
                 .trim_matches(';')
                 .trim();
 
-            if cleaned.is_empty() || cleaned.starts_with('-') {
+            if cleaned.is_empty() {
                 continue;
             }
 
-            if cleaned.starts_with('/') {
-                self.check_bash_external_path(cleaned, permission_manager)?;
-            } else if cleaned.starts_with("~/") || cleaned == "~" {
-                let expanded = PermissionManager::expand_tilde_pub(cleaned);
+            // `--flag=/path` and `--flag=~/path` tokens would otherwise
+            // be swallowed whole by the `starts_with('-')` filter below,
+            // so split at the first `=` to expose the path half. Without
+            // this, `grep --include=/etc/passwd` bypasses the external-
+            // path prompt entirely.
+            let path_candidate = if cleaned.starts_with('-') {
+                match cleaned.find('=') {
+                    Some(i) => cleaned[i + 1..].trim_matches(|c: char| matches!(c, '"' | '\'')),
+                    None => continue,
+                }
+            } else {
+                cleaned
+            };
+
+            if path_candidate.starts_with('/') {
+                self.check_bash_external_path(path_candidate, permission_manager)?;
+            } else if path_candidate.starts_with("~/") || path_candidate == "~" {
+                let expanded = PermissionManager::expand_tilde_pub(path_candidate);
                 self.check_bash_external_path(&expanded, permission_manager)?;
             }
         }
@@ -975,6 +989,29 @@ ask = []
         assert!(executor.is_safe_command_structure("ls ~/tmp"));
         assert!(executor.is_safe_command_structure("cat ~/file.txt"));
         assert!(executor.is_safe_command_structure("grep pattern ~/docs/file.txt"));
+    }
+
+    #[test]
+    fn test_flag_embedded_external_path_is_checked() {
+        // `--include=/etc/passwd` previously slipped past the external-path
+        // prompt because the whole token was filtered by `starts_with('-')`.
+        // The path portion is now extracted and routed to
+        // `check_bash_external_path`, which deny in non-interactive mode
+        // when no grant is configured.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+
+        let result = executor.execute("grep --include=/etc/passwd pattern .");
+
+        assert!(result.is_err(), "expected external-path rejection");
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("outside workspace"),
+                "expected 'outside workspace' in error, got: {msg}"
+            );
+        } else {
+            panic!("Expected ToolExecution error, got: {result:?}");
+        }
     }
 
     #[test]

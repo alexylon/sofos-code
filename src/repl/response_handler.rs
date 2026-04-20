@@ -508,7 +508,19 @@ impl ResponseHandler {
                 tools_executed.join(", ")
             );
 
-            self.conversation.add_user_message(interrupt_msg);
+            // Fold the interrupt notice into the existing tool-results
+            // user turn rather than pushing a second consecutive user
+            // message. Two user messages in a row pass Anthropic's
+            // validator but fail OpenAI's strict role-alternation check,
+            // which surfaces as a "roles must alternate" 400 on the next
+            // request. Fall back to a standalone message only if there's
+            // no user-blocks tail to extend (e.g. trim dropped it).
+            if !self
+                .conversation
+                .append_text_to_last_user_blocks(interrupt_msg.clone())
+            {
+                self.conversation.add_user_message(interrupt_msg);
+            }
 
             display_messages.push(DisplayMessage::UserMessage {
                 content: format!(

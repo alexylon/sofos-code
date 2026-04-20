@@ -551,6 +551,30 @@ Show imperial units only when the user explicitly asks for them."#,
         self.trim_if_needed();
     }
 
+    /// Append a plain-text block to the last user message when it already
+    /// carries `Blocks` content (e.g. a user turn holding `ToolResult`
+    /// blocks). Returns `true` if the append happened, `false` if there
+    /// is no suitable user-role tail to extend — callers should fall
+    /// back to [`add_user_message`] in that case.
+    ///
+    /// Used by the post-tool interrupt path to avoid emitting two
+    /// consecutive user messages (the tool-results turn plus an interrupt
+    /// notice), which OpenAI's strict role-alternation validator rejects.
+    pub fn append_text_to_last_user_blocks(&mut self, text: String) -> bool {
+        if let Some(last) = self.messages.last_mut() {
+            if last.role == "user" {
+                if let crate::api::MessageContent::Blocks { content } = &mut last.content {
+                    content.push(crate::api::MessageContentBlock::Text {
+                        text,
+                        cache_control: None,
+                    });
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -606,6 +630,64 @@ mod tests {
         if let crate::api::MessageContent::Text { content } = &history.messages()[0].content {
             assert_eq!(content, "Message 10");
         }
+    }
+
+    #[test]
+    fn test_append_text_to_last_user_blocks_extends_tool_results_turn() {
+        let mut history = ConversationHistory::new();
+        // Pair a user query + assistant ToolUse before the tool-results
+        // turn so `drop_leading_orphaned_tool_results` (called from
+        // `trim_if_needed`) doesn't drop our message as an orphan.
+        history.add_user_message("query".to_string());
+        history.add_assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+            id: "call_xyz".to_string(),
+            name: "read_file".to_string(),
+            input: serde_json::json!({"path": "a.rs"}),
+            cache_control: None,
+        }]);
+        history.add_tool_results(vec![MessageContentBlock::ToolResult {
+            tool_use_id: "call_xyz".to_string(),
+            content: "file contents".to_string(),
+            cache_control: None,
+        }]);
+
+        let appended = history.append_text_to_last_user_blocks("hello".to_string());
+        assert!(appended, "append should succeed on a user-blocks tail");
+
+        let last = history.messages().last().unwrap();
+        assert_eq!(last.role, "user");
+        if let crate::api::MessageContent::Blocks { content } = &last.content {
+            assert_eq!(content.len(), 2, "expected ToolResult + Text");
+            assert!(matches!(
+                &content[0],
+                MessageContentBlock::ToolResult { .. }
+            ));
+            match &content[1] {
+                MessageContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
+                _ => panic!("expected Text block at index 1"),
+            }
+        } else {
+            panic!("expected Blocks content");
+        }
+    }
+
+    #[test]
+    fn test_append_text_to_last_user_blocks_noop_when_last_is_text_only() {
+        let mut history = ConversationHistory::new();
+        history.add_user_message("just text".to_string());
+
+        let appended = history.append_text_to_last_user_blocks("suffix".to_string());
+        assert!(
+            !appended,
+            "append should refuse to extend a Text-variant user message"
+        );
+    }
+
+    #[test]
+    fn test_append_text_to_last_user_blocks_noop_on_empty_history() {
+        let mut history = ConversationHistory::new();
+        let appended = history.append_text_to_last_user_blocks("text".to_string());
+        assert!(!appended, "append should refuse on empty history");
     }
 
     #[test]
