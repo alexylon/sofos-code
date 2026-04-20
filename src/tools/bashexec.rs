@@ -41,6 +41,22 @@ fn has_path_traversal(command: &str) -> bool {
     false
 }
 
+/// Return true when `op` appears as a command-name prefix anywhere in
+/// `command` — at the start, or immediately after a shell separator
+/// (` `, `;`, `&&`, `||`, `|`). Used to match multi-word command
+/// patterns (like `git checkout -f`) against a compound shell command
+/// (`ls && git checkout -f foo`). The match is a plain prefix — the
+/// caller is responsible for picking `op` strings that can't appear
+/// benignly as substrings after those separators.
+fn command_contains_op(command: &str, op: &str) -> bool {
+    command.starts_with(op)
+        || command.contains(&format!(" {}", op))
+        || command.contains(&format!(";{}", op))
+        || command.contains(&format!("&&{}", op))
+        || command.contains(&format!("||{}", op))
+        || command.contains(&format!("|{}", op))
+}
+
 /// Convert Unix signal number to human-readable name
 #[cfg(unix)]
 fn signal_name(sig: i32) -> &'static str {
@@ -155,6 +171,15 @@ impl BashExecutor {
             ));
         }
 
+        // Commands that aren't destructive enough to hard-deny but
+        // mutate working-tree state in a way the user should see before
+        // it happens — e.g. `git checkout <branch>` switches branches,
+        // `git checkout HEAD~N` detaches HEAD, `git checkout -- <path>`
+        // overwrites uncommitted changes. Fires AFTER the structural
+        // hard-deny above so `git checkout -f` / `git checkout -b`
+        // stay hard-blocked instead of being askable.
+        self.confirm_askable_command(command)?;
+
         // Check external paths in command — ask user for paths not covered by Bash path grants
         self.check_bash_external_paths(command, &mut permission_manager)?;
 
@@ -235,6 +260,46 @@ impl BashExecutor {
             MAX_TOOL_OUTPUT_TOKENS,
             TruncationKind::BashOutput,
         ))
+    }
+
+    /// Prompt the user before running commands that mutate working-tree
+    /// state in a way that's easy to overlook. Currently just
+    /// `git checkout <anything>` — plain branch switches, detached-HEAD
+    /// checkouts, and `git checkout -- <path>` file recovery all land
+    /// here. Hard-denied variants (`git checkout -f`, `git checkout -b`)
+    /// are filtered out earlier by `is_safe_command_structure`.
+    ///
+    /// Declining the prompt aborts the command. Accepting is scoped to
+    /// this one invocation — the user has to confirm each `git
+    /// checkout` explicitly, matching `confirm_destructive`'s policy of
+    /// "no remember button for working-tree mutations".
+    fn confirm_askable_command(&self, command: &str) -> Result<()> {
+        const ASKABLE_PREFIXES: &[&str] = &["git checkout"];
+
+        let matches = ASKABLE_PREFIXES
+            .iter()
+            .any(|prefix| command_contains_op(command, prefix));
+        if !matches {
+            return Ok(());
+        }
+
+        if !self.interactive {
+            return Err(SofosError::ToolExecution(format!(
+                "Command '{}' requires interactive confirmation\n\
+                 Hint: `git checkout` prompts before running because it switches branches \
+                 (or overwrites working-tree files). Run sofos interactively to confirm.",
+                command
+            )));
+        }
+
+        let prompt = format!("Run bash command: {}", command);
+        if !crate::tools::utils::confirm_destructive(&prompt)? {
+            return Err(SofosError::ToolExecution(format!(
+                "Command '{}' declined by user",
+                command
+            )));
+        }
+        Ok(())
     }
 
     /// Check all external paths (absolute or tilde) in a command against Bash path grants.
@@ -521,13 +586,7 @@ impl BashExecutor {
         ];
 
         for dangerous_op in &dangerous_git_ops {
-            if command.starts_with(dangerous_op)
-                || command.contains(&format!(" {}", dangerous_op))
-                || command.contains(&format!(";{}", dangerous_op))
-                || command.contains(&format!("&&{}", dangerous_op))
-                || command.contains(&format!("||{}", dangerous_op))
-                || command.contains(&format!("|{}", dangerous_op))
-            {
+            if command_contains_op(command, dangerous_op) {
                 return false;
             }
         }
@@ -982,6 +1041,68 @@ ask = []
         assert!(executor.is_safe_command_structure("ls ~/tmp"));
         assert!(executor.is_safe_command_structure("cat ~/file.txt"));
         assert!(executor.is_safe_command_structure("grep pattern ~/docs/file.txt"));
+    }
+
+    #[test]
+    fn test_git_checkout_requires_confirmation_non_interactive() {
+        // Plain `git checkout <branch>` isn't destructive enough to hard-
+        // deny (git refuses dirty-tree switches), but it mutates
+        // working-tree state in a way the user should see before it
+        // runs. In non-interactive mode (tests, piped stdin) there's no
+        // way to prompt, so the executor returns a clear error pointing
+        // at the interactive-mode requirement.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+
+        for cmd in &[
+            "git checkout main",
+            "git checkout HEAD~3",
+            "git checkout -- src/lib.rs",
+        ] {
+            let result = executor.execute(cmd);
+            assert!(
+                result.is_err(),
+                "expected confirmation gate to deny `{}` in non-interactive mode",
+                cmd
+            );
+            if let Err(SofosError::ToolExecution(msg)) = result {
+                assert!(
+                    msg.contains("confirmation"),
+                    "expected 'confirmation' hint for `{}`, got: {}",
+                    cmd,
+                    msg
+                );
+            } else {
+                panic!(
+                    "expected ToolExecution error for `{}`, got: {:?}",
+                    cmd, result
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_git_checkout_force_stays_hard_denied() {
+        // `git checkout -f` and `git checkout -b` must reject BEFORE the
+        // confirmation gate — they're in `dangerous_git_ops` and stay
+        // in the hard-deny tier even with the new askable mechanism.
+        // The error message mentions the dangerous-op reason, not the
+        // interactive-confirmation hint.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+
+        for cmd in &["git checkout -f main", "git checkout -b new-branch"] {
+            let result = executor.execute(cmd);
+            assert!(result.is_err(), "`{}` must stay hard-denied", cmd);
+            if let Err(SofosError::ToolExecution(msg)) = result {
+                assert!(
+                    !msg.contains("requires interactive confirmation"),
+                    "`{}` should be hard-denied, not askable — got: {}",
+                    cmd,
+                    msg
+                );
+            }
+        }
     }
 
     #[test]
