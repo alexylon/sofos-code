@@ -83,6 +83,16 @@ pub struct Repl {
     /// from overwriting them on terminals whose cursor-position DSR
     /// doesn't answer (e.g. Ghostty), where our fallback was `(0, 0)`.
     startup_banner: String,
+    /// Shared tokio runtime driving every `block_on` in the REPL
+    /// (initial request, compaction summary, tool-list refresh). Built
+    /// once in [`Self::new`] and reused for the lifetime of the `Repl`.
+    /// Previously each call site constructed a fresh
+    /// `Runtime::new()` and dropped it on return — expensive per-turn
+    /// (thread-pool spin-up + epoll registration) and fd-exhaustion-
+    /// prone under sustained load. Works because the TUI worker runs
+    /// on a plain `std::thread` (see `tui/worker.rs`), so the REPL's
+    /// owned runtime is the only tokio context on that thread.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl Repl {
@@ -92,7 +102,9 @@ impl Repl {
         workspace: PathBuf,
         morph_client: Option<MorphClient>,
     ) -> Result<Self> {
-        // Initialize MCP manager
+        // One runtime for the whole REPL lifetime — reused by every
+        // in-REPL `block_on` below (initial request, tool-list refresh,
+        // compaction summary). See the `runtime` field doc on `Repl`.
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
@@ -154,7 +166,13 @@ impl Repl {
 
         let ui = UI::new();
 
-        let mut repl = Self {
+        // Initialize available tools (needs async) — uses the runtime
+        // before it's moved into the struct so the async block can
+        // borrow `tool_executor` without conflicting with the struct's
+        // own borrow rules.
+        let available_tools = runtime.block_on(async { tool_executor.get_available_tools().await });
+
+        Ok(Self {
             client,
             tool_executor,
             history_manager,
@@ -163,18 +181,12 @@ impl Repl {
             model_config,
             session_state,
             safe_mode: config.safe_mode,
-            available_tools: Vec::new(),
+            available_tools,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             steer_queue: Arc::new(Mutex::new(Vec::new())),
             startup_banner: String::new(),
-        };
-
-        // Initialize available tools (needs async)
-        let available_tools =
-            runtime.block_on(async { repl.tool_executor.get_available_tools().await });
-        repl.available_tools = available_tools;
-
-        Ok(repl)
+            runtime,
+        })
     }
 
     pub fn run(self) -> Result<()> {
@@ -357,8 +369,7 @@ impl Repl {
 
         let initial_request = self.build_initial_request();
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
+        let runtime = &self.runtime;
 
         let use_streaming = false;
         let client_for_retry = self.client.clone();
@@ -785,10 +796,14 @@ impl Repl {
     }
 
     fn refresh_available_tools(&mut self) {
-        if let Ok(runtime) = tokio::runtime::Runtime::new() {
-            self.available_tools =
-                runtime.block_on(async { self.tool_executor.get_available_tools().await });
-        }
+        // Disjoint field borrows: `self.runtime` and `self.tool_executor`
+        // are different fields, so the async block's borrow of
+        // `tool_executor` doesn't conflict with the runtime's `&self`
+        // receiver on `block_on`.
+        let tools = self
+            .runtime
+            .block_on(async { self.tool_executor.get_available_tools().await });
+        self.available_tools = tools;
     }
 
     pub fn load_session_by_id(&mut self, session_id: &str) -> Result<()> {
@@ -900,15 +915,13 @@ impl Repl {
             reasoning: None,
         };
 
-        let runtime = tokio::runtime::Runtime::new()
-            .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
-
         let interrupt_flag = Arc::clone(&self.interrupt_flag);
         let client = self.client.clone();
-        let mut request_handle =
-            runtime.spawn(async move { client.create_message(summary_request).await });
+        let mut request_handle = self
+            .runtime
+            .spawn(async move { client.create_message(summary_request).await });
 
-        let response_result = runtime.block_on(async {
+        let response_result = self.runtime.block_on(async {
             tokio::select! {
                 res = &mut request_handle => {
                     match res {
