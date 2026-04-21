@@ -3,11 +3,29 @@ use std::io;
 use std::io::Write;
 use std::sync::OnceLock;
 
-/// Maximum tokens (≈ chars / 4, ≈ 56 KB) a single tool call is allowed
+/// Maximum tokens (≈ chars / 4, ≈ 64 KB) a single tool call is allowed
 /// to return before [`truncate_for_context`] clips it with an informational
 /// suffix. Keeps a single large bash output or file read from monopolising
 /// the model's context window.
 pub const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000;
+
+/// Separate, more generous cap for path-list tools (`list_directory`,
+/// `glob_files`). Filenames are short and the model often needs to see
+/// the full listing to locate a specific file, so we apply roughly an
+/// order-of-magnitude-bigger budget (~1 MB) than the generic cap above.
+/// Still far under OpenAI's 10 MB per-tool-output ceiling, so a
+/// pathological `glob_files("**/*")` on a huge monorepo can't produce
+/// an API 400.
+pub const MAX_PATH_LIST_TOKENS: usize = 250_000;
+
+/// Generous cap (~1 MB) for diff outputs returned from `write_file`,
+/// `edit_file`, and `morph_edit_file`. Diffs carry syntax-highlighting
+/// ANSI codes that roughly triple the byte-per-line count, so an
+/// overwrite of a large file (every line marked `-` then `+`) can
+/// easily exceed the tight code-output cap. Enough for the model to
+/// inspect nearly any real-world edit in full, but still far below
+/// OpenAI's 10 MB per-tool-output ceiling.
+pub const MAX_DIFF_TOKENS: usize = 250_000;
 
 /// Which "kind" of tool output we're truncating — drives the suffix copy
 /// so the model sees a hint tuned to the actual recovery path (re-run
@@ -20,20 +38,54 @@ pub enum TruncationKind {
     /// `execute_bash` stdout / stderr — suffix suggests redirecting the
     /// full output to a file.
     BashOutput,
+    /// `search_code` ripgrep output — suffix suggests narrowing the
+    /// pattern, adding a file_type filter, or lowering max_results.
+    SearchOutput,
+    /// `list_directory` / `glob_files` path list — suffix suggests
+    /// narrowing the pattern or listing a smaller subdirectory.
+    PathList,
+    /// `write_file` / `edit_file` / `morph_edit_file` diff report —
+    /// suffix reminds the caller the edit already succeeded and points
+    /// at `read_file` for inspecting specific regions.
+    DiffOutput,
 }
 
 impl TruncationKind {
-    fn suffix(&self, estimated_tokens: usize, shown_tokens: usize) -> String {
+    /// Subject word that fills the `"<X> has ~N tokens"` slot, and the
+    /// per-kind remediation hint appended after the token counts. Split
+    /// out so `suffix` can format all five variants through a single
+    /// template instead of duplicating it five times.
+    fn subject_and_hint(&self) -> (&'static str, &'static str) {
         match self {
-            Self::File => format!(
-                "[TRUNCATED: File has ~{} tokens, showing first ~{} tokens. Use search_code or request specific line ranges if you need more.]",
-                estimated_tokens, shown_tokens
+            Self::File => (
+                "File",
+                "Use search_code or request specific line ranges if you need more.",
             ),
-            Self::BashOutput => format!(
-                "[TRUNCATED: Output has ~{} tokens, showing first ~{} tokens. Re-run with output redirection if you need the full output.]",
-                estimated_tokens, shown_tokens
+            Self::BashOutput => (
+                "Output",
+                "Re-run with output redirection if you need the full output.",
+            ),
+            Self::SearchOutput => (
+                "Search output",
+                "Narrow the pattern, add a file_type filter, or lower max_results to reduce the output.",
+            ),
+            Self::PathList => (
+                "Path list",
+                "Narrow the glob pattern or list a smaller subdirectory to reduce the output.",
+            ),
+            Self::DiffOutput => (
+                "Diff",
+                "The edit already succeeded — use read_file with a line range to inspect specific regions if needed.",
             ),
         }
+    }
+
+    fn suffix(&self, estimated_tokens: usize, shown_tokens: usize) -> String {
+        let (subject, hint) = self.subject_and_hint();
+        format!(
+            "[TRUNCATED: {} has ~{} tokens, showing first ~{} tokens. {}]",
+            subject, estimated_tokens, shown_tokens, hint
+        )
     }
 }
 
@@ -41,8 +93,7 @@ impl TruncationKind {
 /// (4 chars ≈ 1 token) and append an informational suffix describing the
 /// drop. The cut point is snapped to the nearest UTF-8 char boundary so
 /// multi-byte scalars (Cyrillic, CJK, emoji) never get split — raw byte
-/// slicing would panic on those. Consolidated from two near-identical
-/// copies that previously lived in `filesystem.rs` and `bashexec.rs`.
+/// slicing would panic on those.
 pub fn truncate_for_context(content: &str, max_tokens: usize, kind: TruncationKind) -> String {
     let estimated_tokens = content.len() / 4;
     if estimated_tokens > max_tokens {
@@ -334,5 +385,57 @@ mod tests {
         assert!(out.contains("[TRUNCATED: Output has"));
         assert!(out.contains("output redirection"));
         assert!(!out.contains("search_code"));
+    }
+
+    #[test]
+    fn truncate_for_context_search_variant_hints_at_narrowing() {
+        let big = "z".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::SearchOutput);
+        assert!(out.contains("[TRUNCATED: Search output has"));
+        assert!(out.contains("Narrow the pattern"));
+        assert!(out.contains("file_type"));
+        assert!(out.contains("max_results"));
+        assert!(!out.contains("output redirection"));
+    }
+
+    #[test]
+    fn truncate_for_context_path_list_variant_hints_at_subdirectory() {
+        let big = "p".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::PathList);
+        assert!(out.contains("[TRUNCATED: Path list has"));
+        assert!(out.contains("Narrow the glob pattern"));
+        assert!(out.contains("subdirectory"));
+        assert!(!out.contains("file_type"));
+    }
+
+    #[test]
+    fn truncate_for_context_handles_multibyte_boundary() {
+        // Build a string whose natural byte-index cut (`max_tokens * 4`)
+        // lands inside a multi-byte UTF-8 scalar. Cyrillic 'ъ' is 2
+        // bytes, so 15 ASCII chars followed by 'ъ' puts the character
+        // at bytes 15..17 — byte 16 is in the middle. Without the
+        // char-boundary snap, slicing `content[..16]` would panic.
+        let max_tokens = 4;
+        let cut = max_tokens * 4; // 16
+        let mut s = "a".repeat(cut - 1);
+        s.push('ъ');
+        s.push_str(" and some trailing context to push past the limit");
+        assert!(
+            !s.is_char_boundary(cut),
+            "test setup: byte {} must be inside a multi-byte char",
+            cut
+        );
+        let out = truncate_for_context(&s, max_tokens, TruncationKind::File);
+        assert!(out.contains("[TRUNCATED"));
+    }
+
+    #[test]
+    fn truncate_for_context_diff_variant_points_at_read_file() {
+        let big = "d".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::DiffOutput);
+        assert!(out.contains("[TRUNCATED: Diff has"));
+        assert!(out.contains("edit already succeeded"));
+        assert!(out.contains("read_file"));
+        assert!(!out.contains("glob pattern"));
     }
 }

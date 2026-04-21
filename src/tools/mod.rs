@@ -21,7 +21,10 @@ use std::time::Duration;
 use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
-use crate::tools::utils::confirm_destructive;
+use crate::tools::utils::{
+    MAX_DIFF_TOKENS, MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS, TruncationKind,
+    confirm_destructive, truncate_for_context,
+};
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 use std::collections::HashSet;
@@ -422,17 +425,23 @@ impl ToolExecutor {
 
                 self.check_read_access(path, &canonical, canonical_str, is_inside_workspace)?;
 
-                if is_inside_workspace {
-                    match self.fs_tool.read_file(path) {
-                        Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
-                        Err(e) => Err(e),
-                    }
+                // Read raw file contents, then apply the model-facing
+                // truncation cap here at the dispatcher. Truncation lives
+                // in this layer (not inside `fs_tool.read_file`) so that
+                // `edit_file` / `morph_edit_file` / the `write_file` diff
+                // path — which all call the same fs_tool method — get the
+                // full file and don't silently drop the tail past ~64 KB.
+                let raw = if is_inside_workspace {
+                    self.fs_tool.read_file(path)?
                 } else {
-                    match self.fs_tool.read_file_with_outside_access(canonical_str) {
-                        Ok(content) => Ok(format!("File content of '{}':\n\n{}", path, content)),
-                        Err(e) => Err(e),
-                    }
-                }
+                    self.fs_tool.read_file_with_outside_access(canonical_str)?
+                };
+                let content = truncate_for_context(
+                    &raw,
+                    MAX_TOOL_OUTPUT_TOKENS,
+                    TruncationKind::File,
+                );
+                Ok(format!("File content of '{}':\n\n{}", path, content))
             }
             ToolName::WriteFile => {
                 // Accept common parameter-name variations. OpenAI
@@ -576,9 +585,12 @@ impl ToolExecutor {
                     ))
                 } else if let Some(original) = original_content {
                     let diff_output = diff::generate_compact_diff(&original, content, path);
-                    Ok(format!(
-                        "Successfully wrote to file '{}'\n\nChanges:\n{}",
-                        path, diff_output
+                    let body =
+                        format!("Successfully wrote to file '{}'\n\nChanges:\n{}", path, diff_output);
+                    Ok(truncate_for_context(
+                        &body,
+                        MAX_DIFF_TOKENS,
+                        TruncationKind::DiffOutput,
                     ))
                 } else {
                     Ok(format!("Successfully created file '{}'", path))
@@ -625,7 +637,12 @@ impl ToolExecutor {
                     entries
                 };
 
-                Ok(format!("Contents of '{}':\n{}", path, entries.join("\n")))
+                let body = format!("Contents of '{}':\n{}", path, entries.join("\n"));
+                Ok(truncate_for_context(
+                    &body,
+                    MAX_PATH_LIST_TOKENS,
+                    TruncationKind::PathList,
+                ))
             }
             ToolName::CreateDirectory => {
                 let path = input["path"].as_str().ok_or_else(|| {
@@ -647,8 +664,10 @@ impl ToolExecutor {
 
                 let file_type = input["file_type"].as_str();
                 let max_results = input["max_results"].as_u64().map(|n| n as usize);
+                let include_ignored = input["include_ignored"].as_bool().unwrap_or(false);
 
-                let results = code_search.search(pattern, file_type, max_results)?;
+                let results =
+                    code_search.search(pattern, file_type, max_results, include_ignored)?;
                 Ok(format!("{}{}", codesearch::SEARCH_RESULTS_PREFIX, results))
             }
             ToolName::GlobFiles => {
@@ -656,17 +675,45 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'pattern' parameter".to_string())
                 })?;
                 let base = input["path"].as_str().unwrap_or(".");
+                let include_ignored = input["include_ignored"].as_bool().unwrap_or(false);
 
-                let search_dir = self.fs_tool._workspace().join(base);
-                if !search_dir.exists() {
-                    return Err(SofosError::FileNotFound(base.to_string()));
-                }
+                // Resolve `base` the same way `list_directory` / `read_file`
+                // do — tilde / absolute paths are taken as-is, relative
+                // paths join with the workspace — then canonicalize and
+                // run through `check_read_access` for the external-path
+                // case. That routes unauthorised outside-workspace paths
+                // through the user-prompt / allow-rule gate instead of
+                // silently walking them (the earlier bug) or hard-
+                // rejecting them (which would block the legitimate
+                // "review /some/other/repo" workflow). Relative escapes
+                // like `base=".."` still fall here: they canonicalize
+                // outside the workspace and hit the same gate.
+                let full_path = if base.starts_with('/') || base.starts_with('~') {
+                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(base))
+                } else {
+                    self.fs_tool._workspace().join(base)
+                };
+                let search_dir = std::fs::canonicalize(&full_path)
+                    .map_err(|_| SofosError::FileNotFound(base.to_string()))?;
+                let is_inside_workspace = search_dir.starts_with(self.fs_tool._workspace());
+                let canonical_str = search_dir.to_str().unwrap_or(base);
+                self.check_read_access(base, &search_dir, canonical_str, is_inside_workspace)?;
 
                 let glob = globset::GlobBuilder::new(pattern)
                     .literal_separator(false)
                     .build()
                     .map_err(|e| SofosError::ToolExecution(format!("Invalid glob pattern: {}", e)))?
                     .compile_matcher();
+
+                // Skip descent into build / vendor directories by basename.
+                // Matches the `search_code` policy and prevents a broad
+                // pattern like `**/*` from walking a 2.5 GB `target/` tree.
+                // `include_ignored=true` disables this and walks everything.
+                let excluded_basenames: std::collections::HashSet<&str> = if include_ignored {
+                    std::collections::HashSet::new()
+                } else {
+                    codesearch::DEFAULT_EXCLUDE_DIRS.iter().copied().collect()
+                };
 
                 let mut matches = Vec::new();
                 let mut stack = vec![search_dir.clone()];
@@ -678,11 +725,16 @@ impl ToolExecutor {
                     };
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if let Ok(rel) = path.strip_prefix(&search_dir) {
+                        if path.is_dir() {
+                            let dir_name =
+                                path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            if excluded_basenames.contains(dir_name) {
+                                continue;
+                            }
+                            stack.push(path);
+                        } else if let Ok(rel) = path.strip_prefix(&search_dir) {
                             let rel_str = rel.to_string_lossy();
-                            if path.is_dir() {
-                                stack.push(path);
-                            } else if glob.is_match(rel_str.as_ref()) {
+                            if glob.is_match(rel_str.as_ref()) {
                                 matches.push(rel_str.to_string());
                             }
                         }
@@ -691,16 +743,22 @@ impl ToolExecutor {
 
                 matches.sort();
 
-                if matches.is_empty() {
-                    Ok(format!("No files matching '{}' in '{}'", pattern, base))
+                let body = if matches.is_empty() {
+                    format!("No files matching '{}' in '{}'", pattern, base)
                 } else {
-                    Ok(format!(
+                    format!(
                         "Found {} file(s) matching '{}':\n{}",
                         matches.len(),
                         pattern,
                         matches.join("\n")
-                    ))
-                }
+                    )
+                };
+
+                Ok(truncate_for_context(
+                    &body,
+                    MAX_PATH_LIST_TOKENS,
+                    TruncationKind::PathList,
+                ))
             }
             ToolName::EditFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
@@ -787,9 +845,11 @@ impl ToolExecutor {
                 }
 
                 let diff_output = diff::generate_compact_diff(&original, &modified, path);
-                Ok(format!(
-                    "Successfully edited '{}'\n\nChanges:\n{}",
-                    path, diff_output
+                let body = format!("Successfully edited '{}'\n\nChanges:\n{}", path, diff_output);
+                Ok(truncate_for_context(
+                    &body,
+                    MAX_DIFF_TOKENS,
+                    TruncationKind::DiffOutput,
                 ))
             }
             ToolName::MorphEditFile => {
@@ -933,9 +993,14 @@ impl ToolExecutor {
                 // Generate diff for display
                 let diff_output = diff::generate_compact_diff(&original_code, &merged_code, path);
 
-                Ok(format!(
+                let body = format!(
                     "Successfully applied Morph edit to '{}'\n\nChanges:\n{}",
                     path, diff_output
+                );
+                Ok(truncate_for_context(
+                    &body,
+                    MAX_DIFF_TOKENS,
+                    TruncationKind::DiffOutput,
                 ))
             }
             ToolName::DeleteFile => {

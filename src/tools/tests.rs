@@ -157,6 +157,70 @@ async fn test_edit_file_replaces_string() {
 }
 
 #[tokio::test]
+async fn test_edit_file_preserves_content_past_truncation_cap() {
+    // Regression: `edit_file` used to read through `fs_tool.read_file`,
+    // which applied a ~64 KB `truncate_for_context` cap before returning
+    // the "original" content. The edit was then applied to that
+    // truncated view and written back — silently dropping everything
+    // past the first ~64 KB and leaving a literal `[TRUNCATED: ...]`
+    // footer in the file. Any source file bigger than the cap was
+    // getting corrupted by a simple search-and-replace edit.
+    //
+    // This test builds a file far above the cap (~200 KB), runs
+    // `edit_file` against a match that lives in the prefix, and then
+    // verifies the tail is still intact and nothing from the
+    // truncation-suffix copy leaked onto disk.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let head = "TARGET_MARKER\n".to_string();
+    let middle = "x".repeat(200_000);
+    let tail = "\nEND_OF_FILE_SENTINEL\n".to_string();
+    let original = format!("{head}{middle}{tail}");
+    std::fs::write(workspace.path().join("big.txt"), &original).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "edit_file",
+            &json!({
+                "path": "big.txt",
+                "old_string": "TARGET_MARKER",
+                "new_string": "REPLACED_MARKER",
+            }),
+        )
+        .await;
+    assert!(result.is_ok(), "edit_file failed: {:?}", result);
+
+    let on_disk = std::fs::read_to_string(workspace.path().join("big.txt")).unwrap();
+    assert!(
+        on_disk.starts_with("REPLACED_MARKER\n"),
+        "head must contain the replacement"
+    );
+    assert!(
+        on_disk.ends_with("END_OF_FILE_SENTINEL\n"),
+        "tail must be preserved — file was truncated: length={}",
+        on_disk.len()
+    );
+    assert!(
+        !on_disk.contains("[TRUNCATED:"),
+        "truncation suffix must never land on disk"
+    );
+    assert_eq!(
+        on_disk.len(),
+        original.len() + "REPLACED_MARKER".len() - "TARGET_MARKER".len(),
+        "file length should change only by the replacement delta"
+    );
+}
+
+#[tokio::test]
 async fn test_edit_file_not_found_string() {
     let workspace = tempdir().unwrap();
     let config_dir = workspace.path().join(".sofos");
@@ -236,6 +300,156 @@ async fn test_glob_files_finds_matches() {
     assert!(text.contains("main.rs"));
     assert!(text.contains("lib.rs"));
     assert!(!text.contains("README.md"));
+}
+
+#[tokio::test]
+async fn test_glob_files_skips_default_excludes() {
+    // `glob_files("**/*.rs")` must not descend into `target/`,
+    // `node_modules/`, `.git/`, etc. by default — a broad pattern over
+    // a repo with a populated `target/` would otherwise return
+    // thousands of compiler-generated `.rs` files and blow past the
+    // API tool-output limit.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let src = workspace.path().join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("main.rs"), "").unwrap();
+
+    let generated = workspace.path().join("target/debug/build/foo");
+    std::fs::create_dir_all(&generated).unwrap();
+    std::fs::write(generated.join("generated.rs"), "").unwrap();
+
+    let node_dep = workspace.path().join("node_modules/pkg");
+    std::fs::create_dir_all(&node_dep).unwrap();
+    std::fs::write(node_dep.join("index.rs"), "").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("glob_files", &json!({"pattern": "**/*.rs"}))
+        .await;
+    assert!(result.is_ok());
+    let text = result.unwrap().text().to_string();
+    assert!(text.contains("main.rs"), "expected src/main.rs; got: {text}");
+    assert!(
+        !text.contains("generated.rs"),
+        "target/ descent must be blocked by default; got: {text}"
+    );
+    assert!(
+        !text.contains("node_modules"),
+        "node_modules/ descent must be blocked by default; got: {text}"
+    );
+
+    // include_ignored=true walks everything.
+    let result = executor
+        .execute(
+            "glob_files",
+            &json!({"pattern": "**/*.rs", "include_ignored": true}),
+        )
+        .await;
+    assert!(result.is_ok());
+    let text = result.unwrap().text().to_string();
+    assert!(
+        text.contains("generated.rs"),
+        "include_ignored=true must surface target/ contents; got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn test_glob_files_gates_external_path_through_permissions() {
+    // `base = ".."` used to pass through `workspace.join("..")` = workspace
+    // parent and then `read_dir` would walk it. `base = "/etc"` is even
+    // more direct — `Path::join` replaces self with an absolute argument,
+    // so the walk started at `/etc`. Both paths are now routed through
+    // `check_read_access`, which in non-interactive mode with no allow
+    // grant produces an "outside workspace" error. With an explicit
+    // allow rule the same path succeeds — so the legitimate "review
+    // /some/other/repo" workflow still works, but unauthorised escapes
+    // can't walk arbitrary directories silently.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let outside = tempdir().unwrap();
+    std::fs::write(outside.path().join("SECRET_MARKER"), "leak").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    // Parent-directory escape — no grant, non-interactive mode → denied
+    // with the "outside workspace" hint.
+    let result = executor
+        .execute("glob_files", &json!({"pattern": "**/*", "path": ".."}))
+        .await;
+    match result {
+        Err(SofosError::ToolExecution(msg)) => assert!(
+            msg.contains("outside workspace"),
+            "expected 'outside workspace' hint; got: {msg}"
+        ),
+        other => panic!("expected ToolExecution error for base='..'; got: {other:?}"),
+    }
+
+    // Absolute-path escape gets the same treatment.
+    let outside_abs = outside.path().to_string_lossy().to_string();
+    let result = executor
+        .execute(
+            "glob_files",
+            &json!({"pattern": "**/*", "path": outside_abs}),
+        )
+        .await;
+    match result {
+        Err(SofosError::ToolExecution(msg)) => assert!(
+            msg.contains("outside workspace"),
+            "expected 'outside workspace' hint; got: {msg}"
+        ),
+        other => panic!("expected ToolExecution error for absolute path; got: {other:?}"),
+    }
+
+    // With an explicit Read allow rule covering the outside directory,
+    // `glob_files` proceeds — the legitimate workflow the permission
+    // system is there to support.
+    let canonical_outside = std::fs::canonicalize(outside.path()).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
+            canonical_outside.display()
+        ),
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "glob_files",
+            &json!({
+                "pattern": "**/SECRET_MARKER",
+                "path": outside.path().to_string_lossy(),
+            }),
+        )
+        .await;
+    let text = result
+        .expect("glob_files with Read grant must succeed")
+        .text()
+        .to_string();
+    assert!(
+        text.contains("SECRET_MARKER"),
+        "expected grant to surface outside files; got: {text}"
+    );
 }
 
 #[tokio::test]

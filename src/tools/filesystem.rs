@@ -1,6 +1,5 @@
 use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
-use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -142,74 +141,55 @@ impl FileSystemTool {
         Ok(canonical)
     }
 
+    /// Read the full contents of a file inside the workspace.
+    ///
+    /// Returns the complete bytes (subject to [`MAX_FILE_SIZE`]) with no
+    /// truncation — `edit_file` / `morph_edit_file` need the whole file
+    /// so their edits don't silently drop everything past the first
+    /// ~64 KB. The `read_file` tool dispatcher is responsible for
+    /// applying [`crate::tools::utils::truncate_for_context`] before
+    /// handing the content to the model.
     pub fn read_file(&self, path: &str) -> Result<String> {
         let validated_path = self.validate_path(path)?;
-
-        if !validated_path.exists() {
-            return Err(SofosError::FileNotFound(path.to_string()));
-        }
-
-        let metadata = fs::metadata(&validated_path)
-            .with_context(|| format!("Failed to read metadata for: {}", path))?;
-
-        if metadata.len() > MAX_FILE_SIZE {
-            return Err(SofosError::ToolExecution(format!(
-                "File too large: {} (max: {} MB)",
-                path,
-                MAX_FILE_SIZE / (1024 * 1024)
-            )));
-        }
-
-        let content = fs::read_to_string(&validated_path)
-            .with_context(|| format!("Failed to read file: {}", path))?;
-
-        Ok(truncate_for_context(
-            &content,
-            MAX_TOOL_OUTPUT_TOKENS,
-            TruncationKind::File,
-        ))
+        Self::read_bytes_bounded(&validated_path, path)
     }
 
-    /// Read a file that may be outside the workspace
-    /// Only used when explicitly allowed by config - does not enforce workspace prefix
+    /// Read a file that may be outside the workspace. Only used when
+    /// explicitly allowed by config — does not enforce the workspace
+    /// prefix. Same "return raw bytes" contract as [`Self::read_file`];
+    /// truncation for the read_file tool output is the dispatcher's job.
     pub fn read_file_with_outside_access(&self, path: &str) -> Result<String> {
         let full_path = PathBuf::from(path);
-
-        if !full_path.is_absolute() {
-            let joined = self.workspace.join(path);
-            self.read_canonicalized(joined, path)
+        let candidate = if full_path.is_absolute() {
+            full_path
         } else {
-            self.read_canonicalized(full_path, path)
-        }
+            self.workspace.join(path)
+        };
+        let canonical = fs::canonicalize(&candidate)
+            .with_context(|| format!("Failed to resolve path: {}", path))?;
+        Self::read_bytes_bounded(&canonical, path)
     }
 
-    fn read_canonicalized(&self, path_buf: PathBuf, original: &str) -> Result<String> {
-        let canonical = fs::canonicalize(&path_buf)
-            .with_context(|| format!("Failed to resolve path: {}", original))?;
-
-        if !canonical.exists() {
-            return Err(SofosError::FileNotFound(original.to_string()));
+    /// Shared size-check + read logic for the two public read methods.
+    /// `label` is the caller-facing path string used in error messages.
+    fn read_bytes_bounded(path: &Path, label: &str) -> Result<String> {
+        if !path.exists() {
+            return Err(SofosError::FileNotFound(label.to_string()));
         }
 
-        let metadata = fs::metadata(&canonical)
-            .with_context(|| format!("Failed to read metadata for: {}", original))?;
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for: {}", label))?;
 
         if metadata.len() > MAX_FILE_SIZE {
             return Err(SofosError::ToolExecution(format!(
                 "File too large: {} (max: {} MB)",
-                original,
+                label,
                 MAX_FILE_SIZE / (1024 * 1024)
             )));
         }
 
-        let content = fs::read_to_string(&canonical)
-            .with_context(|| format!("Failed to read file: {}", original))?;
-
-        Ok(truncate_for_context(
-            &content,
-            MAX_TOOL_OUTPUT_TOKENS,
-            TruncationKind::File,
-        ))
+        fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file: {}", label))
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {
@@ -447,27 +427,6 @@ mod tests {
             contents,
             "# Синергията между Божия промисъл и човешката воля"
         );
-    }
-
-    #[test]
-    fn truncate_for_context_handles_multibyte_boundary() {
-        // Build a string whose natural byte-index cut (`max_tokens * 4`)
-        // lands inside a multi-byte UTF-8 scalar. Cyrillic 'ъ' is 2
-        // bytes, so 15 ASCII chars followed by 'ъ' puts the character
-        // at bytes 15..17 — byte 16 is in the middle. Without the
-        // char-boundary snap, slicing `content[..16]` would panic.
-        let max_tokens = 4;
-        let cut = max_tokens * 4; // 16
-        let mut s = "a".repeat(cut - 1);
-        s.push('ъ');
-        s.push_str(" and some trailing context to push past the limit");
-        assert!(
-            !s.is_char_boundary(cut),
-            "test setup: byte {} must be inside a multi-byte char",
-            cut
-        );
-        let out = truncate_for_context(&s, max_tokens, TruncationKind::File);
-        assert!(out.contains("[TRUNCATED"));
     }
 
     #[test]

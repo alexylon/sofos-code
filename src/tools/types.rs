@@ -242,9 +242,17 @@ fn edit_file_tool() -> Tool {
 }
 
 fn glob_files_tool() -> Tool {
+    let excludes = crate::tools::codesearch::default_exclude_dirs_human();
+    let tool_description = format!(
+        "Find files recursively by glob pattern. Use this when you need to find files across the codebase by name or extension (e.g., '**/*.rs', 'src/**/test_*.py'). For listing a single directory's contents, use list_directory instead. By default skips build/vendored directories ({excludes}); set include_ignored=true to walk everything."
+    );
+    let include_ignored_description = format!(
+        "When true, descend into the default build/vendored excludes ({excludes}). Default: false. Only set this when you specifically need to find files inside build artefacts or vendored code."
+    );
+
     Tool::Regular {
         name: "glob_files".to_string(),
-        description: "Find files recursively by glob pattern. Use this when you need to find files across the codebase by name or extension (e.g., '**/*.rs', 'src/**/test_*.py'). For listing a single directory's contents, use list_directory instead.".to_string(),
+        description: tool_description,
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -254,7 +262,11 @@ fn glob_files_tool() -> Tool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in, relative to workspace root. Default: '.' (entire workspace)"
+                    "description": "Directory to search in, relative to workspace root. Default: '.' (entire workspace). Can also be absolute or ~/ paths for external directories (user will be prompted for Read access)."
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": include_ignored_description
                 }
             },
             "required": ["pattern"]
@@ -376,9 +388,21 @@ pub fn get_read_only_tools() -> Vec<Tool> {
 
 /// Add code search tool to an existing tool list
 pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
+    let excludes = crate::tools::codesearch::default_exclude_dirs_human();
+    let tool_description = format!(
+        "Search for patterns in code using ripgrep. Supports regex patterns and file type filtering. Fast search across the entire codebase. By default skips build/vendored directories ({excludes}) and respects .gitignore; set include_ignored=true to search everywhere."
+    );
+    let max_results_description = format!(
+        "Maximum results per file (default: {})",
+        crate::tools::codesearch::DEFAULT_MAX_RESULTS_PER_FILE
+    );
+    let include_ignored_description = format!(
+        "When true, bypass the default build/vendored excludes ({excludes}) and ignore files (.gitignore, .ignore). Default: false. Only set this when you specifically need to grep inside build artefacts or vendored code."
+    );
+
     tools.push(Tool::Regular {
         name: "search_code".to_string(),
-        description: "Search for patterns in code using ripgrep. Supports regex patterns and file type filtering. Fast search across the entire codebase.".to_string(),
+        description: tool_description,
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -392,7 +416,11 @@ pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum results per file (default: 50)"
+                    "description": max_results_description
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": include_ignored_description
                 }
             },
             "required": ["pattern"]
