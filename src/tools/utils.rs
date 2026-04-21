@@ -3,11 +3,24 @@ use std::io;
 use std::io::Write;
 use std::sync::OnceLock;
 
-/// Maximum tokens (≈ chars / 4, ≈ 64 KB) a single tool call is allowed
-/// to return before [`truncate_for_context`] clips it with an informational
-/// suffix. Keeps a single large bash output or file read from monopolising
-/// the model's context window.
+/// Maximum tokens (≈ chars / 4, ≈ 64 KB) returned from `execute_bash`
+/// (stdout / stderr) and `search_code` (ripgrep output) before
+/// [`truncate_for_context`] clips with an informational suffix. Verbose
+/// test runs and broad regex searches spiral quickly; capping here forces
+/// the model to narrow the query or redirect to a file rather than drown
+/// the context in noise. `read_file` uses a separate, larger cap —
+/// see [`MAX_FILE_READ_TOKENS`].
 pub const MAX_TOOL_OUTPUT_TOKENS: usize = 16_000;
+
+/// Larger cap (≈ 256 KB) for `read_file` output. A single mid-sized
+/// source file — generated code, JSON fixtures, long prompt templates —
+/// routinely exceeds the 16 KB bash/search budget, and clipping it
+/// forces the model into a range-reads round trip against the
+/// 200-iteration budget. Files are structured content the model
+/// typically needs to reason about in full, so the tradeoff favours a
+/// bigger budget here than for bash noise. Still far below OpenAI's
+/// 10 MB per-tool-output ceiling.
+pub const MAX_FILE_READ_TOKENS: usize = 64_000;
 
 /// Separate, more generous cap for path-list tools (`list_directory`,
 /// `glob_files`). Filenames are short and the model often needs to see

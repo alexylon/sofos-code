@@ -22,8 +22,8 @@ use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::{
-    MAX_DIFF_TOKENS, MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT, MAX_MCP_OUTPUT_TOKENS,
-    MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS, TruncationKind, confirm_destructive,
+    MAX_DIFF_TOKENS, MAX_FILE_READ_TOKENS, MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT,
+    MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, TruncationKind, confirm_destructive,
     is_absolute_or_tilde, truncate_for_context,
 };
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
@@ -659,7 +659,7 @@ impl ToolExecutor {
                         .read_file_with_outside_access(&resolved.canonical_str)?
                 };
                 let content =
-                    truncate_for_context(&raw, MAX_TOOL_OUTPUT_TOKENS, TruncationKind::File);
+                    truncate_for_context(&raw, MAX_FILE_READ_TOKENS, TruncationKind::File);
                 Ok(format!("File content of '{}':\n\n{}", path, content))
             }
             ToolName::WriteFile => {

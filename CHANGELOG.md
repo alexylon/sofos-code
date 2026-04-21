@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **`read_file` output cap raised to ~256 KB** (64k tokens). Previously `read_file` shared the ~64 KB / 16k-token cap with `execute_bash` and `search_code`, which clipped mid-sized source files — generated code, JSON fixtures, long prompt templates — and forced the model into an extra range-reads round trip against the 200-iteration tool-loop budget. `execute_bash` stdout/stderr and `search_code` keep the 16k-token cap, since verbose test output and broad ripgrep patterns benefit from being forced to narrow rather than handing the model noise.
+
+### Fixed
+
+- Prompt glyph (> or :) now correctly reflects the normal/safe modes.
+
 ## [0.2.2] - 2026-04-21
 
 ### Security
