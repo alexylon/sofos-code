@@ -887,7 +887,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
     let glyph = if will_steer {
         "↑"
     } else if app.is_safe_mode() {
-        "λ:"
+        ":"
     } else {
         ">"
     };

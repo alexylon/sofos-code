@@ -114,7 +114,7 @@ sofos
 - `/clear` - Clear conversation history
 - `/think [on|off]` - Toggle extended thinking (shows status if no arg)
 - `/compact` - Summarize older messages via the LLM to reclaim context tokens (auto-triggers at 80% usage)
-- `/s` - Safe mode (read-only, prompt: **`λ:`**)
+- `/s` - Safe mode (read-only, prompt: **`:`**)
 - `/n` - Normal mode (all tools, prompt: **`>`**)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
 - `ESC` or `Ctrl+C` (while busy) - Interrupt AI response

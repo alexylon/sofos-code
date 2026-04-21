@@ -36,9 +36,9 @@ You should see: `MCP servers initialized`
 ### 4. Use MCP Tools
 
 ```
-λ> List files in my Documents folder
+> List files in my Documents folder
 
-λ> Read test.txt from Documents
+> Read test.txt from Documents
 ```
 
 The AI will use tools like `filesystem_list_directory` and `filesystem_read_file`.

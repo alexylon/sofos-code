@@ -652,7 +652,7 @@ impl Repl {
     }
 
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
-        let symbol = if self.safe_mode { "λ:" } else { "λ>" };
+        let symbol = if self.safe_mode { ":" } else { ">" };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
         self.process_message(prompt, vec![])?;

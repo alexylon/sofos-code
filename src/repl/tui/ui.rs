@@ -88,7 +88,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let safe = app.is_safe_mode();
-    let prompt_glyph = if safe { " λ: " } else { " > " };
+    let prompt_glyph = if safe { " : " } else { " > " };
     let title = Line::from(vec![Span::styled(
         prompt_glyph,
         Style::default()
