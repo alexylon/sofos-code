@@ -1,6 +1,8 @@
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
-use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
+use crate::tools::utils::{
+    MAX_TOOL_OUTPUT_TOKENS, TruncationKind, is_absolute_path, truncate_for_context,
+};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -334,11 +336,18 @@ impl BashExecutor {
                 cleaned
             };
 
-            if path_candidate.starts_with('/') {
-                self.check_bash_external_path(path_candidate, permission_manager)?;
-            } else if path_candidate.starts_with("~/") || path_candidate == "~" {
+            // Check tilde before absolute so `~` / `~/foo` get expanded
+            // first. `is_absolute_path` catches Unix (`/foo`) and
+            // Windows (`C:\foo`, `\\server\share`) shapes on every
+            // platform — `Path::is_absolute` alone would miss Unix
+            // paths on Windows, letting a bash command referencing
+            // `/etc/passwd` bypass the external-path prompt when the
+            // binary runs there.
+            if path_candidate.starts_with("~/") || path_candidate == "~" {
                 let expanded = PermissionManager::expand_tilde_pub(path_candidate);
                 self.check_bash_external_path(&expanded, permission_manager)?;
+            } else if is_absolute_path(path_candidate) {
+                self.check_bash_external_path(path_candidate, permission_manager)?;
             }
         }
 

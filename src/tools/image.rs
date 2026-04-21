@@ -1,6 +1,7 @@
 use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
+use crate::tools::utils::is_absolute_or_tilde;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::path::PathBuf;
 
@@ -119,7 +120,7 @@ impl ImageLoader {
     }
 
     pub fn load_local_image(&self, path: &str) -> Result<ImageSource> {
-        let full_path = if path.starts_with('/') || path.starts_with('~') {
+        let full_path = if is_absolute_or_tilde(path) {
             PathBuf::from(PermissionManager::expand_tilde_pub(path))
         } else {
             self.workspace.join(path)

@@ -1,6 +1,137 @@
 use super::*;
+use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
+use crate::tools::utils::{MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT};
 use serde_json::json;
 use tempfile::tempdir;
+
+fn fake_image(mime: &str, base64_len: usize) -> ImageData {
+    ImageData {
+        mime_type: mime.to_string(),
+        base64_data: "x".repeat(base64_len),
+    }
+}
+
+#[test]
+fn cap_mcp_images_drops_by_count() {
+    // Many tiny images → count cap hits first, byte cap stays under.
+    let images: Vec<ImageData> = (0..(MAX_MCP_IMAGE_COUNT + 5))
+        .map(|_| fake_image("image/png", 16))
+        .collect();
+    let mut result = McpToolResult {
+        text: String::new(),
+        images,
+    };
+
+    let dropped = cap_mcp_images(&mut result);
+    assert_eq!(dropped, 5, "should drop exactly the excess");
+    assert_eq!(result.images.len(), MAX_MCP_IMAGE_COUNT);
+}
+
+#[test]
+fn cap_mcp_images_drops_by_total_bytes() {
+    // Three images, each half the byte cap — the first two fit, the
+    // third blows past the total. Count cap stays inert because there
+    // are only three.
+    let half = MAX_MCP_IMAGE_BYTES / 2 + 1;
+    let mut result = McpToolResult {
+        text: String::new(),
+        images: vec![
+            fake_image("image/png", half),
+            fake_image("image/png", half),
+            fake_image("image/png", half),
+        ],
+    };
+
+    let dropped = cap_mcp_images(&mut result);
+    assert_eq!(
+        dropped, 2,
+        "second and third images exceed the total-byte cap"
+    );
+    assert_eq!(result.images.len(), 1);
+}
+
+#[test]
+fn cap_mcp_images_preserves_all_when_under_caps() {
+    let mut result = McpToolResult {
+        text: String::new(),
+        images: vec![fake_image("image/png", 32); 3],
+    };
+    let dropped = cap_mcp_images(&mut result);
+    assert_eq!(dropped, 0);
+    assert_eq!(result.images.len(), 3);
+}
+
+#[test]
+fn cap_mcp_response_drop_note_survives_text_truncation() {
+    // Regression: the dispatcher used to append the image-drop note
+    // BEFORE truncating the text, so a 2 MB response with dropped
+    // images would have the note truncated away and the model would
+    // silently lose the signal that attachments were capped. The drop
+    // note now lands after text truncation — this test pins the
+    // ordering so a future refactor doesn't regress it.
+    let huge_text = "x".repeat(5 * 1024 * 1024); // 5 MB, well past cap
+    let mut result = McpToolResult {
+        text: huge_text,
+        images: (0..(MAX_MCP_IMAGE_COUNT + 3))
+            .map(|_| fake_image("image/png", 16))
+            .collect(),
+    };
+
+    cap_mcp_response(&mut result);
+
+    // Text was truncated...
+    assert!(
+        result.text.contains("[TRUNCATED: MCP response has"),
+        "expected truncation suffix in text"
+    );
+    // ...but the image-drop note still survives at the end.
+    assert!(
+        result.text.contains("image attachment(s) dropped"),
+        "drop note must outlive text truncation, got: {}",
+        &result.text[result.text.len().saturating_sub(300)..]
+    );
+    assert_eq!(result.images.len(), MAX_MCP_IMAGE_COUNT);
+}
+
+#[test]
+fn cap_mcp_response_no_drop_note_when_no_images_dropped() {
+    // If nothing was dropped we shouldn't pollute the text with a
+    // drop-count note.
+    let mut result = McpToolResult {
+        text: "small response".to_string(),
+        images: vec![fake_image("image/png", 32); 3],
+    };
+
+    cap_mcp_response(&mut result);
+
+    assert_eq!(result.text, "small response");
+    assert_eq!(result.images.len(), 3);
+    assert!(!result.text.contains("dropped"));
+}
+
+#[test]
+fn cap_mcp_images_skips_oversized_middle_image_greedily() {
+    // Greedy fill: an oversized image in the middle of the list is
+    // skipped, but smaller images after it are still kept so long as
+    // the remaining byte budget covers them. The docstring advertises
+    // this behaviour — this test pins it so a future "stop at first
+    // overflow" refactor doesn't silently change user-visible output.
+    let small = 1024; // 1 KB
+    let oversized = MAX_MCP_IMAGE_BYTES + 1;
+    let mut result = McpToolResult {
+        text: String::new(),
+        images: vec![
+            fake_image("image/png", small),
+            fake_image("image/png", oversized),
+            fake_image("image/png", small),
+        ],
+    };
+    let dropped = cap_mcp_images(&mut result);
+    assert_eq!(dropped, 1, "only the middle oversized image is dropped");
+    assert_eq!(result.images.len(), 2);
+    assert_eq!(result.images[0].base64_data.len(), small);
+    assert_eq!(result.images[1].base64_data.len(), small);
+}
 
 #[test]
 fn test_validate_morph_output_rejects_empty() {

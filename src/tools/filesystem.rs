@@ -1,5 +1,6 @@
 use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
+use crate::tools::utils::is_absolute_path;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -104,7 +105,12 @@ impl FileSystemTool {
     /// Validate and resolve a path relative to the workspace
     /// Returns an error if the path attempts to escape the workspace
     fn validate_path(&self, path: &str) -> Result<PathBuf> {
-        if path.starts_with('/') {
+        // `is_absolute_path` catches both Unix (`/foo`) and Windows
+        // (`C:\foo`, UNC `\\server\share`) shapes. Using
+        // `Path::is_absolute` directly would miss Unix-style paths
+        // when running on Windows — a regression the helper
+        // specifically guards against.
+        if is_absolute_path(path) {
             return Err(SofosError::PathViolation(
                 "Absolute paths are not allowed".to_string(),
             ));

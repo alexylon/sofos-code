@@ -1,5 +1,5 @@
 use crate::error::{Result, SofosError};
-use crate::tools::utils::{ConfirmationType, confirm_multi_choice};
+use crate::tools::utils::{ConfirmationType, confirm_multi_choice, is_absolute_path};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -396,14 +396,20 @@ impl PermissionManager {
     }
 
     /// Extract path patterns from Bash() entries.
-    /// Only treats entries as path grants if the content starts with / or ~ AND contains a glob char.
-    /// Plain commands like Bash(npm test) are not path patterns.
+    /// Only treats entries as path grants if the content is absolute or
+    /// a tilde path AND contains a glob char. Plain commands like
+    /// Bash(npm test) are not path patterns. `is_absolute_path` handles
+    /// Unix (`/tmp/**`), Windows drive-letter (`C:\Users\**`), and UNC
+    /// paths on every platform — using `Path::is_absolute` alone would
+    /// mis-classify a Unix-style `Bash(/var/log/**)` config entry as a
+    /// command pattern when the binary runs on Windows.
     fn extract_bash_path_pattern(entry: &str) -> Option<&str> {
         let trimmed = entry.trim();
         if let Some(rest) = trimmed.strip_prefix("Bash(") {
             if let Some(end) = rest.rfind(')') {
                 let content = &rest[..end];
-                if (content.starts_with('/') || content.starts_with('~')) && content.contains('*') {
+                let looks_like_path = content.starts_with('~') || is_absolute_path(content);
+                if looks_like_path && content.contains('*') {
                     return Some(content);
                 }
             }
@@ -459,14 +465,49 @@ impl PermissionManager {
             .unwrap_or(without_prefix)
     }
 
+    /// Look up the user's home directory in a way that works on both
+    /// Unix (`$HOME`) and Windows (`%USERPROFILE%`). `std::env::home_dir`
+    /// was re-stabilised with a correct Windows implementation in Rust
+    /// 1.85, but reading the platform-native env var directly keeps us
+    /// compatible with older toolchains and makes the per-platform
+    /// choice explicit. Returns `None` when the env var is unset, which
+    /// is the same "fall through unexpanded" signal the caller uses.
+    fn home_dir() -> Option<PathBuf> {
+        #[cfg(windows)]
+        {
+            std::env::var_os("USERPROFILE").map(PathBuf::from)
+        }
+        #[cfg(not(windows))]
+        {
+            std::env::var_os("HOME").map(PathBuf::from)
+        }
+    }
+
+    /// Expand a leading `~` or `~/` to the user's home directory. Uses
+    /// `PathBuf::push` so the separator between the home directory and
+    /// the rest of the path is the platform's native one — the old
+    /// `format!("{}/{}", home, rest)` produced `C:\Users\alice/foo` on
+    /// Windows, which Windows accepts but looks wrong on inspection.
+    /// Paths not starting with `~` are returned unchanged.
+    ///
+    /// Strips leading separators from the remainder before pushing
+    /// because `PathBuf::push` *replaces* self when the argument is
+    /// absolute — so `expand_tilde("~//foo")` without the trim would
+    /// return `/foo` (escaped out of home) instead of the
+    /// bash-semantic `~/foo` = `home/foo`. Matters more on Windows
+    /// where a user-supplied `~/\\server\share\file` would be UNC-
+    /// absolute and would likewise replace the home prefix.
     fn expand_tilde(path: &str) -> String {
+        if path == "~" {
+            return Self::home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.to_string());
+        }
         if let Some(rest) = path.strip_prefix("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return format!("{}/{}", home, rest);
-            }
-        } else if path == "~" {
-            if let Ok(home) = std::env::var("HOME") {
-                return home;
+            if let Some(mut home) = Self::home_dir() {
+                let rest = rest.trim_start_matches(['/', '\\']);
+                home.push(rest);
+                return home.to_string_lossy().to_string();
             }
         }
         path.to_string()
@@ -1184,6 +1225,67 @@ ask = []
         assert_eq!(expanded, "/home/testuser/file.txt");
         assert_eq!(expanded_dir, "/home/testuser");
         assert_eq!(not_tilde, "./file.txt");
+    }
+
+    #[test]
+    fn test_tilde_expansion_trims_leading_separator_in_remainder() {
+        // `PathBuf::push` replaces self when the pushed argument is
+        // absolute. If the caller types `~//foo` (double slash after
+        // the tilde), the remainder after `~/` starts with `/`, which
+        // `push` would treat as absolute and escape the home
+        // directory entirely — `~//foo` would resolve to `/foo`,
+        // which is not what bash would do. The trim keeps the
+        // expansion rooted at the home directory.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let _temp_dir = TempDir::new().unwrap();
+
+        let original_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/home/testuser");
+
+        let single = PermissionManager::expand_tilde_pub("~/foo");
+        let double = PermissionManager::expand_tilde_pub("~//foo");
+        let triple = PermissionManager::expand_tilde_pub("~///foo");
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(single, "/home/testuser/foo");
+        assert_eq!(
+            double, "/home/testuser/foo",
+            "double-slash after tilde must not escape home"
+        );
+        assert_eq!(
+            triple, "/home/testuser/foo",
+            "any number of leading slashes must not escape home"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_tilde_expansion_uses_userprofile_on_windows() {
+        // Regression: `expand_tilde` used to read `$HOME`, which isn't
+        // the canonical home-directory env var on Windows. A user
+        // typing `~/docs` got no expansion. The fix reads
+        // `%USERPROFILE%` on Windows and joins via `PathBuf::push` so
+        // the resulting separator is native (backslash on Windows).
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let _temp_dir = TempDir::new().unwrap();
+
+        let original = std::env::var_os("USERPROFILE");
+        std::env::set_var("USERPROFILE", r"C:\Users\testuser");
+
+        let expanded = PermissionManager::expand_tilde_pub("~/docs/file.txt");
+        let expanded_dir = PermissionManager::expand_tilde_pub("~");
+
+        match original {
+            Some(home) => std::env::set_var("USERPROFILE", home),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+
+        assert_eq!(expanded, r"C:\Users\testuser\docs\file.txt");
+        assert_eq!(expanded_dir, r"C:\Users\testuser");
     }
 
     #[test]

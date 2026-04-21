@@ -32,8 +32,46 @@ pub const MAX_DIFF_TOKENS: usize = 250_000;
 /// but it CAN bound the response size before passing it back to the
 /// model, so a misbehaving or noisy server can't reproduce the
 /// "string too long" HTTP 400 that oversized internal tool outputs
-/// used to trigger. Images are passed through untouched.
+/// used to trigger. Image attachments are capped separately via
+/// [`MAX_MCP_IMAGE_COUNT`] / [`MAX_MCP_IMAGE_BYTES`].
 pub const MAX_MCP_OUTPUT_TOKENS: usize = 250_000;
+
+/// Maximum number of image attachments returned by a single MCP tool
+/// call. Multimodal providers count each image against a separate
+/// budget from text, so a chatty MCP server returning dozens of
+/// screenshots can blow past provider limits even when the text is
+/// short. Images beyond the cap are dropped and the drop is noted
+/// in the text response.
+pub const MAX_MCP_IMAGE_COUNT: usize = 10;
+
+/// Cap on total base64-encoded bytes of all image attachments from
+/// a single MCP tool call. Base64 expands binary by ~33%, so 20 MB
+/// here corresponds to roughly 15 MB of raw image data — enough for
+/// real tools to attach a handful of high-res screenshots without
+/// one oversized image killing the whole request.
+pub const MAX_MCP_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
+/// True when `path` is absolute on any supported platform: Unix
+/// `/foo`, Windows `C:\foo`, or UNC `\\server\share`.
+///
+/// Both the `starts_with('/')` check and `Path::is_absolute` are
+/// needed because neither catches every shape on its own:
+/// `Path::is_absolute` returns `false` on Windows for `/etc/passwd`
+/// (Windows requires a drive prefix for true absolute paths), so
+/// relying on it alone would silently re-classify Unix-style paths
+/// as workspace-relative when the binary runs on Windows. On Unix
+/// the two checks are equivalent; the second is free redundancy.
+pub fn is_absolute_path(path: &str) -> bool {
+    path.starts_with('/') || std::path::Path::new(path).is_absolute()
+}
+
+/// True when `path` should be treated as "not workspace-relative":
+/// an absolute path (see [`is_absolute_path`]) or a tilde path
+/// (`~`, `~/foo`) that needs expansion before use. Centralises the
+/// check so dispatchers don't have to repeat it.
+pub fn is_absolute_or_tilde(path: &str) -> bool {
+    path.starts_with('~') || is_absolute_path(path)
+}
 
 /// Which "kind" of tool output we're truncating — drives the suffix copy
 /// so the model sees a hint tuned to the actual recovery path (re-run
@@ -462,5 +500,76 @@ mod tests {
         assert!(out.contains("MCP tool response was capped"));
         assert!(!out.contains("glob pattern"));
         assert!(!out.contains("edit already succeeded"));
+    }
+
+    #[test]
+    fn is_absolute_path_catches_unix_style_paths_on_every_platform() {
+        // Unix-style absolute paths must be recognised everywhere,
+        // even on Windows where `Path::is_absolute` alone would miss
+        // them (Windows requires a drive prefix). That's the whole
+        // reason for keeping the `starts_with('/')` check alongside
+        // `Path::is_absolute` — losing it would re-introduce the
+        // "Unix-absolute path slips through as relative on Windows"
+        // regression.
+        assert!(is_absolute_path("/"));
+        assert!(is_absolute_path("/etc/hosts"));
+        assert!(is_absolute_path("/tmp/foo"));
+        assert!(is_absolute_path("//double-slash"));
+
+        // Tilde paths are NOT absolute; they need expansion first.
+        assert!(!is_absolute_path("~"));
+        assert!(!is_absolute_path("~/foo"));
+
+        // Relative forms.
+        assert!(!is_absolute_path(""));
+        assert!(!is_absolute_path("foo"));
+        assert!(!is_absolute_path("./foo"));
+        assert!(!is_absolute_path("../foo"));
+
+        #[cfg(windows)]
+        {
+            assert!(is_absolute_path(r"C:\foo"));
+            assert!(is_absolute_path(r"D:\Users\me"));
+            assert!(is_absolute_path(r"\\server\share\file"));
+            assert!(!is_absolute_path(r"C:foo"));
+            assert!(!is_absolute_path(r"foo\bar"));
+        }
+    }
+
+    #[test]
+    fn is_absolute_or_tilde_classifies_all_platform_shapes() {
+        // Tilde forms (platform-independent).
+        assert!(is_absolute_or_tilde("~"));
+        assert!(is_absolute_or_tilde("~/foo"));
+        assert!(is_absolute_or_tilde("~/foo/bar.txt"));
+
+        // Unix-shaped absolute paths — always absolute regardless of host.
+        assert!(is_absolute_or_tilde("/"));
+        assert!(is_absolute_or_tilde("/etc/hosts"));
+        assert!(is_absolute_or_tilde("/tmp/foo"));
+
+        // Relative forms — never treated as external.
+        assert!(!is_absolute_or_tilde(""));
+        assert!(!is_absolute_or_tilde("foo"));
+        assert!(!is_absolute_or_tilde("foo/bar.txt"));
+        assert!(!is_absolute_or_tilde("./foo"));
+        assert!(!is_absolute_or_tilde("../foo"));
+
+        // Non-tilde paths containing tildes mid-string are relative.
+        assert!(!is_absolute_or_tilde("foo~bar"));
+        assert!(!is_absolute_or_tilde("src/~tmp"));
+
+        // Windows-shaped absolute paths — relied on `Path::is_absolute`
+        // returning true on Windows and false on Unix, so we can only
+        // assert the Unix behaviour from a Unix CI. The important
+        // correctness property — `is_absolute_or_tilde("C:\\foo")` being
+        // true on Windows — is verified by `Path::is_absolute` itself.
+        #[cfg(windows)]
+        {
+            assert!(is_absolute_or_tilde(r"C:\foo"));
+            assert!(is_absolute_or_tilde(r"C:\Users\me\doc.txt"));
+            assert!(is_absolute_or_tilde(r"\\server\share\file"));
+            assert!(!is_absolute_or_tilde(r"foo\bar"));
+        }
     }
 }

@@ -22,8 +22,9 @@ use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::{
-    MAX_DIFF_TOKENS, MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS,
-    TruncationKind, confirm_destructive, truncate_for_context,
+    MAX_DIFF_TOKENS, MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT, MAX_MCP_OUTPUT_TOKENS,
+    MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS, TruncationKind, confirm_destructive,
+    is_absolute_or_tilde, truncate_for_context,
 };
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
@@ -110,6 +111,56 @@ pub struct ToolExecutor {
 /// (upstream) and trailing-newline parity (below) for that.
 const MORPH_STUB_ORIGINAL_MIN: usize = 500;
 const MORPH_STUB_FLOOR_BYTES: usize = 50;
+
+/// Apply both MCP-response caps (image count/bytes and text tokens) in
+/// the order the dispatcher needs. The drop note for images has to land
+/// AFTER text truncation so the model always sees it — otherwise a
+/// ~1 MB text response could push the note out past the truncation
+/// boundary and the model would silently lose the "images dropped"
+/// signal. The overage this adds to the text field is ~100 bytes,
+/// immaterial compared with the 10 MB API ceiling this cap is really
+/// protecting against. Factored out from the `execute` dispatcher so
+/// the ordering can be pinned in unit tests.
+fn cap_mcp_response(result: &mut McpToolResult) {
+    let dropped = cap_mcp_images(result);
+    result.text = truncate_for_context(
+        &result.text,
+        MAX_MCP_OUTPUT_TOKENS,
+        TruncationKind::McpOutput,
+    );
+    if dropped > 0 {
+        result.text.push_str(&format!(
+            "\n\n[{} image attachment(s) dropped: MCP image cap is {} images or ~{} MB total]",
+            dropped,
+            MAX_MCP_IMAGE_COUNT,
+            MAX_MCP_IMAGE_BYTES / (1024 * 1024)
+        ));
+    }
+}
+
+/// Drop image attachments from an MCP result until both the per-call
+/// count cap and the total-bytes cap are satisfied. Returns the number
+/// of images that were dropped. Walks the list in order and keeps each
+/// image that still fits under both caps — so a single oversized image
+/// in the middle of the response is skipped without blocking smaller
+/// images that come after it. Kept images retain their original order.
+fn cap_mcp_images(result: &mut McpToolResult) -> usize {
+    let original = result.images.len();
+    let mut kept = Vec::with_capacity(result.images.len().min(MAX_MCP_IMAGE_COUNT));
+    let mut total_bytes: usize = 0;
+    for img in std::mem::take(&mut result.images) {
+        let size = img.base64_data.len();
+        if kept.len() >= MAX_MCP_IMAGE_COUNT
+            || total_bytes.saturating_add(size) > MAX_MCP_IMAGE_BYTES
+        {
+            continue;
+        }
+        total_bytes += size;
+        kept.push(img);
+    }
+    result.images = kept;
+    original - result.images.len()
+}
 
 /// Ensure `path`'s parent directory exists, creating it (and any missing
 /// intermediates) if not. Used by move/copy when the destination is
@@ -257,7 +308,7 @@ impl ToolExecutor {
     /// doesn't exist or canonicalize fails. Individual dispatchers can
     /// still customise the error via `.map_err(...)?`.
     fn resolve_existing(&self, caller_path: &str) -> Result<ResolvedPath> {
-        let full_path = if caller_path.starts_with('/') || caller_path.starts_with('~') {
+        let full_path = if is_absolute_or_tilde(caller_path) {
             std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
                 caller_path,
             ))
@@ -283,7 +334,7 @@ impl ToolExecutor {
     /// lossy conversion if the parent is also missing (nested mkdir)
     /// or the path has no parent (filesystem root).
     fn resolve_for_write(&self, caller_path: &str) -> Result<ResolvedPath> {
-        let full_path = if caller_path.starts_with('/') || caller_path.starts_with('~') {
+        let full_path = if is_absolute_or_tilde(caller_path) {
             std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
                 caller_path,
             ))
@@ -325,8 +376,9 @@ impl ToolExecutor {
 
         // Neither the target nor its parent exists. Relative paths are
         // still inside-workspace by convention; absolute / tilde paths
-        // are treated as outside and will hit the permission gate.
-        let is_inside_workspace = !caller_path.starts_with('/') && !caller_path.starts_with('~');
+        // (including Windows `C:\...`) are treated as outside and will
+        // hit the permission gate.
+        let is_inside_workspace = !is_absolute_or_tilde(caller_path);
         let canonical_str = full_path.to_string_lossy().to_string();
         Ok(ResolvedPath {
             canonical: full_path,
@@ -554,18 +606,7 @@ impl ToolExecutor {
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name).await {
                 let mut result = mcp_manager.execute_tool(tool_name, input).await?;
-                // Cap the server-provided text before handing it to the
-                // model. The MCP server itself is a separate process, so
-                // this doesn't sandbox what it can read — but it keeps
-                // an overly-chatty or malicious server from reproducing
-                // the "string too long" HTTP 400 that oversized internal
-                // tool outputs used to trigger. Images pass through
-                // untouched.
-                result.text = truncate_for_context(
-                    &result.text,
-                    MAX_MCP_OUTPUT_TOKENS,
-                    TruncationKind::McpOutput,
-                );
+                cap_mcp_response(&mut result);
                 return Ok(ToolExecutionResult::Structured(result));
             }
         }
