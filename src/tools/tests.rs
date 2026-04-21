@@ -338,7 +338,10 @@ async fn test_glob_files_skips_default_excludes() {
         .await;
     assert!(result.is_ok());
     let text = result.unwrap().text().to_string();
-    assert!(text.contains("main.rs"), "expected src/main.rs; got: {text}");
+    assert!(
+        text.contains("main.rs"),
+        "expected src/main.rs; got: {text}"
+    );
     assert!(
         !text.contains("generated.rs"),
         "target/ descent must be blocked by default; got: {text}"
@@ -552,7 +555,60 @@ async fn test_write_file_to_external_path_allowed_with_grant() {
 }
 
 #[tokio::test]
-async fn test_edit_file_external_path_allowed_with_write_grant() {
+async fn test_edit_file_external_path_allowed_with_read_and_write_grant() {
+    // `edit_file` on an external path now requires BOTH Read (to
+    // load the original) and Write (to save the edit). Granting only
+    // one is no longer enough — see
+    // `test_edit_file_external_write_only_grant_denied` for the
+    // negative case.
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let outside_file = outside.path().join("editable.txt");
+    std::fs::write(&outside_file, "foo bar baz").unwrap();
+
+    let canonical_outside = std::fs::canonicalize(outside.path()).unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Read({dir}/**)\", \"Write({dir}/**)\"]\ndeny = []\nask = []\n",
+            dir = canonical_outside.display()
+        ),
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute(
+            "edit_file",
+            &json!({
+                "path": outside_file.to_string_lossy(),
+                "old_string": "bar",
+                "new_string": "qux"
+            }),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Edit should succeed with Read + Write grant: {:?}",
+        result
+    );
+    let content = std::fs::read_to_string(&outside_file).unwrap();
+    assert_eq!(content, "foo qux baz");
+}
+
+#[tokio::test]
+async fn test_edit_file_external_write_only_grant_denied() {
+    // Regression: `edit_file` used to accept a Write-only grant on an
+    // external path and silently gain Read access as a side effect —
+    // defensible ergonomically but wrong if the user explicitly shaped
+    // the permission model to allow writes and block reads. Read is
+    // now checked alongside Write; a Write-only grant fails, and the
+    // file on disk is left alone.
     let workspace = tempdir().unwrap();
     let outside = tempdir().unwrap();
     let outside_file = outside.path().join("editable.txt");
@@ -579,18 +635,21 @@ async fn test_edit_file_external_path_allowed_with_write_grant() {
             &json!({
                 "path": outside_file.to_string_lossy(),
                 "old_string": "bar",
-                "new_string": "qux"
+                "new_string": "qux",
             }),
         )
         .await;
 
     assert!(
-        result.is_ok(),
-        "Edit should succeed with Write grant: {:?}",
+        matches!(result, Err(SofosError::ToolExecution(_))),
+        "Write-only grant should no longer suffice: {:?}",
         result
     );
     let content = std::fs::read_to_string(&outside_file).unwrap();
-    assert_eq!(content, "foo qux baz");
+    assert_eq!(
+        content, "foo bar baz",
+        "file must not be modified when denied"
+    );
 }
 
 #[tokio::test]
@@ -1115,4 +1174,253 @@ async fn test_bash_deny_overrides_allow() {
             msg
         );
     }
+}
+
+#[tokio::test]
+async fn test_create_directory_external_requires_write_grant() {
+    // `create_directory` now accepts absolute / ~/ paths, gated by a
+    // Write grant — symmetric with `write_file`. Without the grant the
+    // external mkdir is denied; with it, the directory is created and
+    // the permission prompt is bypassed.
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let external_dir = outside.path().join("new_subdir");
+
+    let canonical_outside = std::fs::canonicalize(outside.path()).unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+
+    // No grant → denied with the "outside workspace" hint.
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "create_directory",
+            &json!({"path": external_dir.to_string_lossy()}),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(SofosError::ToolExecution(_))),
+        "external mkdir without grant must fail: {:?}",
+        result
+    );
+    assert!(!external_dir.exists(), "directory must not be created");
+
+    // Write grant → succeeds.
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
+            canonical_outside.display()
+        ),
+    )
+    .unwrap();
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "create_directory",
+            &json!({"path": external_dir.to_string_lossy()}),
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "mkdir with Write grant must succeed: {:?}",
+        result
+    );
+    assert!(external_dir.is_dir(), "directory must be created");
+}
+
+#[tokio::test]
+async fn test_copy_file_external_source_and_destination() {
+    // External source needs Read, external destination needs Write;
+    // with both grants, copy succeeds and the source is preserved.
+    let workspace = tempdir().unwrap();
+    let outside_src = tempdir().unwrap();
+    let outside_dst = tempdir().unwrap();
+    let source_file = outside_src.path().join("src.txt");
+    std::fs::write(&source_file, "payload").unwrap();
+    let dest_file = outside_dst.path().join("dst.txt");
+
+    let canonical_src = std::fs::canonicalize(outside_src.path()).unwrap();
+    let canonical_dst = std::fs::canonicalize(outside_dst.path()).unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Read({src}/**)\", \"Write({dst}/**)\"]\ndeny = []\nask = []\n",
+            src = canonical_src.display(),
+            dst = canonical_dst.display(),
+        ),
+    )
+    .unwrap();
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute(
+            "copy_file",
+            &json!({
+                "source": source_file.to_string_lossy(),
+                "destination": dest_file.to_string_lossy(),
+            }),
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "copy with Read+Write grants must succeed: {:?}",
+        result
+    );
+    assert_eq!(
+        std::fs::read_to_string(&dest_file).unwrap(),
+        "payload",
+        "destination must contain the copied payload"
+    );
+    assert!(source_file.exists(), "copy must leave the source in place");
+}
+
+#[tokio::test]
+async fn test_move_file_external_requires_write_on_source() {
+    // Moving removes the source, so external sources require Write
+    // (not just Read). A Read-only source grant must not suffice even
+    // when the destination is writable.
+    let workspace = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let source_file = outside.path().join("movable.txt");
+    std::fs::write(&source_file, "to move").unwrap();
+
+    let canonical_outside = std::fs::canonicalize(outside.path()).unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
+            canonical_outside.display()
+        ),
+    )
+    .unwrap();
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let dest_in_workspace = workspace.path().join("moved.txt");
+    let result = executor
+        .execute(
+            "move_file",
+            &json!({
+                "source": source_file.to_string_lossy(),
+                "destination": "moved.txt",
+            }),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(SofosError::ToolExecution(_))),
+        "move with Read-only source grant must fail: {:?}",
+        result
+    );
+    assert!(
+        source_file.exists(),
+        "source must remain after a failed move"
+    );
+    assert!(
+        !dest_in_workspace.exists(),
+        "destination must not be created"
+    );
+
+    // With Write grant on source the move succeeds.
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        format!(
+            "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
+            canonical_outside.display()
+        ),
+    )
+    .unwrap();
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "move_file",
+            &json!({
+                "source": source_file.to_string_lossy(),
+                "destination": "moved.txt",
+            }),
+        )
+        .await;
+    assert!(
+        result.is_ok(),
+        "move with Write grant must succeed: {:?}",
+        result
+    );
+    assert!(!source_file.exists(), "source must be removed after move");
+    assert_eq!(
+        std::fs::read_to_string(&dest_in_workspace).unwrap(),
+        "to move"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_glob_files_symlink_not_followed_by_default() {
+    // Default follow_symlinks=false keeps a workspace-internal symlink
+    // from leaking files from its target directory. With the opt-in
+    // flag (`follow_symlinks: true`), the walk descends through the
+    // link — the ripgrep `-L` equivalent.
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    // A regular file (so default-disabled excludes don't hide it).
+    std::fs::write(workspace.path().join("anchor.txt"), "").unwrap();
+
+    // A real directory outside the symlink we'll reach only via follow.
+    let hidden = workspace.path().join("real_hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("through_symlink.txt"), "").unwrap();
+
+    // Symlink pointing at the hidden directory. Default walk won't
+    // descend through it; `follow_symlinks: true` will.
+    symlink(&hidden, workspace.path().join("alias")).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("glob_files", &json!({"pattern": "**/through_symlink.txt"}))
+        .await;
+    let text = result.unwrap().text().to_string();
+    assert!(
+        text.contains("real_hidden/through_symlink.txt"),
+        "the file via its real path must always be found; got: {text}"
+    );
+    assert!(
+        !text.contains("alias/through_symlink.txt"),
+        "default walk must not follow the symlink; got: {text}"
+    );
+
+    // Opt-in follows the symlink and surfaces the aliased path too.
+    let result = executor
+        .execute(
+            "glob_files",
+            &json!({"pattern": "**/through_symlink.txt", "follow_symlinks": true}),
+        )
+        .await;
+    let text = result.unwrap().text().to_string();
+    assert!(
+        text.contains("alias/through_symlink.txt"),
+        "follow_symlinks=true must surface the aliased path; got: {text}"
+    );
 }

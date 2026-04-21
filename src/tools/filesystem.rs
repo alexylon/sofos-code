@@ -188,8 +188,7 @@ impl FileSystemTool {
             )));
         }
 
-        fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file: {}", label))
+        fs::read_to_string(path).with_context(|| format!("Failed to read file: {}", label))
     }
 
     pub fn write_file(&self, path: &str, content: &str) -> Result<()> {

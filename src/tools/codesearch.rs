@@ -15,8 +15,7 @@ pub const SEARCH_RESULTS_PREFIX: &str = "Code search results:\n\n";
 /// in the tool schema is derived from this via [`default_exclude_dirs_human`],
 /// so adding an entry here automatically updates the description the
 /// model sees.
-pub const DEFAULT_EXCLUDE_DIRS: &[&str] =
-    &["target", "node_modules", ".git", "dist", "build"];
+pub const DEFAULT_EXCLUDE_DIRS: &[&str] = &["target", "node_modules", ".git", "dist", "build"];
 
 /// Default per-file match cap when the caller doesn't specify `max_results`.
 /// Exposed `pub` so the schema description in `types.rs` stays in sync
@@ -168,9 +167,8 @@ impl CodeSearchTool {
         // is the common "no matches" shape; we also keep the legacy
         // "No matches found" substring check for defence-in-depth.
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let is_no_match = output.status.success()
-            || stderr.is_empty()
-            || stderr.contains("No matches found");
+        let is_no_match =
+            output.status.success() || stderr.is_empty() || stderr.contains("No matches found");
         if is_no_match {
             Ok(format!("No matches found for pattern: '{}'", pattern))
         } else {

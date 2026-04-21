@@ -27,6 +27,14 @@ pub const MAX_PATH_LIST_TOKENS: usize = 250_000;
 /// OpenAI's 10 MB per-tool-output ceiling.
 pub const MAX_DIFF_TOKENS: usize = 250_000;
 
+/// Cap (~1 MB) for the `text` field of MCP tool responses. The MCP
+/// server itself is a separate process sofos can't fully sandbox —
+/// but it CAN bound the response size before passing it back to the
+/// model, so a misbehaving or noisy server can't reproduce the
+/// "string too long" HTTP 400 that oversized internal tool outputs
+/// used to trigger. Images are passed through untouched.
+pub const MAX_MCP_OUTPUT_TOKENS: usize = 250_000;
+
 /// Which "kind" of tool output we're truncating — drives the suffix copy
 /// so the model sees a hint tuned to the actual recovery path (re-run
 /// with redirection for bash; request a range for file reads).
@@ -48,6 +56,9 @@ pub enum TruncationKind {
     /// suffix reminds the caller the edit already succeeded and points
     /// at `read_file` for inspecting specific regions.
     DiffOutput,
+    /// MCP tool response text — suffix tells the model the response
+    /// came from an external MCP server and to narrow its query.
+    McpOutput,
 }
 
 impl TruncationKind {
@@ -76,6 +87,10 @@ impl TruncationKind {
             Self::DiffOutput => (
                 "Diff",
                 "The edit already succeeded — use read_file with a line range to inspect specific regions if needed.",
+            ),
+            Self::McpOutput => (
+                "MCP response",
+                "The MCP tool response was capped before being returned to the model. Narrow the query, request a specific subset, or call the tool with a tighter scope if you need more.",
             ),
         }
     }
@@ -437,5 +452,15 @@ mod tests {
         assert!(out.contains("edit already succeeded"));
         assert!(out.contains("read_file"));
         assert!(!out.contains("glob pattern"));
+    }
+
+    #[test]
+    fn truncate_for_context_mcp_variant_mentions_server() {
+        let big = "m".repeat(20_000);
+        let out = truncate_for_context(&big, 4, TruncationKind::McpOutput);
+        assert!(out.contains("[TRUNCATED: MCP response has"));
+        assert!(out.contains("MCP tool response was capped"));
+        assert!(!out.contains("glob pattern"));
+        assert!(!out.contains("edit already succeeded"));
     }
 }

@@ -22,8 +22,8 @@ use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::{
-    MAX_DIFF_TOKENS, MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS, TruncationKind,
-    confirm_destructive, truncate_for_context,
+    MAX_DIFF_TOKENS, MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, MAX_TOOL_OUTPUT_TOKENS,
+    TruncationKind, confirm_destructive, truncate_for_context,
 };
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
@@ -72,6 +72,18 @@ impl ToolExecutionResult {
 #[cfg(test)]
 mod tests;
 
+/// Path resolved by [`ToolExecutor::resolve_existing`] or
+/// [`ToolExecutor::resolve_for_write`]. Carries the three pieces of data
+/// every filesystem-touching dispatcher needs: the canonical `PathBuf`
+/// for the operation itself, the canonical string form for permission
+/// checks, and whether the target lives inside the workspace (drives
+/// the "inside FS tool / outside direct-std::fs" branch).
+struct ResolvedPath {
+    canonical: std::path::PathBuf,
+    canonical_str: String,
+    is_inside_workspace: bool,
+}
+
 /// ToolExecutor handles execution of tool calls from AI
 #[derive(Clone)]
 pub struct ToolExecutor {
@@ -98,6 +110,74 @@ pub struct ToolExecutor {
 /// (upstream) and trailing-newline parity (below) for that.
 const MORPH_STUB_ORIGINAL_MIN: usize = 500;
 const MORPH_STUB_FLOOR_BYTES: usize = 50;
+
+/// Ensure `path`'s parent directory exists, creating it (and any missing
+/// intermediates) if not. Used by move/copy when the destination is
+/// outside the workspace — inside-workspace writes go through
+/// `FileSystemTool::move_file` / `copy_file`, which already handle this.
+fn ensure_parent_dir(path: &std::path::Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                SofosError::ToolExecution(format!(
+                    "Failed to create destination parent '{}': {}",
+                    parent.display(),
+                    e
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Rename `src` → `dst` handling the four inside/outside combinations.
+/// When both paths are inside the workspace we delegate to the
+/// workspace-sandboxed `FileSystemTool::move_file`; any other combination
+/// (inside→outside, outside→inside, outside→outside) uses `std::fs::rename`
+/// on the canonical paths after the dispatcher has already verified the
+/// required Read / Write grants.
+fn move_between(
+    source: &str,
+    destination: &str,
+    src: &ResolvedPath,
+    dst: &ResolvedPath,
+    fs_tool: &FileSystemTool,
+) -> Result<()> {
+    if src.is_inside_workspace && dst.is_inside_workspace {
+        return fs_tool.move_file(source, destination);
+    }
+    ensure_parent_dir(&dst.canonical)?;
+    std::fs::rename(&src.canonical, &dst.canonical).map_err(|e| {
+        SofosError::ToolExecution(format!(
+            "Failed to move '{}' to '{}': {}",
+            source, destination, e
+        ))
+    })
+}
+
+/// Copy-file counterpart to [`move_between`]. Same inside/outside matrix;
+/// uses `FileSystemTool::copy_file` when both are inside, `std::fs::copy`
+/// otherwise.
+fn copy_between(
+    source: &str,
+    destination: &str,
+    src: &ResolvedPath,
+    dst: &ResolvedPath,
+    fs_tool: &FileSystemTool,
+) -> Result<()> {
+    if src.is_inside_workspace && dst.is_inside_workspace {
+        return fs_tool.copy_file(source, destination);
+    }
+    ensure_parent_dir(&dst.canonical)?;
+    std::fs::copy(&src.canonical, &dst.canonical)
+        .map(|_| ())
+        .map_err(|e| {
+            SofosError::ToolExecution(format!(
+                "Failed to copy '{}' to '{}': {}",
+                source, destination, e
+            ))
+        })
+}
 
 /// Sanity-check a Morph-merged file against the original before committing
 /// it to disk. Returns `Err(reason)` if the merge looks like a truncated
@@ -167,6 +247,92 @@ impl ToolExecutor {
 
     pub fn has_morph(&self) -> bool {
         self.morph_client.is_some()
+    }
+
+    /// Resolve a caller-supplied path that **must already exist**. Handles
+    /// tilde and absolute-vs-relative uniformly, canonicalizes, and
+    /// returns the resolved shape every dispatcher needs: the canonical
+    /// `PathBuf`, its string form for permission checks, and whether
+    /// it's inside the workspace. Returns `FileNotFound` if the path
+    /// doesn't exist or canonicalize fails. Individual dispatchers can
+    /// still customise the error via `.map_err(...)?`.
+    fn resolve_existing(&self, caller_path: &str) -> Result<ResolvedPath> {
+        let full_path = if caller_path.starts_with('/') || caller_path.starts_with('~') {
+            std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
+                caller_path,
+            ))
+        } else {
+            self.fs_tool._workspace().join(caller_path)
+        };
+        let canonical = std::fs::canonicalize(&full_path)
+            .map_err(|_| SofosError::FileNotFound(caller_path.to_string()))?;
+        let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+        let canonical_str = canonical.to_string_lossy().to_string();
+        Ok(ResolvedPath {
+            canonical,
+            canonical_str,
+            is_inside_workspace,
+        })
+    }
+
+    /// Resolve a caller-supplied path that **may not exist yet** — the
+    /// write-side counterpart of [`resolve_existing`]. When the file
+    /// itself is missing (new-file creation) we canonicalize the parent
+    /// and rejoin the filename, so the `canonical` field still points
+    /// at where the write will land. Falls through to a best-effort
+    /// lossy conversion if the parent is also missing (nested mkdir)
+    /// or the path has no parent (filesystem root).
+    fn resolve_for_write(&self, caller_path: &str) -> Result<ResolvedPath> {
+        let full_path = if caller_path.starts_with('/') || caller_path.starts_with('~') {
+            std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
+                caller_path,
+            ))
+        } else {
+            self.fs_tool._workspace().join(caller_path)
+        };
+
+        if full_path.exists() {
+            let canonical = std::fs::canonicalize(&full_path)
+                .map_err(|e| SofosError::ToolExecution(format!("Failed to resolve path: {}", e)))?;
+            let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+            let canonical_str = canonical.to_string_lossy().to_string();
+            return Ok(ResolvedPath {
+                canonical,
+                canonical_str,
+                is_inside_workspace,
+            });
+        }
+
+        if let Some(parent) = full_path.parent() {
+            if parent.exists() {
+                let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                    SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
+                })?;
+                let is_inside_workspace = canonical_parent.starts_with(self.fs_tool._workspace());
+                let filename = full_path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let canonical = canonical_parent.join(&filename);
+                let canonical_str = canonical.to_string_lossy().to_string();
+                return Ok(ResolvedPath {
+                    canonical,
+                    canonical_str,
+                    is_inside_workspace,
+                });
+            }
+        }
+
+        // Neither the target nor its parent exists. Relative paths are
+        // still inside-workspace by convention; absolute / tilde paths
+        // are treated as outside and will hit the permission gate.
+        let is_inside_workspace = !caller_path.starts_with('/') && !caller_path.starts_with('~');
+        let canonical_str = full_path.to_string_lossy().to_string();
+        Ok(ResolvedPath {
+            canonical: full_path,
+            canonical_str,
+            is_inside_workspace,
+        })
     }
 
     pub fn has_code_search(&self) -> bool {
@@ -387,7 +553,19 @@ impl ToolExecutor {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name).await {
-                let result = mcp_manager.execute_tool(tool_name, input).await?;
+                let mut result = mcp_manager.execute_tool(tool_name, input).await?;
+                // Cap the server-provided text before handing it to the
+                // model. The MCP server itself is a separate process, so
+                // this doesn't sandbox what it can read — but it keeps
+                // an overly-chatty or malicious server from reproducing
+                // the "string too long" HTTP 400 that oversized internal
+                // tool outputs used to trigger. Images pass through
+                // untouched.
+                result.text = truncate_for_context(
+                    &result.text,
+                    MAX_MCP_OUTPUT_TOKENS,
+                    TruncationKind::McpOutput,
+                );
                 return Ok(ToolExecutionResult::Structured(result));
             }
         }
@@ -400,30 +578,23 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                let full_path = if path.starts_with('/') || path.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
-                } else {
-                    self.fs_tool._workspace().join(path)
-                };
+                let resolved = self.resolve_existing(path).map_err(|_| {
+                    let parent_dir = std::path::Path::new(path)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or(".");
+                    SofosError::ToolExecution(format!(
+                        "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
+                        path, parent_dir
+                    ))
+                })?;
 
-                let canonical = match std::fs::canonicalize(&full_path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        let parent_dir = std::path::Path::new(path)
-                            .parent()
-                            .and_then(|p| p.to_str())
-                            .unwrap_or(".");
-                        return Err(SofosError::ToolExecution(format!(
-                            "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
-                            path, parent_dir
-                        )));
-                    }
-                };
-
-                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-                let canonical_str = canonical.to_str().unwrap_or(path);
-
-                self.check_read_access(path, &canonical, canonical_str, is_inside_workspace)?;
+                self.check_read_access(
+                    path,
+                    &resolved.canonical,
+                    &resolved.canonical_str,
+                    resolved.is_inside_workspace,
+                )?;
 
                 // Read raw file contents, then apply the model-facing
                 // truncation cap here at the dispatcher. Truncation lives
@@ -431,16 +602,14 @@ impl ToolExecutor {
                 // `edit_file` / `morph_edit_file` / the `write_file` diff
                 // path — which all call the same fs_tool method — get the
                 // full file and don't silently drop the tail past ~64 KB.
-                let raw = if is_inside_workspace {
+                let raw = if resolved.is_inside_workspace {
                     self.fs_tool.read_file(path)?
                 } else {
-                    self.fs_tool.read_file_with_outside_access(canonical_str)?
+                    self.fs_tool
+                        .read_file_with_outside_access(&resolved.canonical_str)?
                 };
-                let content = truncate_for_context(
-                    &raw,
-                    MAX_TOOL_OUTPUT_TOKENS,
-                    TruncationKind::File,
-                );
+                let content =
+                    truncate_for_context(&raw, MAX_TOOL_OUTPUT_TOKENS, TruncationKind::File);
                 Ok(format!("File content of '{}':\n\n{}", path, content))
             }
             ToolName::WriteFile => {
@@ -501,45 +670,10 @@ impl ToolExecutor {
                         ))
                     })?;
 
-                // Check if path is outside workspace
-                let full_path = if path.starts_with('/') || path.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
-                } else {
-                    self.fs_tool._workspace().join(path)
-                };
+                let resolved = self.resolve_for_write(path)?;
 
-                // For new files, canonicalize parent; for existing files, canonicalize directly
-                let (is_inside_workspace, canonical_str_owned) = if full_path.exists() {
-                    let canonical = std::fs::canonicalize(&full_path).map_err(|e| {
-                        SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
-                    })?;
-                    let inside = canonical.starts_with(self.fs_tool._workspace());
-                    let cs = canonical.to_string_lossy().to_string();
-                    (inside, cs)
-                } else if let Some(parent) = full_path.parent() {
-                    if parent.exists() {
-                        let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
-                            SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
-                        })?;
-                        let inside = canonical_parent.starts_with(self.fs_tool._workspace());
-                        let filename = full_path
-                            .file_name()
-                            .map(|f| f.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let cs = format!("{}/{}", canonical_parent.display(), filename);
-                        (inside, cs)
-                    } else {
-                        // Parent doesn't exist — assume outside if path is absolute
-                        let inside = !path.starts_with('/') && !path.starts_with('~');
-                        (inside, full_path.to_string_lossy().to_string())
-                    }
-                } else {
-                    (true, full_path.to_string_lossy().to_string())
-                };
-
-                if !is_inside_workspace {
-                    let canonical_path = std::path::Path::new(&canonical_str_owned);
-                    self.check_write_access(path, &canonical_str_owned, canonical_path)?;
+                if !resolved.is_inside_workspace {
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
                 }
 
                 // Append mode lets the model write a file larger than a
@@ -558,23 +692,23 @@ impl ToolExecutor {
                     // the whole file back for each chunk would scale
                     // quadratically with the number of chunks.
                     None
-                } else if is_inside_workspace {
+                } else if resolved.is_inside_workspace {
                     self.fs_tool.read_file(path).ok()
                 } else {
                     self.fs_tool
-                        .read_file_with_outside_access(&canonical_str_owned)
+                        .read_file_with_outside_access(&resolved.canonical_str)
                         .ok()
                 };
 
-                match (append, is_inside_workspace) {
+                match (append, resolved.is_inside_workspace) {
                     (true, true) => self.fs_tool.append_file(path, content)?,
                     (true, false) => self
                         .fs_tool
-                        .append_file_with_outside_access(&canonical_str_owned, content)?,
+                        .append_file_with_outside_access(&resolved.canonical_str, content)?,
                     (false, true) => self.fs_tool.write_file(path, content)?,
                     (false, false) => self
                         .fs_tool
-                        .write_file_with_outside_access(&canonical_str_owned, content)?,
+                        .write_file_with_outside_access(&resolved.canonical_str, content)?,
                 }
 
                 if append {
@@ -585,8 +719,10 @@ impl ToolExecutor {
                     ))
                 } else if let Some(original) = original_content {
                     let diff_output = diff::generate_compact_diff(&original, content, path);
-                    let body =
-                        format!("Successfully wrote to file '{}'\n\nChanges:\n{}", path, diff_output);
+                    let body = format!(
+                        "Successfully wrote to file '{}'\n\nChanges:\n{}",
+                        path, diff_output
+                    );
                     Ok(truncate_for_context(
                         &body,
                         MAX_DIFF_TOKENS,
@@ -601,31 +737,18 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                // Expand tilde and canonicalize
-                let full_path = if path.starts_with('/') || path.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
-                } else {
-                    self.fs_tool._workspace().join(path)
-                };
+                let resolved = self.resolve_existing(path)?;
+                self.check_read_access(
+                    path,
+                    &resolved.canonical,
+                    &resolved.canonical_str,
+                    resolved.is_inside_workspace,
+                )?;
 
-                let canonical = match std::fs::canonicalize(&full_path) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        return Err(SofosError::FileNotFound(path.to_string()));
-                    }
-                };
-
-                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-                let canonical_str = canonical.to_str().unwrap_or(path);
-
-                self.check_read_access(path, &canonical, canonical_str, is_inside_workspace)?;
-
-                // Use canonical path for the actual operation
-                let entries = if is_inside_workspace {
+                let entries = if resolved.is_inside_workspace {
                     self.fs_tool.list_directory(path)?
                 } else {
-                    // List using canonical path for outside workspace
-                    let canonical_entries = std::fs::read_dir(&canonical)?;
+                    let canonical_entries = std::fs::read_dir(&resolved.canonical)?;
                     let mut entries = Vec::new();
                     for entry in canonical_entries {
                         let entry = entry?;
@@ -649,7 +772,25 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
-                self.fs_tool.create_directory(path)?;
+                // Symmetry with `write_file` / `edit_file`: accept
+                // absolute and `~/` paths gated by a Write grant, so a
+                // user who's granted Write to an external directory can
+                // create subfolders there without dropping to bash.
+                let resolved = self.resolve_for_write(path)?;
+                if !resolved.is_inside_workspace {
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
+                }
+
+                if resolved.is_inside_workspace {
+                    self.fs_tool.create_directory(path)?;
+                } else {
+                    std::fs::create_dir_all(&resolved.canonical).map_err(|e| {
+                        SofosError::ToolExecution(format!(
+                            "Failed to create directory '{}': {}",
+                            path, e
+                        ))
+                    })?;
+                }
                 Ok(format!("Successfully created directory '{}'", path))
             }
             ToolName::SearchCode => {
@@ -676,28 +817,27 @@ impl ToolExecutor {
                 })?;
                 let base = input["path"].as_str().unwrap_or(".");
                 let include_ignored = input["include_ignored"].as_bool().unwrap_or(false);
+                // Matches ripgrep's default: symlinks are not followed
+                // unless the caller opts in. Prevents a workspace-internal
+                // symlink pointing outside the workspace from leaking
+                // filenames under the target directory. Set
+                // `follow_symlinks: true` to walk them (equivalent to
+                // `rg -L`).
+                let follow_symlinks = input["follow_symlinks"].as_bool().unwrap_or(false);
 
-                // Resolve `base` the same way `list_directory` / `read_file`
-                // do — tilde / absolute paths are taken as-is, relative
-                // paths join with the workspace — then canonicalize and
-                // run through `check_read_access` for the external-path
-                // case. That routes unauthorised outside-workspace paths
-                // through the user-prompt / allow-rule gate instead of
-                // silently walking them (the earlier bug) or hard-
-                // rejecting them (which would block the legitimate
-                // "review /some/other/repo" workflow). Relative escapes
-                // like `base=".."` still fall here: they canonicalize
-                // outside the workspace and hit the same gate.
-                let full_path = if base.starts_with('/') || base.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(base))
-                } else {
-                    self.fs_tool._workspace().join(base)
-                };
-                let search_dir = std::fs::canonicalize(&full_path)
-                    .map_err(|_| SofosError::FileNotFound(base.to_string()))?;
-                let is_inside_workspace = search_dir.starts_with(self.fs_tool._workspace());
-                let canonical_str = search_dir.to_str().unwrap_or(base);
-                self.check_read_access(base, &search_dir, canonical_str, is_inside_workspace)?;
+                // Same shape as `list_directory` / `read_file`: resolve
+                // the base path (tilde/abs/rel) and route through
+                // `check_read_access`. External paths with a Read grant
+                // proceed; unauthorised `base=".."` / `base="/etc"` hit
+                // the permission gate.
+                let resolved = self.resolve_existing(base)?;
+                self.check_read_access(
+                    base,
+                    &resolved.canonical,
+                    &resolved.canonical_str,
+                    resolved.is_inside_workspace,
+                )?;
+                let search_dir = resolved.canonical;
 
                 let glob = globset::GlobBuilder::new(pattern)
                     .literal_separator(false)
@@ -724,10 +864,19 @@ impl ToolExecutor {
                         Err(_) => continue,
                     };
                     for entry in entries.flatten() {
+                        // `file_type()` returns symlink info without
+                        // following the link, so we can distinguish a
+                        // real directory from a symlink-to-directory.
+                        let file_type = match entry.file_type() {
+                            Ok(ft) => ft,
+                            Err(_) => continue,
+                        };
+                        if file_type.is_symlink() && !follow_symlinks {
+                            continue;
+                        }
                         let path = entry.path();
                         if path.is_dir() {
-                            let dir_name =
-                                path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                             if excluded_basenames.contains(dir_name) {
                                 continue;
                             }
@@ -797,30 +946,36 @@ impl ToolExecutor {
                     }
                 }
 
-                // Check if path is outside workspace
-                let full_path = if path.starts_with('/') || path.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
-                } else {
-                    self.fs_tool._workspace().join(path)
-                };
-
-                let canonical = std::fs::canonicalize(&full_path).map_err(|_| {
+                let resolved = self.resolve_existing(path).map_err(|_| {
                     SofosError::ToolExecution(format!(
                         "File not found: '{}'. The file must exist to edit it.",
                         path
                     ))
                 })?;
-                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-                let canonical_str = canonical.to_string_lossy().to_string();
 
-                if !is_inside_workspace {
-                    self.check_write_access(path, &canonical_str, &canonical)?;
+                // External paths require BOTH a Read grant (we read the
+                // file to compute the modified content and the diff) and
+                // a Write grant (we write it back). Previously only
+                // Write was checked, which silently granted Read as a
+                // side effect — defensible ergonomically, but wrong if
+                // the user explicitly shaped the permission model to
+                // allow writes and block reads. Check both so the scopes
+                // hold independently.
+                if !resolved.is_inside_workspace {
+                    self.check_read_access(
+                        path,
+                        &resolved.canonical,
+                        &resolved.canonical_str,
+                        resolved.is_inside_workspace,
+                    )?;
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
                 }
 
-                let original = if is_inside_workspace {
+                let original = if resolved.is_inside_workspace {
                     self.fs_tool.read_file(path)?
                 } else {
-                    self.fs_tool.read_file_with_outside_access(&canonical_str)?
+                    self.fs_tool
+                        .read_file_with_outside_access(&resolved.canonical_str)?
                 };
 
                 if !original.contains(old_string) {
@@ -837,15 +992,18 @@ impl ToolExecutor {
                     original.replacen(old_string, new_string, 1)
                 };
 
-                if is_inside_workspace {
+                if resolved.is_inside_workspace {
                     self.fs_tool.write_file(path, &modified)?;
                 } else {
                     self.fs_tool
-                        .write_file_with_outside_access(&canonical_str, &modified)?;
+                        .write_file_with_outside_access(&resolved.canonical_str, &modified)?;
                 }
 
                 let diff_output = diff::generate_compact_diff(&original, &modified, path);
-                let body = format!("Successfully edited '{}'\n\nChanges:\n{}", path, diff_output);
+                let body = format!(
+                    "Successfully edited '{}'\n\nChanges:\n{}",
+                    path, diff_output
+                );
                 Ok(truncate_for_context(
                     &body,
                     MAX_DIFF_TOKENS,
@@ -898,29 +1056,31 @@ impl ToolExecutor {
                     )));
                 }
 
-                // Check if path is outside workspace for external access
-                let full_path = if path.starts_with('/') || path.starts_with('~') {
-                    std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(path))
-                } else {
-                    self.fs_tool._workspace().join(path)
-                };
-                let canonical = std::fs::canonicalize(&full_path).map_err(|_| {
+                let resolved = self.resolve_existing(path).map_err(|_| {
                     SofosError::ToolExecution(format!(
                         "File not found: '{}'. The file must exist for morph_edit_file.",
                         path
                     ))
                 })?;
-                let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-                let canonical_str = canonical.to_string_lossy().to_string();
 
-                if !is_inside_workspace {
-                    self.check_write_access(path, &canonical_str, &canonical)?;
+                // External paths require BOTH Read (we send the file to
+                // Morph as context) and Write (we write the merged
+                // result back). Same rationale as `edit_file`.
+                if !resolved.is_inside_workspace {
+                    self.check_read_access(
+                        path,
+                        &resolved.canonical,
+                        &resolved.canonical_str,
+                        resolved.is_inside_workspace,
+                    )?;
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
                 }
 
-                let original_code = if is_inside_workspace {
+                let original_code = if resolved.is_inside_workspace {
                     self.fs_tool.read_file(path)?
                 } else {
-                    self.fs_tool.read_file_with_outside_access(&canonical_str)?
+                    self.fs_tool
+                        .read_file_with_outside_access(&resolved.canonical_str)?
                 };
 
                 // Wrap morph API call with a timeout; fall back to edit_file on timeout/network errors
@@ -983,11 +1143,11 @@ impl ToolExecutor {
                     )));
                 }
 
-                if is_inside_workspace {
+                if resolved.is_inside_workspace {
                     self.fs_tool.write_file(path, &merged_code)?;
                 } else {
                     self.fs_tool
-                        .write_file_with_outside_access(&canonical_str, &merged_code)?;
+                        .write_file_with_outside_access(&resolved.canonical_str, &merged_code)?;
                 }
 
                 // Generate diff for display
@@ -1048,7 +1208,34 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'destination' parameter".to_string())
                 })?;
 
-                self.fs_tool.move_file(source, destination)?;
+                // Moving a file removes it from its source location, so
+                // external sources need a Write grant (not just Read).
+                // External destinations need Write as usual.
+                let src_resolved = self.resolve_existing(source)?;
+                let dst_resolved = self.resolve_for_write(destination)?;
+
+                if !src_resolved.is_inside_workspace {
+                    self.check_write_access(
+                        source,
+                        &src_resolved.canonical_str,
+                        &src_resolved.canonical,
+                    )?;
+                }
+                if !dst_resolved.is_inside_workspace {
+                    self.check_write_access(
+                        destination,
+                        &dst_resolved.canonical_str,
+                        &dst_resolved.canonical,
+                    )?;
+                }
+
+                move_between(
+                    source,
+                    destination,
+                    &src_resolved,
+                    &dst_resolved,
+                    &self.fs_tool,
+                )?;
                 Ok(format!(
                     "Successfully moved '{}' to '{}'",
                     source, destination
@@ -1062,7 +1249,35 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'destination' parameter".to_string())
                 })?;
 
-                self.fs_tool.copy_file(source, destination)?;
+                // Copy leaves the source untouched, so external sources
+                // only need a Read grant. External destinations still
+                // need Write.
+                let src_resolved = self.resolve_existing(source)?;
+                let dst_resolved = self.resolve_for_write(destination)?;
+
+                if !src_resolved.is_inside_workspace {
+                    self.check_read_access(
+                        source,
+                        &src_resolved.canonical,
+                        &src_resolved.canonical_str,
+                        src_resolved.is_inside_workspace,
+                    )?;
+                }
+                if !dst_resolved.is_inside_workspace {
+                    self.check_write_access(
+                        destination,
+                        &dst_resolved.canonical_str,
+                        &dst_resolved.canonical,
+                    )?;
+                }
+
+                copy_between(
+                    source,
+                    destination,
+                    &src_resolved,
+                    &dst_resolved,
+                    &self.fs_tool,
+                )?;
                 Ok(format!(
                     "Successfully copied '{}' to '{}'",
                     source, destination

@@ -81,13 +81,13 @@ fn list_directory_tool() -> Tool {
 fn create_directory_tool() -> Tool {
     Tool::Regular {
         name: "create_directory".to_string(),
-        description: "Create a new directory (and parent directories if needed). Only works within the current project directory.".to_string(),
+        description: "Create a new directory (and parent directories if needed). Supports absolute or ~/ paths for external directories (user will be prompted for Write access).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the directory (e.g., 'src/utils')"
+                    "description": "The relative path to the directory (e.g., 'src/utils'). Can also be absolute or ~/ paths for external directories (user will be prompted for Write access)."
                 }
             },
             "required": ["path"]
@@ -170,17 +170,17 @@ fn delete_directory_tool() -> Tool {
 fn move_file_tool() -> Tool {
     Tool::Regular {
         name: "move_file".to_string(),
-        description: "Move or rename a file or directory within the workspace. Creates parent directories if needed.".to_string(),
+        description: "Move or rename a file or directory. Creates parent directories if needed. Supports absolute or ~/ paths for either endpoint (user will be prompted for Write access on external paths, since moving removes the source).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "The relative path to the source file/directory (e.g., 'src/old_name.rs')"
+                    "description": "The relative path to the source file/directory (e.g., 'src/old_name.rs'). Can also be absolute or ~/ paths; external sources require a Write grant (move removes the source)."
                 },
                 "destination": {
                     "type": "string",
-                    "description": "The relative path to the destination (e.g., 'src/new_name.rs' or 'new_folder/file.rs')"
+                    "description": "The relative path to the destination (e.g., 'src/new_name.rs' or 'new_folder/file.rs'). Can also be absolute or ~/ paths; external destinations require a Write grant."
                 }
             },
             "required": ["source", "destination"]
@@ -192,17 +192,17 @@ fn move_file_tool() -> Tool {
 fn copy_file_tool() -> Tool {
     Tool::Regular {
         name: "copy_file".to_string(),
-        description: "Copy a file to a new location within the workspace. Creates parent directories if needed.".to_string(),
+        description: "Copy a file to a new location. Creates parent directories if needed. Supports absolute or ~/ paths for either endpoint (user will be prompted for Read on external sources and Write on external destinations).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "The relative path to the source file (e.g., 'src/template.rs')"
+                    "description": "The relative path to the source file (e.g., 'src/template.rs'). Can also be absolute or ~/ paths; external sources require a Read grant."
                 },
                 "destination": {
                     "type": "string",
-                    "description": "The relative path to the destination (e.g., 'src/new_file.rs')"
+                    "description": "The relative path to the destination (e.g., 'src/new_file.rs'). Can also be absolute or ~/ paths; external destinations require a Write grant."
                 }
             },
             "required": ["source", "destination"]
@@ -244,7 +244,7 @@ fn edit_file_tool() -> Tool {
 fn glob_files_tool() -> Tool {
     let excludes = crate::tools::codesearch::default_exclude_dirs_human();
     let tool_description = format!(
-        "Find files recursively by glob pattern. Use this when you need to find files across the codebase by name or extension (e.g., '**/*.rs', 'src/**/test_*.py'). For listing a single directory's contents, use list_directory instead. By default skips build/vendored directories ({excludes}); set include_ignored=true to walk everything."
+        "Find files recursively by glob pattern. Use this when you need to find files across the codebase by name or extension (e.g., '**/*.rs', 'src/**/test_*.py'). For listing a single directory's contents, use list_directory instead. By default skips build/vendored directories ({excludes}) and does not follow symlinks (matching ripgrep's default); set include_ignored=true or follow_symlinks=true to widen the walk."
     );
     let include_ignored_description = format!(
         "When true, descend into the default build/vendored excludes ({excludes}). Default: false. Only set this when you specifically need to find files inside build artefacts or vendored code."
@@ -267,6 +267,10 @@ fn glob_files_tool() -> Tool {
                 "include_ignored": {
                     "type": "boolean",
                     "description": include_ignored_description
+                },
+                "follow_symlinks": {
+                    "type": "boolean",
+                    "description": "When true, follow symlinks while walking (equivalent to `rg -L`). Default: false — matches ripgrep's default and prevents a workspace-internal symlink that points outside from leaking filenames under the target directory."
                 }
             },
             "required": ["pattern"]
