@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-04-21
+
 ### Security
 
 - **Windows absolute paths bypassed the external-path detection** on every filesystem-touching dispatcher (`read_file`, `write_file`, `list_directory`, `glob_files`, `create_directory`, `edit_file`, `morph_edit_file` via the shared resolver), on `execute_bash`'s path scanner, on the image loader, and on the config parser that classifies `Bash(path)` entries. All these call sites used `path.starts_with('/') || path.starts_with('~')`, which only catches the Unix variant — `C:\Users\...` or `\\server\share\...` on Windows slipped through as "relative", got joined to the workspace, and then `Path::join`'s "replace on absolute" rule silently let the path escape. Centralised into two composable helpers in `tools::utils`: `is_absolute_path` (Unix `/foo` + Windows drive / UNC) and `is_absolute_or_tilde` (adds `~` / `~/foo`). Both combine `starts_with('/')` with `Path::is_absolute` rather than relying on either alone — `Path::is_absolute` returns `false` on Windows for a Unix-shaped `/etc/passwd`, which would have re-introduced the bug in reverse.
