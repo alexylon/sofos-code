@@ -219,6 +219,64 @@ async fn test_read_file_blocks_relative_escape() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_resolve_for_write_canonicalizes_through_missing_ancestors() {
+    // Regression: when the target file AND its immediate parent don't
+    // exist yet (e.g. nested mkdir on write), the old
+    // `resolve_for_write` fell through to an un-canonicalised path. On
+    // systems where an ancestor has a canonical form different from
+    // its literal form — macOS `/tmp` → `/private/tmp`, or any
+    // intermediate symlink — a permission rule written against the
+    // canonical prefix wouldn't match, and the write would be denied
+    // for paths that should have been allowed.
+    //
+    // The fix walks up to the nearest existing ancestor, canonicalises
+    // that, and re-appends the missing tail. We exercise it here with
+    // a symlink so the test works on Linux (where `/tmp` is already
+    // canonical) and macOS alike.
+    use std::os::unix::fs::symlink;
+
+    let workspace = tempdir().unwrap();
+    let real_target = tempdir().unwrap();
+    let real_target_canonical = std::fs::canonicalize(real_target.path()).unwrap();
+
+    // Create a symlink inside the workspace pointing to the real target
+    // directory. When callers pass `alias/missing/dir/file.txt`, the
+    // intermediate directories under the symlink don't exist yet.
+    let alias = workspace.path().join("alias");
+    symlink(&real_target_canonical, &alias).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let resolved = executor
+        .resolve_for_write("alias/missing/dir/file.txt")
+        .expect("resolve_for_write should succeed when an ancestor exists");
+
+    // The canonical form must resolve the symlink, not leave it as
+    // `<workspace>/alias/...`. That's the property a permission rule
+    // against the real target's canonical prefix relies on.
+    let expected = real_target_canonical
+        .join("missing")
+        .join("dir")
+        .join("file.txt");
+    assert_eq!(
+        resolved.canonical, expected,
+        "canonical path must route through the resolved symlink target",
+    );
+    assert_eq!(resolved.canonical_str, expected.to_string_lossy());
+
+    // The symlink escapes the workspace, so `is_inside_workspace` must
+    // reflect the canonical target rather than the alias location.
+    let workspace_canonical = std::fs::canonicalize(workspace.path()).unwrap();
+    assert_eq!(
+        resolved.is_inside_workspace,
+        real_target_canonical.starts_with(&workspace_canonical),
+        "is_inside_workspace must be computed against the canonical path",
+    );
+}
+
 #[tokio::test]
 async fn test_read_file_allows_explicit_outside_path_with_glob() {
     let workspace = tempdir().unwrap();

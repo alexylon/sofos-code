@@ -1,10 +1,10 @@
 # Sofos Code
 
-![](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg) &nbsp; [![Crates.io](https://img.shields.io/crates/v/sofos.svg?color=blue)](https://crates.io/crates/sofos)
+![CI](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg) &nbsp; [![Crates.io](https://img.shields.io/crates/v/sofos.svg?color=blue)](https://crates.io/crates/sofos)
 
 A blazingly fast, interactive AI coding assistant powered by Claude or GPT, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
 
-Tested on macOS but should work on Linux and Windows as well.
+Tested on macOS; supported on Linux and Windows.
 
 <div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code"></div>
 
@@ -41,7 +41,7 @@ Tested on macOS but should work on Linux and Windows as well.
 - **Image Vision** - Analyze local or web images, paste from clipboard with Ctrl+V
 - **Session History** - Auto-save with an in-TUI resume picker (`/resume` or `sofos -r`)
 - **Custom Instructions** - Project and personal context files
-- **File Operations** - Read, write, edit, list, create (sandboxed)
+- **File Operations** - Read, write, edit, list, glob, create, move, copy, delete (sandboxed; external paths via permission grants)
 - **Targeted Edits** - Diff-based `edit_file` for precise string replacements
 - **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec)
 - **File Search** - Find files by glob pattern (`**/*.rs`)
@@ -157,7 +157,7 @@ Exit summary shows token usage and estimated cost (based on official API pricing
 
 ```
 -p, --prompt <TEXT>          One-shot mode
--s, --safe-mode              Start in read-only mode (native writes and bash disabled; see Safe Mode note under Available Tools)
+-s, --safe-mode              Start in read-only mode (native writes and bash disabled)
 -r, --resume                 Resume a previous session
     --check-connection       Check API connectivity and exit
     --api-key <KEY>          Anthropic API key (overrides env var)
@@ -185,12 +185,12 @@ For Claude, it enables the thinking protocol and `--thinking-budget` controls to
 For OpenAI (gpt-5 models), `/think on` sets high reasoning effort and `/think off` sets low reasoning effort. 
 The `--thinking-budget` parameter only applies to Claude models.
 
-## Custom Instructions/Context
+## Custom Instructions
 
-**[`AGENTS.md`](https://agents.md)** (project root, version controlled) - Project context for AI agents, team-wide conventions, architecture
-**`.sofos/instructions.md`** (gitignored) - Personal preferences
+Two files are loaded at startup and appended to the system prompt:
 
-Both loaded at startup and appended to system prompt.
+- **[`AGENTS.md`](https://agents.md)** (project root, version controlled) — project context for AI agents: team-wide conventions, architecture, domain vocabulary.
+- **`.sofos/instructions.md`** (gitignored) — personal preferences that shouldn't be shared with the team.
 
 ## Session History
 
@@ -198,14 +198,18 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 
 ## Available Tools
 
-**File Operations:**
+**File Operations** (accept absolute and `~/` paths with a `Read` or `Write` grant as appropriate — see Security and Configuration):
 - `read_file` - Read file contents
-- `write_file` - Create or overwrite files
-- `edit_file` - Targeted string replacement edits (no API key needed)
-- `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
 - `list_directory` - List a single directory's contents
 - `glob_files` - Find files recursively by glob pattern (`**/*.rs`, `src/**/test_*.py`)
-- `create_directory`, `delete_file`, `delete_directory`, `move_file`, `copy_file` - Standard file ops
+- `write_file` - Create or overwrite files (append mode for chunked writes)
+- `edit_file` - Targeted string replacement edits (no API key needed)
+- `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
+- `create_directory` - Create a directory (and missing parents)
+- `move_file`, `copy_file` - Move or copy files
+
+**Workspace-only file ops** (absolute / `~/` paths are rejected, even with grants — destructive ops are deliberately scoped to the workspace):
+- `delete_file`, `delete_directory` - Delete files or directories (prompt for confirmation)
 
 **Code & Search:**
 - `search_code` - Fast regex-based code search (requires `ripgrep`)
@@ -218,9 +222,9 @@ Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resu
 
 **Image Vision:** not a tool — sofos detects image paths (JPEG, PNG, GIF, WebP, up to 20 MB local) in your user messages and loads them automatically as image content blocks. Clipboard paste (Ctrl+V) works the same way. See [Image Vision](#image-vision) under Usage.
 
-**Note:** Tools can access paths outside workspace when allowed via interactive prompt or config. Three separate scopes control access: `Read` (read/list), `Write` (write/edit), and `Bash` (command execution). Each scope is granted independently.
+**Note:** Tools can access paths outside the workspace when allowed via interactive prompt or config. Three independent scopes (`Read` / `Write` / `Bash`) gate this access — see [Security](#security) for the full model.
 
-Safe mode (`--safe-mode` or `/s`) restricts the native tool set to: `list_directory`, `read_file`, `glob_files`, `web_fetch`, and `web_search` (Anthropic + OpenAI provider-native variants). MCP tools are **not** filtered by safe mode — if you've configured MCP servers with mutating tools, those remain available.
+Safe mode (`--safe-mode` or `/s`) restricts the native tool set to read-only operations: `list_directory`, `read_file`, `glob_files`, `web_fetch`, `web_search` (Anthropic + OpenAI provider-native variants), and `search_code` when `ripgrep` is available. MCP tools are **not** filtered by safe mode — if you've configured MCP servers with mutating tools, those remain available.
 
 ## MCP Servers
 
@@ -235,8 +239,9 @@ Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`).
 **Sandboxing (by default):**
 - ✅ Full access to workspace files/directories
 - ✅ External access via interactive prompts — user is asked to allow/deny, with option to remember in config
-- Three separate scopes: `Read` (read/list), `Write` (write/edit), `Bash` (commands with external paths)
-- Each scope is independently granted — Read access does not imply Write or Bash access
+- Three separate scopes: `Read` (read/list), `Write` (write/create/move/delete), `Bash` (commands with external paths)
+- Each scope is independently granted — Read access does not imply Write or Bash access, and vice versa
+- Tools that both read and write a file on external paths (`edit_file`, `morph_edit_file`) require **both** `Read` and `Write` grants on the path
 
 **Bash Permissions (3-Tier System):**
 
@@ -305,7 +310,7 @@ headers = { "Authorization" = "Bearer token123" }
 - Three scopes: `Read(path)` for reading, `Write(path)` for writing, `Bash(path)` for bash access — each independent
 - `Bash(path)` entries with globs (e.g. `Bash(/tmp/**)`) grant path access; plain entries (e.g. `Bash(npm test)`) grant command access
 - Glob patterns supported: `*` (single level), `**` (recursive)
-- Tilde expansion: `~` → home directory
+- Tilde expansion: `~` → `$HOME` on Unix, `%USERPROFILE%` on Windows
 - `ask` only works for Bash commands
 
 \* These rules do not restrict MCP server command paths

@@ -327,12 +327,19 @@ impl ToolExecutor {
     }
 
     /// Resolve a caller-supplied path that **may not exist yet** — the
-    /// write-side counterpart of [`resolve_existing`]. When the file
-    /// itself is missing (new-file creation) we canonicalize the parent
-    /// and rejoin the filename, so the `canonical` field still points
-    /// at where the write will land. Falls through to a best-effort
-    /// lossy conversion if the parent is also missing (nested mkdir)
-    /// or the path has no parent (filesystem root).
+    /// write-side counterpart of [`resolve_existing`].
+    ///
+    /// Walks up the path until it finds an existing ancestor,
+    /// canonicalises that ancestor, and re-appends the missing tail
+    /// components. This matters because the canonical form of an
+    /// ancestor can differ from its literal form — on macOS, `/tmp`
+    /// canonicalises to `/private/tmp` — so permission rules written
+    /// against the canonical prefix (e.g. `Write(/private/tmp/**)`)
+    /// wouldn't otherwise match a write to
+    /// `/tmp/new/deeply/nested/file.txt` when none of the intermediate
+    /// directories exist yet. The earlier implementation only
+    /// canonicalised the immediate parent, so it fell through to an
+    /// un-canonicalised path whenever the grandparent was missing too.
     fn resolve_for_write(&self, caller_path: &str) -> Result<ResolvedPath> {
         let full_path = if is_absolute_or_tilde(caller_path) {
             std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
@@ -342,46 +349,48 @@ impl ToolExecutor {
             self.fs_tool._workspace().join(caller_path)
         };
 
-        if full_path.exists() {
-            let canonical = std::fs::canonicalize(&full_path)
-                .map_err(|e| SofosError::ToolExecution(format!("Failed to resolve path: {}", e)))?;
-            let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-            let canonical_str = canonical.to_string_lossy().to_string();
-            return Ok(ResolvedPath {
-                canonical,
-                canonical_str,
-                is_inside_workspace,
-            });
-        }
-
-        if let Some(parent) = full_path.parent() {
-            if parent.exists() {
-                let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+        // Walk up collecting missing components until an existing
+        // ancestor is found. `cursor.exists()` follows symlinks, same
+        // as `canonicalize` below, so the two stay consistent.
+        let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+        let mut cursor = full_path.as_path();
+        let canonical_anchor = loop {
+            if cursor.exists() {
+                break std::fs::canonicalize(cursor).map_err(|e| {
                     SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
                 })?;
-                let is_inside_workspace = canonical_parent.starts_with(self.fs_tool._workspace());
-                let filename = full_path
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let canonical = canonical_parent.join(&filename);
-                let canonical_str = canonical.to_string_lossy().to_string();
-                return Ok(ResolvedPath {
-                    canonical,
-                    canonical_str,
-                    is_inside_workspace,
-                });
             }
-        }
+            match (cursor.file_name(), cursor.parent()) {
+                (Some(name), Some(parent)) => {
+                    missing_tail.push(name.to_os_string());
+                    cursor = parent;
+                }
+                _ => {
+                    // Reached the filesystem root (or a path without a
+                    // file_name — empty / ending in `..`) without
+                    // finding an existing ancestor. Can only happen on
+                    // a borderline-broken filesystem or an exotic
+                    // input, but fall back to the un-canonicalised
+                    // path rather than erroring out.
+                    let is_inside_workspace = !is_absolute_or_tilde(caller_path);
+                    let canonical_str = full_path.to_string_lossy().to_string();
+                    return Ok(ResolvedPath {
+                        canonical: full_path,
+                        canonical_str,
+                        is_inside_workspace,
+                    });
+                }
+            }
+        };
 
-        // Neither the target nor its parent exists. Relative paths are
-        // still inside-workspace by convention; absolute / tilde paths
-        // (including Windows `C:\...`) are treated as outside and will
-        // hit the permission gate.
-        let is_inside_workspace = !is_absolute_or_tilde(caller_path);
-        let canonical_str = full_path.to_string_lossy().to_string();
+        let mut canonical = canonical_anchor;
+        for name in missing_tail.iter().rev() {
+            canonical.push(name);
+        }
+        let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+        let canonical_str = canonical.to_string_lossy().to_string();
         Ok(ResolvedPath {
-            canonical: full_path,
+            canonical,
             canonical_str,
             is_inside_workspace,
         })
