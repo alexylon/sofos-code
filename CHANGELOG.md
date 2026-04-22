@@ -4,13 +4,32 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- **`read_file` output cap raised to ~256 KB** (64k tokens). Previously `read_file` shared the ~64 KB / 16k-token cap with `execute_bash` and `search_code`, which clipped mid-sized source files — generated code, JSON fixtures, long prompt templates — and forced the model into an extra range-reads round trip against the 200-iteration tool-loop budget. `execute_bash` stdout/stderr and `search_code` keep the 16k-token cap, since verbose test output and broad ripgrep patterns benefit from being forced to narrow rather than handing the model noise.
+- **Claude Opus 4.7 adaptive-thinking support.** Opus 4.7 rejects the legacy `{thinking: {type: "enabled", budget_tokens: N}}` request shape with HTTP 400; sofos now detects Opus 4.7 models and sends `{thinking: {type: "adaptive"}, output_config: {effort}}` instead. The `--thinking-budget` token count is meaningless for adaptive models (the server picks its own budget), so `/think on` maps to `effort: high` and `/think off` maps to `effort: low`. Adaptive is sent on every request — including when thinking is toggled off — so echoed thinking blocks from earlier turns still round-trip cleanly. Startup banner, TUI status line, and `/think` handlers all label the state as `Adaptive thinking effort: high|low` rather than showing a fake token count.
+- **Confirmation modal now fits on short terminals.** The 4-choice permission prompt (`Yes` / `Yes and remember` / `No` / `No and remember`) needs ~10 rows of chrome, which used to get clipped to just "Yes" on small inline viewports. The modal grows the viewport to fit when it can; when it can't, it drops the separators and hint row, and finally scrolls the choice list around the cursor with `▴` / `▾` cues on the nearest non-cursor row so the "I'm at the top/bottom of the list" signal doesn't fight the cursor glyph.
+- **Visible feedback on `/s` and `/n`** (safe-mode toggles). Previously silent on state changes and a total no-op when the mode was already active; now prints a one-line status (`Safe mode: enabled / read-only tools only; no writes or bash`, `Safe mode: disabled / all tools available`, or a dimmed `already enabled/disabled`).
+
+### Security
+
+- **`FOO=bar rm -rf /` no longer bypassed the forbidden-command check.** `extract_base_command` took the first whitespace-delimited token, which for a command starting with `KEY=value` env assignments was the assignment itself — meaning the real base command (`rm`) was never looked up against allow/deny lists. Leading POSIX-shaped env assignments are now skipped before the base-command lookup. Regression test added (`env_prefix_does_not_bypass_forbidden_base`).
+- **Forbidden-git detection now covers shell substitution boundaries.** `command_contains_op` only recognised `` ` ` ``, `;`, `&&`, `||`, `|` as command boundaries, so `` echo hi; `git push` ``, `echo $(git push)`, `(git push)`, and `{ git push; }` all slipped past the guarded-git list. Extended to cover backtick substitution, `$(…)` command substitution, `(…)` subshells, and `{…;}` groups. Regression test added (`command_contains_op_catches_shell_boundaries`).
+- **Clipboard paste is now bounded at 20 MB.** Matches the Anthropic Messages API ceiling on base64-encoded image bodies; an oversized screenshot is dropped (with a `tracing::warn!`) before it enters the conversation state, so a huge paste can't blow the session up with a confusing HTTP 400.
 
 ### Fixed
 
+- **"Goodbye!" no longer prints on the same line as the status row on exit.** The TUI left the cursor parked at the end of the status line; when the session summary short-circuited on zero usage, `print_goodbye` then printed `Goodbye!` flush against `… thinking: 5120 tok`. The teardown now emits an escape-newline on the no-summary path so the message always starts fresh.
+- **Safe-mode tool list now matches reality.** `SAFE_MODE_MESSAGE` told the model it had `list_directory, read_file and web_search`, but `get_read_only_tools()` actually exposes `list_directory, read_file, glob_files, web_fetch, web_search` (+ `search_code` when ripgrep is present). The model was being given a false toolset description on safe-mode entry.
+- **Corrupted session file on save no longer wipes the in-memory conversation.** `save_session` re-read the prior file to preserve `created_at`; if the file was unparseable (hand-edited, partial prior write, schema drift) the JSON error bubbled up and the current turn's messages were dropped on the floor. The stamp now falls back to `now` on any read/parse failure — losing a date is cheaper than losing the session. Regression test added (`save_session_survives_corrupted_prior_file`).
+- **Empty-signature thinking blocks no longer round-trip.** If a streamed thinking block ended without ever receiving a `signature_delta`, sofos pushed a `ContentBlock::Thinking { thinking: "", signature: "" }` into history — which the server would reject on the next turn with a signature-verification 400. The block is now dropped when the signature is empty; legitimate empty-thinking adaptive blocks (Opus 4.7 `display: "omitted"`, which still emit a real signature) continue to round-trip.
+- **`on_thinking_delta` no longer prints a bare `Thinking:` label** when the first delta is an empty string.
 - Prompt glyph (> or :) now correctly reflects the normal/safe modes.
+
+### Changed
+
+- **"User declined" prompt phrasing** now nudges the model to pivot rather than retry. The old `Command blocked by user: 'X'` read like a hard policy block and invited the model to reissue the same command. Replaced with `User declined 'X'. Propose a different approach or ask the user to clarify rather than retrying the same command.` at all three rejection sites.
+- **`/think` command wording aligned.** The startup banner used `Extended thinking: enabled`; `/think on` printed `Extended thinking enabled.`; `/think off` printed `Extended thinking disabled.`. Consolidated on `Extended thinking: enabled` / `Extended thinking: disabled` everywhere.
+- **`read_file` output cap raised to ~256 KB** (64k tokens). Previously `read_file` shared the ~64 KB / 16k-token cap with `execute_bash` and `search_code`, which clipped mid-sized source files — generated code, JSON fixtures, long prompt templates — and forced the model into an extra range-reads round trip against the 200-iteration tool-loop budget. `execute_bash` stdout/stderr and `search_code` keep the 16k-token cap, since verbose test output and broad ripgrep patterns benefit from being forced to narrow rather than handing the model noise.
 
 ## [0.2.2] - 2026-04-21
 

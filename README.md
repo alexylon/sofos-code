@@ -176,14 +176,15 @@ Exit summary shows token usage and estimated cost (based on official API pricing
 Enable for complex reasoning tasks (disabled by default):
 
 ```bash
-sofos -t                                             # Default 5120 token budget (Claude only)
-sofos -t --thinking-budget 10000 --max-tokens 16000  # Custom budget (Claude only)
+sofos -t                                             # Default 5120 token budget (Claude 4.5 / 4.6)
+sofos -t --thinking-budget 10000 --max-tokens 16000  # Custom budget (Claude 4.5 / 4.6)
 ```
 
-**Note:** Extended thinking works with both Claude and OpenAI models. 
-For Claude, it enables the thinking protocol and `--thinking-budget` controls token allocation. 
-For OpenAI (gpt-5 models), `/think on` sets high reasoning effort and `/think off` sets low reasoning effort. 
-The `--thinking-budget` parameter only applies to Claude models.
+**Note:** Extended thinking works with both Claude and OpenAI models.
+
+- **Claude 4.5 / 4.6** uses a manual token budget controlled by `--thinking-budget` (default `5120`).
+- **Claude Opus 4.7** uses adaptive thinking — the server picks the budget based on the prompt, and sofos sends `effort: high` when thinking is on and `effort: low` when off. `--thinking-budget` is ignored for this model; the status line shows `effort: high|low` instead of a token count.
+- **OpenAI (gpt-5 models)** — `/think on` sets high reasoning effort and `/think off` sets low. `--thinking-budget` is ignored.
 
 ## Custom Instructions
 

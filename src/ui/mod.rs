@@ -238,9 +238,18 @@ impl UI {
         println!("{}", "Goodbye!".bright_cyan());
     }
 
-    pub fn display_session_summary(model: &str, total_input_tokens: u32, total_output_tokens: u32) {
+    /// Print the post-turn usage summary. Returns `true` when something
+    /// was printed, `false` when the early-return path skipped it — the
+    /// TUI teardown uses that return to decide whether to emit its own
+    /// escape-newline before [`Self::print_goodbye`] so "Goodbye!"
+    /// never collides with the status row.
+    pub fn display_session_summary(
+        model: &str,
+        total_input_tokens: u32,
+        total_output_tokens: u32,
+    ) -> bool {
         if total_input_tokens == 0 && total_output_tokens == 0 {
-            return;
+            return false;
         }
 
         println!();
@@ -274,6 +283,7 @@ impl UI {
 
         println!("{}", "─".repeat(50).bright_cyan());
         println!();
+        true
     }
 
     pub fn display_session(&self, session: &Session) -> io::Result<()> {
@@ -657,6 +667,13 @@ impl StreamPrinter {
     }
 
     pub fn on_thinking_delta(&self, delta: &str) {
+        // Skip empty deltas (Opus 4.7 with `display: omitted` can emit
+        // a thinking block that never carries any body). Claiming we've
+        // started printing thinking would leave a bare "Thinking:"
+        // label with no content below it.
+        if delta.is_empty() {
+            return;
+        }
         if !self.thinking_started.swap(true, Ordering::SeqCst) {
             let (tr, tg, tb) = THINKING_RGB;
             print!("\n{}\n", "Thinking:".truecolor(tr, tg, tb).bold().dimmed());

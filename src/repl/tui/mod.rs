@@ -218,7 +218,19 @@ pub fn run(mut repl: Repl) -> Result<()> {
     colored::control::unset_override();
 
     if let Some(summary) = app.exit_summary.take() {
-        UI::display_session_summary(&summary.model, summary.input_tokens, summary.output_tokens);
+        let summary_printed = UI::display_session_summary(
+            &summary.model,
+            summary.input_tokens,
+            summary.output_tokens,
+        );
+        // The summary emits its own leading newline when it prints; if
+        // it short-circuited, the cursor is still parked at the end of
+        // the status row, so emit an escape-newline ourselves —
+        // otherwise "Goodbye!" would land flush against "thinking: …
+        // tok".
+        if !summary_printed {
+            println!();
+        }
         UI::print_goodbye();
     }
 

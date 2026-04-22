@@ -9,6 +9,24 @@ use std::path::PathBuf;
 const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
 const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
 
+/// Match POSIX-shell `KEY=value` assignment tokens: the key starts with
+/// a letter or underscore, is alphanumeric+`_` throughout, and is
+/// followed by `=`. Used by `extract_base_command` to skip leading
+/// env prefixes so `FOO=bar rm -rf /` is classified as a `rm`
+/// invocation (and therefore caught by the forbidden-command set),
+/// not as a never-heard-of `FOO=bar` command.
+fn is_env_assignment(tok: &str) -> bool {
+    let Some((key, _)) = tok.split_once('=') else {
+        return false;
+    };
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermissionSettings {
     pub permissions: Permissions,
@@ -459,9 +477,14 @@ impl PermissionManager {
             command
         };
 
+        // Skip any leading env-var assignments: `FOO=bar rm -rf /`
+        // runs `rm`, not `FOO=bar`. Without this, a shell prefix would
+        // bypass both the forbidden-command set and any remembered
+        // allow/deny decisions keyed to the real command name.
         without_prefix
             .split_whitespace()
-            .next()
+            .find(|tok| !is_env_assignment(tok))
+            .or_else(|| without_prefix.split_whitespace().next())
             .unwrap_or(without_prefix)
     }
 
@@ -1088,6 +1111,49 @@ mod tests {
             manager.check_command_permission("mkdir subdir").unwrap(),
             CommandPermission::Ask
         );
+    }
+
+    /// `FOO=bar rm -rf /` must classify as `rm`, not as the never-seen
+    /// `FOO=bar` command. Regression for the env-prefix permission
+    /// bypass flagged in the 2026-04 audit.
+    #[test]
+    fn env_prefix_does_not_bypass_forbidden_base() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("FOO=bar rm -rf /")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("A=1 B=2 C=3 sudo ls")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+        // A token that looks like `KEY=value` but has a leading digit
+        // isn't a valid shell env name — treat it as the base command
+        // so we don't accidentally skip it and classify the next token
+        // as the command.
+        assert_eq!(
+            PermissionManager::extract_base_command("1BAD=x rm"),
+            "1BAD=x"
+        );
+    }
+
+    #[test]
+    fn is_env_assignment_matches_posix_names_only() {
+        assert!(is_env_assignment("FOO=bar"));
+        assert!(is_env_assignment("_FOO=bar"));
+        assert!(is_env_assignment("FOO_1=bar"));
+        assert!(is_env_assignment("FOO="));
+        assert!(!is_env_assignment("1FOO=bar")); // leading digit
+        assert!(!is_env_assignment("FOO-X=bar")); // hyphen
+        assert!(!is_env_assignment("FOO"));
+        assert!(!is_env_assignment("=bar"));
+        assert!(!is_env_assignment(""));
     }
 
     #[test]

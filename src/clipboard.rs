@@ -43,6 +43,14 @@ pub fn strip_paste_markers(input: &str) -> (String, Vec<usize>) {
     (cleaned.trim().to_string(), indices)
 }
 
+/// Ceiling on pasted clipboard images. Matches the 20 MB cap Anthropic
+/// imposes on base64-encoded image bodies in the Messages API — a
+/// larger screenshot would just get rejected at request time with a
+/// confusing 400. Checked on both the raw PNG buffer (encoder output)
+/// and the encoded base64 so a huge image never makes it into the
+/// conversation state.
+const MAX_CLIPBOARD_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+
 pub fn get_clipboard_image() -> Option<PastedImage> {
     let mut clipboard = arboard::Clipboard::new().ok()?;
     let image = clipboard.get_image().ok()?;
@@ -60,8 +68,27 @@ pub fn get_clipboard_image() -> Option<PastedImage> {
         writer.write_image_data(&image.bytes).ok()?;
     }
 
+    if buf.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+        tracing::warn!(
+            bytes = buf.len(),
+            limit = MAX_CLIPBOARD_IMAGE_BYTES,
+            "dropping oversized clipboard image"
+        );
+        return None;
+    }
+
+    let base64_data = STANDARD.encode(&buf);
+    if base64_data.len() > MAX_CLIPBOARD_IMAGE_BYTES {
+        tracing::warn!(
+            bytes = base64_data.len(),
+            limit = MAX_CLIPBOARD_IMAGE_BYTES,
+            "dropping clipboard image whose base64 form exceeds the API limit"
+        );
+        return None;
+    }
+
     Some(PastedImage {
         media_type: "image/png".to_string(),
-        base64_data: STANDARD.encode(&buf),
+        base64_data,
     })
 }

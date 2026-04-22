@@ -228,7 +228,15 @@ impl Repl {
 
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
-        let reasoning = if matches!(self.client, Anthropic(_)) {
+        let reasoning = if self.uses_adaptive_thinking() {
+            // Opus 4.7 picks its own budget; showing a fixed token count
+            // would be misleading, so render the `output_config.effort`
+            // value we actually send instead.
+            format!(
+                "effort: {}",
+                crate::api::anthropic::effort_label(self.model_config.enable_thinking)
+            )
+        } else if matches!(self.client, Anthropic(_)) {
             if self.model_config.enable_thinking {
                 format!("thinking: {} tok", self.model_config.thinking_budget)
             } else {
@@ -725,74 +733,94 @@ impl Repl {
         Ok(())
     }
 
+    /// True when the active model demands adaptive thinking (Opus 4.7+).
+    /// Shared by the three `/think` handlers and the status line so they
+    /// don't drift apart.
+    fn uses_adaptive_thinking(&self) -> bool {
+        matches!(self.client, Anthropic(_))
+            && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
+    }
+
+    /// Print the reasoning-state line shared by `/think on|off|status` —
+    /// three flavours: adaptive effort, Anthropic manual budget, OpenAI
+    /// reasoning effort. Writing this once keeps the wording identical
+    /// across the three commands.
+    fn print_reasoning_state(&self) {
+        if self.uses_adaptive_thinking() {
+            let effort = crate::api::anthropic::effort_label(self.model_config.enable_thinking);
+            println!(
+                "\n{} {}\n",
+                "Adaptive thinking effort:".bright_green(),
+                effort
+            );
+        } else if matches!(self.client, Anthropic(_)) {
+            if self.model_config.enable_thinking {
+                println!(
+                    "\n{} (budget: {} tokens)\n",
+                    "Extended thinking: enabled".bright_green(),
+                    self.model_config.thinking_budget
+                );
+            } else {
+                println!("\n{}\n", "Extended thinking: disabled".bright_yellow());
+            }
+        } else {
+            let effort = if self.model_config.enable_thinking {
+                crate::api::Reasoning::enabled().effort
+            } else {
+                crate::api::Reasoning::disabled().effort
+            };
+            println!("\n{} {}\n", "Reasoning effort:".bright_green(), effort);
+        }
+    }
+
     pub fn handle_think_on(&mut self) {
         self.model_config.set_thinking(true);
-
-        if matches!(self.client, Anthropic(_)) {
-            println!(
-                "\n{} (budget: {} tokens)\n",
-                "Extended thinking enabled.".bright_green(),
-                self.model_config.thinking_budget
-            );
-        } else {
-            let reasoning = Some(crate::api::Reasoning::enabled());
-            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
-
-            if let Some(e) = effort {
-                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
-            }
-        }
+        self.print_reasoning_state();
     }
 
     pub fn handle_think_off(&mut self) {
         self.model_config.set_thinking(false);
-
-        if matches!(self.client, Anthropic(_)) {
-            println!("\n{}\n", "Extended thinking disabled.".bright_yellow());
-        } else {
-            let reasoning = Some(crate::api::Reasoning::disabled());
-            let effort: Option<&str> = reasoning.as_ref().map(|r| r.effort.as_str());
-
-            if let Some(e) = effort {
-                println!("\n{} {}\n", "Reasoning effort:".bright_green(), e);
-            }
-        }
+        self.print_reasoning_state();
     }
 
     pub fn handle_think_status(&self) {
-        if self.model_config.enable_thinking {
-            println!(
-                "\n{} (budget: {} tokens)\n",
-                "Extended thinking is enabled".bright_green(),
-                self.model_config.thinking_budget
-            );
-        } else {
-            println!("\n{}\n", "Extended thinking is disabled".bright_yellow());
-        }
+        self.print_reasoning_state();
     }
 
     pub fn enable_safe_mode(&mut self) {
-        if !self.safe_mode {
-            self.safe_mode = true;
-            self.tool_executor.set_safe_mode(true);
-            self.refresh_available_tools();
-
-            self.session_state
-                .conversation
-                .add_user_message(SAFE_MODE_MESSAGE.to_string());
+        if self.safe_mode {
+            println!("\n{}\n", "Safe mode: already enabled".dimmed());
+            return;
         }
+        self.safe_mode = true;
+        self.tool_executor.set_safe_mode(true);
+        self.refresh_available_tools();
+
+        self.session_state
+            .conversation
+            .add_user_message(SAFE_MODE_MESSAGE.to_string());
+        println!(
+            "\n{} read-only tools only; no writes or bash\n",
+            "Safe mode: enabled".bright_yellow()
+        );
     }
 
     pub fn disable_safe_mode(&mut self) {
-        if self.safe_mode {
-            self.safe_mode = false;
-            self.tool_executor.set_safe_mode(false);
-            self.refresh_available_tools();
-
-            self.session_state
-                .conversation
-                .add_user_message(NORMAL_MODE_MESSAGE.to_string());
+        if !self.safe_mode {
+            println!("\n{}\n", "Safe mode: already disabled".dimmed());
+            return;
         }
+        self.safe_mode = false;
+        self.tool_executor.set_safe_mode(false);
+        self.refresh_available_tools();
+
+        self.session_state
+            .conversation
+            .add_user_message(NORMAL_MODE_MESSAGE.to_string());
+        println!(
+            "\n{} all tools available\n",
+            "Safe mode: disabled".bright_green()
+        );
     }
 
     fn refresh_available_tools(&mut self) {
@@ -912,6 +940,7 @@ impl Repl {
             tools: None,
             stream: None,
             thinking: None,
+            output_config: None,
             reasoning: None,
         };
 

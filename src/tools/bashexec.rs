@@ -44,19 +44,25 @@ fn has_path_traversal(command: &str) -> bool {
 }
 
 /// Return true when `op` appears as a command-name prefix anywhere in
-/// `command` — at the start, or immediately after a shell separator
-/// (` `, `;`, `&&`, `||`, `|`). Used to match multi-word command
-/// patterns (like `git checkout -f`) against a compound shell command
-/// (`ls && git checkout -f foo`). The match is a plain prefix — the
-/// caller is responsible for picking `op` strings that can't appear
-/// benignly as substrings after those separators.
+/// `command` — at the start, or immediately after a shell
+/// command-boundary sequence. The set of boundaries must cover every
+/// place the shell can start executing a new command, because this
+/// function gates our forbidden-git detection: if we miss one, the
+/// model can wrap `git push` in that construct and bypass the check.
+///
+/// Covered: plain space, `;`, `&&`, `||`, `|`, backtick substitution
+/// (`` `git push` ``), `$(...)` command substitution, `(...)` subshell,
+/// `{...; }` group. False positives (e.g. `ls {git,svn}` brace
+/// expansion triggering `git` detection) are acceptable — the worst
+/// outcome is the user being prompted to confirm a benign command.
 fn command_contains_op(command: &str, op: &str) -> bool {
-    command.starts_with(op)
-        || command.contains(&format!(" {}", op))
-        || command.contains(&format!(";{}", op))
-        || command.contains(&format!("&&{}", op))
-        || command.contains(&format!("||{}", op))
-        || command.contains(&format!("|{}", op))
+    const BOUNDARIES: &[&str] = &[" ", ";", "&&", "||", "|", "`", "$(", "(", "{"];
+    if command.starts_with(op) {
+        return true;
+    }
+    BOUNDARIES
+        .iter()
+        .any(|sep| command.contains(&format!("{sep}{op}")))
 }
 
 /// Convert Unix signal number to human-readable name
@@ -116,7 +122,9 @@ impl BashExecutor {
         if let Ok(denied) = self.session_denied.lock() {
             if denied.contains(&normalized) {
                 return Err(SofosError::ToolExecution(format!(
-                    "Command blocked (denied earlier this session): '{}'",
+                    "User already declined '{}' earlier this session. \
+                     Propose a different approach or ask the user to clarify \
+                     rather than retrying the same command.",
                     command
                 )));
             }
@@ -144,7 +152,9 @@ impl BashExecutor {
                         }
                     }
                     return Err(SofosError::ToolExecution(format!(
-                        "Command blocked by user: '{}'",
+                        "User declined '{}'. Propose a different approach or \
+                         ask the user to clarify rather than retrying the same \
+                         command.",
                         command
                     )));
                 }
@@ -297,7 +307,8 @@ impl BashExecutor {
         let prompt = format!("Run bash command: {}", command);
         if !crate::tools::utils::confirm_destructive(&prompt)? {
             return Err(SofosError::ToolExecution(format!(
-                "Command '{}' declined by user",
+                "User declined '{}'. Propose a different approach or ask \
+                 the user to clarify rather than retrying the same command.",
                 command
             )));
         }
@@ -768,6 +779,28 @@ impl BashExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `command_contains_op` gates our forbidden-git detection. A miss
+    /// here is a real security bypass: the model could wrap `git push`
+    /// in a subshell or command substitution and slip past.
+    #[test]
+    fn command_contains_op_catches_shell_boundaries() {
+        assert!(command_contains_op("git push", "git push"));
+        assert!(command_contains_op("ls; git push", "git push"));
+        assert!(command_contains_op("ls && git push", "git push"));
+        assert!(command_contains_op("ls || git push", "git push"));
+        assert!(command_contains_op("ls | git push", "git push"));
+
+        // Shell-substitution boundaries — the regressions from the audit.
+        assert!(command_contains_op("echo hi; `git push`", "git push"));
+        assert!(command_contains_op("echo $(git push)", "git push"));
+        assert!(command_contains_op("(git push)", "git push"));
+        assert!(command_contains_op("{ git push; }", "git push"));
+
+        // Genuinely unrelated commands shouldn't trigger.
+        assert!(!command_contains_op("rgit push", "git push")); // non-boundary prefix
+        assert!(!command_contains_op("ls", "git push"));
+    }
 
     #[test]
     fn test_safe_commands() {

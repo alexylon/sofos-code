@@ -34,10 +34,33 @@ impl<'a> RequestBuilder<'a> {
     }
 
     pub fn build(self) -> CreateMessageRequest {
-        let thinking_config = if self.enable_thinking && matches!(self.client, Anthropic(_)) {
-            Some(crate::api::Thinking::enabled(self.thinking_budget))
+        let is_anthropic = matches!(self.client, Anthropic(_));
+        let adaptive =
+            is_anthropic && crate::api::anthropic::requires_adaptive_thinking(self.model);
+
+        // Opus 4.7 rejects `thinking.type = "enabled"` and requires
+        // `adaptive` + `output_config.effort`. Older Anthropic models
+        // still take the manual `budget_tokens` shape. On adaptive
+        // models we *always* send `thinking: adaptive` even when the
+        // user toggled `/think off` — dropping it would 400 the next
+        // turn if the conversation history already contains echoed
+        // thinking blocks from an earlier adaptive-on turn (Anthropic
+        // rejects requests carrying thinking blocks without a matching
+        // top-level thinking config). The on/off knob is expressed
+        // through `output_config.effort` instead.
+        let (thinking_config, output_config) = if is_anthropic && adaptive {
+            let effort = crate::api::anthropic::effort_label(self.enable_thinking);
+            (
+                Some(crate::api::Thinking::adaptive()),
+                Some(crate::api::OutputConfig::with_effort(effort)),
+            )
+        } else if is_anthropic && self.enable_thinking {
+            (
+                Some(crate::api::Thinking::enabled(self.thinking_budget)),
+                None,
+            )
         } else {
-            None
+            (None, None)
         };
 
         let reasoning_config = if self.enable_thinking && matches!(self.client, OpenAI(_)) {
@@ -59,6 +82,7 @@ impl<'a> RequestBuilder<'a> {
             tools: Some(self.tools),
             stream: None,
             thinking: thinking_config,
+            output_config,
             reasoning: reasoning_config,
         };
 

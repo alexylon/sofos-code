@@ -101,11 +101,18 @@ fn main() -> Result<()> {
     startup_banner.push_str(&format!("{} {}\n", "Model:".bright_green(), cli.model));
 
     if matches!(client, LlmClient::OpenAI(_)) {
-        let effort = if cli.enable_thinking { "high" } else { "low" };
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Reasoning effort:".bright_green(),
-            effort
+            crate::api::anthropic::effort_label(cli.enable_thinking)
+        ));
+    } else if crate::api::anthropic::requires_adaptive_thinking(&cli.model) {
+        // Opus 4.7 picks its own budget; advertising a token count would be
+        // a lie. Surface the `output_config.effort` we actually send.
+        startup_banner.push_str(&format!(
+            "{} {}\n",
+            "Adaptive thinking effort:".bright_green(),
+            crate::api::anthropic::effort_label(cli.enable_thinking)
         ));
     } else if cli.enable_thinking {
         startup_banner.push_str(&format!(

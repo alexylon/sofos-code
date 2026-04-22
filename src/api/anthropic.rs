@@ -10,6 +10,27 @@ const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const ANTHROPIC_BETA: &str = "token-efficient-tools-2025-02-19";
 
+/// Return true for models that *only* accept `thinking.type = "adaptive"`
+/// (paired with `output_config.effort`) and reject the legacy
+/// `{type: "enabled", budget_tokens: N}` shape with HTTP 400.
+///
+/// Currently Opus 4.7 is the sole member of this set; Sonnet/Opus 4.6 and
+/// older continue to accept manual budgets, so we keep them on the old path
+/// to preserve the user's `--thinking-budget` knob.
+pub fn requires_adaptive_thinking(model: &str) -> bool {
+    model.starts_with("claude-opus-4-7")
+}
+
+/// The string form of an "effort" level derived from the user's
+/// thinking-on/off toggle. Used both for Anthropic's `output_config.effort`
+/// (adaptive models) and OpenAI's `reasoning.effort` — the two APIs
+/// happen to share the same `high` / `low` vocabulary, so one helper
+/// keeps the request builder, TUI status line, startup banner, and
+/// `/think` messages in sync without each site hand-mapping the bool.
+pub fn effort_label(enable_thinking: bool) -> &'static str {
+    if enable_thinking { "high" } else { "low" }
+}
+
 #[derive(Clone)]
 pub struct AnthropicClient {
     client: reqwest::Client,
@@ -263,10 +284,20 @@ impl AnthropicClient {
                                 });
                             }
                             Some("thinking") => {
-                                content_blocks.push(ContentBlock::Thinking {
-                                    thinking: current_thinking.clone(),
-                                    signature: current_signature.clone(),
-                                });
+                                // Every legitimate thinking block the server emits
+                                // is paired with a signature. An empty signature
+                                // means no `signature_delta` ever arrived for this
+                                // block — echoing it back on the next turn would
+                                // fail server-side verification and 400 the whole
+                                // request. Drop the block; an empty-thinking
+                                // adaptive block *with* a real signature (Opus 4.7
+                                // `display: "omitted"`) is still preserved.
+                                if !current_signature.is_empty() {
+                                    content_blocks.push(ContentBlock::Thinking {
+                                        thinking: current_thinking.clone(),
+                                        signature: current_signature.clone(),
+                                    });
+                                }
                             }
                             Some("tool_use") => {
                                 let input = utils::parse_tool_arguments(
@@ -373,11 +404,56 @@ mod tests {
     fn test_thinking_serialization() {
         let thinking = Thinking::enabled(5120);
         assert_eq!(thinking.thinking_type, "enabled");
-        assert_eq!(thinking.budget_tokens, 5120);
+        assert_eq!(thinking.budget_tokens, Some(5120));
 
         let json = serde_json::to_value(&thinking).unwrap();
         assert_eq!(json["type"], "enabled");
         assert_eq!(json["budget_tokens"], 5120);
+    }
+
+    #[test]
+    fn test_adaptive_thinking_serialization() {
+        let thinking = Thinking::adaptive();
+        let json = serde_json::to_value(&thinking).unwrap();
+        assert_eq!(json["type"], "adaptive");
+        // `budget_tokens` must be omitted for adaptive — Opus 4.7 rejects it.
+        assert!(json.get("budget_tokens").is_none());
+    }
+
+    #[test]
+    fn requires_adaptive_thinking_matches_opus_4_7_only() {
+        assert!(requires_adaptive_thinking("claude-opus-4-7"));
+        assert!(requires_adaptive_thinking("claude-opus-4-7-20260301"));
+        assert!(!requires_adaptive_thinking("claude-opus-4-6"));
+        assert!(!requires_adaptive_thinking("claude-sonnet-4-6"));
+        assert!(!requires_adaptive_thinking("claude-opus-4-5"));
+        assert!(!requires_adaptive_thinking(""));
+    }
+
+    #[test]
+    fn effort_label_maps_bool_to_high_low() {
+        assert_eq!(effort_label(true), "high");
+        assert_eq!(effort_label(false), "low");
+    }
+
+    #[test]
+    fn adaptive_request_sends_output_config_and_omits_budget() {
+        let request = CreateMessageRequest {
+            model: "claude-opus-4-7".to_string(),
+            max_tokens: 8192,
+            messages: vec![],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: Some(Thinking::adaptive()),
+            output_config: Some(OutputConfig::with_effort("high")),
+            reasoning: None,
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(json["thinking"]["type"], "adaptive");
+        assert!(json["thinking"].get("budget_tokens").is_none());
+        assert_eq!(json["output_config"]["effort"], "high");
     }
 
     #[test]
@@ -391,6 +467,7 @@ mod tests {
             tools: None,
             stream: None,
             thinking,
+            output_config: None,
             reasoning: None,
         };
 

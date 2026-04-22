@@ -65,6 +65,8 @@ pub struct CreateMessageRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
 }
 
@@ -145,14 +147,40 @@ pub enum ContentBlock {
 pub struct Thinking {
     #[serde(rename = "type")]
     pub thinking_type: String,
-    pub budget_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<u32>,
 }
 
 impl Thinking {
     pub fn enabled(budget_tokens: u32) -> Self {
         Self {
             thinking_type: "enabled".to_string(),
-            budget_tokens,
+            budget_tokens: Some(budget_tokens),
+        }
+    }
+
+    /// Opus 4.7+ uses adaptive thinking: the server picks the budget based
+    /// on the prompt, and the caller expresses intent via
+    /// [`OutputConfig::effort`] on the request instead of a token count.
+    pub fn adaptive() -> Self {
+        Self {
+            thinking_type: "adaptive".to_string(),
+            budget_tokens: None,
+        }
+    }
+}
+
+/// Top-level `output_config` block on the Messages API. Currently used to
+/// set the `effort` level that pairs with adaptive thinking on Opus 4.7+.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputConfig {
+    pub effort: String,
+}
+
+impl OutputConfig {
+    pub fn with_effort(effort: impl Into<String>) -> Self {
+        Self {
+            effort: effort.into(),
         }
     }
 }

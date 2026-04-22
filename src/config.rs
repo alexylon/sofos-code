@@ -62,10 +62,13 @@ impl SofosConfig {
     // No need for new() since Default::default() is the idiomatic way
 }
 
-/// Safe mode message shown to user and AI
+/// Safe mode message shown to user and AI. Must stay in sync with the
+/// tool set returned by `tools::get_read_only_tools()` (+ the optional
+/// `search_code` tool wired in when ripgrep is on PATH).
 pub const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
-                                     No file modifications or bash commands are allowed.\
-                                     Available tools: list_directory, read_file and web_search.]";
+                                     No file modifications or bash commands are allowed. \
+                                     Available tools: list_directory, read_file, glob_files, \
+                                     search_code (when ripgrep is installed), web_fetch, web_search.]";
 
 /// Normal mode message shown when switching from safe mode
 pub const NORMAL_MODE_MESSAGE: &str = "[SYSTEM: Normal (unrestricted) mode has been enabled. \

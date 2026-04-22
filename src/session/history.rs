@@ -155,17 +155,23 @@ impl HistoryManager {
 
         let session_path = self.sessions_dir().join(format!("{}.json", session_id));
 
+        // Preserve `created_at` from any prior save. If the old file is
+        // unreadable or no longer parses (user edited it, disk
+        // corruption, schema change), fall back to `now` rather than
+        // propagating the error — losing the in-memory conversation to
+        // save a `created_at` stamp would be an awful trade.
+        let created_at = match fs::read_to_string(&session_path) {
+            Ok(raw) => serde_json::from_str::<Session>(&raw)
+                .map(|existing| existing.created_at)
+                .unwrap_or(now),
+            Err(_) => now,
+        };
         let session = Session {
             id: session_id.to_string(),
             api_messages: messages.to_vec(),
             display_messages: display_messages.to_vec(),
             system_prompt: system_prompt.to_vec(),
-            created_at: if session_path.exists() {
-                let existing: Session = serde_json::from_str(&fs::read_to_string(&session_path)?)?;
-                existing.created_at
-            } else {
-                now
-            },
+            created_at,
             updated_at: now,
         };
 
@@ -401,5 +407,34 @@ mod tests {
         if preview.ends_with("...") {
             assert!(preview.chars().count() <= MAX_PREVIEW_LENGTH + 3);
         }
+    }
+
+    /// If a session file on disk is corrupted (hand-edited, partial
+    /// write from a prior crash, schema drift), `save_session` must
+    /// still succeed rather than bubbling the parse error and losing
+    /// the in-memory conversation.
+    #[test]
+    fn save_session_survives_corrupted_prior_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let session_id = HistoryManager::generate_session_id();
+        let session_path = manager.sessions_dir().join(format!("{}.json", session_id));
+        fs::write(&session_path, "{not valid json at all").unwrap();
+
+        let system_prompt = SystemPrompt::new_cached_with_ttl("System".to_string(), None);
+        let save_result = manager.save_session(
+            &session_id,
+            &[Message::user("After corruption")],
+            &[],
+            std::slice::from_ref(&system_prompt),
+        );
+        assert!(
+            save_result.is_ok(),
+            "save_session should recover: {save_result:?}"
+        );
+
+        let loaded = manager.load_session(&session_id).unwrap();
+        assert_eq!(loaded.api_messages.len(), 1);
     }
 }
