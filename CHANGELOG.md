@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-04-23
+
 ### Added
 
 - **Claude Opus 4.7 adaptive-thinking support.** Opus 4.7 rejects the legacy `{thinking: {type: "enabled", budget_tokens: N}}` request shape with HTTP 400; sofos now detects Opus 4.7 models and sends `{thinking: {type: "adaptive"}, output_config: {effort}}` instead. The `--thinking-budget` token count is meaningless for adaptive models (the server picks its own budget), so `/think on` maps to `effort: high` and `/think off` maps to `effort: low`. Adaptive is sent on every request — including when thinking is toggled off — so echoed thinking blocks from earlier turns still round-trip cleanly. Startup banner, TUI status line, and `/think` handlers all label the state as `Adaptive thinking effort: high|low` rather than showing a fake token count.
