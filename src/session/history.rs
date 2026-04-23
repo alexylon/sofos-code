@@ -3,13 +3,21 @@ use crate::error::{Result, SofosError};
 use crate::error_ext::ResultExt;
 
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SOFOS_DIR: &str = ".sofos";
 const SESSIONS_DIR: &str = "sessions";
 const INDEX_FILE: &str = "index.json";
+/// Per-workspace lock file the session subsystem grabs exclusively for
+/// the duration of every `save_session` / `delete_session` call.
+/// Serialises the read-modify-write of `index.json` across concurrent
+/// sofos processes working in the same directory — without it, two
+/// instances racing each other can each read the stale index, append
+/// their own entry, and then clobber the other's update with their
+/// own `atomic_write`, silently losing session metadata.
+const SAVE_LOCK_FILE: &str = ".save.lock";
 const MAX_PREVIEW_LENGTH: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +104,36 @@ impl HistoryManager {
         self.sessions_dir().join(INDEX_FILE)
     }
 
+    fn save_lock_path(&self) -> PathBuf {
+        self.sessions_dir().join(SAVE_LOCK_FILE)
+    }
+
+    /// Acquire an exclusive OS-level lock on the save-lock file for
+    /// the lifetime of the returned `File`; the OS releases the lock
+    /// when the handle drops, including on crash.
+    fn acquire_save_lock(&self) -> Result<File> {
+        let path = self.save_lock_path();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| {
+                SofosError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to open session save-lock {:?}: {}", path, e),
+                ))
+            })?;
+        file.lock().map_err(|e| {
+            SofosError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to acquire session save-lock: {}", e),
+            ))
+        })?;
+        Ok(file)
+    }
+
     pub fn generate_session_id() -> String {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -148,6 +186,8 @@ impl HistoryManager {
         display_messages: &[DisplayMessage],
         system_prompt: &[SystemPrompt],
     ) -> Result<()> {
+        let _lock = self.acquire_save_lock()?;
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
@@ -282,6 +322,8 @@ impl HistoryManager {
 
     #[allow(dead_code)]
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let _lock = self.acquire_save_lock()?;
+
         let session_path = self.sessions_dir().join(format!("{}.json", session_id));
 
         if session_path.exists() {
@@ -436,5 +478,63 @@ mod tests {
 
         let loaded = manager.load_session(&session_id).unwrap();
         assert_eq!(loaded.api_messages.len(), 1);
+    }
+
+    /// Two sofos processes sharing a workspace used to race each
+    /// other's `update_index` (read-modify-write), occasionally
+    /// dropping session metadata. The save-lock serialises those
+    /// updates. Simulate the race with threads: 8 writers × 5 saves
+    /// each, each writer using its own `HistoryManager` backed by
+    /// the same on-disk directory (mirroring two processes), and
+    /// assert the final index has all 8 session ids present.
+    #[test]
+    fn save_lock_serialises_concurrent_index_updates() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp_dir = TempDir::new().unwrap();
+        // Ensure the sessions dir exists before any writer starts —
+        // otherwise each writer races to `ensure_directories` too.
+        HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let writer_count = 8;
+        let saves_per_writer = 5;
+        let barrier = Arc::new(Barrier::new(writer_count));
+        let workspace = temp_dir.path().to_path_buf();
+
+        let mut handles = Vec::new();
+        for w in 0..writer_count {
+            let barrier = Arc::clone(&barrier);
+            let workspace = workspace.clone();
+            handles.push(thread::spawn(move || {
+                let manager = HistoryManager::new(workspace).unwrap();
+                let system_prompt = SystemPrompt::new_cached_with_ttl("sys".to_string(), None);
+                let session_id = format!("session_writer_{}", w);
+                barrier.wait();
+                for n in 0..saves_per_writer {
+                    manager
+                        .save_session(
+                            &session_id,
+                            &[Message::user(format!("writer {} save {}", w, n))],
+                            &[],
+                            std::slice::from_ref(&system_prompt),
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let sessions = HistoryManager::new(workspace)
+            .unwrap()
+            .list_sessions()
+            .unwrap();
+        assert_eq!(
+            sessions.len(),
+            writer_count,
+            "all writers' ids should survive in the index: {sessions:?}"
+        );
     }
 }
