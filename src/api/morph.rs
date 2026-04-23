@@ -54,7 +54,7 @@ impl MorphClient {
                 .map_err(|e| SofosError::Config(format!("Invalid Morph API key: {}", e)))?,
         );
 
-        let client = utils::build_http_client(headers)?;
+        let client = utils::build_http_client(headers, utils::MORPH_REQUEST_TIMEOUT)?;
 
         Ok(Self {
             client,
@@ -95,11 +95,10 @@ impl MorphClient {
             let client = client.clone();
             let url = url.clone();
             let request = request.clone();
-            async move { client.post(&url).json(&request).send().await }
+            async move { utils::send_classified(client.post(&url).json(&request)).await }
         })
         .await?;
 
-        let response = utils::check_response_status(response).await?;
         let result: MorphResponse = response.json().await?;
 
         let choice = result

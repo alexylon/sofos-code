@@ -1133,8 +1133,10 @@ impl ToolExecutor {
                         .read_file_with_outside_access(&resolved.canonical_str)?
                 };
 
-                // Wrap morph API call with a timeout; fall back to edit_file on timeout/network errors
-                let morph_timeout = Duration::from_secs(30);
+                // Any Morph failure (timeout, transport, 4xx, 5xx) falls back to
+                // a prompt-level `edit_file` hint rather than propagating and
+                // stalling the tool loop.
+                let morph_timeout = Duration::from_secs(600);
                 let merged_code = match tokio::time::timeout(
                     morph_timeout,
                     morph.apply_edit(instruction, &original_code, code_edit),
@@ -1142,19 +1144,6 @@ impl ToolExecutor {
                 .await
                 {
                     Ok(Ok(code)) => code,
-                    Ok(Err(SofosError::NetworkError(msg))) => {
-                        eprintln!(
-                            "  {} Morph API failed ({}), use edit_file instead",
-                            "⚠".bright_yellow(),
-                            msg
-                        );
-                        return Ok(ToolExecutionResult::Text(format!(
-                            "morph_edit_file failed ({}). The file '{}' was NOT modified. \
-                             Please use read_file to get the current file content, then use edit_file \
-                             with exact old_string/new_string to make this change.",
-                            msg, path
-                        )));
-                    }
                     Err(_elapsed) => {
                         eprintln!(
                             "  {} Morph API timed out after {}s, use edit_file instead",
@@ -1169,7 +1158,26 @@ impl ToolExecutor {
                             path
                         )));
                     }
-                    Ok(Err(e)) => return Err(e),
+                    Ok(Err(e)) => {
+                        // Match only variants Morph produces; propagate anything
+                        // else (Interrupted, Io, etc.) so it isn't silently masked.
+                        let msg = match e {
+                            SofosError::Api(m) | SofosError::NetworkError(m) => m,
+                            SofosError::Http(err) => err.to_string(),
+                            other => return Err(other),
+                        };
+                        eprintln!(
+                            "  {} Morph API failed ({}), use edit_file instead",
+                            "⚠".bright_yellow(),
+                            msg
+                        );
+                        return Ok(ToolExecutionResult::Text(format!(
+                            "morph_edit_file failed ({}). The file '{}' was NOT modified. \
+                             Please use read_file to get the current file content, then use edit_file \
+                             with exact old_string/new_string to make this change.",
+                            msg, path
+                        )));
+                    }
                 };
 
                 // Sanity-check the Morph output before committing it to

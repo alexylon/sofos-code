@@ -21,7 +21,7 @@ impl OpenAIClient {
                 .map_err(|e| SofosError::Config(format!("Invalid OpenAI API key: {}", e)))?,
         );
 
-        let client = utils::build_http_client(headers)?;
+        let client = utils::build_http_client(headers, utils::REQUEST_TIMEOUT)?;
 
         Ok(Self { client })
     }
@@ -104,16 +104,8 @@ impl OpenAIClient {
             eprintln!("======================================\n");
         }
 
-        let client = self.client.clone();
-        let response = utils::with_retries("OpenAI", || {
-            let client = client.clone();
-            let url = url.clone();
-            let body = body.clone();
-            async move { client.post(&url).json(&body).send().await }
-        })
-        .await?;
+        let response = utils::send_once("OpenAI", self.client.post(&url).json(&body)).await?;
 
-        let response = utils::check_response_status(response).await?;
         let response_text = response.text().await?;
 
         if std::env::var("SOFOS_DEBUG").is_ok() {

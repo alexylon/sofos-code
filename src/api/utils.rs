@@ -6,13 +6,20 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::future::Future;
 use std::time::Duration;
 
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-/// Per-request ceiling for streaming (SSE) endpoints. Larger than
-/// [`REQUEST_TIMEOUT`] because a single stream can legitimately run
-/// for several minutes while the model is producing a long reply plus
-/// extended-thinking tokens; the 300s non-streaming budget would clip
-/// those off mid-stream.
-pub const STREAMING_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+/// Client-level ceiling for the main LLM providers (Anthropic, OpenAI).
+/// reqwest's `.timeout()` is a total-operation deadline (not an idle one),
+/// so this has to cover the whole response — including minutes of silent
+/// adaptive thinking on Opus 4.7+ at high effort before any tokens arrive.
+/// 30 min fits every practical request we've seen; anything longer is
+/// almost certainly a stuck connection rather than a legitimately-thinking
+/// model.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(1800);
+/// Morph's edit endpoint returns in sub-second under normal load, but
+/// can stall on large files or under backend pressure. 10 min is the
+/// ceiling the tool dispatcher enforces before falling back to
+/// `edit_file`; we mirror it here so the client-level timeout never
+/// kills a request the dispatcher would still be happy to wait for.
+pub const MORPH_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 pub const MAX_RETRIES: u32 = 2;
 pub const INITIAL_RETRY_DELAY_MS: u64 = 1000;
 const JITTER_FACTOR: f64 = 0.3; // Add 0-30% random jitter
@@ -44,13 +51,16 @@ fn merge_default_headers(provider_headers: HeaderMap) -> HeaderMap {
 
 /// Build the standard JSON-over-HTTPS client every provider uses:
 /// common `Content-Type: application/json`, the caller's
-/// authentication / version headers, and the shared [`REQUEST_TIMEOUT`].
-/// Returns a friendly `Config` error instead of a raw reqwest error so
-/// the surface mirrors the rest of the crate.
-pub fn build_http_client(provider_headers: HeaderMap) -> Result<reqwest::Client> {
+/// authentication / version headers, and the caller-chosen client-level
+/// timeout. Returns a friendly `Config` error instead of a raw reqwest
+/// error so the surface mirrors the rest of the crate.
+pub fn build_http_client(
+    provider_headers: HeaderMap,
+    timeout: Duration,
+) -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .default_headers(merge_default_headers(provider_headers))
-        .timeout(REQUEST_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|e| SofosError::Config(format!("Failed to create HTTP client: {}", e)))
 }
@@ -337,51 +347,103 @@ pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
     i
 }
 
-pub async fn check_response_status(response: reqwest::Response) -> Result<reqwest::Response> {
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        tracing::error!(
-            status = %status,
-            error = %error_text,
-            "API request failed"
-        );
-        return Err(SofosError::Api(format!(
-            "API request failed with status {}: {}",
-            status, error_text
-        )));
+/// Only `ServerError` triggers a retry — transport failures and 4xx
+/// statuses fail fast.
+#[derive(Debug)]
+pub enum ApiCallError {
+    Transport(reqwest::Error),
+    /// Body already drained for error reporting.
+    ServerError {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    /// Body already drained for error reporting.
+    ClientError {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+}
+
+impl ApiCallError {
+    fn is_retryable(&self) -> bool {
+        matches!(self, Self::ServerError { .. })
     }
-    Ok(response)
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Transport(e) => format!("Request failed: {}", e),
+            Self::ServerError { status, .. } => format!("Server error {}", status),
+            Self::ClientError { status, .. } => format!("Client error {}", status),
+        }
+    }
 }
 
-pub fn is_retryable_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect() || error.status().is_some_and(|s| s.is_server_error())
+/// Drains the body on non-2xx so the caller can report it; 2xx responses
+/// are returned untouched (important for streaming callers that consume
+/// the body later).
+pub async fn classify_response(
+    response: reqwest::Response,
+) -> std::result::Result<reqwest::Response, ApiCallError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    if status.is_server_error() {
+        Err(ApiCallError::ServerError { status, body })
+    } else {
+        Err(ApiCallError::ClientError { status, body })
+    }
 }
 
-/// Execute an async operation with retries and exponential backoff with jitter.
-/// Returns the result of the operation or the last error after all retries exhausted.
+/// Used as the operation closure inside [`with_retries`].
+pub async fn send_classified(
+    request: reqwest::RequestBuilder,
+) -> std::result::Result<reqwest::Response, ApiCallError> {
+    let response = request.send().await.map_err(ApiCallError::Transport)?;
+    classify_response(response).await
+}
+
+/// Use this when a retry would re-burn an expensive call — the main
+/// Anthropic and OpenAI endpoints, where a 5xx or timeout is surfaced to
+/// the user immediately rather than quietly re-running a long thinking
+/// phase.
+pub async fn send_once(
+    service_name: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response> {
+    send_classified(request)
+        .await
+        .map_err(|e| api_call_error_to_sofos(service_name, 1, e))
+}
+
+fn api_call_error_to_sofos(service_name: &str, attempts: u32, e: ApiCallError) -> SofosError {
+    match e {
+        ApiCallError::Transport(err) => SofosError::NetworkError(format!(
+            "{} request failed after {} attempt(s): {}",
+            service_name, attempts, err
+        )),
+        ApiCallError::ServerError { status, body } | ApiCallError::ClientError { status, body } => {
+            SofosError::Api(format!(
+                "{} request failed with status {} after {} attempt(s): {}",
+                service_name, status, attempts, body
+            ))
+        }
+    }
+}
+
+/// Only retries 5xx responses — timeouts, connection errors, and 4xx
+/// all fail fast, since retrying those either re-burns expensive work
+/// or re-hits a deterministic client error.
 pub async fn with_retries<F, Fut, T>(service_name: &str, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
-    Fut: Future<Output = std::result::Result<T, reqwest::Error>>,
+    Fut: Future<Output = std::result::Result<T, ApiCallError>>,
 {
-    let mut last_error: Option<reqwest::Error> = None;
     let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
 
     for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
-            let reason = last_error
-                .as_ref()
-                .map(|e| {
-                    if e.is_timeout() {
-                        "Request timed out".to_string()
-                    } else {
-                        format!("Request failed: {}", e)
-                    }
-                })
-                .unwrap_or_else(|| "Request failed".to_string());
-
-            // Add jitter to prevent thundering herd
             let jitter = rand::rng().random_range(0.0..JITTER_FACTOR);
             let jittered_delay = retry_delay.mul_f64(1.0 + jitter);
 
@@ -390,14 +452,11 @@ where
                 attempt = attempt,
                 max_retries = MAX_RETRIES,
                 delay_ms = jittered_delay.as_millis() as u64,
-                reason = %reason,
-                "Retrying API request"
+                "Retrying API request after server error"
             );
-
             eprintln!(
-                " {} {}, retrying in {:?}... (attempt {}/{})",
+                " {} server error, retrying in {:?}... (attempt {}/{})",
                 format!("{}:", service_name).bright_yellow(),
-                reason,
                 jittered_delay,
                 attempt,
                 MAX_RETRIES
@@ -409,39 +468,87 @@ where
         match operation().await {
             Ok(result) => return Ok(result),
             Err(e) => {
-                let is_retryable = is_retryable_error(&e);
-
-                if attempt < MAX_RETRIES && is_retryable {
-                    last_error = Some(e);
+                let retryable = e.is_retryable();
+                if attempt < MAX_RETRIES && retryable {
                     continue;
-                } else {
-                    tracing::error!(
-                        service = service_name,
-                        attempts = if is_retryable { attempt + 1 } else { 1 },
-                        error = %e,
-                        retryable = is_retryable,
-                        "API request failed permanently"
-                    );
-                    return Err(SofosError::NetworkError(format!(
-                        "{} request failed after {} attempts: {}",
-                        service_name,
-                        if is_retryable { attempt + 1 } else { 1 },
-                        e
-                    )));
                 }
+                let attempts = attempt + 1;
+                tracing::error!(
+                    service = service_name,
+                    attempts = attempts,
+                    reason = %e.describe(),
+                    retryable = retryable,
+                    "API request failed permanently"
+                );
+                return Err(api_call_error_to_sofos(service_name, attempts, e));
             }
         }
     }
 
-    Err(last_error.map_or_else(
-        || SofosError::NetworkError(format!("Unknown {} error", service_name)),
-        |e| SofosError::NetworkError(format!("Failed after {} retries: {}", MAX_RETRIES, e)),
-    ))
+    // for-loop always returns inside; this is just to satisfy the type checker.
+    Err(SofosError::NetworkError(format!(
+        "Unknown {} error",
+        service_name
+    )))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_call_error_is_retryable_only_for_server_error() {
+        let server = ApiCallError::ServerError {
+            status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body: String::new(),
+        };
+        let client = ApiCallError::ClientError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: String::new(),
+        };
+        assert!(server.is_retryable());
+        assert!(!client.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn with_retries_retries_server_error_then_succeeds() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<&'static str> = with_retries("Test", || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(ApiCallError::ServerError {
+                        status: reqwest::StatusCode::BAD_GATEWAY,
+                        body: "retry me".into(),
+                    })
+                } else {
+                    Ok("done")
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn with_retries_does_not_retry_client_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<&'static str> = with_retries("Test", || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Err(ApiCallError::ClientError {
+                    status: reqwest::StatusCode::BAD_REQUEST,
+                    body: "nope".into(),
+                })
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn merge_default_headers_adds_content_type_when_absent() {
@@ -482,7 +589,7 @@ mod tests {
         // Integration-level smoke: construction doesn't blow up on the
         // minimum viable header set. Header content is covered by the
         // `merge_default_headers_*` tests above.
-        assert!(build_http_client(HeaderMap::new()).is_ok());
+        assert!(build_http_client(HeaderMap::new(), REQUEST_TIMEOUT).is_ok());
     }
 
     #[test]

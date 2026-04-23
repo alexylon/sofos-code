@@ -47,7 +47,7 @@ impl AnthropicClient {
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
         headers.insert("anthropic-beta", HeaderValue::from_static(ANTHROPIC_BETA));
 
-        let client = utils::build_http_client(headers)?;
+        let client = utils::build_http_client(headers, utils::REQUEST_TIMEOUT)?;
 
         Ok(Self { client })
     }
@@ -87,16 +87,8 @@ impl AnthropicClient {
         let url = format!("{}/messages", API_BASE);
         let request = Self::prepare_request(request);
 
-        let client = self.client.clone();
-        let response = utils::with_retries("Anthropic", || {
-            let client = client.clone();
-            let url = url.clone();
-            let request = request.clone();
-            async move { client.post(&url).json(&request).send().await }
-        })
-        .await?;
+        let response = utils::send_once("Anthropic", self.client.post(&url).json(&request)).await?;
 
-        let response = utils::check_response_status(response).await?;
         let result = response.json::<CreateMessageResponse>().await?;
         Ok(result)
     }
@@ -117,23 +109,7 @@ impl AnthropicClient {
 
         let url = format!("{}/messages", API_BASE);
 
-        let client = self.client.clone();
-        let response = utils::with_retries("Anthropic", || {
-            let client = client.clone();
-            let url = url.clone();
-            let request = request.clone();
-            async move {
-                client
-                    .post(&url)
-                    .json(&request)
-                    .timeout(utils::STREAMING_REQUEST_TIMEOUT)
-                    .send()
-                    .await
-            }
-        })
-        .await?;
-
-        let response = utils::check_response_status(response).await?;
+        let response = utils::send_once("Anthropic", self.client.post(&url).json(&request)).await?;
 
         let mut byte_stream = response.bytes_stream();
         let mut buffer = String::new();
