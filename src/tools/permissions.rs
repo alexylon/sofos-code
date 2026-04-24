@@ -169,6 +169,7 @@ impl PermissionManager {
             "cat",
             "head",
             "tail",
+            "nl",
             "less",
             "more",
             "grep",
@@ -758,7 +759,21 @@ impl PermissionManager {
     pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {
         let normalized = Self::normalize_command(command);
         let prompt = format!("Allow command `{}`?", command);
-        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
+
+        // For commands whose args change every call (sed line ranges,
+        // head/tail line counts, grep context flags, awk NR predicates),
+        // "remember this exact command" would never match the next
+        // invocation. Drop those to a plain Yes/No so the user isn't
+        // offered a useless persistence option. Users who want to
+        // allowlist the invocation family can add `Bash(cmd:*)` to
+        // settings directly.
+        let (confirmed, remember) = if Self::command_has_volatile_line_args(command) {
+            let choices = ["Yes", "No"];
+            let idx = confirm_multi_choice(&prompt, &choices, 1, ConfirmationType::Permission)?;
+            (idx == 0, false)
+        } else {
+            Self::ask_three_way(&prompt)?
+        };
 
         if remember {
             if confirmed {
@@ -771,6 +786,122 @@ impl PermissionManager {
         }
 
         Ok((confirmed, remember))
+    }
+
+    /// Heuristic: does `command` carry line-number / line-range args that
+    /// make the exact string un-rememberable? Checks each pipe segment
+    /// for:
+    ///
+    /// - sed numeric addresses: `sed -n '10,20p'`, `sed '5d'`, `sed 1,5q`
+    /// - head/tail numeric counts: `head -50`, `head -n 50`, `tail +20`
+    /// - grep/rg context flags: `grep -A 3`, `grep -B5`, `grep -C 10`
+    /// - awk record-number predicates: `awk 'NR==5'`, `awk 'NR<=10'`
+    ///
+    /// False positives just downgrade the prompt to Yes/No, so the
+    /// heuristic prefers simple matches over exhaustive parsing.
+    fn command_has_volatile_line_args(command: &str) -> bool {
+        command
+            .split('|')
+            .any(|segment| Self::segment_has_volatile_line_args(segment.trim()))
+    }
+
+    fn segment_has_volatile_line_args(segment: &str) -> bool {
+        let mut tokens = segment.split_whitespace();
+        // Skip leading env-var assignments the same way extract_base_command does.
+        let base = loop {
+            match tokens.next() {
+                Some(t) if is_env_assignment(t) => continue,
+                Some(t) => break t,
+                None => return false,
+            }
+        };
+        let args: Vec<&str> = tokens.collect();
+        match base {
+            "sed" => Self::sed_has_numeric_address(&args),
+            "head" | "tail" => Self::head_tail_has_numeric_count(&args),
+            "grep" | "egrep" | "fgrep" | "rg" => Self::grep_has_context_count(&args),
+            "awk" => Self::awk_has_nr_predicate(&args),
+            _ => false,
+        }
+    }
+
+    fn sed_has_numeric_address(args: &[&str]) -> bool {
+        args.iter().any(|raw| {
+            let s = raw.trim_matches(['\'', '"']);
+            // Strip trailing sed command letters (p/d/q/!) — what remains
+            // must look like N or N,M with only digits.
+            let addr = s.trim_end_matches(['p', 'd', 'q', '!']);
+            if addr.is_empty() || addr == s {
+                return false;
+            }
+            addr.split(',')
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        })
+    }
+
+    fn head_tail_has_numeric_count(args: &[&str]) -> bool {
+        // Separate form: `-n 50`, `-c 100`. Glued form: `-n50`, `-c100`,
+        // bare digits with `-`/`+`: `-50`, `+20`. `-n`/`-c` are listed in
+        // both lists so `-n50` is caught by the glued path while `-n`
+        // alone is caught by the separate path.
+        Self::scan_numeric_flag_arg(args, &["-n", "-c"], &["-n", "-c", "-", "+"])
+    }
+
+    fn grep_has_context_count(args: &[&str]) -> bool {
+        Self::scan_numeric_flag_arg(args, &["-A", "-B", "-C"], &["-A", "-B", "-C"])
+    }
+
+    /// Shared scanner for "does this arg list contain a flag whose value
+    /// is a line number"? Flags in `separate_flags` consume the next arg
+    /// (which must be all-digits). Prefixes in `glued_prefixes` match
+    /// flag+digits in a single token (e.g. `-n50`, `-A3`, `+20`).
+    fn scan_numeric_flag_arg(
+        args: &[&str],
+        separate_flags: &[&str],
+        glued_prefixes: &[&str],
+    ) -> bool {
+        let mut prev_was_flag = false;
+        for arg in args {
+            if prev_was_flag {
+                prev_was_flag = false;
+                if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_digit()) {
+                    return true;
+                }
+                continue;
+            }
+            if separate_flags.contains(arg) {
+                prev_was_flag = true;
+                continue;
+            }
+            for prefix in glued_prefixes {
+                if let Some(rest) = arg.strip_prefix(prefix) {
+                    if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn awk_has_nr_predicate(args: &[&str]) -> bool {
+        args.iter().any(|raw| {
+            let s = raw.trim_matches(['\'', '"']);
+            for op in ["NR==", "NR<=", "NR>=", "NR<", "NR>"] {
+                // Scan every occurrence of `op` — an earlier non-digit
+                // match (e.g. `NR==var`) shouldn't shadow a later
+                // numeric one (`NR==5`).
+                let mut rest = s;
+                while let Some(pos) = rest.find(op) {
+                    let tail = &rest[pos + op.len()..];
+                    if tail.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        return true;
+                    }
+                    rest = tail;
+                }
+            }
+            false
+        })
     }
 
     /// Ask user for path-scoped permission (Read, Write, or Bash access to a directory).
@@ -1808,5 +1939,117 @@ ask = []
             manager.check_read_permission("/data/secret/other.txt"),
             CommandPermission::Denied
         );
+    }
+
+    #[test]
+    fn test_volatile_line_args_sed_range() {
+        // The user's original example — sed with a numeric address range.
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "nl -ba tests/foo.rs | sed -n '1270,1320p'"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "sed -n 10,20p file.txt"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "sed '5d' file.txt"
+        ));
+        // `$` is not numeric → not a line-number range.
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "sed \"1,$q\" file.txt"
+        ));
+    }
+
+    #[test]
+    fn test_volatile_line_args_head_tail() {
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "head -n 50 big.log"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "head -50 big.log"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "tail -n 100 /var/log/syslog"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "tail +20 file.txt"
+        ));
+        // No numeric flag → not considered volatile.
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "head file.txt"
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "tail -f /var/log/syslog"
+        ));
+    }
+
+    #[test]
+    fn test_volatile_line_args_grep_context() {
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "grep -A 3 pattern file.txt"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "grep -B5 pattern file.txt"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "rg -C 10 needle ."
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "grep -i pattern file.txt"
+        ));
+    }
+
+    #[test]
+    fn test_volatile_line_args_awk_nr() {
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "awk 'NR==5' file.txt"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "awk 'NR<=10{print}' file.txt"
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "awk '/pattern/' file.txt"
+        ));
+        // A non-digit NR== earlier in the program must not shadow a
+        // later numeric NR==. Regression for the `.find()` first-hit bug.
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "awk 'NR==var; NR==5 {print}' file.txt"
+        ));
+    }
+
+    #[test]
+    fn test_volatile_line_args_covers_named_patterns() {
+        // Explicit coverage for every pattern the user called out as
+        // "should drop to Yes/No only": sed -n 'Np', sed -n 'N,Mp',
+        // head -n N, tail -n N, grep -A/-B/-C N, awk 'NR==N'.
+        let cases = [
+            "sed -n '5p' file.txt",
+            "sed -n '10,20p' file.txt",
+            "head -n 50 big.log",
+            "tail -n 100 /var/log/syslog",
+            "grep -A 5 pattern file.txt",
+            "grep -B 5 pattern file.txt",
+            "grep -C 5 pattern file.txt",
+            "awk 'NR==5' file.txt",
+        ];
+        for cmd in cases {
+            assert!(
+                PermissionManager::command_has_volatile_line_args(cmd),
+                "expected `{cmd}` to be classified as volatile"
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatile_line_args_plain_commands() {
+        // Normal commands with stable args should NOT be flagged.
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "cargo build --release"
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "git log --oneline"
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "ls -la src/"
+        ));
     }
 }

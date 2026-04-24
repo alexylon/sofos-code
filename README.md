@@ -248,7 +248,7 @@ Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`).
 
 1. **Allowed (auto-execute):** Build tools (cargo, npm, go), read-only commands (ls, cat, grep), system info (pwd, date), git read-only commands (`status`, `log`, `diff`, `show`, `branch`, …).
 2. **Forbidden (always blocked):** file destruction (`rm`, `rmdir`, `touch`, `ln`); permissions (`chmod`, `chown`, `chgrp`); disk / partition (`dd`, `mkfs`, `fdisk`, `parted`, `mkswap`, `mount`, `umount`); system control (`shutdown`, `reboot`, `halt`, `systemctl`, `service`); user management (`useradd`, `usermod`, `passwd`, …); process signals (`kill`, `killall`, `pkill`); privilege escalation (`sudo`, `su`); directory navigation (`cd`, `pushd`, `popd`); destructive git operations (`git push`, `git reset --hard`, `git clean`, `git checkout -f`, `git checkout -b`, `git switch`, `git rebase`, `git commit`, …).
-3. **Ask (prompt user):** `cp`, `mv`, `mkdir`, `git checkout <branch>` / `git checkout HEAD~N` / `git checkout -- <path>`, commands referencing paths outside the workspace, and any unknown command. Approvals can be session-scoped or remembered in config.
+3. **Ask (prompt user):** `cp`, `mv`, `mkdir`, `git checkout <branch>` / `git checkout HEAD~N` / `git checkout -- <path>`, commands referencing paths outside the workspace, and any unknown command. Approvals can be session-scoped or remembered in config. Commands whose args wouldn't repeat — `sed -n 'N,Mp'`, `head -n N`, `tail -n N`, `grep -A/-B/-C N`, `awk 'NR==N'` — drop the "and remember" options and show a plain Yes / No, since the exact command string won't match the next call.
 
 ## Configuration
 

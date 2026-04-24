@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Permission prompt drops the "and remember" options for bash commands whose args won't repeat.** The four-choice prompt (`Yes` / `Yes and remember` / `No` / `No and remember`) offered to persist the exact command string — which for `sed -n '1270,1320p'`, `head -n 50`, `tail -n 100`, `grep -A 5 pat`, `awk 'NR==5'` was useless because the line number / range / count changes every call, so the remembered rule never matched again. Sofos now detects these four shapes (sed numeric addresses, head/tail numeric counts, grep/`rg` context flags `-A`/`-B`/`-C`, awk `NR==|<=|>=|<|>` predicates) per pipe segment and falls back to a plain `Yes` / `No` prompt. Commands with stable args still get the full four-choice prompt. To allowlist a whole invocation family, add a `Bash(cmd:*)` entry to `.sofos/config.local.toml` directly.
+
+### Added
+
+- **`nl` added to the built-in auto-allow list** alongside sibling read-only inspection tools (`cat`, `head`, `tail`, `less`, `more`). Commands like `nl -ba file.rs | sed -n '1270,1320p'` no longer prompt.
+
 ## [0.2.3] - 2026-04-23
 
 ### Added
