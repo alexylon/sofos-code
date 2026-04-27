@@ -625,10 +625,11 @@ impl UI {
         // Prices per million tokens in USD
         let (input_price, output_price) = match model {
             "claude-sonnet-4-6" => (3.0, 15.0),
-            "claude-opus-4-6" => (5.0, 25.0),
+            "claude-opus-4-6" | "claude-opus-4-7" => (5.0, 25.0),
             "claude-haiku-4-5" => (1.0, 5.0),
-            "gpt-5.1-codex-max" | "gpt-5.1-codex" | "gpt-5-codex" => (1.25, 10.0),
-            "gpt-5.2" => (1.75, 14.0),
+            "gpt-5.3-codex" => (1.75, 14.0),
+            "gpt-5.4" => (2.5, 15.0),
+            "gpt-5.5" => (5.0, 30.0),
             // Default fallback (use Sonnet 4.5 pricing)
             _ => (3.0, 15.0),
         };
