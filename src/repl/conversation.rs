@@ -6,6 +6,11 @@ pub struct ConversationHistory {
     messages: Vec<Message>,
     system_prompt: Vec<SystemPrompt>,
     config: SofosConfig,
+    /// Set when `trim_if_needed` printed the floor-hit warning; cleared
+    /// the next time we end a trim under budget. Stops the warning from
+    /// firing on every message append once we're stuck at the 10-message
+    /// floor.
+    warned_at_floor: bool,
 }
 
 impl ConversationHistory {
@@ -109,7 +114,16 @@ Show imperial units only when the user explicitly asks for them."#,
                 None,
             )],
             config: SofosConfig::default(),
+            warned_at_floor: false,
         }
+    }
+
+    /// Set the trim threshold, typically picked by model via
+    /// `crate::config::max_context_tokens_for`. Called once at REPL
+    /// startup so the trim floor matches the model's real context
+    /// window rather than the 165k default fallback.
+    pub fn set_max_context_tokens(&mut self, n: usize) {
+        self.config.max_context_tokens = n;
     }
 
     pub fn estimate_tokens(text: &str) -> usize {
@@ -236,11 +250,25 @@ Show imperial units only when the user explicitly asks for them."#,
         self.drop_leading_orphaned_tool_results();
         total_tokens = self.estimate_total_tokens();
 
-        if total_tokens > self.config.max_context_tokens && self.messages.len() <= 10 {
-            eprintln!(
-                "⚠️  Warning: Conversation approaching token limit ({} tokens). Consider starting a new session.",
-                total_tokens
-            );
+        // The warning describes our internal trim heuristic, not the
+        // model's API context window — those are different numbers.
+        // The condition below means: we tried to trim down to budget
+        // but hit the 10-message floor. The model API will still accept
+        // the request; this just warns the user that auto-trim can't
+        // help further. Dedup with `warned_at_floor` so a long agent
+        // loop doesn't print the warning on every tool round-trip.
+        let at_floor = total_tokens > self.config.max_context_tokens && self.messages.len() <= 10;
+        if at_floor {
+            if !self.warned_at_floor {
+                eprintln!(
+                    "⚠️  Auto-trim hit the 10-message floor at ~{} tokens (budget {}). \
+                     Run /compact or /clear if responses start degrading.",
+                    total_tokens, self.config.max_context_tokens
+                );
+                self.warned_at_floor = true;
+            }
+        } else {
+            self.warned_at_floor = false;
         }
     }
 

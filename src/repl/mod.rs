@@ -149,6 +149,7 @@ impl Repl {
 
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
+        conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
 
         if config.safe_mode {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());

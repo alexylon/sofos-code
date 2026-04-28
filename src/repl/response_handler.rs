@@ -218,6 +218,22 @@ impl ResponseHandler {
                 return Ok(());
             }
 
+            // Phase 1 compaction inside the agent loop: if a long tool
+            // chain has pushed token usage past the trigger ratio,
+            // truncate large tool results in older messages before the
+            // next API call. Phase 2 (LLM summarization) is left to the
+            // explicit `/compact` path so we don't add an extra LLM
+            // call to every iteration. Phase 1 is purely local and
+            // history-preserving — it shortens big tool-result payloads
+            // (file dumps, long bash) but keeps every message in place,
+            // so the model still sees the full conversation flow.
+            if self.conversation.needs_compaction() {
+                let split = self.conversation.compaction_split_point();
+                if split > 0 {
+                    self.conversation.truncate_tool_results(split);
+                }
+            }
+
             let response = self.get_next_response(&tool_uses, display_messages).await?;
 
             *total_input_tokens += response.usage.input_tokens;

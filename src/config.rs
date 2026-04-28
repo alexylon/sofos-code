@@ -62,6 +62,22 @@ impl SofosConfig {
     // No need for new() since Default::default() is the idiomatic way
 }
 
+/// Per-model trim threshold. The model's API context window is much
+/// larger than what we want to actually pay for, so this returns a
+/// budget that leaves headroom for output tokens and avoids needless
+/// summarization on shorter sessions. Codex variants ship with a
+/// 400k window (vs. 1M on flagship Claude / GPT-5.5), so we cap them
+/// lower to stay safely below the API limit.
+pub fn max_context_tokens_for(model: &str) -> usize {
+    // Case-insensitive so a capitalized model id from env/config
+    // doesn't silently slip past the codex cap.
+    if model.to_ascii_lowercase().contains("codex") {
+        300_000
+    } else {
+        800_000
+    }
+}
+
 /// Safe mode message shown to user and AI. Must stay in sync with the
 /// tool set returned by `tools::get_read_only_tools()` (+ the optional
 /// `search_code` tool wired in when ripgrep is on PATH).
