@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-04-29
+
 ### Added
 
 - **Per-model auto-trim budget.** The conversation auto-trim threshold used to be a single `max_context_tokens` default (~165k) regardless of model — far below the 1M window flagship Claude / GPT-5.5 actually accept, and slightly above what Codex variants (400k API window) can take. `config::max_context_tokens_for(model)` now picks 800k for flagship models and 300k for any model whose id contains `codex` (case-insensitive, so a capitalized id from env/config doesn't slip past the cap), leaving headroom for output tokens. The REPL calls `ConversationHistory::set_max_context_tokens` once at startup so the trim floor matches the model's real context window.
