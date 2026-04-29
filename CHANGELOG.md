@@ -4,6 +4,15 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Per-model auto-trim budget.** The conversation auto-trim threshold used to be a single `max_context_tokens` default (~165k) regardless of model — far below the 1M window flagship Claude / GPT-5.5 actually accept, and slightly above what Codex variants (400k API window) can take. `config::max_context_tokens_for(model)` now picks 800k for flagship models and 300k for any model whose id contains `codex` (case-insensitive, so a capitalized id from env/config doesn't slip past the cap), leaving headroom for output tokens. The REPL calls `ConversationHistory::set_max_context_tokens` once at startup so the trim floor matches the model's real context window.
+- **In-loop phase-1 compaction.** A long tool chain (file dumps, verbose bash) used to push token usage past the trigger ratio mid-loop with no relief until the user ran `/compact` manually. The agent loop now checks `needs_compaction()` between tool round-trips and, if the split point is non-zero, truncates large tool-result payloads in older messages before the next API call. Phase 1 is purely local and history-preserving — every message stays in place, only big tool-result bodies shrink — so the model still sees the full conversation flow without an extra LLM call per iteration. Phase 2 (LLM summarization) is still gated behind explicit `/compact`.
+
+### Fixed
+
+- **"Approaching token limit" warning no longer spams once stuck at the floor.** The trim path printed the warning every time `trim_if_needed` ran while `messages.len() <= 10` and `total_tokens > max_context_tokens`, so a long agent loop produced one warning per tool round-trip. A new `warned_at_floor` flag fires the warning once on entry to the floor and clears the next time a trim ends under budget. The message was also rephrased from "Conversation approaching token limit" (which conflated our internal trim heuristic with the model's API context window) to "Auto-trim hit the 10-message floor at ~N tokens (budget M). Run /compact or /clear if responses start degrading."
+
 ## [0.2.4] - 2026-04-27
 
 ### Changed
