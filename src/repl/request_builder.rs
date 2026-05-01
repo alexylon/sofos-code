@@ -111,25 +111,45 @@ impl<'a> RequestBuilder<'a> {
                     }
                 }
             }
-            mark_rolling_cache_breakpoint(&mut request.messages);
+            mark_rolling_cache_breakpoint(
+                &mut request.messages,
+                self.conversation.cache_anchor_message_idx(),
+            );
         }
 
         request
     }
 }
 
-/// Stamp `cache_control: ephemeral` on the final content block of the
-/// last message so the cached Anthropic prefix grows with the
-/// conversation instead of restarting on each turn.
-fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message]) {
+/// Stamp `cache_control: ephemeral` on the rolling breakpoint (last
+/// block of the last message) and, if `anchor_idx` is provided, on the
+/// last block of `messages[anchor_idx]`. The anchor is the secondary
+/// breakpoint that protects against the 20-block lookback window in
+/// wide multi-tool iterations — the rolling alone cold-misses when a
+/// single turn jumps past 20 blocks.
+fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message], anchor_idx: Option<usize>) {
+    if let Some(last_msg) = messages.last_mut() {
+        stamp_last_block_ephemeral(last_msg);
+    }
+    if let Some(idx) = anchor_idx {
+        // The anchor must be a different message than the rolling, and
+        // within bounds. `maintain_cache_anchor` already guarantees
+        // both, but recheck so an out-of-sync caller can't panic the
+        // request build.
+        if idx + 1 < messages.len() {
+            stamp_last_block_ephemeral(&mut messages[idx]);
+        }
+    }
+}
+
+/// No-op when the message has plain `Text` content rather than
+/// per-block `Blocks` — those messages have no `cache_control` field
+/// to stamp, so the breakpoint lands on the next turn that uses
+/// blocks.
+fn stamp_last_block_ephemeral(msg: &mut crate::api::Message) {
     use crate::api::{CacheControl, MessageContent, MessageContentBlock};
 
-    let Some(last_msg) = messages.last_mut() else {
-        return;
-    };
-    // Plain-text user messages don't carry per-block cache_control;
-    // the breakpoint lands on the next turn that uses blocks.
-    let MessageContent::Blocks { content } = &mut last_msg.content else {
+    let MessageContent::Blocks { content } = &mut msg.content else {
         return;
     };
     let Some(last_block) = content.last_mut() else {
@@ -244,7 +264,7 @@ mod tests {
     #[test]
     fn rolling_breakpoint_is_noop_on_plain_text_user_message() {
         let mut messages = vec![Message::user("just text")];
-        mark_rolling_cache_breakpoint(&mut messages);
+        mark_rolling_cache_breakpoint(&mut messages, None);
         // No panic, and no Blocks content was synthesized.
         assert!(matches!(
             &messages[0].content,
@@ -255,7 +275,7 @@ mod tests {
     #[test]
     fn rolling_breakpoint_is_noop_on_empty_messages() {
         let mut messages: Vec<Message> = Vec::new();
-        mark_rolling_cache_breakpoint(&mut messages);
+        mark_rolling_cache_breakpoint(&mut messages, None);
         assert!(messages.is_empty());
     }
 
@@ -271,7 +291,7 @@ mod tests {
                 cache_control: None,
             },
         ])];
-        mark_rolling_cache_breakpoint(&mut messages);
+        mark_rolling_cache_breakpoint(&mut messages, None);
 
         let blocks = match &messages[0].content {
             crate::api::MessageContent::Blocks { content } => content,
@@ -291,5 +311,120 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn one_text_block_user(text: &str) -> Message {
+        Message::user_with_blocks(vec![MessageContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }])
+    }
+
+    fn block_cache_control(msg: &Message) -> Option<&crate::api::CacheControl> {
+        match &msg.content {
+            crate::api::MessageContent::Blocks { content } => match content.last() {
+                Some(MessageContentBlock::Text { cache_control, .. }) => cache_control.as_ref(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn anchor_breakpoint_stamps_when_index_provided() {
+        let mut messages = vec![
+            one_text_block_user("a"),
+            one_text_block_user("b"),
+            one_text_block_user("c"),
+        ];
+        mark_rolling_cache_breakpoint(&mut messages, Some(0));
+
+        assert!(
+            block_cache_control(&messages[0]).is_some(),
+            "anchor stamped"
+        );
+        assert!(
+            block_cache_control(&messages[1]).is_none(),
+            "middle untouched"
+        );
+        assert!(
+            block_cache_control(&messages[2]).is_some(),
+            "rolling stamped"
+        );
+    }
+
+    #[test]
+    fn anchor_breakpoint_skipped_when_index_is_rolling() {
+        let mut messages = vec![one_text_block_user("a"), one_text_block_user("b")];
+        // Anchor index 1 == rolling index → defensively skip rather than double-stamp.
+        mark_rolling_cache_breakpoint(&mut messages, Some(1));
+
+        assert!(block_cache_control(&messages[0]).is_none());
+        assert!(
+            block_cache_control(&messages[1]).is_some(),
+            "rolling still stamped"
+        );
+    }
+
+    #[test]
+    fn anchor_breakpoint_skipped_when_index_out_of_bounds() {
+        let mut messages = vec![one_text_block_user("a"), one_text_block_user("b")];
+        mark_rolling_cache_breakpoint(&mut messages, Some(99));
+        // Out-of-bounds anchor must not panic; rolling still stamped.
+        assert!(block_cache_control(&messages[1]).is_some());
+    }
+
+    #[test]
+    fn anthropic_build_stamps_both_anchor_and_rolling_when_conversation_has_anchor() {
+        // End-to-end: build a long-enough conversation that the
+        // ConversationHistory's `cache_anchor_message_idx` is set, then
+        // verify the Anthropic build path stamps cache_control on both
+        // the rolling (last message) AND the anchor (earlier message).
+        let mut conv = ConversationHistory::new();
+        for i in 0..16 {
+            conv.add_user_with_blocks(vec![MessageContentBlock::Text {
+                text: format!("msg-{}", i),
+                cache_control: None,
+            }]);
+        }
+        let anchor_idx = conv
+            .cache_anchor_message_idx()
+            .expect("anchor must be set with 16 blocks of history");
+
+        let req = RequestBuilder::new(
+            &anthropic_client(),
+            "claude-sonnet-4-6",
+            8192,
+            &conv,
+            one_regular_tool(),
+            false,
+            0,
+            "s1",
+        )
+        .build();
+
+        // Rolling stamp on the last message.
+        let last_cc = block_cache_control(req.messages.last().unwrap());
+        assert!(last_cc.is_some(), "rolling breakpoint missing");
+
+        // Anchor stamp on the recorded anchor message.
+        let anchor_cc = block_cache_control(&req.messages[anchor_idx]);
+        assert!(
+            anchor_cc.is_some(),
+            "anchor breakpoint missing at idx {}",
+            anchor_idx
+        );
+
+        // No spurious stamps in between.
+        for (i, msg) in req.messages.iter().enumerate() {
+            if i == anchor_idx || i == req.messages.len() - 1 {
+                continue;
+            }
+            assert!(
+                block_cache_control(msg).is_none(),
+                "unexpected cache_control at idx {} (only rolling + anchor should be stamped)",
+                i
+            );
+        }
     }
 }

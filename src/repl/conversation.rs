@@ -11,6 +11,13 @@ pub struct ConversationHistory {
     /// firing on every message append once we're stuck at the 10-message
     /// floor.
     warned_at_floor: bool,
+    /// Index of the message whose last block carries the secondary
+    /// Anthropic `cache_control` marker (the "anchor"). Stays put across
+    /// turns whenever the rolling breakpoint stays within the 20-block
+    /// lookback window; advances only when it would otherwise fall out
+    /// of range. Without this, a single iteration adding more than ~20
+    /// blocks (wide multi-tool turn) would cold-miss every cache entry.
+    cache_anchor_message_idx: Option<usize>,
 }
 
 impl ConversationHistory {
@@ -115,6 +122,7 @@ Show imperial units only when the user explicitly asks for them."#,
             )],
             config: SofosConfig::default(),
             warned_at_floor: false,
+            cache_anchor_message_idx: None,
         }
     }
 
@@ -226,6 +234,8 @@ Show imperial units only when the user explicitly asks for them."#,
 
     /// Trim messages to stay within token budget.
     fn trim_if_needed(&mut self) {
+        let len_before = self.messages.len();
+
         if self.messages.len() > self.config.max_messages {
             let remove_count = self.messages.len() - self.config.max_messages;
             self.messages.drain(0..remove_count);
@@ -247,8 +257,17 @@ Show imperial units only when the user explicitly asks for them."#,
         // results so the serialized history stays self-consistent. The
         // drop can move the total token count, so recompute before the
         // "approaching limit" warning to avoid reporting stale numbers.
-        self.drop_leading_orphaned_tool_results();
+        let stripped_orphan = self.drop_leading_orphaned_tool_results();
         total_tokens = self.estimate_total_tokens();
+
+        // Invalidate the anchor when ANY front-of-history mutation
+        // happened — index shift OR in-place strip of `messages[0]`
+        // (the latter changes the prefix hash for every anchor
+        // position, since the prefix up to the anchor includes
+        // `messages[0]`). Pure appends leave the anchor untouched.
+        if self.messages.len() != len_before || stripped_orphan {
+            self.cache_anchor_message_idx = None;
+        }
 
         // The warning describes our internal trim heuristic, not the
         // model's API context window — those are different numbers.
@@ -270,11 +289,92 @@ Show imperial units only when the user explicitly asks for them."#,
         } else {
             self.warned_at_floor = false;
         }
+
+        self.maintain_cache_anchor();
+    }
+
+    fn message_block_count(msg: &Message) -> usize {
+        match &msg.content {
+            crate::api::MessageContent::Text { .. } => 1,
+            crate::api::MessageContent::Blocks { content } => content.len(),
+        }
+    }
+
+    /// Drives the "advance the anchor?" decision in
+    /// `maintain_cache_anchor` against Anthropic's 20-block lookback
+    /// window — note this excludes the rolling message itself, so a
+    /// single very wide rolling message doesn't force an advance.
+    fn block_distance(&self, from: usize, to: usize) -> usize {
+        self.messages[from..to]
+            .iter()
+            .map(Self::message_block_count)
+            .sum()
+    }
+
+    /// Pick the secondary `cache_control` ("anchor") position so that
+    /// even a single iteration adding more than 20 blocks still finds
+    /// at least one cached entry within Anthropic's lookback window.
+    /// The anchor stays put across turns until the rolling breakpoint
+    /// has drifted more than ~18 blocks past it; then it advances to
+    /// roughly 10 blocks behind the current rolling. Stamps only land
+    /// on Blocks-variant messages — Text-variant has no per-block
+    /// `cache_control` field, so picking one would silently waste the
+    /// 4th breakpoint slot.
+    fn maintain_cache_anchor(&mut self) {
+        const KEEP_DISTANCE_BLOCKS: usize = 18;
+        const TARGET_OFFSET_BLOCKS: usize = 10;
+
+        let len = self.messages.len();
+        if len < 2 {
+            self.cache_anchor_message_idx = None;
+            return;
+        }
+        let rolling_idx = len - 1;
+
+        if let Some(idx) = self.cache_anchor_message_idx {
+            let still_valid = idx < rolling_idx
+                && matches!(
+                    self.messages[idx].content,
+                    crate::api::MessageContent::Blocks { .. }
+                );
+            if !still_valid {
+                self.cache_anchor_message_idx = None;
+            }
+        }
+
+        if let Some(idx) = self.cache_anchor_message_idx {
+            if self.block_distance(idx, rolling_idx) <= KEEP_DISTANCE_BLOCKS {
+                return;
+            }
+        }
+
+        let mut blocks_back = 0;
+        for i in (0..rolling_idx).rev() {
+            blocks_back += Self::message_block_count(&self.messages[i]);
+            if blocks_back >= TARGET_OFFSET_BLOCKS
+                && matches!(
+                    self.messages[i].content,
+                    crate::api::MessageContent::Blocks { .. }
+                )
+            {
+                self.cache_anchor_message_idx = Some(i);
+                return;
+            }
+        }
+
+        self.cache_anchor_message_idx = None;
+    }
+
+    pub fn cache_anchor_message_idx(&self) -> Option<usize> {
+        self.cache_anchor_message_idx
     }
 
     /// Drop leading messages whose content still references tool calls
     /// that have been trimmed away. Called after any operation that
-    /// removes messages from the front of the history.
+    /// removes messages from the front of the history. Returns `true`
+    /// if any blocks were stripped or any message was removed — the
+    /// cache anchor must be invalidated in either case because the
+    /// prefix bytes up to the anchor include `messages[0]`.
     ///
     /// Preserves sibling `Text` / `Image` blocks in mixed user messages.
     /// A user turn can legitimately carry `[ToolResult, Text]` — the
@@ -283,21 +383,23 @@ Show imperial units only when the user explicitly asks for them."#,
     /// drops the preceding assistant `ToolUse`, the `ToolResult` is
     /// orphaned but the `Text` isn't. Strip only the orphaned blocks;
     /// remove the whole message only when nothing survives the strip.
-    fn drop_leading_orphaned_tool_results(&mut self) {
+    fn drop_leading_orphaned_tool_results(&mut self) -> bool {
+        let mut mutated = false;
         loop {
             let head_has_orphan = self
                 .messages
                 .first()
                 .is_some_and(|m| m.role == "user" && Self::message_has_tool_result(m));
             if !head_has_orphan {
-                return;
+                return mutated;
             }
 
+            mutated = true;
             if let crate::api::MessageContent::Blocks { content } = &mut self.messages[0].content {
                 content
                     .retain(|b| !matches!(b, crate::api::MessageContentBlock::ToolResult { .. }));
                 if !content.is_empty() {
-                    return;
+                    return mutated;
                 }
             }
             self.messages.remove(0);
@@ -429,6 +531,10 @@ Show imperial units only when the user explicitly asks for them."#,
 
     /// Truncate large tool results in messages[0..up_to] to save tokens cheaply.
     pub fn truncate_tool_results(&mut self, up_to: usize) {
+        // In-place mutation of older message content changes the prefix
+        // hash up to the anchor; invalidate so the next request doesn't
+        // stamp a marker on a now-mismatched position.
+        self.cache_anchor_message_idx = None;
         let threshold = self.config.tool_result_truncate_threshold;
         let keep_chars = 500;
 
@@ -526,12 +632,16 @@ Show imperial units only when the user explicitly asks for them."#,
         if split_point == 0 || split_point > self.messages.len() {
             return;
         }
+        // Front-drain + insert shifts every remaining index; the anchor
+        // can't carry across this transformation.
+        self.cache_anchor_message_idx = None;
         self.messages.drain(0..split_point);
         let summary_msg = Message::user(format!(
             "[Conversation Summary]\n\nThe following is a summary of our earlier conversation:\n\n{}",
             summary
         ));
         self.messages.insert(0, summary_msg);
+        self.maintain_cache_anchor();
     }
 
     /// Fallback trim used when compaction fails.
@@ -632,9 +742,13 @@ Show imperial units only when the user explicitly asks for them."#,
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.cache_anchor_message_idx = None;
     }
 
     pub fn restore_messages(&mut self, messages: Vec<Message>) {
+        // The new history has no relationship to the prior conversation;
+        // any inherited anchor index is meaningless content-wise.
+        self.cache_anchor_message_idx = None;
         self.messages = messages;
         self.trim_if_needed();
     }
@@ -642,6 +756,7 @@ Show imperial units only when the user explicitly asks for them."#,
     /// Remove the last message from the conversation (used for error recovery)
     pub fn remove_last_message(&mut self) {
         self.messages.pop();
+        self.maintain_cache_anchor();
     }
 
     pub fn _len(&self) -> usize {
@@ -1157,5 +1272,364 @@ mod tests {
         }
         history.fallback_trim();
         assert_eq!(history.messages().len(), 5);
+    }
+
+    fn blocks_msg_with(role: &str, n: usize) -> Message {
+        let blocks: Vec<MessageContentBlock> = (0..n)
+            .map(|i| MessageContentBlock::Text {
+                text: format!("{}-{}", role, i),
+                cache_control: None,
+            })
+            .collect();
+        if role == "user" {
+            Message::user_with_blocks(blocks)
+        } else {
+            Message::assistant_with_blocks(blocks)
+        }
+    }
+
+    #[test]
+    fn cache_anchor_stays_unset_when_history_under_10_blocks() {
+        let mut history = ConversationHistory::new();
+        // 1 user (1 block) + 1 assistant (3 blocks) + 1 user (3 blocks) = 7 blocks. Under 10.
+        history.add_user_message("hi".to_string());
+        history.add_assistant_with_blocks(vec![
+            MessageContentBlock::Text {
+                text: "ok".to_string(),
+                cache_control: None,
+            },
+            MessageContentBlock::ToolUse {
+                id: "1".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            },
+            MessageContentBlock::ToolUse {
+                id: "2".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            },
+        ]);
+        history.add_tool_results(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "1".to_string(),
+                content: "ok".to_string(),
+                cache_control: None,
+            },
+            MessageContentBlock::ToolResult {
+                tool_use_id: "2".to_string(),
+                content: "ok".to_string(),
+                cache_control: None,
+            },
+        ]);
+        assert!(
+            history.cache_anchor_message_idx().is_none(),
+            "anchor should stay unset under 10 blocks of history"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_set_when_threshold_crossed_and_lands_on_blocks_message() {
+        let mut history = ConversationHistory::new();
+        // Build up >10 blocks with all-Blocks messages so the anchor lands cleanly.
+        history.add_user_with_blocks(vec![MessageContentBlock::Text {
+            text: "user-0".to_string(),
+            cache_control: None,
+        }]);
+        for _ in 0..6 {
+            history.add_assistant_with_blocks(vec![
+                MessageContentBlock::Text {
+                    text: "asst".to_string(),
+                    cache_control: None,
+                },
+                MessageContentBlock::Text {
+                    text: "more".to_string(),
+                    cache_control: None,
+                },
+            ]);
+            history.add_user_with_blocks(vec![MessageContentBlock::Text {
+                text: "u".to_string(),
+                cache_control: None,
+            }]);
+        }
+        let idx = history
+            .cache_anchor_message_idx()
+            .expect("anchor should be set once history exceeds 10 blocks");
+        assert!(
+            idx < history.messages().len() - 1,
+            "anchor must not be the rolling (last) message"
+        );
+        assert!(matches!(
+            history.messages()[idx].content,
+            crate::api::MessageContent::Blocks { .. }
+        ));
+    }
+
+    #[test]
+    fn cache_anchor_preserved_while_distance_within_18_blocks() {
+        let mut history = ConversationHistory::new();
+        // Push enough to trigger the anchor.
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let first_anchor = history
+            .cache_anchor_message_idx()
+            .expect("anchor should be set");
+
+        // Add 5 more 1-block messages — distance grows by 5, still <= 18.
+        for _ in 0..5 {
+            history.messages.push(blocks_msg_with("assistant", 1));
+            history.maintain_cache_anchor();
+        }
+        assert_eq!(
+            history.cache_anchor_message_idx(),
+            Some(first_anchor),
+            "anchor must stay put while distance to rolling stays within 18 blocks"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_persists_through_a_wide_iteration() {
+        // A single new message with many blocks doesn't push the anchor
+        // forward because `block_distance` measures intermediate
+        // messages only. The anchor's own cache lookup (at its earlier
+        // block position) still hits across the wide turn — which is
+        // the saving the anchor provides when the rolling lookup
+        // cold-misses.
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let first_anchor = history.cache_anchor_message_idx().unwrap();
+
+        history.messages.push(blocks_msg_with("assistant", 25));
+        history.maintain_cache_anchor();
+
+        assert_eq!(
+            history.cache_anchor_message_idx(),
+            Some(first_anchor),
+            "anchor must stay put across a wide iteration"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_advances_after_intermediate_growth() {
+        // Many normal-width iterations push the cumulative
+        // intermediate distance past 18 blocks; the anchor then
+        // refreshes to ~10 blocks behind the new rolling.
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let first_anchor = history.cache_anchor_message_idx().unwrap();
+
+        for _ in 0..20 {
+            history.messages.push(blocks_msg_with("user", 1));
+            history.maintain_cache_anchor();
+        }
+
+        let new_anchor = history.cache_anchor_message_idx().unwrap();
+        assert_ne!(
+            new_anchor, first_anchor,
+            "anchor must advance once cumulative intermediate distance exceeds 18 blocks"
+        );
+        assert!(
+            new_anchor < history.messages().len() - 1,
+            "advanced anchor must not equal the rolling"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_skips_text_variant_messages_when_picking() {
+        let mut history = ConversationHistory::new();
+        // First message is plain Text variant; cannot carry per-block cache_control.
+        history
+            .messages
+            .push(Message::user("plain-text".to_string()));
+        // Then a series of Blocks messages building up >10 blocks.
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let idx = history.cache_anchor_message_idx().unwrap();
+        assert!(matches!(
+            history.messages()[idx].content,
+            crate::api::MessageContent::Blocks { .. }
+        ));
+        assert_ne!(idx, 0, "must skip the Text-variant message at index 0");
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_on_clear() {
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        assert!(history.cache_anchor_message_idx().is_some());
+        history.clear();
+        assert!(history.cache_anchor_message_idx().is_none());
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_when_trim_drops_front_messages() {
+        // Aggressive max_messages so the next add forces trim to drop
+        // most of the history, leaving fewer than 10 blocks — the
+        // post-invalidation maintain leaves the anchor at None. Without
+        // the invalidation fix, the anchor would persist at its
+        // pre-trim index, silently pointing to shifted content.
+        let mut history = ConversationHistory::new();
+        history.config.max_messages = 5;
+        for _ in 0..15 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        assert!(history.cache_anchor_message_idx().is_some());
+
+        history.add_user_message("trigger trim".to_string());
+
+        assert!(
+            history.cache_anchor_message_idx().is_none(),
+            "trim that shrinks history below 10 blocks must leave anchor None, \
+             which only happens if invalidation ran before maintain"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_by_replace_with_summary() {
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        assert!(history.cache_anchor_message_idx().is_some());
+
+        history.replace_with_summary("done".to_string(), 8);
+
+        // After summary replacement, only the first 5 messages remain
+        // (12 - 8 = 4 + 1 summary). 5 messages × 1 block = 5 blocks,
+        // under the 10-block threshold, so the anchor stays None.
+        assert!(
+            history.cache_anchor_message_idx().is_none(),
+            "anchor must be invalidated; small remaining history stays unset"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_by_truncate_tool_results() {
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        assert!(history.cache_anchor_message_idx().is_some());
+
+        history.truncate_tool_results(10);
+
+        assert!(
+            history.cache_anchor_message_idx().is_none(),
+            "in-place content mutation must invalidate the anchor"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_when_orphan_strip_mutates_front() {
+        // Construct an orphaned [ToolResult, Text] at the front (no
+        // preceding ToolUse). Limits high so trim doesn't drain — the
+        // orphan strip is the SOLE mutation, and it leaves the Text
+        // block intact, so `len` doesn't change. Without the
+        // strip-tracking fix the anchor would persist with a stale
+        // prefix hash; with the fix it's invalidated and re-established.
+        let mut history = ConversationHistory::new();
+        history.config.max_messages = 1000;
+        history.config.max_context_tokens = 10_000_000;
+
+        history.messages.push(Message::user_with_blocks(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "orphan".to_string(),
+                content: "result".to_string(),
+                cache_control: None,
+            },
+            MessageContentBlock::Text {
+                text: "steer".to_string(),
+                cache_control: None,
+            },
+        ]));
+        for _ in 0..15 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+
+        history.maintain_cache_anchor();
+        assert!(
+            history.cache_anchor_message_idx().is_some(),
+            "anchor should be set with 17+ blocks of history"
+        );
+        let len_before_call = history.messages.len();
+
+        history.add_user_message("trigger".to_string());
+
+        // No drain — the only mutation was the orphan strip on msg[0]
+        // plus the new add. Net len change is exactly +1.
+        assert_eq!(history.messages.len(), len_before_call + 1);
+        // Strip ran: the ToolResult is gone, the Text survives.
+        match &history.messages[0].content {
+            crate::api::MessageContent::Blocks { content } => {
+                assert_eq!(content.len(), 1, "only the Text block should survive");
+                assert!(matches!(&content[0], MessageContentBlock::Text { .. }));
+            }
+            _ => panic!("msg[0] should remain Blocks variant after strip"),
+        }
+        // Strong invariant: the anchor reflects the post-strip state.
+        // Without the strip-tracking fix, the anchor would silently
+        // keep its pre-strip index (the validation in maintain only
+        // checks idx-in-bounds + Blocks-variant, both still satisfied).
+        // We catch that by clearing the anchor and re-running maintain
+        // from scratch — if the post-strip code ran correctly, the
+        // result must match.
+        let final_anchor = history.cache_anchor_message_idx();
+        history.cache_anchor_message_idx = None;
+        history.maintain_cache_anchor();
+        assert_eq!(
+            history.cache_anchor_message_idx(),
+            final_anchor,
+            "anchor must be the one maintain produces on the post-strip state, \
+             not a stale carry-over"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_invalidated_by_restore_messages() {
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let prior_anchor = history.cache_anchor_message_idx();
+        assert!(prior_anchor.is_some());
+
+        // Restore to a totally new conversation with the same shape.
+        let new_messages: Vec<Message> = (0..12).map(|_| blocks_msg_with("user", 1)).collect();
+        history.restore_messages(new_messages);
+
+        // The anchor must be re-established from current state, not
+        // carried across from the prior conversation. After
+        // re-establishment by trim_if_needed → maintain, it can be
+        // Some at a freshly chosen position — but its identity
+        // semantically belongs to the *new* messages.
+        // The strong invariant we're enforcing: invalidation happened
+        // before maintain ran. We can verify by replacing with a
+        // smaller history that's under the 10-block threshold and
+        // checking the anchor is None (would be Some(stale) without
+        // the fix).
+        let small: Vec<Message> = (0..3).map(|_| blocks_msg_with("user", 1)).collect();
+        history.restore_messages(small);
+        assert!(
+            history.cache_anchor_message_idx().is_none(),
+            "small restored history must leave anchor None"
+        );
     }
 }
