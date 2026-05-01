@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-05-01
+
 ### Fixed
 
 - **Anthropic prefix cache survives wide multi-tool iterations.** Anthropic's prompt cache walks back at most 20 blocks from each `cache_control` marker; without a secondary anchor, a single iteration adding more than ~20 blocks (parallel tool calls returning many ToolUse / ToolResult blocks at once) cold-missed the rolling lookup and re-billed the entire prefix at full price. `ConversationHistory::maintain_cache_anchor` now tracks a stateful anchor index that stays put across turns and only advances when intermediate distance crosses 18 blocks; `request_builder` stamps a secondary `cache_control` at that position so the anchor's own lookup hits exactly across wide turns. Intermediate blocks between the anchor and the new rolling still re-bill at full price on wide turns — that's a fundamental limit of Anthropic's 20-block window, not a sofos bug. See `project_anthropic_20_block_lookback.md`.
