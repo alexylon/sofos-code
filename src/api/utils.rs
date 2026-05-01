@@ -75,8 +75,7 @@ pub fn build_message_response(
     model: String,
     content: Vec<ContentBlock>,
     stop_reason: Option<String>,
-    input_tokens: u32,
-    output_tokens: u32,
+    usage: Usage,
 ) -> CreateMessageResponse {
     CreateMessageResponse {
         _id: id,
@@ -85,12 +84,7 @@ pub fn build_message_response(
         content,
         _model: model,
         stop_reason,
-        usage: Usage {
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: None,
-            cache_creation_input_tokens: None,
-        },
+        usage,
     }
 }
 
@@ -601,8 +595,12 @@ mod tests {
             "test-model".into(),
             vec![],
             Some("max_tokens".into()),
-            100,
-            50,
+            Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_input_tokens: Some(40),
+                cache_creation_input_tokens: Some(10),
+            },
         );
         assert_eq!(r._id, "id-42");
         assert_eq!(r._model, "test-model");
@@ -611,6 +609,8 @@ mod tests {
         assert_eq!(r.stop_reason.as_deref(), Some("max_tokens"));
         assert_eq!(r.usage.input_tokens, 100);
         assert_eq!(r.usage.output_tokens, 50);
+        assert_eq!(r.usage.cache_read_input_tokens, Some(40));
+        assert_eq!(r.usage.cache_creation_input_tokens, Some(10));
         assert!(r.content.is_empty());
     }
 

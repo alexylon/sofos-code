@@ -209,16 +209,18 @@ impl OpenAIClient {
             _ => None,
         };
 
-        let mut response = utils::build_message_response(
+        Ok(utils::build_message_response(
             response_parsed.id,
             response_parsed.model,
             content_blocks,
             stop_reason,
-            usage.input_tokens.unwrap_or(0),
-            usage.output_tokens.unwrap_or(0),
-        );
-        response.usage.cache_read_input_tokens = cache_read;
-        Ok(response)
+            Usage {
+                input_tokens: usage.input_tokens.unwrap_or(0),
+                output_tokens: usage.output_tokens.unwrap_or(0),
+                cache_read_input_tokens: cache_read,
+                cache_creation_input_tokens: None,
+            },
+        ))
     }
 }
 

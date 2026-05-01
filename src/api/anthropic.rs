@@ -339,17 +339,18 @@ impl AnthropicClient {
             }
         }
 
-        let mut response = utils::build_message_response(
+        Ok(utils::build_message_response(
             message_id,
             model_name,
             content_blocks,
             stop_reason,
-            input_tokens,
-            output_tokens,
-        );
-        response.usage.cache_read_input_tokens = cache_read_input_tokens;
-        response.usage.cache_creation_input_tokens = cache_creation_input_tokens;
-        Ok(response)
+            Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_input_tokens,
+                cache_creation_input_tokens,
+            },
+        ))
     }
 }
 
