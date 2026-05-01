@@ -4,6 +4,17 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cost no longer grows exponentially across iterations.** Two bugs introduced with the 800k context budget kept invalidating the provider prompt cache, so each agent-loop iteration re-billed the entire prefix at full price (~$1–2 first pass → ~$15 second → ~$50 third). Both are fixed:
+  1. **Stable `prompt_cache_key`.** Every OpenAI Responses request now carries a `prompt_cache_key` pinned to the REPL's `session_state.session_id`, so consecutive requests share a prompt-cache shard.
+  2. **No more mid-loop suffix mutation.** The "phase-1 compaction" introduced in 0.2.5 truncated tool-result bodies in older messages between iterations, which evicted the cached prefix on every iteration. Removed; the existing front-trim in `trim_if_needed` already handles overflow without touching the cached suffix, and `/compact` still handles structural summarization.
+- **Anthropic gets a rolling cache breakpoint.** `cache_control: ephemeral` is now stamped on the last block of the last message each request. Combined with the existing system-prompt and last-tool breakpoints, this lets the cached Anthropic prefix grow with the conversation instead of restarting on each turn.
+
+### Added
+
+- **Cache-hit observability.** `Usage` now carries `cache_read_input_tokens` (filled from `usage.input_tokens_details.cached_tokens` on OpenAI and `cache_read_input_tokens` on Anthropic) and `cache_creation_input_tokens` (Anthropic only). Wire these into the cost line later if you want a visual cache-hit indicator.
+
 ## [0.2.5] - 2026-04-29
 
 ### Added

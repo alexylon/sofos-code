@@ -68,6 +68,11 @@ pub struct CreateMessageRequest {
     pub output_config: Option<OutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<Reasoning>,
+    /// Stable per-session id forwarded to OpenAI Responses as
+    /// `prompt_cache_key` so consecutive requests share a prompt-cache
+    /// shard. Cleared on the Anthropic path before sending.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -391,10 +396,16 @@ pub enum _ContentDelta {
     InputJsonDelta { partial_json: String },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
+    /// Anthropic-only; the OpenAI Responses API doesn't surface a
+    /// separate creation counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
 }
 
 // Streaming types

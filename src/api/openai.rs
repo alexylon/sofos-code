@@ -44,51 +44,18 @@ impl OpenAIClient {
     }
 
     async fn call_responses(&self, request: CreateMessageRequest) -> Result<CreateMessageResponse> {
-        let inputs = build_response_input(&request);
+        let body = build_responses_body(&request);
 
-        let mut body = json!({
-            "model": request.model,
-            "input": inputs,
-            "max_output_tokens": request.max_tokens,
-            "reasoning": request.reasoning,
-        });
-
-        if let Some(tool_list) = request.tools.clone() {
-            let tools: Vec<serde_json::Value> = tool_list
-                .into_iter()
-                .filter_map(|tool| match tool {
-                    Tool::Regular {
-                        name,
-                        description,
-                        input_schema,
-                        ..
-                    } => Some(json!({
-                        "type": "function",
-                        "name": name,
-                        "description": description,
-                        "parameters": input_schema
-                    })),
-                    Tool::OpenAIWebSearch { tool_type } => Some(json!({"type": tool_type})),
-                    _ => None,
-                })
-                .collect();
-
-            if !tools.is_empty() {
-                body["tools"] = json!(tools);
-                body["tool_choice"] = json!("auto");
-
-                if std::env::var("SOFOS_DEBUG").is_ok() {
-                    eprintln!("\n=== OpenAI /responses Request ===");
-                    eprintln!("Sending {} tools to OpenAI", tools.len());
-                    for tool in &tools {
-                        if let Some(func) = tool.get("function") {
-                            if let Some(name) = func.get("name") {
-                                eprintln!("  - Tool: {}", name);
-                            }
-                        }
+        if std::env::var("SOFOS_DEBUG").is_ok() {
+            if let Some(tools) = body.get("tools").and_then(|v| v.as_array()) {
+                eprintln!("\n=== OpenAI /responses Request ===");
+                eprintln!("Sending {} tools to OpenAI", tools.len());
+                for tool in tools {
+                    if let Some(name) = tool.get("name").and_then(|v| v.as_str()) {
+                        eprintln!("  - Tool: {}", name);
                     }
-                    eprintln!("==================================\n");
                 }
+                eprintln!("==================================\n");
             }
         }
 
@@ -215,6 +182,10 @@ impl OpenAIClient {
         }
 
         let usage = response_parsed.usage.unwrap_or_default();
+        let cache_read = usage
+            .input_tokens_details
+            .as_ref()
+            .and_then(|d| d.cached_tokens);
 
         // Map OpenAI's `status: "incomplete"` / `incomplete_details.reason`
         // onto the shared `stop_reason` field so the REPL's existing
@@ -238,15 +209,60 @@ impl OpenAIClient {
             _ => None,
         };
 
-        Ok(utils::build_message_response(
+        let mut response = utils::build_message_response(
             response_parsed.id,
             response_parsed.model,
             content_blocks,
             stop_reason,
             usage.input_tokens.unwrap_or(0),
             usage.output_tokens.unwrap_or(0),
-        ))
+        );
+        response.usage.cache_read_input_tokens = cache_read;
+        Ok(response)
     }
+}
+
+fn build_responses_body(request: &CreateMessageRequest) -> serde_json::Value {
+    let inputs = build_response_input(request);
+
+    let mut body = json!({
+        "model": request.model,
+        "input": inputs,
+        "max_output_tokens": request.max_tokens,
+        "reasoning": request.reasoning,
+    });
+
+    if let Some(ref cache_key) = request.prompt_cache_key {
+        body["prompt_cache_key"] = json!(cache_key);
+    }
+
+    if let Some(tool_list) = request.tools.clone() {
+        let tools: Vec<serde_json::Value> = tool_list
+            .into_iter()
+            .filter_map(|tool| match tool {
+                Tool::Regular {
+                    name,
+                    description,
+                    input_schema,
+                    ..
+                } => Some(json!({
+                    "type": "function",
+                    "name": name,
+                    "description": description,
+                    "parameters": input_schema
+                })),
+                Tool::OpenAIWebSearch { tool_type } => Some(json!({"type": tool_type})),
+                _ => None,
+            })
+            .collect();
+
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+            body["tool_choice"] = json!("auto");
+        }
+    }
+
+    body
 }
 
 fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
@@ -446,4 +462,70 @@ struct OpenAIResponseUsage {
     input_tokens: Option<u32>,
     #[serde(default)]
     output_tokens: Option<u32>,
+    #[serde(default)]
+    input_tokens_details: Option<OpenAIInputTokensDetails>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct OpenAIInputTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::Message;
+
+    fn req_with_cache_key(key: Option<&str>) -> CreateMessageRequest {
+        CreateMessageRequest {
+            model: "gpt-5.3".to_string(),
+            max_tokens: 4096,
+            messages: vec![Message::user("hi".to_string())],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: None,
+            output_config: None,
+            reasoning: None,
+            prompt_cache_key: key.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn responses_body_includes_prompt_cache_key_when_set() {
+        let body = build_responses_body(&req_with_cache_key(Some("session-xyz")));
+        assert_eq!(body["prompt_cache_key"], "session-xyz");
+    }
+
+    #[test]
+    fn responses_body_omits_prompt_cache_key_when_none() {
+        let body = build_responses_body(&req_with_cache_key(None));
+        assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn parses_cached_tokens_from_input_tokens_details() {
+        let json = serde_json::json!({
+            "input_tokens": 12000,
+            "output_tokens": 300,
+            "input_tokens_details": { "cached_tokens": 9500 }
+        });
+        let usage: OpenAIResponseUsage = serde_json::from_value(json).unwrap();
+        assert_eq!(usage.input_tokens, Some(12000));
+        assert_eq!(
+            usage.input_tokens_details.and_then(|d| d.cached_tokens),
+            Some(9500)
+        );
+    }
+
+    #[test]
+    fn parses_usage_without_cache_details() {
+        let json = serde_json::json!({
+            "input_tokens": 50,
+            "output_tokens": 10
+        });
+        let usage: OpenAIResponseUsage = serde_json::from_value(json).unwrap();
+        assert!(usage.input_tokens_details.is_none());
+    }
 }

@@ -66,6 +66,9 @@ impl AnthropicClient {
     fn prepare_request(mut request: CreateMessageRequest) -> CreateMessageRequest {
         request.messages = sanitize_messages_for_anthropic(request.messages);
 
+        // OpenAI-only; drop before serializing for Anthropic.
+        request.prompt_cache_key = None;
+
         if let Some(tools) = request.tools.take() {
             let filtered: Vec<Tool> = tools
                 .into_iter()
@@ -119,6 +122,8 @@ impl AnthropicClient {
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
+        let mut cache_read_input_tokens: Option<u32> = None;
+        let mut cache_creation_input_tokens: Option<u32> = None;
         let mut stop_reason: Option<String> = None;
 
         let mut current_block_type: Option<String> = None;
@@ -173,6 +178,14 @@ impl AnthropicClient {
                                 input_tokens =
                                     u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
                                         as u32;
+                                cache_read_input_tokens = u
+                                    .get("cache_read_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|n| n as u32);
+                                cache_creation_input_tokens = u
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|n| n as u32);
                             }
                         }
                     }
@@ -326,14 +339,17 @@ impl AnthropicClient {
             }
         }
 
-        Ok(utils::build_message_response(
+        let mut response = utils::build_message_response(
             message_id,
             model_name,
             content_blocks,
             stop_reason,
             input_tokens,
             output_tokens,
-        ))
+        );
+        response.usage.cache_read_input_tokens = cache_read_input_tokens;
+        response.usage.cache_creation_input_tokens = cache_creation_input_tokens;
+        Ok(response)
     }
 }
 
@@ -424,6 +440,7 @@ mod tests {
             thinking: Some(Thinking::adaptive()),
             output_config: Some(OutputConfig::with_effort("high")),
             reasoning: None,
+            prompt_cache_key: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -445,11 +462,31 @@ mod tests {
             thinking,
             output_config: None,
             reasoning: None,
+            prompt_cache_key: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
         assert!(json["thinking"].is_object());
         assert_eq!(json["thinking"]["type"], "enabled");
         assert_eq!(json["thinking"]["budget_tokens"], 3000);
+    }
+
+    #[test]
+    fn prepare_request_strips_prompt_cache_key() {
+        let request = CreateMessageRequest {
+            model: "claude-sonnet-4-6".to_string(),
+            max_tokens: 8192,
+            messages: vec![],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: None,
+            output_config: None,
+            reasoning: None,
+            prompt_cache_key: Some("session-1".to_string()),
+        };
+
+        let prepared = AnthropicClient::prepare_request(request);
+        assert!(prepared.prompt_cache_key.is_none());
     }
 }

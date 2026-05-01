@@ -10,9 +10,13 @@ pub struct RequestBuilder<'a> {
     tools: Vec<Tool>,
     enable_thinking: bool,
     thinking_budget: u32,
+    /// Stable per-session identifier sent as `prompt_cache_key` on the
+    /// OpenAI Responses path. Anthropic ignores it.
+    session_id: &'a str,
 }
 
 impl<'a> RequestBuilder<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: &'a LlmClient,
         model: &'a str,
@@ -21,6 +25,7 @@ impl<'a> RequestBuilder<'a> {
         tools: Vec<Tool>,
         enable_thinking: bool,
         thinking_budget: u32,
+        session_id: &'a str,
     ) -> Self {
         Self {
             client,
@@ -30,6 +35,7 @@ impl<'a> RequestBuilder<'a> {
             tools,
             enable_thinking,
             thinking_budget,
+            session_id,
         }
     }
 
@@ -84,9 +90,15 @@ impl<'a> RequestBuilder<'a> {
             thinking: thinking_config,
             output_config,
             reasoning: reasoning_config,
+            prompt_cache_key: Some(self.session_id.to_string()),
         };
 
-        // For Anthropic, enable cache on last tool to mark cache breakpoint
+        // Anthropic prompt caching is opt-in per content block. We mark
+        // two breakpoints in addition to the system prompt (already
+        // cached at construction): the last tool definition, and the
+        // last block of the last message. The latter rolls forward as
+        // the conversation grows so each turn extends the cached prefix
+        // instead of restarting.
         if matches!(self.client, Anthropic(_)) {
             if let Some(tools) = request.tools.as_mut() {
                 if let Some(last_tool) = tools.last_mut() {
@@ -99,8 +111,185 @@ impl<'a> RequestBuilder<'a> {
                     }
                 }
             }
+            mark_rolling_cache_breakpoint(&mut request.messages);
         }
 
         request
+    }
+}
+
+/// Stamp `cache_control: ephemeral` on the final content block of the
+/// last message so the cached Anthropic prefix grows with the
+/// conversation instead of restarting on each turn.
+fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message]) {
+    use crate::api::{CacheControl, MessageContent, MessageContentBlock};
+
+    let Some(last_msg) = messages.last_mut() else {
+        return;
+    };
+    // Plain-text user messages don't carry per-block cache_control;
+    // the breakpoint lands on the next turn that uses blocks.
+    let MessageContent::Blocks { content } = &mut last_msg.content else {
+        return;
+    };
+    let Some(last_block) = content.last_mut() else {
+        return;
+    };
+    let cc = match last_block {
+        MessageContentBlock::Text { cache_control, .. }
+        | MessageContentBlock::Thinking { cache_control, .. }
+        | MessageContentBlock::Summary { cache_control, .. }
+        | MessageContentBlock::ToolUse { cache_control, .. }
+        | MessageContentBlock::ToolResult { cache_control, .. }
+        | MessageContentBlock::ServerToolUse { cache_control, .. }
+        | MessageContentBlock::WebSearchToolResult { cache_control, .. }
+        | MessageContentBlock::Image { cache_control, .. } => cache_control,
+    };
+    *cc = Some(CacheControl::ephemeral(None));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{AnthropicClient, Message, MessageContentBlock, OpenAIClient, Tool};
+
+    fn anthropic_client() -> LlmClient {
+        LlmClient::Anthropic(AnthropicClient::new("test-key".to_string()).unwrap())
+    }
+
+    fn openai_client() -> LlmClient {
+        LlmClient::OpenAI(OpenAIClient::new("test-key".to_string()).unwrap())
+    }
+
+    fn one_regular_tool() -> Vec<Tool> {
+        vec![Tool::Regular {
+            name: "read_file".to_string(),
+            description: "read a file".to_string(),
+            input_schema: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        }]
+    }
+
+    #[test]
+    fn build_sets_prompt_cache_key_to_session_id() {
+        let conv = ConversationHistory::new();
+        let request = RequestBuilder::new(
+            &openai_client(),
+            "gpt-5.3",
+            8192,
+            &conv,
+            one_regular_tool(),
+            false,
+            0,
+            "session-abc",
+        )
+        .build();
+
+        assert_eq!(request.prompt_cache_key.as_deref(), Some("session-abc"));
+    }
+
+    #[test]
+    fn build_marks_rolling_cache_breakpoint_on_anthropic_only() {
+        let mut conv = ConversationHistory::new();
+        conv.add_user_with_blocks(vec![MessageContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }]);
+
+        let anth = RequestBuilder::new(
+            &anthropic_client(),
+            "claude-sonnet-4-6",
+            8192,
+            &conv,
+            one_regular_tool(),
+            false,
+            0,
+            "s1",
+        )
+        .build();
+
+        let last_block = match &anth.messages.last().unwrap().content {
+            crate::api::MessageContent::Blocks { content } => content.last().unwrap(),
+            _ => panic!("expected Blocks content"),
+        };
+        let cc = match last_block {
+            MessageContentBlock::Text { cache_control, .. } => cache_control.as_ref(),
+            _ => panic!("expected Text block"),
+        };
+        assert!(cc.is_some(), "Anthropic should stamp rolling breakpoint");
+
+        let oai = RequestBuilder::new(
+            &openai_client(),
+            "gpt-5.3",
+            8192,
+            &conv,
+            one_regular_tool(),
+            false,
+            0,
+            "s1",
+        )
+        .build();
+
+        let last_block = match &oai.messages.last().unwrap().content {
+            crate::api::MessageContent::Blocks { content } => content.last().unwrap(),
+            _ => panic!("expected Blocks content"),
+        };
+        let cc = match last_block {
+            MessageContentBlock::Text { cache_control, .. } => cache_control.as_ref(),
+            _ => panic!("expected Text block"),
+        };
+        assert!(cc.is_none(), "OpenAI must not stamp Anthropic markers");
+    }
+
+    #[test]
+    fn rolling_breakpoint_is_noop_on_plain_text_user_message() {
+        let mut messages = vec![Message::user("just text")];
+        mark_rolling_cache_breakpoint(&mut messages);
+        // No panic, and no Blocks content was synthesized.
+        assert!(matches!(
+            &messages[0].content,
+            crate::api::MessageContent::Text { .. }
+        ));
+    }
+
+    #[test]
+    fn rolling_breakpoint_is_noop_on_empty_messages() {
+        let mut messages: Vec<Message> = Vec::new();
+        mark_rolling_cache_breakpoint(&mut messages);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn rolling_breakpoint_targets_only_the_final_block() {
+        let mut messages = vec![Message::user_with_blocks(vec![
+            MessageContentBlock::Text {
+                text: "first".to_string(),
+                cache_control: None,
+            },
+            MessageContentBlock::Text {
+                text: "second".to_string(),
+                cache_control: None,
+            },
+        ])];
+        mark_rolling_cache_breakpoint(&mut messages);
+
+        let blocks = match &messages[0].content {
+            crate::api::MessageContent::Blocks { content } => content,
+            _ => panic!("expected Blocks"),
+        };
+        assert!(matches!(
+            &blocks[0],
+            MessageContentBlock::Text {
+                cache_control: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &blocks[1],
+            MessageContentBlock::Text {
+                cache_control: Some(_),
+                ..
+            }
+        ));
     }
 }

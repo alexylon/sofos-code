@@ -599,6 +599,7 @@ impl Repl {
             use_streaming,
             Arc::clone(&self.interrupt_flag),
             Arc::clone(&self.steer_queue),
+            self.session_state.session_id.clone(),
         );
 
         let result = runtime.block_on(handler.handle_response(
@@ -656,6 +657,7 @@ impl Repl {
             self.get_available_tools(),
             self.model_config.enable_thinking,
             self.model_config.thinking_budget,
+            &self.session_state.session_id,
         )
         .build()
     }
@@ -943,6 +945,9 @@ impl Repl {
             thinking: None,
             output_config: None,
             reasoning: None,
+            // Reuse the session id so the summarization call shares the
+            // OpenAI prompt-cache shard with the rest of the session.
+            prompt_cache_key: Some(self.session_state.session_id.clone()),
         };
 
         let interrupt_flag = Arc::clone(&self.interrupt_flag);

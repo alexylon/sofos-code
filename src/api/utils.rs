@@ -88,6 +88,8 @@ pub fn build_message_response(
         usage: Usage {
             input_tokens,
             output_tokens,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
         },
     }
 }
