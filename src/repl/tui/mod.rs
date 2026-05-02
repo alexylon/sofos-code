@@ -528,6 +528,12 @@ fn handle_idle_key(
         KeyCode::Char('v') if ctrl => {
             handle_clipboard_paste(app);
         }
+        // Ctrl+U deletes from the cursor to the start of the line, matching
+        // readline / Claude Code. tui-textarea's default would undo the last
+        // edit instead, which looks like a single-char backspace.
+        KeyCode::Char('u') if ctrl => {
+            app.textarea.delete_line_by_head();
+        }
         // Alt+Up / Alt+Down cycle previously-submitted messages
         // without shadowing the textarea's own Up/Down cursor keys.
         KeyCode::Up if alt && !ctrl => {
