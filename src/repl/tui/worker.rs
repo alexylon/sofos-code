@@ -79,6 +79,8 @@ impl<'a> ShutdownSender<'a> {
             model: String::new(),
             input_tokens: 0,
             output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         });
         let _ = self.ui_tx.send(UiEvent::WorkerShutdown(summary));
         self.sent = true;
@@ -167,16 +169,12 @@ fn run(
         }
     }
 
-    let (model, input_tokens, output_tokens) = repl.get_session_summary();
+    let summary = repl.get_session_summary();
     if let Err(e) = repl.save_current_session() {
         UI::print_warning(&format!("Failed to save session: {}", e));
     }
     flush_captured_streams();
-    shutdown.set_summary(ExitSummary {
-        model,
-        input_tokens,
-        output_tokens,
-    });
+    shutdown.set_summary(summary);
     shutdown.send_now();
 }
 

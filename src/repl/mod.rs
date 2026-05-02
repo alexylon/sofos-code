@@ -22,7 +22,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 /// Shared buffer used by the TUI to inject user messages mid-turn. The UI
@@ -267,6 +267,13 @@ impl Repl {
         user_input: &str,
         pasted_images: Vec<crate::clipboard::PastedImage>,
     ) -> Result<()> {
+        // Record turn start so we can show "Finished in Xs" when the
+        // model is fully done (after every text reply, tool call, and
+        // continuation). Steer messages typed mid-turn don't reset
+        // this — they're folded into the same turn via `SteerQueue` and
+        // the same `process_message` call keeps running until the
+        // agent loop exits.
+        let turn_start = Instant::now();
         let (remaining_text, image_refs) = extract_image_references(user_input);
 
         let has_images = !image_refs.is_empty() || !pasted_images.is_empty();
@@ -584,8 +591,7 @@ impl Repl {
             }
         };
 
-        self.session_state
-            .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
+        self.session_state.add_usage(&response.usage);
 
         let mut handler = ResponseHandler::new(
             self.client.clone(),
@@ -607,13 +613,21 @@ impl Repl {
             &mut self.session_state.display_messages,
             &mut self.session_state.total_input_tokens,
             &mut self.session_state.total_output_tokens,
+            &mut self.session_state.total_cache_read_tokens,
+            &mut self.session_state.total_cache_creation_tokens,
         ));
 
         // Always preserve conversation state so the AI retains context on retry
         self.session_state.conversation = handler.conversation().clone();
 
         match result {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                println!(
+                    "{}",
+                    UI::format_turn_finished(turn_start.elapsed()).dimmed()
+                );
+                Ok(())
+            }
             Err(SofosError::Interrupted) => Ok(()),
             Err(e) => {
                 // Add error context so the AI knows what happened on next turn.
@@ -672,6 +686,8 @@ impl Repl {
             &self.model_config.model,
             self.session_state.total_input_tokens,
             self.session_state.total_output_tokens,
+            self.session_state.total_cache_read_tokens,
+            self.session_state.total_cache_creation_tokens,
         );
 
         Ok(())
@@ -694,12 +710,14 @@ impl Repl {
         Ok(())
     }
 
-    pub fn get_session_summary(&self) -> (String, u32, u32) {
-        (
-            self.model_config.model.clone(),
-            self.session_state.total_input_tokens,
-            self.session_state.total_output_tokens,
-        )
+    pub fn get_session_summary(&self) -> tui::event::ExitSummary {
+        tui::event::ExitSummary {
+            model: self.model_config.model.clone(),
+            input_tokens: self.session_state.total_input_tokens,
+            output_tokens: self.session_state.total_output_tokens,
+            cache_read_tokens: self.session_state.total_cache_read_tokens,
+            cache_creation_tokens: self.session_state.total_cache_creation_tokens,
+        }
     }
 
     pub fn handle_clear_command(&mut self) -> Result<()> {
@@ -998,8 +1016,7 @@ impl Repl {
                     .conversation
                     .replace_with_summary(summary_text, split_point);
 
-                self.session_state
-                    .add_tokens(response.usage.input_tokens, response.usage.output_tokens);
+                self.session_state.add_usage(&response.usage);
 
                 let tokens_after = self.session_state.conversation.estimate_total_tokens();
                 println!(

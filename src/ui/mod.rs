@@ -23,6 +23,15 @@ const THINKING_RGB: (u8, u8, u8) = (0x77, 0x00, 0xFF);
 /// meaning is "security restriction", not "highlight".
 const BLOCKED_RGB: (u8, u8, u8) = (0xFF, 0xA5, 0x00);
 
+/// Fraction of the base input price charged for tokens served from the
+/// provider prompt cache. Both Anthropic and OpenAI publish this at 10%
+/// for their current model families.
+const CACHE_READ_RATE: f64 = 0.10;
+/// Multiplier applied to the base input price for tokens written to a
+/// 5-minute Anthropic cache breakpoint. OpenAI has no separate creation
+/// charge.
+const CACHE_CREATION_RATE: f64 = 1.25;
+
 /// Message severity levels for consistent UI feedback
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
@@ -247,6 +256,8 @@ impl UI {
         model: &str,
         total_input_tokens: u32,
         total_output_tokens: u32,
+        total_cache_read_tokens: u32,
+        total_cache_creation_tokens: u32,
     ) -> bool {
         if total_input_tokens == 0 && total_output_tokens == 0 {
             return false;
@@ -257,13 +268,43 @@ impl UI {
         println!("{}", "Session Summary".bright_cyan().bold());
         println!("{}", "─".repeat(50).bright_cyan());
 
-        let estimated_cost = Self::calculate_cost(model, total_input_tokens, total_output_tokens);
+        let estimated_cost = Self::calculate_cost(
+            model,
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_tokens,
+            total_cache_creation_tokens,
+        );
+
+        let total_input_seen =
+            Self::total_input_seen_by_model(model, total_input_tokens, total_cache_read_tokens)
+                + total_cache_creation_tokens;
+        let cache_hit_pct = if total_input_seen > 0 {
+            (total_cache_read_tokens as f64 / total_input_seen as f64) * 100.0
+        } else {
+            0.0
+        };
 
         println!(
             "{:<20} {}",
             "Input tokens:".bright_white(),
-            Self::format_number(total_input_tokens).bright_green()
+            Self::format_number(total_input_seen).bright_green()
         );
+        if total_cache_read_tokens > 0 || total_cache_creation_tokens > 0 {
+            println!(
+                "{:<20} {} {}",
+                "  cache read:".bright_white(),
+                Self::format_number(total_cache_read_tokens).bright_green(),
+                format!("({:.0}% hit)", cache_hit_pct).dimmed()
+            );
+            if total_cache_creation_tokens > 0 {
+                println!(
+                    "{:<20} {}",
+                    "  cache write:".bright_white(),
+                    Self::format_number(total_cache_creation_tokens).bright_green()
+                );
+            }
+        }
         println!(
             "{:<20} {}",
             "Output tokens:".bright_white(),
@@ -272,7 +313,7 @@ impl UI {
         println!(
             "{:<20} {}",
             "Total tokens:".bright_white(),
-            Self::format_number(total_input_tokens + total_output_tokens).bright_green()
+            Self::format_number(total_input_seen + total_output_tokens).bright_green()
         );
         println!();
         println!(
@@ -284,6 +325,23 @@ impl UI {
         println!("{}", "─".repeat(50).bright_cyan());
         println!();
         true
+    }
+
+    /// Returns the count of input tokens the model actually saw (cached
+    /// plus uncached, excluding cache-creation writes which are billed
+    /// separately). Hides the per-provider semantic difference of
+    /// `total_input_tokens` (OpenAI already includes cached, Anthropic
+    /// excludes them).
+    fn total_input_seen_by_model(
+        model: &str,
+        total_input_tokens: u32,
+        cache_read_tokens: u32,
+    ) -> u32 {
+        if model.starts_with("gpt") {
+            total_input_tokens
+        } else {
+            total_input_tokens + cache_read_tokens
+        }
     }
 
     pub fn display_session(&self, session: &Session) -> io::Result<()> {
@@ -621,7 +679,13 @@ impl UI {
         }
     }
 
-    fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
+    fn calculate_cost(
+        model: &str,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    ) -> f64 {
         // Prices per million tokens in USD
         let (input_price, output_price) = match model {
             "claude-sonnet-4-6" => (3.0, 15.0),
@@ -634,10 +698,43 @@ impl UI {
             _ => (3.0, 15.0),
         };
 
-        let input_cost = (input_tokens as f64 / 1_000_000.0) * input_price;
+        // OpenAI's `input_tokens` is the total (cached + uncached);
+        // Anthropic's is uncached new tokens only. Normalize to "tokens
+        // billed at the full input rate" before pricing.
+        let uncached = if model.starts_with("gpt") {
+            input_tokens.saturating_sub(cache_read_tokens)
+        } else {
+            input_tokens
+        };
+
+        let uncached_cost = (uncached as f64 / 1_000_000.0) * input_price;
+        let cached_cost = (cache_read_tokens as f64 / 1_000_000.0) * input_price * CACHE_READ_RATE;
+        let creation_cost =
+            (cache_creation_tokens as f64 / 1_000_000.0) * input_price * CACHE_CREATION_RATE;
         let output_cost = (output_tokens as f64 / 1_000_000.0) * output_price;
 
-        input_cost + output_cost
+        uncached_cost + cached_cost + creation_cost + output_cost
+    }
+
+    /// Render the elapsed turn time as a short human-readable string for
+    /// the "your turn" prompt-ready signal at the end of a completed
+    /// agent loop. Unit picks adapt to magnitude so quick turns stay
+    /// concise and long agent runs stay legible.
+    pub fn format_turn_finished(elapsed: std::time::Duration) -> String {
+        let total_secs = elapsed.as_secs();
+        if total_secs < 1 {
+            "Finished in <1s".to_string()
+        } else if total_secs < 60 {
+            format!("Finished in {}s", total_secs)
+        } else if total_secs < 3600 {
+            format!("Finished in {}m {}s", total_secs / 60, total_secs % 60)
+        } else {
+            format!(
+                "Finished in {}h {}m",
+                total_secs / 3600,
+                (total_secs % 3600) / 60
+            )
+        }
     }
 
     fn format_number(n: u32) -> String {
@@ -762,5 +859,113 @@ mod tool_display_tests {
         let msg =
             UI::create_tool_display_message("search_code", &json!({"pattern": "foo"}), output);
         assert_eq!(strip_ansi(&msg), "No matches for foo");
+    }
+}
+
+#[cfg(test)]
+mod cost_tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64) {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "expected ≈{}, got {} (delta {})",
+            b,
+            a,
+            (a - b).abs()
+        );
+    }
+
+    #[test]
+    fn openai_cost_uses_full_rate_when_no_cache() {
+        // 100k input @ $5/M, 5k output @ $30/M, no cache.
+        let cost = UI::calculate_cost("gpt-5.5", 100_000, 5_000, 0, 0);
+        approx(cost, 100_000.0 / 1e6 * 5.0 + 5_000.0 / 1e6 * 30.0);
+    }
+
+    #[test]
+    fn openai_cost_discounts_cache_reads_at_10pct() {
+        // OpenAI: input_tokens (100k) is the TOTAL; cached_tokens (75k)
+        // is a subset. 25k @ $5/M + 75k @ $0.50/M = $0.125 + $0.0375 =
+        // $0.1625. Output: 5k @ $30/M = $0.15. Total $0.3125.
+        let cost = UI::calculate_cost("gpt-5.5", 100_000, 5_000, 75_000, 0);
+        approx(cost, 0.1625 + 0.15);
+    }
+
+    #[test]
+    fn openai_cost_3x_lower_than_pre_fix_at_75pct_hit_input_only() {
+        // Regression for the bug the user reported: pre-fix billed
+        // every input token at full rate, displaying ~3x the real cost
+        // at high cache hit rates (output is small relative to input
+        // in long agent loops). Verify input-only side of the math.
+        let pre_fix_input = 100_000.0 / 1e6 * 5.0;
+        let post_fix_input = UI::calculate_cost("gpt-5.5", 100_000, 0, 75_000, 0);
+        let ratio = pre_fix_input / post_fix_input;
+        assert!(
+            (2.9..=3.2).contains(&ratio),
+            "expected pre/post ratio ≈3x at 75% hit, got {:.2}x",
+            ratio
+        );
+    }
+
+    #[test]
+    fn anthropic_cost_input_tokens_already_excludes_cache() {
+        // Anthropic semantics: input_tokens is uncached new tokens
+        // only; cache_read and cache_creation are disjoint additional
+        // counts. We must NOT subtract cache_read from input_tokens.
+        // 25k input @ $5/M + 75k cache read @ $0.50/M = $0.125 +
+        // $0.0375 = $0.1625. Output: 5k @ $25/M = $0.125. Total
+        // $0.2875.
+        let cost = UI::calculate_cost("claude-opus-4-7", 25_000, 5_000, 75_000, 0);
+        approx(cost, 0.1625 + 0.125);
+    }
+
+    #[test]
+    fn anthropic_cost_charges_creation_at_125pct() {
+        // 50k cache creation @ ($5 * 1.25)/M = $6.25/M = $0.3125
+        let cost = UI::calculate_cost("claude-opus-4-7", 0, 0, 0, 50_000);
+        approx(cost, 50_000.0 / 1e6 * 5.0 * 1.25);
+    }
+
+    #[test]
+    fn cache_hit_does_not_underflow_when_read_exceeds_input() {
+        // Defensive: if a malformed response reports cached_tokens >
+        // input_tokens on the OpenAI side, we should saturate to 0
+        // uncached, not panic on subtraction overflow.
+        let cost = UI::calculate_cost("gpt-5.5", 50_000, 0, 100_000, 0);
+        approx(cost, 100_000.0 / 1e6 * 5.0 * 0.10);
+    }
+
+    #[test]
+    fn turn_finished_format_picks_unit_by_magnitude() {
+        use std::time::Duration;
+        assert_eq!(
+            UI::format_turn_finished(Duration::from_millis(400)),
+            "Finished in <1s"
+        );
+        assert_eq!(
+            UI::format_turn_finished(Duration::from_secs(7)),
+            "Finished in 7s"
+        );
+        assert_eq!(
+            UI::format_turn_finished(Duration::from_secs(94)),
+            "Finished in 1m 34s"
+        );
+        assert_eq!(
+            UI::format_turn_finished(Duration::from_secs(60)),
+            "Finished in 1m 0s"
+        );
+        assert_eq!(
+            UI::format_turn_finished(Duration::from_secs(3725)),
+            "Finished in 1h 2m"
+        );
+    }
+
+    #[test]
+    fn unknown_model_falls_back_without_panic() {
+        // Default fallback uses Sonnet 4.5 pricing ($3 / $15) and the
+        // Anthropic semantics branch (input_tokens is uncached).
+        let cost = UI::calculate_cost("some-future-model", 1_000, 1_000, 0, 0);
+        approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
     }
 }

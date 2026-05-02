@@ -4,7 +4,15 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Session summary "Estimated cost" now accounts for the cache discount.** `calculate_cost` was billing every input token at the full rate, ignoring the `cache_read_input_tokens` and `cache_creation_input_tokens` fields the 0.2.6 fix had started collecting. With a high cache-hit rate that overstated the bill by ~3× (e.g. for `gpt-5.5` at 75% hit, displayed `$0.50` vs. real `$0.16` per 100k input). The cost function now subtracts cache reads from the uncached portion, prices them at 10% of the base input rate (both providers), and bills Anthropic 5-min cache writes at 125% of base. Provider semantics are normalized inside `calculate_cost`: OpenAI's `input_tokens` already includes cached, Anthropic's excludes them.
+
 ### Added
+
+- **Cache-hit indicator in the session summary.** When a turn has any cached or written tokens, the summary now shows `cache read: N (M% hit)` and (Anthropic only) `cache write: N` underneath the input row, and the displayed `Input tokens` row now reflects the total the model actually saw (cached + uncached) on both providers — previously Anthropic's row understated by the cached portion.
+
+- **"Finished in Xs" turn-completion marker.** A dimmed `Finished in 1m 34s` line prints after the assistant has fully finished a turn (last text reply, last tool call, last continuation) so the prompt-ready signal is unambiguous. Steer messages typed mid-turn don't reset the timer — they fold into the same turn and the marker still prints once at the end. Skipped on interrupt or error.
 
 - **Bare `"Bash"` entry in allow / deny acts as a blanket rule.** Adding `"Bash"` to `permissions.allow` in `~/.sofos/config.toml` or `.sofos/config.local.toml` auto-passes every bash command (no Yes/No/remember prompt) except those in the built-in forbidden set (`rm`, `chmod`, `sudo`, …) — useful when you've decided to trust sofos with shell access in a project. Symmetrically, `"Bash"` in `permissions.deny` auto-rejects every bash command. The blanket entry beats every more-specific rule (`Bash(cmd:*)` wildcards, exact-match entries, the built-in allow-list); when both lists contain `"Bash"`, deny wins. Structural safety (`>` redirection, `<<`, `git push` and friends, parent traversal, external-path prompts) still applies.
 

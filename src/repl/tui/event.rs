@@ -12,6 +12,8 @@ pub struct ExitSummary {
     pub model: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_creation_tokens: u32,
 }
 
 /// Tool access mode shown in the status line.

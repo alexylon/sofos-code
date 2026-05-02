@@ -151,7 +151,7 @@ Analyze https://example.com/chart.png
 
 ### Cost Tracking
 
-Exit summary shows token usage and estimated cost (based on official API pricing).
+Exit summary shows token usage and estimated cost based on official API pricing. When the provider prompt cache served any tokens during the session, a `cache read: N (M% hit)` row appears under the input total, and the estimated cost reflects the cache discount (10% of base input on both providers, plus 125% for Anthropic 5-min cache writes).
 
 ### CLI Options
 

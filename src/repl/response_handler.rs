@@ -65,6 +65,24 @@ impl ResponseHandler {
         }
     }
 
+    /// Fold a `Usage` payload into the per-turn running totals carried
+    /// by `handle_response`. Centralised so the four-counter increment
+    /// stays consistent across the three sites that consume responses
+    /// (auto-continue after reasoning-only blocks, tool-result loop,
+    /// max-iterations summary).
+    fn accumulate_usage(
+        usage: &crate::api::Usage,
+        total_input: &mut u32,
+        total_output: &mut u32,
+        total_cache_read: &mut u32,
+        total_cache_creation: &mut u32,
+    ) {
+        *total_input += usage.input_tokens;
+        *total_output += usage.output_tokens;
+        *total_cache_read += usage.cache_read_input_tokens.unwrap_or(0);
+        *total_cache_creation += usage.cache_creation_input_tokens.unwrap_or(0);
+    }
+
     /// Atomically drain all pending steer messages the user typed while
     /// this turn was running. Returns `None` if the queue is empty, or
     /// `Some(text)` with the messages joined by blank lines (preserving
@@ -83,12 +101,15 @@ impl ResponseHandler {
         Some(messages.join("\n\n"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn handle_response(
         &mut self,
         mut content_blocks: Vec<ContentBlock>,
         display_messages: &mut Vec<DisplayMessage>,
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
+        total_cache_read_tokens: &mut u32,
+        total_cache_creation_tokens: &mut u32,
     ) -> Result<()> {
         let mut iteration = 0;
 
@@ -108,6 +129,8 @@ impl ResponseHandler {
                     display_messages,
                     total_input_tokens,
                     total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_creation_tokens,
                 )
                 .await?;
                 return Ok(());
@@ -154,8 +177,13 @@ impl ResponseHandler {
             {
                 let response = self.get_next_response(&[], display_messages).await?;
 
-                *total_input_tokens += response.usage.input_tokens;
-                *total_output_tokens += response.usage.output_tokens;
+                Self::accumulate_usage(
+                    &response.usage,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_creation_tokens,
+                );
 
                 if response.content.is_empty() {
                     println!(
@@ -223,8 +251,13 @@ impl ResponseHandler {
 
             let response = self.get_next_response(&tool_uses, display_messages).await?;
 
-            *total_input_tokens += response.usage.input_tokens;
-            *total_output_tokens += response.usage.output_tokens;
+            Self::accumulate_usage(
+                &response.usage,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_read_tokens,
+                total_cache_creation_tokens,
+            );
 
             if std::env::var("SOFOS_DEBUG").is_ok() {
                 eprintln!(
@@ -570,6 +603,8 @@ impl ResponseHandler {
         display_messages: &mut Vec<DisplayMessage>,
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
+        total_cache_read_tokens: &mut u32,
+        total_cache_creation_tokens: &mut u32,
     ) -> Result<()> {
         UI::print_warning("Maximum tool iterations reached. Stopping to prevent infinite loop.");
 
@@ -601,8 +636,13 @@ impl ResponseHandler {
 
         match response_result {
             Ok(response) => {
-                *total_input_tokens += response.usage.input_tokens;
-                *total_output_tokens += response.usage.output_tokens;
+                Self::accumulate_usage(
+                    &response.usage,
+                    total_input_tokens,
+                    total_output_tokens,
+                    total_cache_read_tokens,
+                    total_cache_creation_tokens,
+                );
 
                 for block in &response.content {
                     if let ContentBlock::Text { text } = block {
