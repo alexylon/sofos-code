@@ -27,6 +27,13 @@ const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"];
 /// base command at all and should yield no entry.
 const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
 
+/// Bare `"Bash"` in an `allow` or `deny` list acts as a blanket rule
+/// over all bash commands. In `allow` it auto-passes everything except
+/// the built-in forbidden set (`rm`, `chmod`, `sudo`, …); in `deny` it
+/// auto-rejects everything. Deny beats allow when both lists contain
+/// the blanket entry.
+const BLANKET_BASH: &str = "Bash";
+
 /// Match POSIX-shell `KEY=value` assignment tokens: the key starts with
 /// a letter or underscore, is alphanumeric+`_` throughout, and is
 /// followed by `=`. Used by `extract_base_command` to skip leading
@@ -743,8 +750,41 @@ impl PermissionManager {
     }
 
     pub fn check_command_permission(&mut self, command: &str) -> Result<CommandPermission> {
+        // Blanket `"Bash"` rules trump every other check. Deny wins over
+        // allow when both lists contain the blanket entry, matching the
+        // existing "deny is strictest" pattern used elsewhere.
+        let blanket_deny = self
+            .settings
+            .permissions
+            .deny
+            .iter()
+            .any(|e| e == BLANKET_BASH);
+        if blanket_deny {
+            return Ok(CommandPermission::Denied);
+        }
+
         let normalized = Self::normalize_command(command);
         let base_command = Self::extract_base_command(command);
+
+        // Blanket `"Bash"` allow short-circuits below the deny check but
+        // still defers to `forbidden_commands` — the user's "trust me"
+        // intent stops at things that are dangerous regardless of
+        // context (`rm`, `chmod`, `sudo`, …). Structural safety checks
+        // (`>` redirection, `<<`, `git push`, parent traversal, external
+        // paths) still run later in `bashexec`.
+        let blanket_allow = self
+            .settings
+            .permissions
+            .allow
+            .iter()
+            .any(|e| e == BLANKET_BASH);
+        if blanket_allow {
+            let bases = Self::collect_command_bases(base_command, command);
+            if bases.iter().any(|b| self.forbidden_commands.contains(b)) {
+                return Ok(CommandPermission::Denied);
+            }
+            return Ok(CommandPermission::Allowed);
+        }
 
         if self.settings.permissions.allow.contains(&normalized) {
             return Ok(CommandPermission::Allowed);
@@ -779,22 +819,30 @@ impl PermissionManager {
         // The splitter does NOT descend into `$(...)` / backticks, so a
         // command smuggled there is still seen as part of the parent
         // command's args (same blind spot as before this change).
-        let compound_bases = Self::enumerate_compound_bases(command);
-        let bases: Vec<&str> = if compound_bases.is_empty() {
-            vec![base_command]
-        } else {
-            compound_bases.iter().map(String::as_str).collect()
-        };
+        let bases = Self::collect_command_bases(base_command, command);
 
-        if bases.iter().any(|&b| self.forbidden_commands.contains(b)) {
+        if bases.iter().any(|b| self.forbidden_commands.contains(b)) {
             return Ok(CommandPermission::Denied);
         }
 
-        if bases.iter().all(|&b| self.allowed_commands.contains(b)) {
+        if bases.iter().all(|b| self.allowed_commands.contains(b)) {
             return Ok(CommandPermission::Allowed);
         }
 
         Ok(CommandPermission::Ask)
+    }
+
+    /// Build the list of base-command names to evaluate for a command.
+    /// Falls back to the leading token from `extract_base_command` when
+    /// the compound splitter finds no separators, so single commands
+    /// and compound shells share one verdict path.
+    fn collect_command_bases(base_command: &str, command: &str) -> Vec<String> {
+        let compound_bases = Self::enumerate_compound_bases(command);
+        if compound_bases.is_empty() {
+            vec![base_command.to_string()]
+        } else {
+            compound_bases
+        }
     }
 
     pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {
@@ -2305,6 +2353,170 @@ ask = []
                 .check_command_permission("ls -la; # quick listing")
                 .unwrap(),
             CommandPermission::Allowed
+        );
+    }
+
+    /// Bare `"Bash"` in the allow list auto-passes any command whose
+    /// every base is non-forbidden. Specific entries become moot; the
+    /// blanket beats every other check.
+    #[test]
+    fn blanket_bash_allow_auto_allows_non_forbidden() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+
+        // Unknown tool: still Allowed under blanket Bash.
+        assert_eq!(
+            manager
+                .check_command_permission("some_custom_tool --flag")
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+        // Built-in allowed: still Allowed.
+        assert_eq!(
+            manager.check_command_permission("ls -la").unwrap(),
+            CommandPermission::Allowed
+        );
+        // Compound with all-unknown bases: still Allowed.
+        assert_eq!(
+            manager.check_command_permission("foo && bar; baz").unwrap(),
+            CommandPermission::Allowed
+        );
+    }
+
+    /// Blanket `"Bash"` allow does NOT override built-in
+    /// `forbidden_commands` — `rm`, `chmod`, `sudo`, … stay denied.
+    #[test]
+    fn blanket_bash_allow_still_blocks_forbidden() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("rm -rf /").unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_command_permission("sudo whoami").unwrap(),
+            CommandPermission::Denied
+        );
+        // Forbidden buried in a compound is also rejected.
+        assert_eq!(
+            manager
+                .check_command_permission("ls && rm tmp.txt")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+    }
+
+    /// Bare `"Bash"` in the deny list auto-rejects every bash command.
+    #[test]
+    fn blanket_bash_deny_rejects_everything() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.deny.push("Bash".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("ls -la").unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_command_permission("cargo build").unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("any_tool whatsoever")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+    }
+
+    /// Specific `Bash(curl --version)` entry alongside a blanket
+    /// `"Bash"` deny is irrelevant — deny wins. Symmetrically, a
+    /// blanket `"Bash"` allow wins over its companion specific entry.
+    #[test]
+    fn blanket_bash_beats_specific_companions() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager
+            .settings
+            .permissions
+            .deny
+            .push("Bash(curl --version)".to_string());
+        manager.settings.permissions.deny.push("Bash".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("ls").unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_command_permission("curl --version").unwrap(),
+            CommandPermission::Denied
+        );
+
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager
+            .settings
+            .permissions
+            .allow
+            .push("Bash(curl --version)".to_string());
+        manager.settings.permissions.allow.push("Bash".to_string());
+
+        assert_eq!(
+            manager
+                .check_command_permission("custom_unknown_tool")
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+    }
+
+    /// Cross-list precedence: blanket `"Bash"` allow wins over a
+    /// specific `Bash(curl --version)` *deny* entry — per the rule
+    /// that the blanket beats every check except built-in forbidden.
+    /// Mirror direction: a specific allow entry can't rescue a command
+    /// when blanket deny is set.
+    #[test]
+    fn blanket_bash_allow_beats_specific_deny_across_lists() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+        manager
+            .settings
+            .permissions
+            .deny
+            .push("Bash(curl --version)".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("curl --version").unwrap(),
+            CommandPermission::Allowed
+        );
+
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager
+            .settings
+            .permissions
+            .allow
+            .push("Bash(curl --version)".to_string());
+        manager.settings.permissions.deny.push("Bash".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("curl --version").unwrap(),
+            CommandPermission::Denied
+        );
+    }
+
+    /// Both lists carrying the blanket entry: deny wins.
+    #[test]
+    fn blanket_bash_deny_beats_blanket_allow() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+        manager.settings.permissions.deny.push("Bash".to_string());
+
+        assert_eq!(
+            manager.check_command_permission("ls").unwrap(),
+            CommandPermission::Denied
         );
     }
 

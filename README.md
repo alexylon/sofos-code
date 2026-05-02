@@ -310,6 +310,7 @@ headers = { "Authorization" = "Bearer token123" }
 - Outside workspace: prompts interactively on first access, or pre-configure in `allow` list
 - Three scopes: `Read(path)` for reading, `Write(path)` for writing, `Bash(path)` for bash access — each independent
 - `Bash(path)` entries with globs (e.g. `Bash(/tmp/**)`) grant path access; plain entries (e.g. `Bash(npm test)`) grant command access
+- Bare `"Bash"` in `allow` auto-allows every command except those in the built-in forbidden set (`rm`, `chmod`, `sudo`, …); bare `"Bash"` in `deny` auto-rejects every bash command. Deny wins when both lists carry the blanket entry. Structural safety (`>` redirection, `<<`, `git push`, parent traversal, external-path prompts) still applies under blanket-allow.
 - Glob patterns supported: `*` (single level), `**` (recursive)
 - Tilde expansion: `~` → `$HOME` on Unix, `%USERPROFILE%` on Windows
 - `ask` only works for Bash commands

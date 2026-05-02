@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Bare `"Bash"` entry in allow / deny acts as a blanket rule.** Adding `"Bash"` to `permissions.allow` in `~/.sofos/config.toml` or `.sofos/config.local.toml` auto-passes every bash command (no Yes/No/remember prompt) except those in the built-in forbidden set (`rm`, `chmod`, `sudo`, …) — useful when you've decided to trust sofos with shell access in a project. Symmetrically, `"Bash"` in `permissions.deny` auto-rejects every bash command. The blanket entry beats every more-specific rule (`Bash(cmd:*)` wildcards, exact-match entries, the built-in allow-list); when both lists contain `"Bash"`, deny wins. Structural safety (`>` redirection, `<<`, `git push` and friends, parent traversal, external-path prompts) still applies.
+
 ### Changed
 
 - **Permission check walks every sub-command of a compound shell.** A `for f in *.rs; do echo $f; sed -n '1,320p' $f | nl -ba; done` pipeline used to hit `Ask` because `extract_base_command` only saw the structural keyword `for`, even though every step (`echo`, `sed`, `nl`) is on the built-in read-only allow-list. `check_command_permission` now splits on `;`, `\n`, `|`, `||`, `&&` (quote-aware; `2>&1` preserved), strips shell-control prefixes (`do` / `done` / `then` / `else` / `elif` / `fi` / `case` / `esac` / `{` / `}` / `(`, `while` / `until` / `if` heads, `for VAR in WORDS` headers, `# comment` segments), and auto-allows when every resulting base is in `allowed_commands`. Volatile-args detection (`sed -n '1,N'p`, `head -n N`, `grep -A N`, `awk 'NR==N'`) uses the same splitter, so the Yes/No-only prompt fires for volatile sub-commands buried inside a `for` loop or `&&` chain — not just inside a `|` pipeline.
