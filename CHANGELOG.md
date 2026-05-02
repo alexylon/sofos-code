@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Permission check walks every sub-command of a compound shell.** A `for f in *.rs; do echo $f; sed -n '1,320p' $f | nl -ba; done` pipeline used to hit `Ask` because `extract_base_command` only saw the structural keyword `for`, even though every step (`echo`, `sed`, `nl`) is on the built-in read-only allow-list. `check_command_permission` now splits on `;`, `\n`, `|`, `||`, `&&` (quote-aware; `2>&1` preserved), strips shell-control prefixes (`do` / `done` / `then` / `else` / `elif` / `fi` / `case` / `esac` / `{` / `}` / `(`, `while` / `until` / `if` heads, `for VAR in WORDS` headers, `# comment` segments), and auto-allows when every resulting base is in `allowed_commands`. Volatile-args detection (`sed -n '1,N'p`, `head -n N`, `grep -A N`, `awk 'NR==N'`) uses the same splitter, so the Yes/No-only prompt fires for volatile sub-commands buried inside a `for` loop or `&&` chain — not just inside a `|` pipeline.
+
+### Security
+
+- **`cat foo && rm bar` no longer slips past as Allowed.** `extract_base_command` returned `cat`, which is on the built-in allow-list, so the smuggled `rm` was never looked up against the forbidden set. The new compound-aware check denies the whole pipeline as soon as any base is in `forbidden_commands` (`rm`, `chmod`, `sudo`, …). The `$(...)` / backtick substitution blind spot is unchanged — a command smuggled inside a substitution is still invisible to the permission system, both before and after this change.
+
 ## [0.2.6] - 2026-05-01
 
 ### Fixed

@@ -9,6 +9,24 @@ use std::path::PathBuf;
 const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
 const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
 
+/// POSIX shell control keywords that punctuate compound commands but
+/// don't introduce one of their own. Stripped from segment heads so the
+/// next non-keyword token is the base command we actually want to inspect.
+const COMPOUND_KEYWORDS: &[&str] = &[
+    "do", "done", "then", "else", "elif", "fi", "case", "esac", "{", "}", "(",
+];
+
+/// Loop / conditional headers whose tail *is* a real command —
+/// `while CMD; do ...`, `until CMD; do ...`, `if CMD; then ...`. The
+/// keyword itself is skipped, and the rest of the segment is parsed
+/// like any other command.
+const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"];
+
+/// Loop headers whose segment is a word list, *not* a command —
+/// `for VAR in WORDS`. Matching one means the segment carries no
+/// base command at all and should yield no entry.
+const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
+
 /// Match POSIX-shell `KEY=value` assignment tokens: the key starts with
 /// a letter or underscore, is alphanumeric+`_` throughout, and is
 /// followed by `=`. Used by `extract_base_command` to skip leading
@@ -745,12 +763,35 @@ impl PermissionManager {
             return Ok(CommandPermission::Denied);
         }
 
-        if self.allowed_commands.contains(base_command) {
-            return Ok(CommandPermission::Allowed);
+        // Walk every sub-command in a compound shell (`for ...; do ...; done`,
+        // `cmd1 && cmd2`, `cmd1; cmd2 | cmd3`) so the verdict reflects the
+        // whole pipeline, not just the first token. Two reasons:
+        //
+        // 1. `for f in *; do echo $f; sed -n '1,N'p $f; done` leads with the
+        //    structural keyword `for`, which isn't in `allowed_commands` —
+        //    the old single-token lookup forced a prompt even though every
+        //    real step is read-only. Bases pulled from the compound let the
+        //    same shell auto-allow.
+        // 2. `cat foo && rm bar` used to slip past as Allowed because `cat`
+        //    is on the allow-list; the smuggled `rm` was never seen. Any
+        //    forbidden base anywhere in the pipeline now wins.
+        //
+        // The splitter does NOT descend into `$(...)` / backticks, so a
+        // command smuggled there is still seen as part of the parent
+        // command's args (same blind spot as before this change).
+        let compound_bases = Self::enumerate_compound_bases(command);
+        let bases: Vec<&str> = if compound_bases.is_empty() {
+            vec![base_command]
+        } else {
+            compound_bases.iter().map(String::as_str).collect()
+        };
+
+        if bases.iter().any(|&b| self.forbidden_commands.contains(b)) {
+            return Ok(CommandPermission::Denied);
         }
 
-        if self.forbidden_commands.contains(base_command) {
-            return Ok(CommandPermission::Denied);
+        if bases.iter().all(|&b| self.allowed_commands.contains(b)) {
+            return Ok(CommandPermission::Allowed);
         }
 
         Ok(CommandPermission::Ask)
@@ -788,9 +829,110 @@ impl PermissionManager {
         Ok((confirmed, remember))
     }
 
+    /// Quote-aware split of a compound command on shell separators
+    /// (`;`, `\n`, `|`, `||`, `&&`). Lone `&` is preserved so that
+    /// `2>&1` stays glued to its preceding token. Quoted regions are
+    /// kept whole so `echo 'a; b'` doesn't split mid-string.
+    ///
+    /// Does NOT descend into `$(...)` command substitution or backtick
+    /// substitution — a `rm` smuggled inside `echo $(rm bad)` is
+    /// invisible to this splitter (and to the rest of the permission
+    /// system, both before and after this change). Closing that hole
+    /// would require yielding the inner sub-commands as separate
+    /// segments and is intentionally out of scope here.
+    fn split_compound_command(command: &str) -> Vec<String> {
+        let mut segments: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut chars = command.chars().peekable();
+        let mut quote: Option<char> = None;
+
+        while let Some(c) = chars.next() {
+            if let Some(q) = quote {
+                current.push(c);
+                if c == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    current.push(c);
+                }
+                ';' | '\n' => Self::push_segment(&mut segments, &mut current),
+                '|' => {
+                    if chars.peek() == Some(&'|') {
+                        chars.next();
+                    }
+                    Self::push_segment(&mut segments, &mut current);
+                }
+                '&' if chars.peek() == Some(&'&') => {
+                    chars.next();
+                    Self::push_segment(&mut segments, &mut current);
+                }
+                _ => current.push(c),
+            }
+        }
+        Self::push_segment(&mut segments, &mut current);
+        segments
+    }
+
+    fn push_segment(segments: &mut Vec<String>, current: &mut String) {
+        let trimmed = current.trim();
+        if !trimmed.is_empty() {
+            segments.push(trimmed.to_string());
+        }
+        current.clear();
+    }
+
+    /// Strip leading shell-control prefixes from a segment and return
+    /// the next "real" command (base + args). Returns `None` for
+    /// segments that carry no command of their own — `for VAR in WORDS`
+    /// loop headers, bare `done` / `fi` / `esac` closers, or shell
+    /// comments (`# anything`).
+    fn extract_segment_base_with_args(segment: &str) -> Option<(&str, Vec<&str>)> {
+        let mut tokens = segment.split_whitespace().peekable();
+        while let Some(&tok) = tokens.peek() {
+            if COMPOUND_HEADERS_NO_BODY.contains(&tok) {
+                return None;
+            }
+            if is_env_assignment(tok)
+                || COMPOUND_KEYWORDS.contains(&tok)
+                || COMPOUND_HEADERS_WITH_BODY.contains(&tok)
+            {
+                tokens.next();
+                continue;
+            }
+            break;
+        }
+        let base = tokens.next()?;
+        // A bare `#` (or token starting with `#`) at the head of a
+        // segment marks the rest as a comment — `ls; # tail msg`
+        // splits to `["ls", "# tail msg"]`, and the second segment is
+        // entirely commentary, not a command. Treating it as a base
+        // would force a needless Ask prompt for what the shell ignores.
+        if base.starts_with('#') {
+            return None;
+        }
+        let args: Vec<&str> = tokens.collect();
+        Some((base, args))
+    }
+
+    /// Base-command names of every sub-command in a compound shell.
+    /// Empty for a single command with no separators (callers fall back
+    /// to `extract_base_command` in that case).
+    fn enumerate_compound_bases(command: &str) -> Vec<String> {
+        Self::split_compound_command(command)
+            .iter()
+            .filter_map(|seg| {
+                Self::extract_segment_base_with_args(seg).map(|(base, _)| base.to_string())
+            })
+            .collect()
+    }
+
     /// Heuristic: does `command` carry line-number / line-range args that
-    /// make the exact string un-rememberable? Checks each pipe segment
-    /// for:
+    /// make the exact string un-rememberable? Walks every sub-command of
+    /// a compound shell looking for:
     ///
     /// - sed numeric addresses: `sed -n '10,20p'`, `sed '5d'`, `sed 1,5q`
     /// - head/tail numeric counts: `head -50`, `head -n 50`, `tail +20`
@@ -800,22 +942,15 @@ impl PermissionManager {
     /// False positives just downgrade the prompt to Yes/No, so the
     /// heuristic prefers simple matches over exhaustive parsing.
     fn command_has_volatile_line_args(command: &str) -> bool {
-        command
-            .split('|')
-            .any(|segment| Self::segment_has_volatile_line_args(segment.trim()))
+        Self::split_compound_command(command)
+            .iter()
+            .any(|segment| Self::segment_has_volatile_line_args(segment))
     }
 
     fn segment_has_volatile_line_args(segment: &str) -> bool {
-        let mut tokens = segment.split_whitespace();
-        // Skip leading env-var assignments the same way extract_base_command does.
-        let base = loop {
-            match tokens.next() {
-                Some(t) if is_env_assignment(t) => continue,
-                Some(t) => break t,
-                None => return false,
-            }
+        let Some((base, args)) = Self::extract_segment_base_with_args(segment) else {
+            return false;
         };
-        let args: Vec<&str> = tokens.collect();
         match base {
             "sed" => Self::sed_has_numeric_address(&args),
             "head" | "tail" => Self::head_tail_has_numeric_count(&args),
@@ -2051,5 +2186,146 @@ ask = []
         assert!(!PermissionManager::command_has_volatile_line_args(
             "ls -la src/"
         ));
+    }
+
+    /// Volatile sed/head/tail buried inside a `for ...; do ...; done`
+    /// loop or behind `;` / `&&` should still be detected — the old
+    /// `split('|')` pass missed everything that wasn't pipe-separated.
+    #[test]
+    fn test_volatile_line_args_inside_compound_shell() {
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "for f in src/*.rs; do sed -n '1,320p' \"$f\" | nl -ba; done"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "cat README.md && head -n 50 CHANGELOG.md"
+        ));
+        assert!(PermissionManager::command_has_volatile_line_args(
+            "echo start; tail -n 20 build.log"
+        ));
+        assert!(!PermissionManager::command_has_volatile_line_args(
+            "for f in *.rs; do echo \"$f\"; cat \"$f\"; done"
+        ));
+    }
+
+    /// `;` and `&&` inside quotes must NOT split a segment — `echo 'a; b'`
+    /// is still a single `echo` command.
+    #[test]
+    fn test_split_compound_command_respects_quotes() {
+        let segs = PermissionManager::split_compound_command("echo 'a; b' && ls");
+        assert_eq!(segs, vec!["echo 'a; b'", "ls"]);
+
+        let segs = PermissionManager::split_compound_command("echo \"x | y\" | wc -l");
+        assert_eq!(segs, vec!["echo \"x | y\"", "wc -l"]);
+    }
+
+    /// Lone `&` is part of `2>&1`, not a separator. The pre-existing
+    /// `2>&1` allowance in `is_safe_command_structure` would be undone
+    /// if our splitter chopped commands at every `&`.
+    #[test]
+    fn test_split_compound_command_keeps_stderr_redirect() {
+        let segs = PermissionManager::split_compound_command("cargo test 2>&1 | tee out.log");
+        assert_eq!(segs, vec!["cargo test 2>&1", "tee out.log"]);
+    }
+
+    /// The user-reported regression: a `for ...; do echo; sed; nl; done`
+    /// pipeline of read-only tools should resolve as Allowed without a
+    /// prompt, not get stuck on the `for` keyword.
+    #[test]
+    fn compound_for_loop_of_allowed_commands_is_allowed() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission(
+                    "for f in src/recipient/*.rs src/recipient/native/*.rs; \
+                     do echo '===== '\"$f\"' ====='; sed -n '1,320p' \"$f\" | nl -ba; done"
+                )
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+    }
+
+    /// A forbidden base anywhere inside a compound shell wins over an
+    /// allowed leader. Closes the `cat foo && rm bar` smuggling hole.
+    #[test]
+    fn compound_with_forbidden_base_is_denied() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("cat foo && rm bar")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("for f in *.rs; do rm \"$f\"; done")
+                .unwrap(),
+            CommandPermission::Denied
+        );
+        assert_eq!(
+            manager.check_command_permission("ls; sudo whoami").unwrap(),
+            CommandPermission::Denied
+        );
+    }
+
+    /// Compound shells that include an unknown tool stay at Ask — only
+    /// fully-allowed pipelines auto-pass.
+    #[test]
+    fn compound_with_unknown_base_asks() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("cat foo && some_custom_tool bar")
+                .unwrap(),
+            CommandPermission::Ask
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("for f in *; do unknown_tool \"$f\"; done")
+                .unwrap(),
+            CommandPermission::Ask
+        );
+    }
+
+    /// `ls; # trailing comment` is shell-equivalent to plain `ls` —
+    /// the `#` segment is commentary, not a command, and the verdict
+    /// must not regress to Ask just because we now look past the head.
+    #[test]
+    fn trailing_shell_comment_does_not_force_ask() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("ls -la; # quick listing")
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+    }
+
+    /// `while CMD; do CMD; done` and `if CMD; then CMD; fi` should
+    /// likewise be inspected sub-command by sub-command.
+    #[test]
+    fn while_and_if_compounds_are_inspected() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("if grep -q foo file.txt; then echo found; fi")
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("if true; then rm file; fi")
+                .unwrap(),
+            CommandPermission::Denied
+        );
     }
 }
