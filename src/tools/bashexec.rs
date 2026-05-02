@@ -89,6 +89,8 @@ pub struct BashExecutor {
     workspace: PathBuf,
     /// Whether interactive prompts (stdin) are available
     interactive: bool,
+    /// Whether `morph_edit_file` is exposed (drives error-message hints)
+    has_morph: bool,
     /// Session-scoped temporary permissions (not persisted to config)
     session_allowed: Arc<Mutex<HashSet<String>>>,
     session_denied: Arc<Mutex<HashSet<String>>>,
@@ -98,10 +100,11 @@ pub struct BashExecutor {
 }
 
 impl BashExecutor {
-    pub fn new(workspace: PathBuf, interactive: bool) -> Result<Self> {
+    pub fn new(workspace: PathBuf, interactive: bool, has_morph: bool) -> Result<Self> {
         Ok(Self {
             workspace,
             interactive,
+            has_morph,
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
             bash_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
@@ -634,10 +637,15 @@ impl BashExecutor {
         if command_without_stderr_redirect.contains('>')
             || command_without_stderr_redirect.contains(">>")
         {
+            let edit_hint = if self.has_morph {
+                "edit_file/morph_edit_file"
+            } else {
+                "edit_file"
+            };
             return format!(
                 "Command '{}' contains output redirection ('>' or '>>')\n\
-                 Hint: Use write_file tool to create or edit_file/morph_edit_file to modify files. Note: '2>&1' is allowed.",
-                command
+                 Hint: Use write_file tool to create or {} to modify files. Note: '2>&1' is allowed.",
+                command, edit_hint
             );
         }
 
@@ -804,7 +812,7 @@ mod tests {
 
     #[test]
     fn test_safe_commands() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Note: These tests check the command structure safety only
         // Actual permission checking is done by PermissionManager
@@ -825,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_unsafe_command_structures() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Test structural safety issues (not permission-based)
         assert!(!executor.is_safe_command_structure("echo hello > file.txt"));
@@ -838,7 +846,7 @@ mod tests {
 
     #[test]
     fn test_path_traversal_blocked() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         assert!(!executor.is_safe_command_structure("cat ../file.txt"));
         assert!(!executor.is_safe_command_structure("ls ../../etc"));
@@ -851,7 +859,7 @@ mod tests {
     fn test_absolute_paths_pass_structural_check() {
         // Absolute paths are no longer blocked by is_safe_command_structure.
         // They are handled by check_bash_external_paths which asks the user.
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         assert!(executor.is_safe_command_structure("/bin/ls"));
         assert!(executor.is_safe_command_structure("cat /etc/passwd"));
@@ -864,7 +872,7 @@ mod tests {
         use tempfile;
 
         let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
 
         let result = executor.execute("seq 1 2000000");
 
@@ -897,7 +905,7 @@ ask = []
         )
         .unwrap();
 
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
 
         // Even without creating the file, permission check should block before execution
         let result = executor.execute("cat ./test/secret.txt");
@@ -912,7 +920,7 @@ ask = []
 
     #[test]
     fn test_safe_git_commands() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Safe read-only git commands
         assert!(executor.is_safe_command_structure("git status"));
@@ -987,7 +995,7 @@ ask = []
 
     #[test]
     fn test_dangerous_git_commands() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Remote operations (data leakage risk)
         assert!(!executor.is_safe_command_structure("git push"));
@@ -1050,7 +1058,7 @@ ask = []
 
     #[test]
     fn test_git_commands_in_chains() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Safe commands in chains
         assert!(executor.is_safe_command_structure("git status && git log"));
@@ -1066,7 +1074,7 @@ ask = []
 
     #[test]
     fn test_error_messages_are_informative() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         let reason = executor.get_git_rejection_reason("git push origin main");
         assert!(reason.contains("git push origin main"));
@@ -1078,7 +1086,7 @@ ask = []
     fn test_tilde_paths_pass_structural_check() {
         // Tilde paths are no longer blocked by is_safe_command_structure.
         // They are handled by check_bash_external_paths which asks the user.
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         assert!(executor.is_safe_command_structure("ls ~/tmp"));
         assert!(executor.is_safe_command_structure("cat ~/file.txt"));
@@ -1094,7 +1102,7 @@ ask = []
         // way to prompt, so the executor returns a clear error pointing
         // at the interactive-mode requirement.
         let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
 
         for cmd in &[
             "git checkout main",
@@ -1131,7 +1139,7 @@ ask = []
         // The error message mentions the dangerous-op reason, not the
         // interactive-confirmation hint.
         let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
 
         for cmd in &["git checkout -f main", "git checkout -b new-branch"] {
             let result = executor.execute(cmd);
@@ -1155,7 +1163,7 @@ ask = []
         // `check_bash_external_path`, which deny in non-interactive mode
         // when no grant is configured.
         let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false).unwrap();
+        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
 
         let result = executor.execute("grep --include=/etc/passwd pattern .");
 
@@ -1172,7 +1180,7 @@ ask = []
 
     #[test]
     fn test_session_scoped_permissions_persist() {
-        let executor = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
 
         // Simulate adding a command to session_allowed
         {
@@ -1201,7 +1209,7 @@ ask = []
 
     #[test]
     fn test_session_permissions_shared_across_clones() {
-        let executor1 = BashExecutor::new(PathBuf::from("."), false).unwrap();
+        let executor1 = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
         let executor2 = executor1.clone();
 
         // Add permission via executor1

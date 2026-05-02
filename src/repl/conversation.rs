@@ -50,6 +50,12 @@ impl ConversationHistory {
             "- When creating or editing code, use the write_file tool"
         };
 
+        let write_scope_tools = if has_morph {
+            "write_file, edit_file, and morph_edit_file"
+        } else {
+            "write_file and edit_file"
+        };
+
         let mut system_text = format!(
             r#"You are Sofos, an AI coding assistant. You have access to tools that allow you to:
 {}
@@ -72,7 +78,7 @@ Prefer read-only commands and dry-runs; if a potentially destructive action seem
 
 Outside Workspace Access (three separate scopes, each prompted independently):
 - Read scope: read_file and list_directory can access absolute or ~/ paths. If not pre-configured, the user is prompted to allow access and can optionally remember the decision.
-- Write scope: write_file, edit_file, and morph_edit_file can write to absolute or ~/ paths. The user is prompted for Write access separately from Read.
+- Write scope: {} can write to absolute or ~/ paths. The user is prompted for Write access separately from Read.
 - Bash scope: bash commands can reference absolute or ~/ paths. The user is prompted for Bash path access. Use absolute paths (not ..) for external directories.
 - All three scopes are independent — Read access does not grant Write or Bash access.
 - When accessing external paths, just use the absolute or ~/ path directly. If not yet allowed, the user will be prompted interactively.
@@ -105,7 +111,8 @@ Your goal is to help users with coding tasks efficiently and accurately.
 Always use the metric system for all measurements. If the user uses other units, convert them and answer in metric.
 Show imperial units only when the user explicitly asks for them."#,
             features.join("\n"),
-            edit_instruction
+            edit_instruction,
+            write_scope_tools
         );
 
         // Append custom instructions if provided

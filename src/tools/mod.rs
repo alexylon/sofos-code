@@ -281,10 +281,11 @@ impl ToolExecutor {
             }
         };
 
+        let has_morph = morph_client.is_some();
         Ok(Self {
             fs_tool: FileSystemTool::new(workspace.clone())?,
             code_search_tool,
-            bash_executor: BashExecutor::new(workspace, interactive)?,
+            bash_executor: BashExecutor::new(workspace, interactive, has_morph)?,
             morph_client,
             mcp_manager,
             safe_mode,
