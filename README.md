@@ -433,7 +433,7 @@ MIT License
 
 ## Acknowledgments
 
-Built with Rust and powered by Anthropic's Claude or OpenAI's GPT. Morph Apply integration for fast edits. Inspired by Aider and similar tools.
+Built with Rust and powered by Anthropic's Claude or OpenAI's GPT. Morph Apply integration for fast edits.
 
 ## Links & Resources
 
