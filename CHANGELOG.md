@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-05-04
+
 ### Fixed
 
 - **Ctrl+U in the TUI input now deletes from the cursor to the start of the line** (readline / Claude Code convention), instead of undoing the last edit. Ctrl+K (delete to end of line) and Ctrl+W (delete previous word) already worked.
