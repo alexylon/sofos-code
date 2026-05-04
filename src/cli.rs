@@ -45,11 +45,16 @@ pub struct Cli {
     #[arg(long, default_value = "32768")]
     pub max_tokens: u32,
 
-    /// Enable extended thinking for complex reasoning tasks
-    #[arg(short = 't', long)]
-    pub enable_thinking: bool,
+    /// Reasoning effort: off, low, medium, high. Default `medium`.
+    /// `Off` skips reasoning entirely on OpenAI (effort=minimal,
+    /// summary suppressed) and disables Anthropic extended thinking on
+    /// non-adaptive models. Anthropic adaptive (Opus 4.7+) collapses
+    /// `Off` to the lowest accepted level (`low`).
+    #[arg(short = 'e', long, default_value = "medium")]
+    pub reasoning_effort: crate::api::ReasoningEffort,
 
-    /// Token budget for thinking (must be less than max_tokens)
+    /// Token budget for non-adaptive Anthropic extended thinking. Ignored
+    /// on OpenAI and on Anthropic adaptive (Opus 4.7+).
     #[arg(long, default_value = "5120")]
     pub thinking_budget: u32,
 

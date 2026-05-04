@@ -73,6 +73,49 @@ pub struct CreateMessageRequest {
     /// shard. Cleared on the Anthropic path before sending.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
+    /// Anthropic-only `context_management` block, populated for models
+    /// that support server-side compaction. The Messages API generates
+    /// a summary when input tokens cross `trigger.value`, returns a
+    /// `compaction` content block, and on subsequent requests drops
+    /// every message before it. Cleared on the OpenAI path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_management: Option<ContextManagement>,
+}
+
+/// Anthropic `context_management` configuration. Currently models a
+/// single `compact_20260112` edit; the API accepts an array of edits
+/// for forward compatibility, but the wire shape on this end stays a
+/// single Vec entry until a second edit type ships.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContextManagement {
+    pub edits: Vec<ContextEdit>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContextEdit {
+    /// Server-side compaction (`compact-2026-01-12` beta). Triggered
+    /// when the request's input crosses `trigger`. Anthropic returns a
+    /// `compaction` content block; on the next request, every message
+    /// before that block is dropped server-side.
+    #[serde(rename = "compact_20260112")]
+    Compact20260112 {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        trigger: Option<CompactionTrigger>,
+        /// Optional override for the summarisation prompt. Left as
+        /// `None` so Anthropic's default — which preserves recent
+        /// tool outputs and code references — applies.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        instructions: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CompactionTrigger {
+    /// Compaction fires when the request's input-token count exceeds
+    /// `value`. Anthropic's documented minimum is 50,000.
+    InputTokens { value: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +172,29 @@ pub enum ContentBlock {
     Thinking { thinking: String, signature: String },
     #[serde(rename = "summary")]
     Summary { summary: String },
+    /// Anthropic server-side compaction summary. Anthropic returns
+    /// this block at the start of an assistant response when the
+    /// request's input crossed the configured trigger threshold.
+    /// On the next request, the API drops every message before this
+    /// block server-side; we only need to keep it in the round-trip.
+    #[serde(rename = "compaction")]
+    Compaction { content: String },
+    /// OpenAI Responses API reasoning item, packed as a single block so
+    /// the `id` and `encrypted_content` (an opaque blob the server uses
+    /// to resume hidden chain-of-thought) round-trip together with all
+    /// of the visible summary entries belonging to the same reasoning
+    /// turn. Sending the encrypted blob back on the next call lets the
+    /// model continue its hidden CoT instead of rederiving it, which
+    /// directly cuts hidden-reasoning output tokens on multi-call
+    /// agentic turns.
+    #[serde(rename = "reasoning")]
+    Reasoning {
+        id: String,
+        #[serde(default)]
+        summary: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -193,22 +259,78 @@ impl OutputConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reasoning {
     pub effort: String,
-    summary: String,
+    /// Omitted when `None` so the model returns no summary blocks at all.
+    /// Reasoning summaries bill as output tokens, so we suppress them on
+    /// the thinking-off path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 impl Reasoning {
-    pub fn enabled() -> Self {
+    pub fn with_effort(effort: impl Into<String>) -> Self {
         Self {
-            effort: "high".to_string(),
-            summary: "auto".to_string(),
+            effort: effort.into(),
+            summary: Some("auto".to_string()),
         }
     }
 
-    pub fn disabled() -> Self {
+    /// Lowest-cost reasoning configuration for the thinking-off path:
+    /// minimal hidden reasoning and no summary stream.
+    pub fn minimal() -> Self {
         Self {
-            effort: "low".to_string(),
-            summary: "auto".to_string(),
+            effort: "minimal".to_string(),
+            summary: None,
         }
+    }
+}
+
+/// User-facing reasoning level. Default is `Medium`; `High` is opt-in
+/// because it materially raises hidden-reasoning token cost on routine
+/// coding work, and `Off` skips reasoning entirely (cheapest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+#[clap(rename_all = "lower")]
+pub enum ReasoningEffort {
+    Off,
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "disabled" => Some(Self::Off),
+            "low" => Some(Self::Low),
+            "medium" | "med" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+}
+
+impl std::str::FromStr for ReasoningEffort {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| {
+            format!(
+                "invalid reasoning effort `{}`; expected one of: off, low, medium, high",
+                s
+            )
+        })
     }
 }
 
@@ -259,7 +381,13 @@ impl CacheControl {
         }
     }
 
-    pub fn _ephemeral_one_hour() -> Self {
+    /// 1-hour ephemeral cache. Write cost is 2x the base input rate
+    /// (vs. 1.25x for 5m), reads are 0.1x for both. Worth the write
+    /// premium only on prefixes that don't change between turns —
+    /// system prompt, tool definitions, and the sticky anchor — where
+    /// a single user pause longer than 5 minutes would otherwise force
+    /// a full prefix re-bill at the cache-creation rate.
+    pub fn ephemeral_one_hour() -> Self {
         Self::ephemeral(Some("1h".to_string()))
     }
 }
@@ -289,6 +417,28 @@ pub enum MessageContentBlock {
     #[serde(rename = "summary")]
     Summary {
         summary: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// Anthropic compaction summary, round-tripped to the API on
+    /// subsequent turns so the server knows where to truncate. See
+    /// [`ContentBlock::Compaction`].
+    #[serde(rename = "compaction")]
+    Compaction {
+        content: String,
+        #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
+    /// OpenAI Responses API reasoning item, packed so `id`,
+    /// `encrypted_content`, and the array of summary texts round-trip
+    /// as a single conversation block. See [`ContentBlock::Reasoning`].
+    #[serde(rename = "reasoning")]
+    Reasoning {
+        id: String,
+        #[serde(default)]
+        summary: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
         #[serde(rename = "cache_control", skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -357,6 +507,26 @@ impl MessageContentBlock {
             // GPT's reasoning summary
             ContentBlock::Summary { summary } => Some(MessageContentBlock::Summary {
                 summary: summary.clone(),
+                cache_control: None,
+            }),
+            // Anthropic server-side compaction summary; must be
+            // round-tripped verbatim so the server can drop earlier
+            // messages on the next turn.
+            ContentBlock::Compaction { content } => Some(MessageContentBlock::Compaction {
+                content: content.clone(),
+                cache_control: None,
+            }),
+            // OpenAI Responses API reasoning item — round-trip with the
+            // encrypted CoT blob so the model resumes its hidden chain
+            // of thought across tool calls instead of rederiving it.
+            ContentBlock::Reasoning {
+                id,
+                summary,
+                encrypted_content,
+            } => Some(MessageContentBlock::Reasoning {
+                id: id.clone(),
+                summary: summary.clone(),
+                encrypted_content: encrypted_content.clone(),
                 cache_control: None,
             }),
             ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
@@ -437,4 +607,70 @@ pub enum _StreamEventType {
     MessageStop,
     #[serde(rename = "ping")]
     Ping,
+}
+
+#[cfg(test)]
+mod block_serde_tests {
+    use super::*;
+
+    #[test]
+    fn compaction_block_deserializes_without_cache_control_field() {
+        // A saved session predating server-side compaction won't carry
+        // a `cache_control` field on compaction blocks (they only
+        // existed after this branch). Verify the new variant tolerates
+        // its absence rather than failing the whole session load.
+        let json = r#"{"type":"compaction","content":"summary text"}"#;
+        let block: MessageContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            MessageContentBlock::Compaction {
+                content,
+                cache_control,
+            } => {
+                assert_eq!(content, "summary text");
+                assert!(cache_control.is_none());
+            }
+            other => panic!("expected Compaction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reasoning_block_deserializes_with_only_id_field() {
+        // Edge case: reasoning items can arrive without a summary
+        // array (effort=minimal) and without encrypted_content (when
+        // include flag wasn't set on the prior request). Both fields
+        // are marked `#[serde(default)]`, so the bare item should
+        // round-trip.
+        let json = r#"{"type":"reasoning","id":"rs_only"}"#;
+        let block: MessageContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            MessageContentBlock::Reasoning {
+                id,
+                summary,
+                encrypted_content,
+                cache_control,
+            } => {
+                assert_eq!(id, "rs_only");
+                assert!(summary.is_empty());
+                assert!(encrypted_content.is_none());
+                assert!(cache_control.is_none());
+            }
+            other => panic!("expected Reasoning, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn content_block_compaction_deserializes_from_anthropic_response_shape() {
+        // Anthropic's docs show the response payload as
+        // `{"type":"compaction","content":"..."}`. The non-streaming
+        // path goes through serde, so verify that exact wire shape
+        // hits the right variant.
+        let json = r#"{"type":"compaction","content":"earlier turns summarised"}"#;
+        let block: ContentBlock = serde_json::from_str(json).unwrap();
+        match block {
+            ContentBlock::Compaction { content } => {
+                assert_eq!(content, "earlier turns summarised");
+            }
+            other => panic!("expected Compaction, got {:?}", other),
+        }
+    }
 }

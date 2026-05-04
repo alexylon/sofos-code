@@ -1,5 +1,5 @@
 use crate::api::LlmClient::{Anthropic, OpenAI};
-use crate::api::{CreateMessageRequest, LlmClient, Tool};
+use crate::api::{CreateMessageRequest, LlmClient, ReasoningEffort, Tool};
 use crate::repl::conversation::ConversationHistory;
 
 pub struct RequestBuilder<'a> {
@@ -8,7 +8,7 @@ pub struct RequestBuilder<'a> {
     max_tokens: u32,
     conversation: &'a ConversationHistory,
     tools: Vec<Tool>,
-    enable_thinking: bool,
+    reasoning_effort: ReasoningEffort,
     thinking_budget: u32,
     /// Stable per-session identifier sent as `prompt_cache_key` on the
     /// OpenAI Responses path. Anthropic ignores it.
@@ -23,7 +23,7 @@ impl<'a> RequestBuilder<'a> {
         max_tokens: u32,
         conversation: &'a ConversationHistory,
         tools: Vec<Tool>,
-        enable_thinking: bool,
+        reasoning_effort: ReasoningEffort,
         thinking_budget: u32,
         session_id: &'a str,
     ) -> Self {
@@ -33,7 +33,7 @@ impl<'a> RequestBuilder<'a> {
             max_tokens,
             conversation,
             tools,
-            enable_thinking,
+            reasoning_effort,
             thinking_budget,
             session_id,
         }
@@ -48,19 +48,26 @@ impl<'a> RequestBuilder<'a> {
         // `adaptive` + `output_config.effort`. Older Anthropic models
         // still take the manual `budget_tokens` shape. On adaptive
         // models we *always* send `thinking: adaptive` even when the
-        // user toggled `/think off` — dropping it would 400 the next
-        // turn if the conversation history already contains echoed
-        // thinking blocks from an earlier adaptive-on turn (Anthropic
-        // rejects requests carrying thinking blocks without a matching
-        // top-level thinking config). The on/off knob is expressed
-        // through `output_config.effort` instead.
+        // user picked `Off` — dropping it would 400 the next turn if
+        // the conversation history already contains echoed thinking
+        // blocks from an earlier on turn (Anthropic rejects requests
+        // carrying thinking blocks without a matching top-level
+        // thinking config). The level is expressed through
+        // `output_config.effort` instead, which collapses `Off` to
+        // `low` for the same reason.
         let (thinking_config, output_config) = if is_anthropic && adaptive {
-            let effort = crate::api::anthropic::effort_label(self.enable_thinking);
+            let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
             (
                 Some(crate::api::Thinking::adaptive()),
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
-        } else if is_anthropic && self.enable_thinking {
+        } else if is_anthropic && self.reasoning_effort.is_enabled() {
+            // TODO: `Low`, `Medium`, and `High` are functionally
+            // identical on non-adaptive Anthropic models — they all
+            // resolve to the same `thinking_budget`. Map the effort
+            // level to a per-tier budget (e.g. Low=1024, Medium=5120,
+            // High=16384) so `/think high` actually buys deeper
+            // reasoning on Sonnet 4.5 / older Opus.
             (
                 Some(crate::api::Thinking::enabled(self.thinking_budget)),
                 None,
@@ -69,16 +76,48 @@ impl<'a> RequestBuilder<'a> {
             (None, None)
         };
 
-        let reasoning_config = if self.enable_thinking && matches!(self.client, OpenAI(_)) {
-            Some(crate::api::Reasoning::enabled())
-        } else if matches!(self.client, OpenAI(_)) {
-            Some(crate::api::Reasoning::disabled())
+        let reasoning_config = if matches!(self.client, OpenAI(_)) {
+            Some(match self.reasoning_effort {
+                ReasoningEffort::Off => crate::api::Reasoning::minimal(),
+                ReasoningEffort::Low => crate::api::Reasoning::with_effort("low"),
+                ReasoningEffort::Medium => crate::api::Reasoning::with_effort("medium"),
+                ReasoningEffort::High => crate::api::Reasoning::with_effort("high"),
+            })
         } else {
             None
         };
 
         // Send system prompt to both Anthropic and OpenAI; cache hints are handled per API
         let system_prompt = Some(self.conversation.system_prompt().clone());
+
+        // Anthropic server-side compaction. Enabled only on models
+        // that advertise it via `ModelInfo::supports_server_compaction`
+        // (currently Opus 4.7, Opus 4.6, Sonnet 4.6). The trigger
+        // value is the same `auto_compact_at` number the rest of the
+        // crate reads, so the per-model cost cap stays the single
+        // source of truth. OpenAI has no server-side equivalent.
+        let context_management = if matches!(self.client, Anthropic(_)) {
+            let info = crate::api::model_info::lookup(self.model);
+            if info.supports_server_compaction {
+                Some(crate::api::ContextManagement {
+                    edits: vec![crate::api::ContextEdit::Compact20260112 {
+                        // TODO: clamp to Anthropic's documented 50K
+                        // minimum (`max(50_000, ...)`) so a future
+                        // small-window model entry whose
+                        // `auto_compact_at` falls below 50K doesn't
+                        // 400 the request.
+                        trigger: Some(crate::api::CompactionTrigger::InputTokens {
+                            value: info.auto_compact_at(),
+                        }),
+                        instructions: None,
+                    }],
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let mut request = CreateMessageRequest {
             model: self.model.to_string(),
@@ -91,23 +130,41 @@ impl<'a> RequestBuilder<'a> {
             output_config,
             reasoning: reasoning_config,
             prompt_cache_key: Some(self.session_id.to_string()),
+            context_management,
         };
 
         // Anthropic prompt caching is opt-in per content block. We mark
         // two breakpoints in addition to the system prompt (already
         // cached at construction): the last tool definition, and the
-        // last block of the last message. The latter rolls forward as
-        // the conversation grows so each turn extends the cached prefix
-        // instead of restarting.
+        // last block of the last message. The rolling breakpoint moves
+        // forward each turn — paying the 2x write premium for a 1-hour
+        // TTL on a position that gets superseded next turn would burn
+        // cache writes for nothing, so the rolling stays at the 5m
+        // default. The anchor and the last tool definition do NOT move
+        // turn-to-turn (the anchor sticks until cumulative intermediate
+        // distance exceeds ~18 blocks; tool definitions are static), so
+        // they get the 1-hour TTL — paid once, survives any pause
+        // shorter than an hour.
         if matches!(self.client, Anthropic(_)) {
             if let Some(tools) = request.tools.as_mut() {
-                if let Some(last_tool) = tools.last_mut() {
-                    match last_tool {
+                // `prepare_request` strips `OpenAIWebSearch` before
+                // sending; stamp on the last *non-OpenAI* tool so the
+                // breakpoint survives that filter. Without this skip,
+                // when `OpenAIWebSearch` is the last entry in the
+                // registered tool list, no Anthropic tool gets the
+                // cache-control marker and the entire tools block
+                // re-bills at full input rate every turn.
+                let last_anthropic_tool = tools
+                    .iter_mut()
+                    .rev()
+                    .find(|t| matches!(t, Tool::Regular { .. } | Tool::AnthropicWebSearch { .. }));
+                if let Some(tool) = last_anthropic_tool {
+                    match tool {
                         Tool::Regular { cache_control, .. }
                         | Tool::AnthropicWebSearch { cache_control, .. } => {
-                            *cache_control = Some(crate::api::CacheControl::ephemeral(None));
+                            *cache_control = Some(crate::api::CacheControl::ephemeral_one_hour());
                         }
-                        Tool::OpenAIWebSearch { .. } => {}
+                        Tool::OpenAIWebSearch { .. } => unreachable!(),
                     }
                 }
             }
@@ -126,10 +183,13 @@ impl<'a> RequestBuilder<'a> {
 /// last block of `messages[anchor_idx]`. The anchor is the secondary
 /// breakpoint that protects against the 20-block lookback window in
 /// wide multi-tool iterations — the rolling alone cold-misses when a
-/// single turn jumps past 20 blocks.
+/// single turn jumps past 20 blocks. Rolling uses the 5m TTL because
+/// it moves every turn; anchor uses 1h because it only advances when
+/// cumulative intermediate distance exceeds ~18 blocks (i.e. once
+/// every ~10 turns), so the 2x write premium is amortised.
 fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message], anchor_idx: Option<usize>) {
     if let Some(last_msg) = messages.last_mut() {
-        stamp_last_block_ephemeral(last_msg);
+        stamp_last_block(last_msg, crate::api::CacheControl::ephemeral(None));
     }
     if let Some(idx) = anchor_idx {
         // The anchor must be a different message than the rolling, and
@@ -137,7 +197,10 @@ fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message], anchor_id
         // both, but recheck so an out-of-sync caller can't panic the
         // request build.
         if idx + 1 < messages.len() {
-            stamp_last_block_ephemeral(&mut messages[idx]);
+            stamp_last_block(
+                &mut messages[idx],
+                crate::api::CacheControl::ephemeral_one_hour(),
+            );
         }
     }
 }
@@ -146,8 +209,8 @@ fn mark_rolling_cache_breakpoint(messages: &mut [crate::api::Message], anchor_id
 /// per-block `Blocks` — those messages have no `cache_control` field
 /// to stamp, so the breakpoint lands on the next turn that uses
 /// blocks.
-fn stamp_last_block_ephemeral(msg: &mut crate::api::Message) {
-    use crate::api::{CacheControl, MessageContent, MessageContentBlock};
+fn stamp_last_block(msg: &mut crate::api::Message, control: crate::api::CacheControl) {
+    use crate::api::{MessageContent, MessageContentBlock};
 
     let MessageContent::Blocks { content } = &mut msg.content else {
         return;
@@ -159,13 +222,15 @@ fn stamp_last_block_ephemeral(msg: &mut crate::api::Message) {
         MessageContentBlock::Text { cache_control, .. }
         | MessageContentBlock::Thinking { cache_control, .. }
         | MessageContentBlock::Summary { cache_control, .. }
+        | MessageContentBlock::Compaction { cache_control, .. }
+        | MessageContentBlock::Reasoning { cache_control, .. }
         | MessageContentBlock::ToolUse { cache_control, .. }
         | MessageContentBlock::ToolResult { cache_control, .. }
         | MessageContentBlock::ServerToolUse { cache_control, .. }
         | MessageContentBlock::WebSearchToolResult { cache_control, .. }
         | MessageContentBlock::Image { cache_control, .. } => cache_control,
     };
-    *cc = Some(CacheControl::ephemeral(None));
+    *cc = Some(control);
 }
 
 #[cfg(test)]
@@ -199,7 +264,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            false,
+            ReasoningEffort::Off,
             0,
             "session-abc",
         )
@@ -222,7 +287,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            false,
+            ReasoningEffort::Off,
             0,
             "s1",
         )
@@ -244,7 +309,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            false,
+            ReasoningEffort::Off,
             0,
             "s1",
         )
@@ -397,7 +462,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            false,
+            ReasoningEffort::Off,
             0,
             "s1",
         )
@@ -426,5 +491,70 @@ mod tests {
                 i
             );
         }
+    }
+
+    #[test]
+    fn anthropic_1m_models_get_server_compaction_config() {
+        let conv = ConversationHistory::new();
+        let req = RequestBuilder::new(
+            &anthropic_client(),
+            "claude-opus-4-7",
+            8192,
+            &conv,
+            one_regular_tool(),
+            ReasoningEffort::Off,
+            0,
+            "s1",
+        )
+        .build();
+        let cm = req
+            .context_management
+            .expect("Opus 4.7 should carry context_management");
+        let json = serde_json::to_value(&cm).unwrap();
+        // Wire shape matches Anthropic's docs: edits[].type ==
+        // "compact_20260112" with an input_tokens trigger.
+        assert_eq!(json["edits"][0]["type"], "compact_20260112");
+        assert_eq!(json["edits"][0]["trigger"]["type"], "input_tokens");
+        let trigger_value = json["edits"][0]["trigger"]["value"].as_u64().unwrap();
+        assert!(
+            trigger_value >= 50_000,
+            "Anthropic rejects triggers below 50K"
+        );
+    }
+
+    #[test]
+    fn unsupported_models_skip_server_compaction() {
+        let conv = ConversationHistory::new();
+        let haiku_req = RequestBuilder::new(
+            &anthropic_client(),
+            "claude-haiku-4-5",
+            8192,
+            &conv,
+            one_regular_tool(),
+            ReasoningEffort::Off,
+            0,
+            "s1",
+        )
+        .build();
+        assert!(
+            haiku_req.context_management.is_none(),
+            "Haiku 4.5 isn't on Anthropic's compaction-supported list"
+        );
+
+        let openai_req = RequestBuilder::new(
+            &openai_client(),
+            "gpt-5.5",
+            8192,
+            &conv,
+            one_regular_tool(),
+            ReasoningEffort::Off,
+            0,
+            "s1",
+        )
+        .build();
+        assert!(
+            openai_req.context_management.is_none(),
+            "OpenAI never receives Anthropic's context_management"
+        );
     }
 }

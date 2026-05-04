@@ -3,13 +3,26 @@
 /// `src/tools/filesystem.rs` (50 MB) and `MAX_OUTPUT_SIZE` in
 /// `src/tools/bashexec.rs` (10 MB) — not here, so this struct only
 /// carries config values that the rest of the crate actually reads.
+///
+/// Per-model knowledge (context window, auto-compact trigger,
+/// pricing, adaptive-thinking flag) lives in
+/// [`crate::api::model_info::lookup`] instead of in this struct.
+/// `set_max_context_tokens` and `set_auto_compact_token_limit` on
+/// [`crate::repl::conversation::ConversationHistory`] populate the
+/// runtime values from the model lookup at REPL startup.
 #[derive(Debug, Clone)]
 pub struct SofosConfig {
     pub max_messages: usize,
+    /// Hard drop-trim floor in tokens. Above this, older messages are
+    /// dropped without summary as a last resort. Populated from
+    /// `ModelInfo::effective_window()` at startup.
     pub max_context_tokens: usize,
     pub max_tool_iterations: u32,
-    /// Auto-compact when token usage exceeds this ratio of max_context_tokens
-    pub compaction_trigger_ratio: f64,
+    /// Auto-compaction trigger in tokens. Compaction runs an LLM
+    /// summary step that preserves context, so this fires well below
+    /// `max_context_tokens`. Populated from `ModelInfo::auto_compact_at()`
+    /// at startup.
+    pub auto_compact_token_limit: usize,
     /// Number of recent messages to preserve during compaction
     pub compaction_preserve_recent: usize,
     /// Truncate tool results longer than this (chars) during compaction
@@ -18,11 +31,16 @@ pub struct SofosConfig {
 
 impl Default for SofosConfig {
     fn default() -> Self {
+        // Defaults match `ModelInfo::default()`: a Sonnet-class
+        // fallback with 200K context window, 95% effective window,
+        // and 125K auto-compact override. These get overwritten by
+        // model-specific values at REPL startup.
+        let info = crate::api::ModelInfo::default();
         Self {
             max_messages: 500,
-            max_context_tokens: 165_000,
+            max_context_tokens: info.effective_window() as usize,
             max_tool_iterations: 200,
-            compaction_trigger_ratio: 0.80,
+            auto_compact_token_limit: info.auto_compact_at() as usize,
             compaction_preserve_recent: 20,
             tool_result_truncate_threshold: 2000,
         }
@@ -34,7 +52,10 @@ impl Default for SofosConfig {
 pub struct ModelConfig {
     pub model: String,
     pub max_tokens: u32,
-    pub enable_thinking: bool,
+    pub reasoning_effort: crate::api::ReasoningEffort,
+    /// Token budget for non-adaptive Anthropic extended thinking. Ignored
+    /// on OpenAI and on Anthropic adaptive (Opus 4.7+) where the server
+    /// picks the budget from `output_config.effort`.
     pub thinking_budget: u32,
 }
 
@@ -42,19 +63,19 @@ impl ModelConfig {
     pub fn new(
         model: String,
         max_tokens: u32,
-        enable_thinking: bool,
+        reasoning_effort: crate::api::ReasoningEffort,
         thinking_budget: u32,
     ) -> Self {
         Self {
             model,
             max_tokens,
-            enable_thinking,
+            reasoning_effort,
             thinking_budget,
         }
     }
 
-    pub fn set_thinking(&mut self, enabled: bool) {
-        self.enable_thinking = enabled;
+    pub fn set_reasoning_effort(&mut self, effort: crate::api::ReasoningEffort) {
+        self.reasoning_effort = effort;
     }
 }
 
@@ -62,20 +83,22 @@ impl SofosConfig {
     // No need for new() since Default::default() is the idiomatic way
 }
 
-/// Per-model trim threshold. The model's API context window is much
-/// larger than what we want to actually pay for, so this returns a
-/// budget that leaves headroom for output tokens and avoids needless
-/// summarization on shorter sessions. Codex variants ship with a
-/// 400k window (vs. 1M on flagship Claude / GPT-5.5), so we cap them
-/// lower to stay safely below the API limit.
+/// Per-model trim-safety floor. Above this value the conversation
+/// trim drops older messages without summary as a last resort —
+/// auto-compaction (which preserves context) runs much earlier at
+/// [`crate::api::ModelInfo::auto_compact_at`]. Both numbers come
+/// from the same per-model lookup so a single
+/// [`crate::api::model_info::lookup`] call is the source of truth.
 pub fn max_context_tokens_for(model: &str) -> usize {
-    // Case-insensitive so a capitalized model id from env/config
-    // doesn't silently slip past the codex cap.
-    if model.to_ascii_lowercase().contains("codex") {
-        300_000
-    } else {
-        800_000
-    }
+    crate::api::model_info::lookup(model).effective_window() as usize
+}
+
+/// Auto-compaction trigger for `model`. Mirrors the codex pattern of
+/// keeping the cost-shaping cap and the API ceiling as separate
+/// concepts: this is where the LLM-summary phase fires, while
+/// [`max_context_tokens_for`] is where the hard drop-trim kicks in.
+pub fn auto_compact_token_limit_for(model: &str) -> usize {
+    crate::api::model_info::lookup(model).auto_compact_at() as usize
 }
 
 /// Safe mode message shown to user and AI. Must stay in sync with the
@@ -96,12 +119,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config_matches_fallback_model_info() {
         let config = SofosConfig::default();
+        let info = crate::api::ModelInfo::default();
         assert_eq!(config.max_messages, 500);
-        assert_eq!(config.max_context_tokens, 165_000);
+        assert_eq!(config.max_context_tokens, info.effective_window() as usize);
         assert_eq!(config.max_tool_iterations, 200);
-        assert!((config.compaction_trigger_ratio - 0.80).abs() < f64::EPSILON);
+        assert_eq!(
+            config.auto_compact_token_limit,
+            info.auto_compact_at() as usize
+        );
         assert_eq!(config.compaction_preserve_recent, 20);
         assert_eq!(config.tool_result_truncate_threshold, 2000);
     }

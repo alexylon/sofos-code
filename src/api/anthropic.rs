@@ -8,27 +8,45 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-const ANTHROPIC_BETA: &str = "token-efficient-tools-2025-02-19";
+/// Comma-separated list of Anthropic beta features sofos opts in to.
+/// `token-efficient-tools-2025-02-19` shrinks tool-call envelopes;
+/// `compact-2026-01-12` enables server-side compaction (the API
+/// generates the summary itself when the request crosses a configured
+/// trigger, then drops earlier messages on subsequent turns).
+///
+/// TODO: `compact-2026-01-12` only applies to Opus 4.7, Opus 4.6,
+/// and Sonnet 4.6. Sending it on a Haiku 4.5 request relies on
+/// Anthropic's "ignore unknown beta tokens" policy. If Anthropic
+/// ever tightens validation, gate the header per-request based on
+/// `ModelInfo::supports_server_compaction` instead of pinning the
+/// value at client construction.
+const ANTHROPIC_BETA: &str = "token-efficient-tools-2025-02-19,compact-2026-01-12";
 
 /// Return true for models that *only* accept `thinking.type = "adaptive"`
 /// (paired with `output_config.effort`) and reject the legacy
 /// `{type: "enabled", budget_tokens: N}` shape with HTTP 400.
 ///
-/// Currently Opus 4.7 is the sole member of this set; Sonnet/Opus 4.6 and
-/// older continue to accept manual budgets, so we keep them on the old path
-/// to preserve the user's `--thinking-budget` knob.
+/// The set is owned by [`crate::api::ModelInfo`]; this thin wrapper
+/// preserves the call shape used by `request_builder` and `repl::mod`
+/// without forcing those sites to dereference the struct just to
+/// check one bool.
 pub fn requires_adaptive_thinking(model: &str) -> bool {
-    model.starts_with("claude-opus-4-7")
+    super::model_info::lookup(model).requires_adaptive_thinking
 }
 
-/// The string form of an "effort" level derived from the user's
-/// thinking-on/off toggle. Used both for Anthropic's `output_config.effort`
-/// (adaptive models) and OpenAI's `reasoning.effort` — the two APIs
-/// happen to share the same `high` / `low` vocabulary, so one helper
-/// keeps the request builder, TUI status line, startup banner, and
-/// `/think` messages in sync without each site hand-mapping the bool.
-pub fn effort_label(enable_thinking: bool) -> &'static str {
-    if enable_thinking { "high" } else { "low" }
+/// Map a [`ReasoningEffort`] to the string Anthropic's adaptive thinking
+/// expects in `output_config.effort` (Opus 4.7+). The API accepts
+/// `low` / `medium` / `high`; `Off` collapses to `low` because adaptive
+/// thinking has no off-switch — the conversation may already carry
+/// thinking blocks that the server cross-checks against the request,
+/// and dropping `output_config` would 400 the next turn.
+pub fn effort_label(effort: super::types::ReasoningEffort) -> &'static str {
+    use super::types::ReasoningEffort;
+    match effort {
+        ReasoningEffort::Off | ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+    }
 }
 
 #[derive(Clone)]
@@ -225,6 +243,18 @@ impl AnthropicClient {
                                     }
                                     current_block_type = None;
                                 }
+                                // TODO: handle `compaction` here.
+                                // Server-side compaction
+                                // (`compact-2026-01-12` beta) emits a
+                                // `compaction` content block with a
+                                // `content` field; the streaming path
+                                // currently drops it, so when
+                                // `use_streaming` is flipped on for
+                                // Anthropic, the next request fails to
+                                // round-trip the summary and Anthropic
+                                // re-compacts (extra cost). The
+                                // non-streaming path handles this via
+                                // serde and works today.
                                 _ => {}
                             }
                         }
@@ -369,7 +399,17 @@ fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
                 let filtered_content = content
                     .into_iter()
                     .filter_map(|block| match block {
+                        // OpenAI reasoning summary block — not part of
+                        // Anthropic's content-block schema; the server
+                        // would reject the unknown type.
                         MessageContentBlock::Summary { .. } => None,
+                        // OpenAI Responses API reasoning item, packed
+                        // with `id` + `encrypted_content`. Carries no
+                        // meaning to Anthropic and uses a `type`
+                        // string the server doesn't recognise. Drop
+                        // before sending so a session that switched
+                        // providers doesn't 400 on the next turn.
+                        MessageContentBlock::Reasoning { .. } => None,
                         other => Some(other),
                     })
                     .collect();
@@ -424,9 +464,12 @@ mod tests {
     }
 
     #[test]
-    fn effort_label_maps_bool_to_high_low() {
-        assert_eq!(effort_label(true), "high");
-        assert_eq!(effort_label(false), "low");
+    fn effort_label_maps_reasoning_levels() {
+        use super::super::types::ReasoningEffort;
+        assert_eq!(effort_label(ReasoningEffort::Off), "low");
+        assert_eq!(effort_label(ReasoningEffort::Low), "low");
+        assert_eq!(effort_label(ReasoningEffort::Medium), "medium");
+        assert_eq!(effort_label(ReasoningEffort::High), "high");
     }
 
     #[test]
@@ -442,6 +485,7 @@ mod tests {
             output_config: Some(OutputConfig::with_effort("high")),
             reasoning: None,
             prompt_cache_key: None,
+            context_management: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -464,6 +508,7 @@ mod tests {
             output_config: None,
             reasoning: None,
             prompt_cache_key: None,
+            context_management: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -485,9 +530,41 @@ mod tests {
             output_config: None,
             reasoning: None,
             prompt_cache_key: Some("session-1".to_string()),
+            context_management: None,
         };
 
         let prepared = AnthropicClient::prepare_request(request);
         assert!(prepared.prompt_cache_key.is_none());
+    }
+
+    #[test]
+    fn sanitizer_drops_openai_reasoning_blocks_before_anthropic_call() {
+        // Regression: a session that started on OpenAI accumulates
+        // `Reasoning` blocks with `id` + `encrypted_content`. Switching
+        // to Anthropic mid-session and forwarding those blocks would
+        // 400 on a content-block-type the server doesn't know.
+        let messages = vec![Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Blocks {
+                content: vec![
+                    MessageContentBlock::Reasoning {
+                        id: "rs_abc".to_string(),
+                        summary: vec!["thought".to_string()],
+                        encrypted_content: Some("blob".to_string()),
+                        cache_control: None,
+                    },
+                    MessageContentBlock::Text {
+                        text: "real reply".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            },
+        }];
+        let cleaned = sanitize_messages_for_anthropic(messages);
+        let MessageContent::Blocks { content } = &cleaned[0].content else {
+            panic!("expected blocks");
+        };
+        assert_eq!(content.len(), 1, "Reasoning block must be dropped");
+        assert!(matches!(content[0], MessageContentBlock::Text { .. }));
     }
 }

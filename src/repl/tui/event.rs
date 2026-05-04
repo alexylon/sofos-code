@@ -14,6 +14,10 @@ pub struct ExitSummary {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// Largest single-turn input observed; used to detect tiered
+    /// pricing cliffs (e.g. gpt-5.4/5.5 at 272K) so the displayed
+    /// session cost reflects the rate the provider actually billed.
+    pub peak_single_turn_input_tokens: u32,
 }
 
 /// Tool access mode shown in the status line.

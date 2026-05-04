@@ -30,6 +30,20 @@ pub struct SessionState {
     /// premium). OpenAI does not surface a creation counter and leaves
     /// this at 0.
     pub total_cache_creation_tokens: u32,
+    /// Largest input-token count observed on any single API call this
+    /// session. Used to detect tiered-pricing cliffs (gpt-5.4/5.5
+    /// flip the entire session to premium rates once any prompt
+    /// crosses 272K input tokens). Compared against
+    /// `ModelInfo::premium_tier.input_threshold` in `calculate_cost`
+    /// so the displayed cost reflects what the provider actually
+    /// bills, not the standard-tier rate.
+    ///
+    /// TODO: persist this through `session/history.rs` so a
+    /// `--resume` of a session that already crossed the cliff keeps
+    /// showing the premium rate. Today the field resets to 0 on
+    /// resume, and the cost line under-reports until the very next
+    /// request crosses the threshold again.
+    pub peak_single_turn_input_tokens: u32,
 }
 
 impl SessionState {
@@ -42,6 +56,7 @@ impl SessionState {
             total_output_tokens: 0,
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
+            peak_single_turn_input_tokens: 0,
         }
     }
 
@@ -53,6 +68,7 @@ impl SessionState {
         self.total_output_tokens = 0;
         self.total_cache_read_tokens = 0;
         self.total_cache_creation_tokens = 0;
+        self.peak_single_turn_input_tokens = 0;
     }
 
     pub fn add_usage(&mut self, usage: &crate::api::Usage) {
@@ -60,5 +76,14 @@ impl SessionState {
         self.total_output_tokens += usage.output_tokens;
         self.total_cache_read_tokens += usage.cache_read_input_tokens.unwrap_or(0);
         self.total_cache_creation_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
+        // Per-call high-water mark on input tokens. For OpenAI, the
+        // figure already includes cached input (the provider's
+        // documented basis for the 272K premium cliff); for Anthropic,
+        // cache reads come on a separate counter, so this is uncached
+        // input only — neither model has a documented Anthropic cliff,
+        // so the asymmetry doesn't matter today.
+        if usage.input_tokens > self.peak_single_turn_input_tokens {
+            self.peak_single_turn_input_tokens = usage.input_tokens;
+        }
     }
 }

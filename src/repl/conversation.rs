@@ -123,9 +123,13 @@ Show imperial units only when the user explicitly asks for them."#,
 
         Self {
             messages: Vec::new(),
+            // The system prompt is stable across the session, so a 1-hour
+            // breakpoint here pays the 2x write premium once and avoids
+            // re-billing the system + workspace text on every pause that
+            // crosses the 5-minute default TTL.
             system_prompt: vec![SystemPrompt::new_cached_with_ttl(
                 system_text.to_string(),
-                None,
+                Some("1h".to_string()),
             )],
             config: SofosConfig::default(),
             warned_at_floor: false,
@@ -169,6 +173,23 @@ Show imperial units only when the user explicitly asks for them."#,
                     } => Self::estimate_tokens(thinking) + Self::estimate_tokens(signature) + 10,
                     MessageContentBlock::Summary { summary, .. } => {
                         Self::estimate_tokens(summary) + 10
+                    }
+                    MessageContentBlock::Compaction { content, .. } => {
+                        Self::estimate_tokens(content) + 10
+                    }
+                    MessageContentBlock::Reasoning {
+                        id,
+                        summary,
+                        encrypted_content,
+                        ..
+                    } => {
+                        let summary_tokens: usize =
+                            summary.iter().map(|s| Self::estimate_tokens(s)).sum();
+                        let enc_tokens = encrypted_content
+                            .as_ref()
+                            .map(|s| Self::estimate_tokens(s))
+                            .unwrap_or(0);
+                        Self::estimate_tokens(id) + summary_tokens + enc_tokens + 10
                     }
                     MessageContentBlock::ToolUse {
                         id, name, input, ..
@@ -493,11 +514,20 @@ Show imperial units only when the user explicitly asks for them."#,
         parts.join("\n")
     }
 
-    /// Check if conversation needs compaction (token usage > trigger ratio)
+    /// Check if conversation needs compaction. The trigger is the
+    /// per-model `auto_compact_token_limit` (clamped to 90% of the
+    /// API ceiling at lookup time), populated at REPL startup from
+    /// [`crate::api::ModelInfo::auto_compact_at`].
     pub fn needs_compaction(&self) -> bool {
-        let threshold =
-            (self.config.max_context_tokens as f64 * self.config.compaction_trigger_ratio) as usize;
-        self.estimate_total_tokens() > threshold
+        self.estimate_total_tokens() > self.config.auto_compact_token_limit
+    }
+
+    /// Set the auto-compaction trigger, picked by model via
+    /// [`crate::api::ModelInfo::auto_compact_at`]. Called once at
+    /// REPL startup so compaction fires at the right point for the
+    /// active model rather than the default fallback.
+    pub fn set_auto_compact_token_limit(&mut self, n: usize) {
+        self.config.auto_compact_token_limit = n;
     }
 
     /// Find a clean split point for compaction, keeping at least `preserve_recent` messages.
@@ -1044,15 +1074,16 @@ mod tests {
     #[test]
     fn test_needs_compaction() {
         let mut history = ConversationHistory::new();
-        // Use a large token limit so the system prompt alone doesn't trigger it
-        history.config.max_context_tokens = 100_000;
-        history.config.compaction_trigger_ratio = 0.80;
+        // Auto-compact triggers at this token count regardless of
+        // the API ceiling — picked by `ModelInfo::auto_compact_at`
+        // at startup, set directly here for the test.
+        history.config.auto_compact_token_limit = 80_000;
 
         // Should not need compaction with small messages
         history.add_user_message("hello".to_string());
         assert!(!history.needs_compaction());
 
-        // Add enough messages to exceed 80% of 100k
+        // Add enough messages to exceed 80k
         let large_content = "x".repeat(10_000);
         for _ in 0..30 {
             history.messages.push(Message::user(large_content.clone()));

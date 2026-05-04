@@ -34,7 +34,7 @@ pub type SteerQueue = Arc<Mutex<Vec<String>>>;
 pub struct ReplConfig {
     pub model: String,
     pub max_tokens: u32,
-    pub enable_thinking: bool,
+    pub reasoning_effort: crate::api::ReasoningEffort,
     pub thinking_budget: u32,
     pub safe_mode: bool,
 }
@@ -43,14 +43,14 @@ impl ReplConfig {
     pub fn new(
         model: String,
         max_tokens: u32,
-        enable_thinking: bool,
+        reasoning_effort: crate::api::ReasoningEffort,
         thinking_budget: u32,
         safe_mode: bool,
     ) -> Self {
         Self {
             model,
             max_tokens,
-            enable_thinking,
+            reasoning_effort,
             thinking_budget,
             safe_mode,
         }
@@ -140,7 +140,7 @@ impl Repl {
         }
 
         // Validate thinking budget
-        if config.enable_thinking && config.thinking_budget >= config.max_tokens {
+        if config.reasoning_effort.is_enabled() && config.thinking_budget >= config.max_tokens {
             return Err(SofosError::Config(format!(
                 "thinking_budget ({}) must be less than max_tokens ({})",
                 config.thinking_budget, config.max_tokens
@@ -150,6 +150,9 @@ impl Repl {
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
         conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
+        conversation.set_auto_compact_token_limit(crate::config::auto_compact_token_limit_for(
+            &config.model,
+        ));
 
         if config.safe_mode {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
@@ -161,7 +164,7 @@ impl Repl {
         let model_config = ModelConfig::new(
             config.model,
             config.max_tokens,
-            config.enable_thinking,
+            config.reasoning_effort,
             config.thinking_budget,
         );
 
@@ -229,24 +232,20 @@ impl Repl {
 
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
+        let effort = self.model_config.reasoning_effort;
         let reasoning = if self.uses_adaptive_thinking() {
             // Opus 4.7 picks its own budget; showing a fixed token count
             // would be misleading, so render the `output_config.effort`
             // value we actually send instead.
-            format!(
-                "effort: {}",
-                crate::api::anthropic::effort_label(self.model_config.enable_thinking)
-            )
+            format!("effort: {}", crate::api::anthropic::effort_label(effort))
         } else if matches!(self.client, Anthropic(_)) {
-            if self.model_config.enable_thinking {
+            if effort.is_enabled() {
                 format!("thinking: {} tok", self.model_config.thinking_budget)
             } else {
                 "thinking: off".to_string()
             }
-        } else if self.model_config.enable_thinking {
-            "effort: high".to_string()
         } else {
-            "effort: low".to_string()
+            format!("effort: {}", effort.as_label())
         };
 
         tui::event::StatusSnapshot {
@@ -599,7 +598,7 @@ impl Repl {
             self.session_state.conversation.clone(),
             self.model_config.model.clone(),
             self.model_config.max_tokens,
-            self.model_config.enable_thinking,
+            self.model_config.reasoning_effort,
             self.model_config.thinking_budget,
             self.available_tools.clone(),
             use_streaming,
@@ -615,6 +614,7 @@ impl Repl {
             &mut self.session_state.total_output_tokens,
             &mut self.session_state.total_cache_read_tokens,
             &mut self.session_state.total_cache_creation_tokens,
+            &mut self.session_state.peak_single_turn_input_tokens,
         ));
 
         // Always preserve conversation state so the AI retains context on retry
@@ -669,7 +669,7 @@ impl Repl {
             self.model_config.max_tokens,
             &self.session_state.conversation,
             self.get_available_tools(),
-            self.model_config.enable_thinking,
+            self.model_config.reasoning_effort,
             self.model_config.thinking_budget,
             &self.session_state.session_id,
         )
@@ -688,6 +688,7 @@ impl Repl {
             self.session_state.total_output_tokens,
             self.session_state.total_cache_read_tokens,
             self.session_state.total_cache_creation_tokens,
+            self.session_state.peak_single_turn_input_tokens,
         );
 
         Ok(())
@@ -717,6 +718,7 @@ impl Repl {
             output_tokens: self.session_state.total_output_tokens,
             cache_read_tokens: self.session_state.total_cache_read_tokens,
             cache_creation_tokens: self.session_state.total_cache_creation_tokens,
+            peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
         }
     }
 
@@ -762,20 +764,20 @@ impl Repl {
             && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
     }
 
-    /// Print the reasoning-state line shared by `/think on|off|status` —
-    /// three flavours: adaptive effort, Anthropic manual budget, OpenAI
+    /// Print the reasoning-state line shared by the `/think` handlers.
+    /// Three flavours: adaptive effort, Anthropic manual budget, OpenAI
     /// reasoning effort. Writing this once keeps the wording identical
-    /// across the three commands.
+    /// across the commands.
     fn print_reasoning_state(&self) {
+        let effort = self.model_config.reasoning_effort;
         if self.uses_adaptive_thinking() {
-            let effort = crate::api::anthropic::effort_label(self.model_config.enable_thinking);
             println!(
                 "\n{} {}\n",
                 "Adaptive thinking effort:".bright_green(),
-                effort
+                crate::api::anthropic::effort_label(effort)
             );
         } else if matches!(self.client, Anthropic(_)) {
-            if self.model_config.enable_thinking {
+            if effort.is_enabled() {
                 println!(
                     "\n{} (budget: {} tokens)\n",
                     "Extended thinking: enabled".bright_green(),
@@ -785,22 +787,16 @@ impl Repl {
                 println!("\n{}\n", "Extended thinking: disabled".bright_yellow());
             }
         } else {
-            let effort = if self.model_config.enable_thinking {
-                crate::api::Reasoning::enabled().effort
-            } else {
-                crate::api::Reasoning::disabled().effort
-            };
-            println!("\n{} {}\n", "Reasoning effort:".bright_green(), effort);
+            println!(
+                "\n{} {}\n",
+                "Reasoning effort:".bright_green(),
+                effort.as_label()
+            );
         }
     }
 
-    pub fn handle_think_on(&mut self) {
-        self.model_config.set_thinking(true);
-        self.print_reasoning_state();
-    }
-
-    pub fn handle_think_off(&mut self) {
-        self.model_config.set_thinking(false);
+    pub fn handle_think_set(&mut self, effort: crate::api::ReasoningEffort) {
+        self.model_config.set_reasoning_effort(effort);
         self.print_reasoning_state();
     }
 
@@ -966,6 +962,10 @@ impl Repl {
             // Reuse the session id so the summarization call shares the
             // OpenAI prompt-cache shard with the rest of the session.
             prompt_cache_key: Some(self.session_state.session_id.clone()),
+            // The summarization call is itself a one-shot request, not
+            // a long-running conversation, so server-side compaction
+            // would be a no-op even on supported models.
+            context_management: None,
         };
 
         let interrupt_flag = Arc::clone(&self.interrupt_flag);

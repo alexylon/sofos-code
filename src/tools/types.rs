@@ -1,4 +1,4 @@
-use crate::api::{CacheControl, Tool};
+use crate::api::Tool;
 use serde_json::json;
 
 fn read_file_tool() -> Tool {
@@ -15,7 +15,7 @@ fn read_file_tool() -> Tool {
             },
             "required": ["path"]
         }),
-        cache_control: Some(CacheControl::ephemeral(None)),
+        cache_control: None,
     }
 }
 

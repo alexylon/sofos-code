@@ -21,7 +21,7 @@ pub struct ResponseHandler {
     ui: UI,
     model: String,
     max_tokens: u32,
-    enable_thinking: bool,
+    reasoning_effort: crate::api::ReasoningEffort,
     thinking_budget: u32,
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
@@ -39,7 +39,7 @@ impl ResponseHandler {
         conversation: ConversationHistory,
         model: String,
         max_tokens: u32,
-        enable_thinking: bool,
+        reasoning_effort: crate::api::ReasoningEffort,
         thinking_budget: u32,
         available_tools: Vec<crate::api::Tool>,
         use_streaming: bool,
@@ -54,7 +54,7 @@ impl ResponseHandler {
             ui: UI::new(),
             model,
             max_tokens,
-            enable_thinking,
+            reasoning_effort,
             thinking_budget,
             config: SofosConfig::default(),
             available_tools,
@@ -66,8 +66,8 @@ impl ResponseHandler {
     }
 
     /// Fold a `Usage` payload into the per-turn running totals carried
-    /// by `handle_response`. Centralised so the four-counter increment
-    /// stays consistent across the three sites that consume responses
+    /// by `handle_response`. Centralised so the counter increments
+    /// stay consistent across the three sites that consume responses
     /// (auto-continue after reasoning-only blocks, tool-result loop,
     /// max-iterations summary).
     fn accumulate_usage(
@@ -76,11 +76,15 @@ impl ResponseHandler {
         total_output: &mut u32,
         total_cache_read: &mut u32,
         total_cache_creation: &mut u32,
+        peak_single_turn_input: &mut u32,
     ) {
         *total_input += usage.input_tokens;
         *total_output += usage.output_tokens;
         *total_cache_read += usage.cache_read_input_tokens.unwrap_or(0);
         *total_cache_creation += usage.cache_creation_input_tokens.unwrap_or(0);
+        if usage.input_tokens > *peak_single_turn_input {
+            *peak_single_turn_input = usage.input_tokens;
+        }
     }
 
     /// Atomically drain all pending steer messages the user typed while
@@ -110,6 +114,7 @@ impl ResponseHandler {
         total_output_tokens: &mut u32,
         total_cache_read_tokens: &mut u32,
         total_cache_creation_tokens: &mut u32,
+        peak_single_turn_input_tokens: &mut u32,
     ) -> Result<()> {
         let mut iteration = 0;
 
@@ -131,6 +136,7 @@ impl ResponseHandler {
                     total_output_tokens,
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
+                    peak_single_turn_input_tokens,
                 )
                 .await?;
                 return Ok(());
@@ -183,6 +189,7 @@ impl ResponseHandler {
                     total_output_tokens,
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
+                    peak_single_turn_input_tokens,
                 );
 
                 if response.content.is_empty() {
@@ -257,6 +264,7 @@ impl ResponseHandler {
                 total_output_tokens,
                 total_cache_read_tokens,
                 total_cache_creation_tokens,
+                peak_single_turn_input_tokens,
             );
 
             if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -316,6 +324,26 @@ impl ResponseHandler {
                 ContentBlock::Summary { summary } => {
                     if !self.use_streaming {
                         self.ui.print_thinking(summary);
+                    }
+                    had_reasoning = true;
+                }
+                ContentBlock::Compaction { content } => {
+                    // Surface the compaction summary so the user can
+                    // see what the server kept after dropping older
+                    // turns. Doesn't count as reasoning for the
+                    // auto-continue-after-reasoning-only branch.
+                    if !self.use_streaming {
+                        self.ui.print_thinking(&format!(
+                            "[server compacted earlier conversation]\n{}",
+                            content
+                        ));
+                    }
+                }
+                ContentBlock::Reasoning { summary, .. } => {
+                    if !self.use_streaming {
+                        for line in summary {
+                            self.ui.print_thinking(line);
+                        }
                     }
                     had_reasoning = true;
                 }
@@ -598,6 +626,7 @@ impl ResponseHandler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_max_iterations(
         &mut self,
         display_messages: &mut Vec<DisplayMessage>,
@@ -605,6 +634,7 @@ impl ResponseHandler {
         total_output_tokens: &mut u32,
         total_cache_read_tokens: &mut u32,
         total_cache_creation_tokens: &mut u32,
+        peak_single_turn_input_tokens: &mut u32,
     ) -> Result<()> {
         UI::print_warning("Maximum tool iterations reached. Stopping to prevent infinite loop.");
 
@@ -642,6 +672,7 @@ impl ResponseHandler {
                     total_output_tokens,
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
+                    peak_single_turn_input_tokens,
                 );
 
                 for block in &response.content {
@@ -686,7 +717,7 @@ impl ResponseHandler {
             self.max_tokens,
             &self.conversation,
             self.get_available_tools(),
-            self.enable_thinking,
+            self.reasoning_effort,
             self.thinking_budget,
             &self.session_id,
         )

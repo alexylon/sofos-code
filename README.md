@@ -112,8 +112,8 @@ sofos
 
 - `/resume` - Resume previous session
 - `/clear` - Clear conversation history
-- `/think [on|off]` - Toggle extended thinking (shows status if no arg)
-- `/compact` - Summarize older messages via the LLM to reclaim context tokens (auto-triggers at 80% usage)
+- `/think [off|low|medium|high]` - Set reasoning effort (shows status if no arg)
+- `/compact` - Summarize older messages via the LLM to reclaim context tokens. Triggers automatically at the per-model auto-compact threshold (~250K tokens on 1M-window models, ~170K on Haiku, ~250K on Codex). On Claude Opus 4.7 / 4.6 / Sonnet 4.6 the API itself runs the summarization server-side via the `compact-2026-01-12` beta — no extra round-trip.
 - `/s` - Safe mode (read-only, prompt: **`:`**)
 - `/n` - Normal mode (all tools, prompt: **`>`**)
 - `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
@@ -125,7 +125,7 @@ sofos
 
 **Scrollback:** Sofos runs as an inline viewport at the bottom of your terminal — the rest of the terminal is normal scrollback, so use your terminal emulator's own scrollbar, mouse wheel, and text selection / copy-paste.
 
-**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`thinking: <N> tok` / `effort: high`), and running token totals.
+**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`effort: off|low|medium|high` for OpenAI and Claude Opus 4.7+; `thinking: <N> tok` for older Claude models with manual budgets), and running token totals.
 
 ### Image Vision
 
@@ -151,7 +151,9 @@ Analyze https://example.com/chart.png
 
 ### Cost Tracking
 
-Exit summary shows token usage and estimated cost based on official API pricing. When the provider prompt cache served any tokens during the session, a `cache read: N (M% hit)` row appears under the input total, and the estimated cost reflects the cache discount (10% of base input on both providers, plus 125% for Anthropic 5-min cache writes).
+Exit summary shows token usage and estimated cost based on official API pricing. When the provider prompt cache served any tokens during the session, a `cache read: N (M% hit)` row appears under the input total, and the estimated cost reflects the cache discount (10% of base input on both providers, plus 125% for Anthropic 5-min writes and 200% for 1-hour writes).
+
+**Tiered pricing detection.** GPT-5.4 and GPT-5.5 charge a session-wide premium (2× input, 1.5× output) once any single prompt crosses 272K input tokens. Sofos tracks the largest single-turn input observed and switches the cost calculator to premium rates if the cliff is ever crossed, so the displayed cost reflects what OpenAI actually bills.
 
 ### CLI Options
 
@@ -166,25 +168,31 @@ Exit summary shows token usage and estimated cost based on official API pricing.
     --model <MODEL>          Model to use (default: claude-sonnet-4-6)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
     --max-tokens <N>         Max response tokens (default: 32768)
--t, --enable-thinking        Enable extended thinking (default: false)
-    --thinking-budget <N>    Token budget for thinking (Claude only, default: 5120, must be < max-tokens)
+-e, --reasoning-effort <LV>  Reasoning effort: off, low, medium, high (default: medium)
+    --thinking-budget <N>    Token budget for older Claude models with manual budgets (default: 5120, must be < max-tokens). Ignored on Claude Opus 4.7+ and on OpenAI.
 -v, --verbose                Verbose logging
 ```
 
-### Extended Thinking
+### Reasoning Effort
 
-Enable for complex reasoning tasks (disabled by default):
+Sofos exposes four levels — `off`, `low`, `medium`, `high` — applied uniformly across providers. Default is `medium`; `high` is opt-in because it materially raises hidden-reasoning token cost on routine coding work.
 
 ```bash
-sofos -t                                             # Default 5120 token budget (Claude 4.5 / 4.6)
-sofos -t --thinking-budget 10000 --max-tokens 16000  # Custom budget (Claude 4.5 / 4.6)
+sofos -e medium                             # Default — sensible cost/quality balance
+sofos -e high                               # Hard tasks, willing to pay more
+sofos -e off                                # Cheapest path; no reasoning summary
+
+# Mid-session
+/think high                                 # Bump up
+/think off                                  # Drop to minimal
+/think                                      # Show current
 ```
 
-**Note:** Extended thinking works with both Claude and OpenAI models.
+**Per-provider mapping:**
 
-- **Claude 4.5 / 4.6** uses a manual token budget controlled by `--thinking-budget` (default `5120`).
-- **Claude Opus 4.7** uses adaptive thinking — the server picks the budget based on the prompt, and sofos sends `effort: high` when thinking is on and `effort: low` when off. `--thinking-budget` is ignored for this model; the status line shows `effort: high|low` instead of a token count.
-- **OpenAI (gpt-5 models)** — `/think on` sets high reasoning effort and `/think off` sets low. `--thinking-budget` is ignored.
+- **OpenAI (gpt-5 family)** — sends `reasoning.effort` matching the level (`minimal` for `off`, `low`/`medium`/`high` otherwise) and `summary: "auto"` when on, omitted when off.
+- **Claude Opus 4.7** — adaptive thinking; the server picks the budget based on the prompt, and sofos sends `output_config.effort` matching the level (`off` collapses to `low`, the lowest the API accepts). `--thinking-budget` is ignored.
+- **Older Claude (Sonnet 4.6, Opus 4.6, Haiku 4.5)** — `off` disables extended thinking; `low/medium/high` all enable it with the `--thinking-budget` token budget (default `5120`). The level is treated uniformly here pending per-tier budget mapping.
 
 ## Custom Instructions
 

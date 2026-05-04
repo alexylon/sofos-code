@@ -4,6 +4,35 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Anthropic server-side compaction** is now enabled on Claude Opus 4.7, Opus 4.6, and Sonnet 4.6. Sofos sends the `compact-2026-01-12` beta header and a `context_management.edits[type=compact_20260112]` block on every request to those models; when the request crosses the per-model auto-compact threshold (~250K tokens), the API itself summarises older turns and returns a `compaction` content block, dropping the pre-compaction messages server-side on subsequent requests. No extra round-trip — the compaction summary arrives in the same response as the user's reply.
+- **OpenAI encrypted-reasoning round-trip.** Requests that enable reasoning now include `include: ["reasoning.encrypted_content"]`. Sofos captures the opaque encrypted-CoT blob alongside the visible reasoning summary and round-trips both on the next call, so the model resumes its hidden chain-of-thought across tool calls instead of regenerating it. Cuts hidden-reasoning output tokens on multi-call agentic turns.
+- **Per-model `ModelInfo` registry** consolidates context-window, auto-compact threshold, adaptive-thinking flag, server-compaction flag, and pricing (including tiered-pricing rules) into one struct per model. Adding a new model is one struct literal in `src/api/model_info.rs`.
+- **Tiered-pricing detection for GPT-5.4 and GPT-5.5.** Sofos tracks the largest single-turn input observed across the session. If any single prompt crosses the documented 272K threshold, the cost calculator switches to premium rates (2× input, 1.5× output) for the rest of the session — matching what OpenAI actually bills.
+- **1-hour cache TTL on stable prefixes.** System prompt, the last-listed tool definition, and the sticky message anchor now use Anthropic's `ttl: "1h"` ephemeral cache. The rolling breakpoint stays at 5 min because it moves every turn; paying the 2× write premium for a one-turn slot would burn cache writes for nothing.
+- **Middle truncation for tool outputs.** Large bash / search / file-read / diff / MCP outputs preserve both the head and the tail (separated by a `…N tokens truncated…` marker) instead of the head-only cut sofos previously applied. The diagnostic tail (last error line, ripgrep totals, exit messages) now survives truncation.
+- **`compaction` content block type** added to the on-the-wire schema and the saved-session schema, so Anthropic's server-side summaries persist across save / load.
+- **Honest server-side cost line.** The session summary now correctly accounts for the 1-hour cache write premium (200% of base input) on top of the existing 5-minute cache write premium (125%).
+
+### Changed
+
+- **CLI `-t` / `--enable-thinking` is replaced with `-e` / `--reasoning-effort <off|low|medium|high>`** (default `medium`). The previous binary on/off knob is gone — `medium` is now the default-on state because `high` materially raises hidden-reasoning token cost on routine coding work, and `off` is the absolute-cheapest path. **Breaking change**: scripts using `-t` need updating.
+- **`/think on` / `/think off` are replaced with `/think <off|low|medium|high>`.** `/think` (no argument) still shows status. `on` and `off` no longer parse as commands. **Breaking change**.
+- **Auto-compact threshold lowered.** Conversations now compact at ~250K tokens on 1M-window models (Opus 4.7 / 4.6, Sonnet 4.6, GPT-5.4 / 5.5), ~170K on Haiku 4.5, ~250K on the GPT-5.3-Codex 400K window. Previously sat at 800K (non-codex) / 300K (codex), which left meaningful cost on the table re-sending huge prefixes on every tool round-trip.
+- **Default reasoning effort is now `medium`** (was `high`). Verified roughly 3–5× cheaper hidden-reasoning bill on routine coding turns. Use `-e high` or `/think high` for hard tasks.
+- **Reasoning summaries are suppressed on the OpenAI thinking-off path.** When `effort: off`, sofos sends `reasoning.effort = "minimal"` with no `summary` field, so the model returns no summary blocks at all (they bill as output tokens).
+- **Model context windows corrected.** Claude Opus 4.7 / 4.6 and Sonnet 4.6 are 1,000,000 tokens (were 200K in the table); GPT-5.4 and GPT-5.5 are 1,050,000 tokens (were 400K). The drop-trim safety floor is now per-model API-aware (95% of the real window) instead of a flat 250K.
+- **Anthropic beta header now opts into both `token-efficient-tools-2025-02-19` and `compact-2026-01-12`.**
+
+### Fixed
+
+- **OpenAI reasoning items round-trip in the right order relative to their assistant message.** Reasoning items were being emitted in the input array *after* the message they preceded, breaking encrypted_content round-trip continuity on the server side. Now correctly placed before.
+- **Tool-cache breakpoint actually lands on Anthropic when OpenAI's web-search tool is registered.** The stamper used to no-op when `OpenAIWebSearch` was the last entry in the tool list, leaving Anthropic with no tool-defs cache breakpoint at all. Now finds the last *Anthropic-compatible* tool to stamp.
+- **OpenAI `Reasoning` blocks no longer leak to Anthropic on provider switch.** A session that started on OpenAI accumulates `Reasoning` content blocks; switching to Anthropic mid-session would have sent those blocks to the Messages API, which doesn't recognise the type. The Anthropic sanitiser now drops them.
+- **`peak_single_turn_input_tokens` is updated for every iteration of multi-tool turns**, not just the first. Long tool chains crossing the GPT-5.5 272K cliff inside the loop now correctly switch the cost line to premium rates.
+- **Stale duplicate cache breakpoint on `read_file_tool` removed.** The tool definition carried an inline `cache_control` that, combined with the request-builder's last-tool stamp, could push the request to a 5th breakpoint (Anthropic limits to 4).
+
 ## [0.2.7] - 2026-05-04
 
 ### Fixed

@@ -18,8 +18,7 @@ pub enum Command {
     Exit,
     Clear,
     Resume,
-    ThinkOn,
-    ThinkOff,
+    ThinkSet(crate::api::ReasoningEffort),
     ThinkStatus,
     SafeMode,
     NormalMode,
@@ -28,17 +27,22 @@ pub enum Command {
 
 impl Command {
     pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
+        let lower = s.to_lowercase();
+        match lower.as_str() {
             "/exit" | "/quit" | "/q" => Some(Command::Exit),
             "/clear" => Some(Command::Clear),
             "/resume" => Some(Command::Resume),
-            "/think on" => Some(Command::ThinkOn),
-            "/think off" => Some(Command::ThinkOff),
             "/think" => Some(Command::ThinkStatus),
             "/s" => Some(Command::SafeMode),
             "/n" => Some(Command::NormalMode),
             "/compact" => Some(Command::Compact),
-            _ => None,
+            _ => {
+                if let Some(arg) = lower.strip_prefix("/think ") {
+                    crate::api::ReasoningEffort::parse(arg).map(Command::ThinkSet)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -47,8 +51,7 @@ impl Command {
             Command::Exit => builtin::exit_command(repl),
             Command::Clear => builtin::clear_command(repl),
             Command::Resume => builtin::resume_command(repl),
-            Command::ThinkOn => builtin::think_on_command(repl),
-            Command::ThinkOff => builtin::think_off_command(repl),
+            Command::ThinkSet(effort) => builtin::think_set_command(repl, *effort),
             Command::ThinkStatus => builtin::think_status_command(repl),
             Command::SafeMode => builtin::safe_mode_command(repl),
             Command::NormalMode => builtin::normal_mode_command(repl),
@@ -64,8 +67,10 @@ pub static COMMANDS: &[&str] = &[
     "/q",
     "/clear",
     "/resume",
-    "/think on",
     "/think off",
+    "/think low",
+    "/think medium",
+    "/think high",
     "/think",
     "/s",
     "/n",

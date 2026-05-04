@@ -23,13 +23,11 @@ pub fn resume_command(repl: &mut Repl) -> Result<CommandResult> {
     Ok(CommandResult::Continue)
 }
 
-pub fn think_on_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.handle_think_on();
-    Ok(CommandResult::Continue)
-}
-
-pub fn think_off_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.handle_think_off();
+pub fn think_set_command(
+    repl: &mut Repl,
+    effort: crate::api::ReasoningEffort,
+) -> Result<CommandResult> {
+    repl.handle_think_set(effort);
     Ok(CommandResult::Continue)
 }
 

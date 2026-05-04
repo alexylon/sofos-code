@@ -146,32 +146,40 @@ impl TruncationKind {
         }
     }
 
-    fn suffix(&self, estimated_tokens: usize, shown_tokens: usize) -> String {
+    fn suffix(&self, estimated_tokens: usize, kept_tokens: usize) -> String {
         let (subject, hint) = self.subject_and_hint();
         format!(
-            "[TRUNCATED: {} has ~{} tokens, showing first ~{} tokens. {}]",
-            subject, estimated_tokens, shown_tokens, hint
+            "[TRUNCATED: {} has ~{} tokens, kept head + tail totaling ~{} tokens. {}]",
+            subject, estimated_tokens, kept_tokens, hint
         )
     }
 }
 
 /// Truncate `content` to at most `max_tokens` token-equivalents
-/// (4 chars ≈ 1 token) and append an informational suffix describing the
-/// drop. The cut point is snapped to the nearest UTF-8 char boundary so
-/// multi-byte scalars (Cyrillic, CJK, emoji) never get split — raw byte
-/// slicing would panic on those.
+/// (4 chars ≈ 1 token) using middle truncation: the prefix and suffix
+/// of the original content are both kept, and the elided middle is
+/// replaced with a marker. Tail preservation matters because diagnostic
+/// tail (last error line, final summary, ripgrep totals) is often the
+/// signal the model needs after a long preamble. The cut points snap
+/// to UTF-8 char boundaries so multi-byte scalars (CJK, Cyrillic,
+/// emoji) never get split.
+///
+/// On truncation the per-kind remediation hint from
+/// [`TruncationKind::suffix`] is appended, telling the model how to
+/// recover (re-run with redirection, request a line range, narrow the
+/// pattern, etc.).
 pub fn truncate_for_context(content: &str, max_tokens: usize, kind: TruncationKind) -> String {
+    use crate::api::truncate::truncate_middle_with_token_budget;
     let estimated_tokens = content.len() / 4;
-    if estimated_tokens > max_tokens {
-        let truncate_at = crate::api::utils::truncate_at_char_boundary(content, max_tokens * 4);
-        let truncated_content = &content[..truncate_at];
+    let (truncated, removed) = truncate_middle_with_token_budget(content, max_tokens);
+    if removed.is_some() {
         format!(
-            "{}...\n\n{}",
-            truncated_content,
+            "{}\n\n{}",
+            truncated,
             kind.suffix(estimated_tokens, max_tokens)
         )
     } else {
-        content.to_string()
+        truncated
     }
 }
 

@@ -104,7 +104,7 @@ fn main() -> Result<()> {
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Reasoning effort:".bright_green(),
-            crate::api::anthropic::effort_label(cli.enable_thinking)
+            cli.reasoning_effort.as_label()
         ));
     } else if crate::api::anthropic::requires_adaptive_thinking(&cli.model) {
         // Opus 4.7 picks its own budget; advertising a token count would be
@@ -112,9 +112,9 @@ fn main() -> Result<()> {
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Adaptive thinking effort:".bright_green(),
-            crate::api::anthropic::effort_label(cli.enable_thinking)
+            crate::api::anthropic::effort_label(cli.reasoning_effort)
         ));
-    } else if cli.enable_thinking {
+    } else if cli.reasoning_effort.is_enabled() {
         startup_banner.push_str(&format!(
             "{} (budget: {} tokens)\n",
             "Extended thinking: enabled".bright_green(),
@@ -145,7 +145,7 @@ fn main() -> Result<()> {
     let config = ReplConfig::new(
         cli.model,
         cli.max_tokens,
-        cli.enable_thinking,
+        cli.reasoning_effort,
         cli.thinking_budget,
         cli.safe_mode,
     );

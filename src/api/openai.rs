@@ -157,12 +157,41 @@ impl OpenAIClient {
                     }
                 }
                 "reasoning" => {
-                    for summary in item.summary {
-                        if summary.summary_type == "summary_text" && !summary.text.trim().is_empty()
-                        {
-                            content_blocks.push(ContentBlock::Summary {
-                                summary: summary.text,
-                            });
+                    // Pack the whole reasoning output item (id + every
+                    // summary entry + encrypted_content) into one block
+                    // so the next request can round-trip it as a single
+                    // `{type: "reasoning"}` input item. Splitting it
+                    // into one Summary block per entry would lose the
+                    // shared `id`/`encrypted_content` and force the
+                    // server to rederive the hidden chain-of-thought
+                    // on every tool round-trip.
+                    let summary_texts: Vec<String> = item
+                        .summary
+                        .into_iter()
+                        .filter(|s| s.summary_type == "summary_text" && !s.text.trim().is_empty())
+                        .map(|s| s.text)
+                        .collect();
+                    if let Some(rid) = item.id {
+                        // TODO: if `summary_texts` is empty AND
+                        // `item.encrypted_content` is None, we
+                        // round-trip an empty reasoning shell
+                        // (`{type: "reasoning", id, summary: []}`).
+                        // Theoretical wire-shape edge case — OpenAI
+                        // may reject it. Drop the block in that
+                        // configuration if it ever shows up in real
+                        // responses.
+                        content_blocks.push(ContentBlock::Reasoning {
+                            id: rid,
+                            summary: summary_texts,
+                            encrypted_content: item.encrypted_content,
+                        });
+                    } else {
+                        // No id means this isn't a real reasoning item
+                        // (e.g. an old payload predating the field) —
+                        // fall back to per-text Summary blocks so the
+                        // visible reasoning still surfaces.
+                        for text in summary_texts {
+                            content_blocks.push(ContentBlock::Summary { summary: text });
                         }
                     }
                 }
@@ -234,6 +263,15 @@ fn build_responses_body(request: &CreateMessageRequest) -> serde_json::Value {
         "reasoning": request.reasoning,
     });
 
+    // Ask the server to surface the encrypted hidden chain-of-thought
+    // alongside reasoning items so we can round-trip it on the next
+    // call. Without this, every tool round-trip forces the model to
+    // rederive its reasoning from scratch — billed as fresh output
+    // tokens at the reasoning-output rate.
+    if request.reasoning.is_some() {
+        body["include"] = json!(["reasoning.encrypted_content"]);
+    }
+
     if let Some(ref cache_key) = request.prompt_cache_key {
         body["prompt_cache_key"] = json!(cache_key);
     }
@@ -293,7 +331,15 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
         };
 
         let mut parts = Vec::new();
-        // Collect function_call and function_call_output items to emit after the message
+        // Reasoning items round-trip as top-level input items emitted
+        // **before** the surrounding message, matching OpenAI's
+        // response-time ordering (reasoning → text → tool_calls).
+        // Putting them after would still serialize, but breaks the
+        // chronology the server uses to pair reasoning with its reply.
+        let mut pre_message_items: Vec<serde_json::Value> = Vec::new();
+        // function_call / function_call_output items come **after** the
+        // message because OpenAI's reference shape pairs each call to
+        // the assistant turn that emitted it.
         let mut deferred_items: Vec<serde_json::Value> = Vec::new();
 
         match &msg.content {
@@ -311,6 +357,48 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
                         }
                         MessageContentBlock::Summary { summary, .. } => {
                             parts.push(text_part("output_text", summary));
+                        }
+                        MessageContentBlock::Compaction { .. } => {
+                            // Anthropic-only block; OpenAI never sees
+                            // it because we don't enable server-side
+                            // compaction on the OpenAI path. If a
+                            // session was migrated from Anthropic, the
+                            // compaction summary is already accounted
+                            // for in the surviving conversation tail,
+                            // so silently skipping it here is correct.
+                        }
+                        MessageContentBlock::Reasoning {
+                            id,
+                            summary,
+                            encrypted_content,
+                            ..
+                        } => {
+                            // Round-trip the OpenAI reasoning item as a
+                            // top-level input item so the server resumes
+                            // the prior hidden chain-of-thought instead
+                            // of regenerating it. `summary` items must
+                            // be wrapped in `{type: "summary_text"}`,
+                            // and `encrypted_content` is only present
+                            // when the prior request set
+                            // `include: ["reasoning.encrypted_content"]`.
+                            let summary_items: Vec<serde_json::Value> = summary
+                                .iter()
+                                .map(|text| {
+                                    json!({
+                                        "type": "summary_text",
+                                        "text": text,
+                                    })
+                                })
+                                .collect();
+                            let mut item = json!({
+                                "type": "reasoning",
+                                "id": id,
+                                "summary": summary_items,
+                            });
+                            if let Some(enc) = encrypted_content {
+                                item["encrypted_content"] = json!(enc);
+                            }
+                            pre_message_items.push(item);
                         }
                         MessageContentBlock::ToolUse {
                             id,
@@ -383,6 +471,11 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
             }
         }
 
+        // Reasoning first (it preceded the assistant text in the
+        // original response), then the message block, then tool calls
+        // and tool results.
+        input.extend(pre_message_items);
+
         if !parts.is_empty() {
             input.push(json!({
                 "role": msg.role,
@@ -390,7 +483,6 @@ fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value
             }));
         }
 
-        // Emit function_call / function_call_output as top-level input items
         input.extend(deferred_items);
     }
 
@@ -420,10 +512,21 @@ struct OpenAIIncompleteDetails {
 struct OpenAIOutputItem {
     #[serde(rename = "type")]
     item_type: String,
+    /// `reasoning` items carry an `id` (e.g. `rs_…`) that pairs with
+    /// `encrypted_content` for round-trip continuity. `function_call`
+    /// items also have an `id` we don't currently use (we use `call_id`
+    /// instead), so this field is shared.
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     content: Vec<OpenAIOutputContent>,
     #[serde(default)]
     summary: Vec<OpenAIOutputSummary>,
+    /// Opaque blob the server uses to resume hidden chain-of-thought
+    /// on the next request. Returned only when the request set
+    /// `include: ["reasoning.encrypted_content"]`.
+    #[serde(default)]
+    encrypted_content: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAIOutputToolCall>>,
     // Fields for when the item type is "function_call"
@@ -491,6 +594,7 @@ mod tests {
             output_config: None,
             reasoning: None,
             prompt_cache_key: key.map(str::to_string),
+            context_management: None,
         }
     }
 
@@ -504,6 +608,128 @@ mod tests {
     fn responses_body_omits_prompt_cache_key_when_none() {
         let body = build_responses_body(&req_with_cache_key(None));
         assert!(body.get("prompt_cache_key").is_none());
+    }
+
+    #[test]
+    fn responses_body_sets_include_when_reasoning_is_set() {
+        let mut req = req_with_cache_key(None);
+        req.reasoning = Some(crate::api::Reasoning::with_effort("medium"));
+        let body = build_responses_body(&req);
+        let include = body.get("include").and_then(|v| v.as_array()).cloned();
+        assert_eq!(
+            include,
+            Some(vec![serde_json::json!("reasoning.encrypted_content")]),
+            "reasoning round-trip requires include[reasoning.encrypted_content]"
+        );
+    }
+
+    #[test]
+    fn responses_body_omits_include_when_reasoning_is_none() {
+        let body = build_responses_body(&req_with_cache_key(None));
+        assert!(
+            body.get("include").is_none(),
+            "no reasoning means nothing to round-trip; sending include would be wasted bytes"
+        );
+    }
+
+    #[test]
+    fn reasoning_block_serializes_back_with_encrypted_content() {
+        use crate::api::{CreateMessageRequest, Message, MessageContent, MessageContentBlock};
+        let req = CreateMessageRequest {
+            model: "gpt-5.5".to_string(),
+            max_tokens: 4096,
+            messages: vec![Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Blocks {
+                    content: vec![MessageContentBlock::Reasoning {
+                        id: "rs_abc123".to_string(),
+                        summary: vec!["Thought one.".to_string(), "Thought two.".to_string()],
+                        encrypted_content: Some("OPAQUE_BLOB".to_string()),
+                        cache_control: None,
+                    }],
+                },
+            }],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: None,
+            output_config: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            context_management: None,
+        };
+        let body = build_responses_body(&req);
+        let inputs = body
+            .get("input")
+            .and_then(|v| v.as_array())
+            .expect("input array");
+        let reasoning_item = inputs
+            .iter()
+            .find(|item| item.get("type") == Some(&serde_json::json!("reasoning")))
+            .expect("reasoning input item");
+        assert_eq!(reasoning_item["id"], "rs_abc123");
+        assert_eq!(reasoning_item["encrypted_content"], "OPAQUE_BLOB");
+        let summary = reasoning_item["summary"].as_array().unwrap();
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary[0]["type"], "summary_text");
+        assert_eq!(summary[0]["text"], "Thought one.");
+        assert_eq!(summary[1]["text"], "Thought two.");
+    }
+
+    #[test]
+    fn reasoning_serializes_before_its_assistant_message_text() {
+        // Order matters: OpenAI's response chronology is
+        // reasoning → text → tool_calls. Round-tripping reasoning
+        // *after* its message would feed the server an out-of-order
+        // input array. The assistant message in this test mixes a
+        // Reasoning block followed by a Text block (recorded in
+        // generation order); the wire output must preserve that.
+        use crate::api::{CreateMessageRequest, Message, MessageContent, MessageContentBlock};
+        let req = CreateMessageRequest {
+            model: "gpt-5.5".to_string(),
+            max_tokens: 4096,
+            messages: vec![Message {
+                role: "assistant".to_string(),
+                content: MessageContent::Blocks {
+                    content: vec![
+                        MessageContentBlock::Reasoning {
+                            id: "rs_abc".to_string(),
+                            summary: vec!["thinking".to_string()],
+                            encrypted_content: None,
+                            cache_control: None,
+                        },
+                        MessageContentBlock::Text {
+                            text: "and the answer is 42".to_string(),
+                            cache_control: None,
+                        },
+                    ],
+                },
+            }],
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: None,
+            output_config: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            context_management: None,
+        };
+        let body = build_responses_body(&req);
+        let inputs = body.get("input").and_then(|v| v.as_array()).unwrap();
+        let reasoning_idx = inputs
+            .iter()
+            .position(|item| item.get("type") == Some(&serde_json::json!("reasoning")))
+            .expect("reasoning input item");
+        let message_idx = inputs
+            .iter()
+            .position(|item| item.get("role").is_some())
+            .expect("assistant message item");
+        assert!(
+            reasoning_idx < message_idx,
+            "reasoning must come before its assistant message (got reasoning@{}, message@{})",
+            reasoning_idx,
+            message_idx
+        );
     }
 
     #[test]
