@@ -70,17 +70,19 @@ impl McpManager {
                             );
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Warning: Failed to list tools from MCP server '{}': {}",
-                                server_name, e
+                            tracing::warn!(
+                                server = %server_name,
+                                error = %e,
+                                "failed to list tools from MCP server"
                             );
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to connect to MCP server '{}': {}",
-                        server_name, e
+                    tracing::warn!(
+                        server = %server_name,
+                        error = %e,
+                        "failed to connect to MCP server"
                     );
                 }
             }
@@ -113,9 +115,10 @@ impl McpManager {
                     }
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Warning: Failed to list tools from MCP server '{}': {}",
-                        server_name, e
+                    tracing::warn!(
+                        server = %server_name,
+                        error = %e,
+                        "failed to list tools from MCP server"
                     );
                 }
             }

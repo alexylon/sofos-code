@@ -82,7 +82,11 @@ fn load_mcp_config_from_file(
     // Validate all server configs
     for (name, server_config) in &config.mcp_servers {
         if let Err(e) = server_config.validate() {
-            eprintln!("Warning: Invalid MCP server config for '{}': {}", name, e);
+            tracing::warn!(
+                server = %name,
+                error = %e,
+                "invalid MCP server config; skipping"
+            );
         }
     }
 

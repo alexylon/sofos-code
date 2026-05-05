@@ -318,12 +318,11 @@ Show imperial units only when the user explicitly asks for them."#,
             && self.messages.len() <= TRIM_MIN_MESSAGES;
         if at_floor {
             if !self.warned_at_floor {
-                eprintln!(
-                    "⚠️  Auto-trim hit the {floor}-message floor at ~{tokens} tokens (budget {budget}). \
-                     Run /compact or /clear if responses start degrading.",
+                tracing::warn!(
                     floor = TRIM_MIN_MESSAGES,
                     tokens = total_tokens,
                     budget = self.config.max_context_tokens,
+                    "auto-trim hit the message floor; run /compact or /clear if responses degrade"
                 );
                 self.warned_at_floor = true;
             }

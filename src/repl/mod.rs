@@ -111,7 +111,7 @@ impl Repl {
             match McpManager::new(workspace.clone()).await {
                 Ok(manager) => Some(manager),
                 Err(e) => {
-                    eprintln!("Warning: Failed to initialize MCP manager: {}", e);
+                    tracing::warn!(error = %e, "failed to initialize MCP manager");
                     None
                 }
             }
@@ -135,7 +135,7 @@ impl Repl {
         let custom_instructions = history_manager.load_custom_instructions()?;
 
         if custom_instructions.is_some() {
-            eprintln!("{}", "Loaded custom instructions".bright_green());
+            tracing::info!("loaded custom instructions");
         }
 
         // Validate that `max_tokens` leaves room for the largest legacy

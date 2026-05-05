@@ -191,10 +191,10 @@ pub fn parse_tool_arguments(name: &str, args: &str) -> serde_json::Value {
     }
 
     let preview_end = truncate_at_char_boundary(args, UNPARSEABLE_ARGS_PREVIEW_BYTES);
-    eprintln!(
-        "  \x1b[33m⚠\x1b[0m Failed to parse tool arguments as JSON for {}: {}",
-        name,
-        &args[..preview_end]
+    tracing::warn!(
+        tool = %name,
+        preview = %&args[..preview_end],
+        "failed to parse tool arguments as JSON; passing raw_arguments through"
     );
     serde_json::json!({"raw_arguments": args})
 }
