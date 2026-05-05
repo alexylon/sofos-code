@@ -42,6 +42,8 @@ pub struct Cli {
     /// the tool-call JSON, surfacing as "Missing 'path' parameter".
     /// Claude Sonnet 4 and GPT-4.1 both support 32k+; smaller models
     /// cap at their own limit so this is safe as a default.
+    /// Must be > 16384 when reasoning effort is enabled (the legacy
+    /// Anthropic thinking-budget ceiling); the default 32768 satisfies it.
     #[arg(long, default_value = "32768")]
     pub max_tokens: u32,
 
@@ -53,8 +55,11 @@ pub struct Cli {
     #[arg(short = 'e', long, default_value = "medium")]
     pub reasoning_effort: crate::api::ReasoningEffort,
 
-    /// Token budget for non-adaptive Anthropic extended thinking. Ignored
-    /// on OpenAI and on Anthropic adaptive (Opus 4.7+).
+    /// Vestigial. Currently inert on every path: legacy Anthropic uses
+    /// a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
+    /// Anthropic adaptive (Opus 4.7+) uses `output_config.effort`, and
+    /// OpenAI uses `reasoning.effort`. Kept for backwards-compatibility;
+    /// will be removed in a later release.
     #[arg(long, default_value = "5120")]
     pub thinking_budget: u32,
 

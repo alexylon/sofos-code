@@ -8,19 +8,69 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
-/// Comma-separated list of Anthropic beta features sofos opts in to.
-/// `token-efficient-tools-2025-02-19` shrinks tool-call envelopes;
-/// `compact-2026-01-12` enables server-side compaction (the API
-/// generates the summary itself when the request crosses a configured
-/// trigger, then drops earlier messages on subsequent turns).
-///
-/// TODO: `compact-2026-01-12` only applies to Opus 4.7, Opus 4.6,
-/// and Sonnet 4.6. Sending it on a Haiku 4.5 request relies on
-/// Anthropic's "ignore unknown beta tokens" policy. If Anthropic
-/// ever tightens validation, gate the header per-request based on
-/// `ModelInfo::supports_server_compaction` instead of pinning the
-/// value at client construction.
-const ANTHROPIC_BETA: &str = "token-efficient-tools-2025-02-19,compact-2026-01-12";
+/// Header name for Anthropic feature opt-ins.
+const BETA_HEADER_NAME: &str = "anthropic-beta";
+
+/// Universal beta token: shrinks tool-call envelopes. Supported on
+/// every model in the registry, so it ships unconditionally.
+const BETA_TOKEN_EFFICIENT: &str = "token-efficient-tools-2025-02-19";
+
+/// Server-side compaction beta. Gated per-request by [`anthropic_beta_for`]
+/// based on `ModelInfo::supports_server_compaction` so a Haiku 4.5
+/// request doesn't depend on Anthropic's "ignore unknown beta tokens"
+/// policy. The runtime header value comes from
+/// [`BETA_TOKEN_EFFICIENT_AND_COMPACT`] (which embeds this string as a
+/// literal); this const exists so the drift-detection test can verify
+/// the literal stays in sync with its components.
+#[allow(dead_code)]
+const BETA_COMPACT: &str = "compact-2026-01-12";
+
+/// Pre-joined string sent when both betas ship. Spelled out as a
+/// literal because `concat!` only works on literals (so it can't
+/// reference [`BETA_TOKEN_EFFICIENT`]/[`BETA_COMPACT`] directly).
+/// The `beta_with_compact_matches_components` test enforces it stays
+/// in sync with its components.
+const BETA_TOKEN_EFFICIENT_AND_COMPACT: &str =
+    "token-efficient-tools-2025-02-19,compact-2026-01-12";
+
+/// Compute the `anthropic-beta` header value for a single request.
+/// Adds `compact-2026-01-12` when the target model advertises server-
+/// side compaction, otherwise returns the base token unchanged.
+fn anthropic_beta_for(model: &str) -> &'static str {
+    if super::model_info::lookup(model).supports_server_compaction {
+        BETA_TOKEN_EFFICIENT_AND_COMPACT
+    } else {
+        BETA_TOKEN_EFFICIENT
+    }
+}
+
+/// Per-effort `budget_tokens` value for Anthropic's *legacy* non-adaptive
+/// extended-thinking shape (`{type: "enabled", budget_tokens}`). Models
+/// that require adaptive thinking (Opus 4.7+) ignore these and drive
+/// effort through `output_config.effort` instead.
+pub const LEGACY_THINKING_BUDGET_LOW: u32 = 1024;
+pub const LEGACY_THINKING_BUDGET_MEDIUM: u32 = 5120;
+pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
+
+/// Anthropic's documented minimum trigger value for the
+/// `compact_20260112` context-edit. Triggers below this 400 the
+/// request, so the request builder clamps `auto_compact_at` against
+/// this floor.
+pub const COMPACTION_TRIGGER_FLOOR: u32 = 50_000;
+
+/// Map a [`ReasoningEffort`] to the legacy `budget_tokens` value.
+/// `Off` defensively collapses to `LOW` so callers that forget to
+/// pre-guard with `is_enabled()` don't panic; the request builder
+/// still gates the whole legacy branch behind `is_enabled()` so the
+/// `Off` arm is unreachable in practice.
+pub fn legacy_thinking_budget(effort: super::types::ReasoningEffort) -> u32 {
+    use super::types::ReasoningEffort;
+    match effort {
+        ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
+        ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
+        ReasoningEffort::High => LEGACY_THINKING_BUDGET_HIGH,
+    }
+}
 
 /// Return true for models that *only* accept `thinking.type = "adaptive"`
 /// (paired with `output_config.effort`) and reject the legacy
@@ -63,7 +113,9 @@ impl AnthropicClient {
                 .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
-        headers.insert("anthropic-beta", HeaderValue::from_static(ANTHROPIC_BETA));
+        // `anthropic-beta` is set per-request by `anthropic_beta_for`
+        // so the compaction beta only ships when the target model
+        // actually supports it.
 
         let client = utils::build_http_client(headers, utils::REQUEST_TIMEOUT)?;
 
@@ -107,8 +159,16 @@ impl AnthropicClient {
     ) -> Result<CreateMessageResponse> {
         let url = format!("{}/messages", API_BASE);
         let request = Self::prepare_request(request);
+        let beta = anthropic_beta_for(&request.model);
 
-        let response = utils::send_once("Anthropic", self.client.post(&url).json(&request)).await?;
+        let response = utils::send_once(
+            "Anthropic",
+            self.client
+                .post(&url)
+                .header(BETA_HEADER_NAME, beta)
+                .json(&request),
+        )
+        .await?;
 
         let result = response.json::<CreateMessageResponse>().await?;
         Ok(result)
@@ -127,10 +187,18 @@ impl AnthropicClient {
     {
         let mut request = Self::prepare_request(request);
         request.stream = Some(true);
+        let beta = anthropic_beta_for(&request.model);
 
         let url = format!("{}/messages", API_BASE);
 
-        let response = utils::send_once("Anthropic", self.client.post(&url).json(&request)).await?;
+        let response = utils::send_once(
+            "Anthropic",
+            self.client
+                .post(&url)
+                .header(BETA_HEADER_NAME, beta)
+                .json(&request),
+        )
+        .await?;
 
         let mut byte_stream = response.bytes_stream();
         let mut buffer = String::new();
@@ -243,18 +311,33 @@ impl AnthropicClient {
                                     }
                                     current_block_type = None;
                                 }
-                                // TODO: handle `compaction` here.
                                 // Server-side compaction
                                 // (`compact-2026-01-12` beta) emits a
-                                // `compaction` content block with a
-                                // `content` field; the streaming path
-                                // currently drops it, so when
-                                // `use_streaming` is flipped on for
-                                // Anthropic, the next request fails to
-                                // round-trip the summary and Anthropic
-                                // re-compacts (extra cost). The
-                                // non-streaming path handles this via
-                                // serde and works today.
+                                // `compaction` content block with the
+                                // full summary in `content`. Mirror
+                                // the non-streaming serde path so the
+                                // next turn can round-trip the summary
+                                // and Anthropic doesn't re-compact.
+                                "compaction" => {
+                                    // Mirror the existing "drop malformed
+                                    // payloads silently" pattern used by
+                                    // `web_search_tool_result` above. The
+                                    // non-streaming serde path would error
+                                    // on a missing `content`; in streaming
+                                    // we don't want to kill the whole
+                                    // response over one block, so skip it
+                                    // — losing the summary forces a
+                                    // re-compact next turn but doesn't
+                                    // 400 the request.
+                                    if let Some(content) =
+                                        block.get("content").and_then(|v| v.as_str())
+                                    {
+                                        content_blocks.push(ContentBlock::Compaction {
+                                            content: content.to_string(),
+                                        });
+                                    }
+                                    current_block_type = None;
+                                }
                                 _ => {}
                             }
                         }
@@ -461,6 +544,63 @@ mod tests {
         assert!(!requires_adaptive_thinking("claude-sonnet-4-6"));
         assert!(!requires_adaptive_thinking("claude-opus-4-5"));
         assert!(!requires_adaptive_thinking(""));
+    }
+
+    #[test]
+    fn anthropic_beta_for_gates_compaction_to_supported_models() {
+        // Opus 4.7 is on the compaction-supported list — both betas ship.
+        let with_compact = anthropic_beta_for("claude-opus-4-7");
+        assert!(with_compact.contains(BETA_TOKEN_EFFICIENT));
+        assert!(with_compact.contains(BETA_COMPACT));
+
+        // Haiku 4.5 isn't — only the universal beta should appear so
+        // we don't depend on Anthropic's "ignore unknown beta tokens"
+        // policy if validation ever tightens.
+        let without = anthropic_beta_for("claude-haiku-4-5");
+        assert!(without.contains(BETA_TOKEN_EFFICIENT));
+        assert!(!without.contains(BETA_COMPACT));
+    }
+
+    #[test]
+    fn beta_with_compact_matches_components() {
+        // `BETA_TOKEN_EFFICIENT_AND_COMPACT` is a literal that must
+        // stay in lockstep with its two component consts. Catch drift
+        // here so renaming one component without the other is a test
+        // failure rather than a silent header mismatch in production.
+        assert_eq!(
+            BETA_TOKEN_EFFICIENT_AND_COMPACT,
+            format!("{BETA_TOKEN_EFFICIENT},{BETA_COMPACT}")
+        );
+    }
+
+    #[test]
+    fn legacy_thinking_budget_helper_scales_with_effort() {
+        use super::super::types::ReasoningEffort;
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::Low),
+            LEGACY_THINKING_BUDGET_LOW
+        );
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::Medium),
+            LEGACY_THINKING_BUDGET_MEDIUM
+        );
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::High),
+            LEGACY_THINKING_BUDGET_HIGH
+        );
+        // Defensive default: `Off` collapses to `LOW` rather than
+        // panicking, even though the legacy branch is upstream-guarded.
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::Off),
+            LEGACY_THINKING_BUDGET_LOW
+        );
+        // Compile-time guard: the three tier values must stay strictly
+        // increasing. Runtime `assert!` would be a tautology on consts
+        // (clippy::assertions_on_constants), so check at const-eval time.
+        const _: () = {
+            assert!(LEGACY_THINKING_BUDGET_LOW < LEGACY_THINKING_BUDGET_MEDIUM);
+            assert!(LEGACY_THINKING_BUDGET_MEDIUM < LEGACY_THINKING_BUDGET_HIGH);
+        };
     }
 
     #[test]

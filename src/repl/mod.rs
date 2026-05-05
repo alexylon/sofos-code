@@ -139,11 +139,22 @@ impl Repl {
             eprintln!("{}", "Loaded custom instructions".bright_green());
         }
 
-        // Validate thinking budget
-        if config.reasoning_effort.is_enabled() && config.thinking_budget >= config.max_tokens {
+        // Validate that `max_tokens` leaves room for the largest legacy
+        // thinking budget we might send. The actual budget is now picked
+        // per-effort in `request_builder` (Low=1024, Medium=5120,
+        // High=16384) rather than read from the user's `--thinking-budget`
+        // flag, so the invariant we need is `max_tokens > HIGH`. We check
+        // unconditionally on enabled-thinking sessions instead of also
+        // probing the model id, because the model can be swapped mid-
+        // session via `/model` and we don't want a runtime 400.
+        if config.reasoning_effort.is_enabled()
+            && config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
+        {
             return Err(SofosError::Config(format!(
-                "thinking_budget ({}) must be less than max_tokens ({})",
-                config.thinking_budget, config.max_tokens
+                "max_tokens ({}) must exceed the legacy thinking-budget ceiling ({}). \
+                 Use a higher --max-tokens or set --reasoning-effort off.",
+                config.max_tokens,
+                crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
             )));
         }
 

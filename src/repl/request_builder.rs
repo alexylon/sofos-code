@@ -9,6 +9,13 @@ pub struct RequestBuilder<'a> {
     conversation: &'a ConversationHistory,
     tools: Vec<Tool>,
     reasoning_effort: ReasoningEffort,
+    /// CLI-plumbed budget hint from `--thinking-budget`. No longer read
+    /// on Anthropic — the effort tier now maps to a fixed per-level
+    /// budget in `build()` so `/think low|medium|high` produce visibly
+    /// different outputs. Kept on the struct to avoid churning every
+    /// caller's signature; remove together with the `--thinking-budget`
+    /// CLI flag if the surface is ever pruned.
+    #[allow(dead_code)]
     thinking_budget: u32,
     /// Stable per-session identifier sent as `prompt_cache_key` on the
     /// OpenAI Responses path. Anthropic ignores it.
@@ -62,16 +69,14 @@ impl<'a> RequestBuilder<'a> {
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
         } else if is_anthropic && self.reasoning_effort.is_enabled() {
-            // TODO: `Low`, `Medium`, and `High` are functionally
-            // identical on non-adaptive Anthropic models — they all
-            // resolve to the same `thinking_budget`. Map the effort
-            // level to a per-tier budget (e.g. Low=1024, Medium=5120,
-            // High=16384) so `/think high` actually buys deeper
-            // reasoning on Sonnet 4.5 / older Opus.
-            (
-                Some(crate::api::Thinking::enabled(self.thinking_budget)),
-                None,
-            )
+            // Non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5/4.6)
+            // take the legacy `{type: "enabled", budget_tokens}` shape.
+            // The per-tier mapping lives in `crate::api::anthropic` so
+            // the startup validation in `repl/mod.rs` can reference the
+            // same `LEGACY_THINKING_BUDGET_HIGH` ceiling without
+            // duplicating the values.
+            let budget = crate::api::anthropic::legacy_thinking_budget(self.reasoning_effort);
+            (Some(crate::api::Thinking::enabled(budget)), None)
         } else {
             (None, None)
         };
@@ -101,13 +106,16 @@ impl<'a> RequestBuilder<'a> {
             if info.supports_server_compaction {
                 Some(crate::api::ContextManagement {
                     edits: vec![crate::api::ContextEdit::Compact20260112 {
-                        // TODO: clamp to Anthropic's documented 50K
-                        // minimum (`max(50_000, ...)`) so a future
-                        // small-window model entry whose
-                        // `auto_compact_at` falls below 50K doesn't
+                        // Clamp to Anthropic's documented floor. No
+                        // model in the registry today drops below it
+                        // (Haiku 4.5 sits at 170K and doesn't carry
+                        // `supports_server_compaction` anyway), but a
+                        // future small-window addition would otherwise
                         // 400 the request.
                         trigger: Some(crate::api::CompactionTrigger::InputTokens {
-                            value: info.auto_compact_at(),
+                            value: info
+                                .auto_compact_at()
+                                .max(crate::api::anthropic::COMPACTION_TRIGGER_FLOOR),
                         }),
                         instructions: None,
                     }],
@@ -520,6 +528,39 @@ mod tests {
             trigger_value >= 50_000,
             "Anthropic rejects triggers below 50K"
         );
+    }
+
+    #[test]
+    fn legacy_anthropic_thinking_budget_scales_with_effort() {
+        // On non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5/4.6),
+        // `/think low|medium|high` used to all collapse to the same
+        // `thinking_budget`. Verify each tier now produces a strictly
+        // larger budget so the slider has a visible effect.
+        let conv = ConversationHistory::new();
+        let budget_for = |effort| {
+            let req = RequestBuilder::new(
+                &anthropic_client(),
+                "claude-opus-4-6",
+                65_536,
+                &conv,
+                one_regular_tool(),
+                effort,
+                0,
+                "s1",
+            )
+            .build();
+            let thinking = req.thinking.expect("legacy Anthropic enables thinking");
+            thinking
+                .budget_tokens
+                .expect("legacy thinking carries budget_tokens")
+        };
+
+        let low = budget_for(ReasoningEffort::Low);
+        let medium = budget_for(ReasoningEffort::Medium);
+        let high = budget_for(ReasoningEffort::High);
+
+        assert!(low < medium, "Medium ({medium}) must exceed Low ({low})");
+        assert!(medium < high, "High ({high}) must exceed Medium ({medium})");
     }
 
     #[test]

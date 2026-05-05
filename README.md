@@ -167,9 +167,9 @@ Exit summary shows token usage and estimated cost based on official API pricing.
     --morph-api-key <KEY>    Morph API key (overrides env var)
     --model <MODEL>          Model to use (default: claude-sonnet-4-6)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
-    --max-tokens <N>         Max response tokens (default: 32768)
+    --max-tokens <N>         Max response tokens (default: 32768; must be > 16384 when reasoning effort is enabled)
 -e, --reasoning-effort <LV>  Reasoning effort: off, low, medium, high (default: medium)
-    --thinking-budget <N>    Token budget for older Claude models with manual budgets (default: 5120, must be < max-tokens). Ignored on Claude Opus 4.7+ and on OpenAI.
+    --thinking-budget <N>    Vestigial. Currently inert on every path: legacy Claude uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384), Claude Opus 4.7+ uses adaptive thinking, OpenAI uses `reasoning.effort`. Kept for backwards-compatibility; will be removed.
 -v, --verbose                Verbose logging
 ```
 
@@ -192,7 +192,7 @@ sofos -e off                                # Cheapest path; no reasoning summar
 
 - **OpenAI (gpt-5 family)** — sends `reasoning.effort` matching the level (`minimal` for `off`, `low`/`medium`/`high` otherwise) and `summary: "auto"` when on, omitted when off.
 - **Claude Opus 4.7** — adaptive thinking; the server picks the budget based on the prompt, and sofos sends `output_config.effort` matching the level (`off` collapses to `low`, the lowest the API accepts). `--thinking-budget` is ignored.
-- **Older Claude (Sonnet 4.6, Opus 4.6, Haiku 4.5)** — `off` disables extended thinking; `low/medium/high` all enable it with the `--thinking-budget` token budget (default `5120`). The level is treated uniformly here pending per-tier budget mapping.
+- **Older Claude (Sonnet 4.6, Opus 4.6, Haiku 4.5)** — `off` disables extended thinking; `low`, `medium`, and `high` each map to a distinct legacy `budget_tokens` value (`1024 / 5120 / 16384`) so the slider has a visible effect. `--thinking-budget` is ignored — the per-tier values are the source of truth.
 
 ## Custom Instructions
 
