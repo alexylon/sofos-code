@@ -447,7 +447,7 @@ impl Repl {
                 }
             });
 
-            if self.interrupt_flag.load(Ordering::Relaxed) {
+            if self.interrupt_flag.load(Ordering::SeqCst) {
                 self.handle_initial_interrupt();
                 return Ok(());
             }

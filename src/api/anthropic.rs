@@ -228,7 +228,7 @@ impl AnthropicClient {
         let mut current_tool_json = String::new();
 
         while let Some(chunk_result) = byte_stream.next().await {
-            if interrupt_flag.load(Ordering::Relaxed) {
+            if interrupt_flag.load(Ordering::SeqCst) {
                 return Err(SofosError::Interrupted);
             }
 
@@ -249,7 +249,14 @@ impl AnthropicClient {
 
                 let event: serde_json::Value = match serde_json::from_str(json_str) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            preview = %json_str.chars().take(200).collect::<String>(),
+                            "failed to parse Anthropic streaming event"
+                        );
+                        continue;
+                    }
                 };
 
                 let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");

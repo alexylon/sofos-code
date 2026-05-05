@@ -232,9 +232,17 @@ impl HistoryManager {
         // propagating the error — losing the in-memory conversation to
         // save a `created_at` stamp would be an awful trade.
         let created_at = match fs::read_to_string(&session_path) {
-            Ok(raw) => serde_json::from_str::<Session>(&raw)
-                .map(|existing| existing.created_at)
-                .unwrap_or(now),
+            Ok(raw) => match serde_json::from_str::<Session>(&raw) {
+                Ok(existing) => existing.created_at,
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "failed to parse prior session save; resetting created_at to now"
+                    );
+                    now
+                }
+            },
             Err(_) => now,
         };
         let session = Session {
