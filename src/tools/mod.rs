@@ -7,6 +7,9 @@ pub mod tool_name;
 pub mod types;
 pub mod utils;
 
+#[cfg(test)]
+mod test_support;
+
 use crate::api::MorphClient;
 use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
@@ -303,14 +306,25 @@ impl ToolExecutor {
         self.morph_client.is_some()
     }
 
-    /// Resolve a caller-supplied path that **must already exist**. Handles
-    /// tilde and absolute-vs-relative uniformly, canonicalizes, and
-    /// returns the resolved shape every dispatcher needs: the canonical
-    /// `PathBuf`, its string form for permission checks, and whether
-    /// it's inside the workspace. Returns `FileNotFound` if the path
-    /// doesn't exist or canonicalize fails. Individual dispatchers can
-    /// still customise the error via `.map_err(...)?`.
-    fn resolve_existing(&self, caller_path: &str) -> Result<ResolvedPath> {
+    /// Resolve a caller-supplied path. Handles tilde and absolute-vs-
+    /// relative uniformly and returns the canonical `PathBuf`, its
+    /// string form, and whether it's inside the workspace.
+    ///
+    /// `must_exist=true` (read side, see [`Self::resolve_existing`])
+    /// canonicalises directly; missing paths return `FileNotFound`.
+    ///
+    /// `must_exist=false` (write side, see [`Self::resolve_for_write`])
+    /// walks up missing components, canonicalises the existing ancestor,
+    /// and re-appends the tail. This matters because the canonical form
+    /// of an ancestor can differ from its literal form — on macOS,
+    /// `/tmp` canonicalises to `/private/tmp` — so permission rules
+    /// written against the canonical prefix (e.g. `Write(/private/tmp/**)`)
+    /// wouldn't otherwise match a write to
+    /// `/tmp/new/deeply/nested/file.txt` when none of the intermediate
+    /// directories exist yet. An earlier implementation only canonicalised
+    /// the immediate parent, so it fell through to an un-canonicalised
+    /// path whenever the grandparent was missing too.
+    fn resolve(&self, caller_path: &str, must_exist: bool) -> Result<ResolvedPath> {
         let full_path = if is_absolute_or_tilde(caller_path) {
             std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
                 caller_path,
@@ -318,8 +332,50 @@ impl ToolExecutor {
         } else {
             self.fs_tool._workspace().join(caller_path)
         };
-        let canonical = std::fs::canonicalize(&full_path)
-            .map_err(|_| SofosError::FileNotFound(caller_path.to_string()))?;
+
+        let canonical = if must_exist {
+            std::fs::canonicalize(&full_path)
+                .map_err(|_| SofosError::FileNotFound(caller_path.to_string()))?
+        } else {
+            // Walk up collecting missing components until an existing
+            // ancestor is found. `cursor.exists()` follows symlinks, same
+            // as `canonicalize` below, so the two stay consistent.
+            let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
+            let mut cursor = full_path.as_path();
+            let canonical_anchor = loop {
+                if cursor.exists() {
+                    break std::fs::canonicalize(cursor).map_err(|e| {
+                        SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
+                    })?;
+                }
+                match (cursor.file_name(), cursor.parent()) {
+                    (Some(name), Some(parent)) => {
+                        missing_tail.push(name.to_os_string());
+                        cursor = parent;
+                    }
+                    _ => {
+                        // Reached the filesystem root (or a path without
+                        // a file_name — empty / ending in `..`) without
+                        // finding an existing ancestor. Fall back to the
+                        // un-canonicalised path rather than erroring out.
+                        let is_inside_workspace = !is_absolute_or_tilde(caller_path);
+                        let canonical_str = full_path.to_string_lossy().to_string();
+                        return Ok(ResolvedPath {
+                            canonical: full_path,
+                            canonical_str,
+                            is_inside_workspace,
+                        });
+                    }
+                }
+            };
+
+            let mut canonical = canonical_anchor;
+            for name in missing_tail.iter().rev() {
+                canonical.push(name);
+            }
+            canonical
+        };
+
         let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
         let canonical_str = canonical.to_string_lossy().to_string();
         Ok(ResolvedPath {
@@ -329,74 +385,17 @@ impl ToolExecutor {
         })
     }
 
-    /// Resolve a caller-supplied path that **may not exist yet** — the
-    /// write-side counterpart of [`resolve_existing`].
-    ///
-    /// Walks up the path until it finds an existing ancestor,
-    /// canonicalises that ancestor, and re-appends the missing tail
-    /// components. This matters because the canonical form of an
-    /// ancestor can differ from its literal form — on macOS, `/tmp`
-    /// canonicalises to `/private/tmp` — so permission rules written
-    /// against the canonical prefix (e.g. `Write(/private/tmp/**)`)
-    /// wouldn't otherwise match a write to
-    /// `/tmp/new/deeply/nested/file.txt` when none of the intermediate
-    /// directories exist yet. The earlier implementation only
-    /// canonicalised the immediate parent, so it fell through to an
-    /// un-canonicalised path whenever the grandparent was missing too.
+    /// Read-side resolve: the path must already exist on disk. Returns
+    /// `FileNotFound` otherwise. Thin wrapper around [`Self::resolve`].
+    fn resolve_existing(&self, caller_path: &str) -> Result<ResolvedPath> {
+        self.resolve(caller_path, true)
+    }
+
+    /// Write-side resolve: the path may not exist yet. Walks up to find
+    /// an existing ancestor, canonicalises it, and re-appends the
+    /// missing tail. Thin wrapper around [`Self::resolve`].
     fn resolve_for_write(&self, caller_path: &str) -> Result<ResolvedPath> {
-        let full_path = if is_absolute_or_tilde(caller_path) {
-            std::path::PathBuf::from(permissions::PermissionManager::expand_tilde_pub(
-                caller_path,
-            ))
-        } else {
-            self.fs_tool._workspace().join(caller_path)
-        };
-
-        // Walk up collecting missing components until an existing
-        // ancestor is found. `cursor.exists()` follows symlinks, same
-        // as `canonicalize` below, so the two stay consistent.
-        let mut missing_tail: Vec<std::ffi::OsString> = Vec::new();
-        let mut cursor = full_path.as_path();
-        let canonical_anchor = loop {
-            if cursor.exists() {
-                break std::fs::canonicalize(cursor).map_err(|e| {
-                    SofosError::ToolExecution(format!("Failed to resolve path: {}", e))
-                })?;
-            }
-            match (cursor.file_name(), cursor.parent()) {
-                (Some(name), Some(parent)) => {
-                    missing_tail.push(name.to_os_string());
-                    cursor = parent;
-                }
-                _ => {
-                    // Reached the filesystem root (or a path without a
-                    // file_name — empty / ending in `..`) without
-                    // finding an existing ancestor. Can only happen on
-                    // a borderline-broken filesystem or an exotic
-                    // input, but fall back to the un-canonicalised
-                    // path rather than erroring out.
-                    let is_inside_workspace = !is_absolute_or_tilde(caller_path);
-                    let canonical_str = full_path.to_string_lossy().to_string();
-                    return Ok(ResolvedPath {
-                        canonical: full_path,
-                        canonical_str,
-                        is_inside_workspace,
-                    });
-                }
-            }
-        };
-
-        let mut canonical = canonical_anchor;
-        for name in missing_tail.iter().rev() {
-            canonical.push(name);
-        }
-        let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
-        let canonical_str = canonical.to_string_lossy().to_string();
-        Ok(ResolvedPath {
-            canonical,
-            canonical_str,
-            is_inside_workspace,
-        })
+        self.resolve(caller_path, false)
     }
 
     pub fn has_code_search(&self) -> bool {

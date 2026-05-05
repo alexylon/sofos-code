@@ -1,4 +1,6 @@
 use crate::error::{Result, SofosError};
+use colored::Colorize;
+use serde_json::Value;
 
 /// Type-safe tool names to prevent typos and enable better refactoring
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,6 +61,124 @@ impl ToolName {
             "web_fetch" => Ok(ToolName::WebFetch),
             "web_search" => Ok(ToolName::WebSearch),
             _ => Err(SofosError::ToolExecution(format!("Unknown tool: {}", s))),
+        }
+    }
+
+    /// Render a one-line human summary of a completed tool call for the
+    /// transcript UI. The four custom-shaped variants (read_file,
+    /// list_directory, search_code, web_fetch) extract counts/paths from
+    /// `tool_input` + `output`; everything else falls through to the raw
+    /// tool output. MCP tools never reach here — `from_str` rejects them
+    /// at the caller and they get the raw-output fallback there.
+    pub fn display_summary(&self, tool_input: &Value, output: &str) -> String {
+        match self {
+            ToolName::ReadFile => {
+                let file_path = tool_input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let offset = tool_input
+                    .get("offset")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1);
+
+                let line_count = output.lines().count() as u64;
+
+                if line_count == 0 {
+                    if file_path.is_empty() {
+                        "Read file (empty or not found)".to_string()
+                    } else {
+                        format!(
+                            "Read file from {} - empty or not found",
+                            file_path.bright_cyan()
+                        )
+                    }
+                } else {
+                    let end_line = offset + line_count - 1;
+                    if file_path.is_empty() {
+                        format!("Read lines {}-{}", offset, end_line)
+                    } else {
+                        format!(
+                            "Read lines {}-{} from {}",
+                            offset,
+                            end_line,
+                            file_path.bright_cyan()
+                        )
+                    }
+                }
+            }
+            ToolName::ListDirectory => {
+                let path = tool_input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".");
+
+                let item_count = output
+                    .lines()
+                    .filter(|line| !line.trim().is_empty() && !line.starts_with("Contents of"))
+                    .count();
+
+                if item_count == 0 {
+                    format!("Found 0 items in {}", path.bright_cyan())
+                } else if item_count == 1 {
+                    format!("Found 1 item in {}", path.bright_cyan())
+                } else {
+                    format!("Found {} items in {}", item_count, path.bright_cyan())
+                }
+            }
+            ToolName::WebFetch => {
+                let url = tool_input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                let char_count = output.len();
+                format!("Fetched {} ({} chars)", url.bright_cyan(), char_count)
+            }
+            ToolName::SearchCode => {
+                let pattern = tool_input
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let body = output
+                    .strip_prefix(crate::tools::codesearch::SEARCH_RESULTS_PREFIX)
+                    .unwrap_or(output);
+
+                // ripgrep --heading output groups matches under file headings
+                // separated by blank lines. Lines starting with `<digits>:` are
+                // matches; non-empty lines without that prefix are file
+                // headings.
+                let mut files = 0usize;
+                let mut matches = 0usize;
+                for line in body.lines() {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if line.starts_with("No matches found") {
+                        continue;
+                    }
+                    let is_match_line = line.split_once(':').is_some_and(|(prefix, _)| {
+                        !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())
+                    });
+                    if is_match_line {
+                        matches += 1;
+                    } else {
+                        files += 1;
+                    }
+                }
+
+                if matches == 0 {
+                    format!("No matches for {}", pattern.bright_cyan())
+                } else {
+                    format!(
+                        "Found {} match{} in {} file{} for {}",
+                        matches,
+                        if matches == 1 { "" } else { "es" },
+                        files,
+                        if files == 1 { "" } else { "s" },
+                        pattern.bright_cyan()
+                    )
+                }
+            }
+            _ => output.to_string(),
         }
     }
 }

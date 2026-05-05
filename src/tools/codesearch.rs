@@ -205,8 +205,8 @@ impl CodeSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::test_support;
     use std::fs;
-    use tempfile::TempDir;
 
     #[test]
     fn default_exclude_dirs_human_renders_every_entry() {
@@ -230,24 +230,24 @@ mod tests {
 
     #[test]
     fn test_code_search_creation() {
-        let temp = TempDir::new().unwrap();
+        let (_temp, path) = test_support::workspace();
 
         // This will fail if ripgrep is not installed, which is fine for CI
-        let result = CodeSearchTool::new(temp.path().to_path_buf());
+        let result = CodeSearchTool::new(path.clone());
 
         // Just check that the constructor doesn't panic
         if let Ok(tool) = result {
-            assert_eq!(tool.workspace, temp.path());
+            assert_eq!(tool.workspace, path);
         }
     }
 
     #[test]
     fn test_search_functionality() {
-        let temp = TempDir::new().unwrap();
-        let test_file = temp.path().join("test.txt");
+        let (_temp, path) = test_support::workspace();
+        let test_file = path.join("test.txt");
         fs::write(&test_file, "Hello World\nTest Pattern\nAnother Line").unwrap();
 
-        if let Ok(tool) = CodeSearchTool::new(temp.path().to_path_buf()) {
+        if let Ok(tool) = CodeSearchTool::new(path) {
             let result = tool.search("Pattern", None, None, false);
             if let Ok(output) = result {
                 assert!(output.contains("Pattern") || output.contains("No matches"));
@@ -261,14 +261,14 @@ mod tests {
         // the "invert match" flag and `--files` as "list files instead of
         // search". Both would silently return the wrong output instead of
         // treating the token as a literal search string.
-        let temp = TempDir::new().unwrap();
+        let (_temp, path) = test_support::workspace();
         fs::write(
-            temp.path().join("notes.txt"),
+            path.join("notes.txt"),
             "release --files checklist\nsome -v output\n",
         )
         .unwrap();
 
-        let Ok(tool) = CodeSearchTool::new(temp.path().to_path_buf()) else {
+        let Ok(tool) = CodeSearchTool::new(path) else {
             return;
         };
 
@@ -289,12 +289,12 @@ mod tests {
 
     #[test]
     fn search_default_excludes_target_directory() {
-        let temp = TempDir::new().unwrap();
-        let target_dir = temp.path().join("target");
+        let (_temp, path) = test_support::workspace();
+        let target_dir = path.join("target");
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(target_dir.join("junk.rs"), "unique_marker_xyz\n").unwrap();
 
-        let Ok(tool) = CodeSearchTool::new(temp.path().to_path_buf()) else {
+        let Ok(tool) = CodeSearchTool::new(path) else {
             return;
         };
 

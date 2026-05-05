@@ -787,6 +787,7 @@ impl BashExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::test_support;
 
     /// `command_contains_op` gates our forbidden-git detection. A miss
     /// here is a real security bypass: the model could wrap `git push`
@@ -869,10 +870,8 @@ mod tests {
 
     #[test]
     fn test_output_size_limit() {
-        use tempfile;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
 
         let result = executor.execute("seq 1 2000000");
 
@@ -888,12 +887,11 @@ mod tests {
     #[test]
     fn test_read_permission_blocks_cat() {
         use std::fs;
-        use tempfile::tempdir;
 
-        let temp_dir = tempdir().unwrap();
+        let (_temp, path) = test_support::workspace();
 
         // Write deny config for test folder reads
-        let config_dir = temp_dir.path().join(".sofos");
+        let config_dir = path.join(".sofos");
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(
             config_dir.join("config.local.toml"),
@@ -905,7 +903,7 @@ ask = []
         )
         .unwrap();
 
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
+        let executor = BashExecutor::new(path, false, false).unwrap();
 
         // Even without creating the file, permission check should block before execution
         let result = executor.execute("cat ./test/secret.txt");
@@ -1101,8 +1099,8 @@ ask = []
         // runs. In non-interactive mode (tests, piped stdin) there's no
         // way to prompt, so the executor returns a clear error pointing
         // at the interactive-mode requirement.
-        let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
 
         for cmd in &[
             "git checkout main",
@@ -1138,8 +1136,8 @@ ask = []
         // in the hard-deny tier even with the new askable mechanism.
         // The error message mentions the dangerous-op reason, not the
         // interactive-confirmation hint.
-        let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
 
         for cmd in &["git checkout -f main", "git checkout -b new-branch"] {
             let result = executor.execute(cmd);
@@ -1162,8 +1160,8 @@ ask = []
         // The path portion is now extracted and routed to
         // `check_bash_external_path`, which deny in non-interactive mode
         // when no grant is configured.
-        let temp_dir = tempfile::tempdir().unwrap();
-        let executor = BashExecutor::new(temp_dir.path().to_path_buf(), false, false).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
 
         let result = executor.execute("grep --include=/etc/passwd pattern .");
 

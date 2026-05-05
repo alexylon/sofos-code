@@ -41,37 +41,7 @@ fn main() -> Result<()> {
     // connectivity checks skip the banner entirely to keep piped
     // output clean — matching the original behaviour.
 
-    let is_openai_model = cli.model.starts_with("gpt-");
-
-    let client = if is_openai_model {
-        match cli.get_openai_api_key() {
-            Ok(key) => match OpenAIClient::new(key) {
-                Ok(c) => LlmClient::OpenAI(c),
-                Err(e) => {
-                    UI::print_error_with_hint(&e);
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                UI::print_error_with_hint(&e);
-                std::process::exit(1);
-            }
-        }
-    } else {
-        match cli.get_anthropic_api_key() {
-            Ok(key) => match AnthropicClient::new(key) {
-                Ok(c) => LlmClient::Anthropic(c),
-                Err(e) => {
-                    UI::print_error_with_hint(&e);
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                UI::print_error_with_hint(&e);
-                std::process::exit(1);
-            }
-        }
-    };
+    let client = build_llm_client(&cli);
 
     if cli.check_connection {
         return check_api_connectivity(&client);
@@ -177,6 +147,27 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Construct the LLM client matching `cli.model`. Both the API-key
+/// fetch and the client constructor exit the process via
+/// `UI::print_error_with_hint` on failure — funnelled through one
+/// `unwrap_or_else` at the bottom so the startup-error UX stays in
+/// sync across all four failure modes.
+fn build_llm_client(cli: &Cli) -> LlmClient {
+    fn try_build(cli: &Cli) -> Result<LlmClient> {
+        if cli.model.starts_with("gpt-") {
+            let key = cli.get_openai_api_key()?;
+            Ok(LlmClient::OpenAI(OpenAIClient::new(key)?))
+        } else {
+            let key = cli.get_anthropic_api_key()?;
+            Ok(LlmClient::Anthropic(AnthropicClient::new(key)?))
+        }
+    }
+    try_build(cli).unwrap_or_else(|e| {
+        UI::print_error_with_hint(&e);
+        std::process::exit(1)
+    })
 }
 
 fn check_api_connectivity(client: &LlmClient) -> Result<()> {

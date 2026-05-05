@@ -383,12 +383,12 @@ impl FileSystemTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+    use crate::tools::test_support;
 
     #[test]
     fn test_path_validation_rejects_parent_traversal() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         assert!(fs_tool.validate_path("../etc/passwd").is_err());
         assert!(fs_tool.validate_path("foo/../../etc/passwd").is_err());
@@ -396,8 +396,8 @@ mod tests {
 
     #[test]
     fn append_file_creates_then_appends_across_calls() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
         fs_tool.append_file("doc.md", "# Part 1\n").unwrap();
         fs_tool.append_file("doc.md", "# Part 2\n").unwrap();
         fs_tool.append_file("doc.md", "# Part 3\n").unwrap();
@@ -407,8 +407,8 @@ mod tests {
 
     #[test]
     fn append_file_creates_missing_parent_dirs() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
         fs_tool
             .append_file("nested/deep/file.txt", "hello")
             .unwrap();
@@ -421,8 +421,8 @@ mod tests {
         // Writing long Cyrillic/CJK content part-by-part shouldn't
         // corrupt multi-byte sequences at the chunk boundary — each
         // chunk is a complete UTF-8 string on its own.
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
         fs_tool
             .append_file("bg.md", "# Синергията между Божия промисъл")
             .unwrap();
@@ -436,16 +436,16 @@ mod tests {
 
     #[test]
     fn test_path_validation_rejects_absolute_paths() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         assert!(fs_tool.validate_path("/etc/passwd").is_err());
     }
 
     #[test]
     fn test_path_validation_allows_relative_paths() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         assert!(fs_tool.validate_path("foo/bar.txt").is_ok());
         assert!(fs_tool.validate_path("test.txt").is_ok());
@@ -453,8 +453,8 @@ mod tests {
 
     #[test]
     fn test_write_and_read_file() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         fs_tool.write_file("test.txt", "Hello, World!").unwrap();
         let content = fs_tool.read_file("test.txt").unwrap();
@@ -465,8 +465,8 @@ mod tests {
     #[cfg(unix)]
     fn test_write_atomic_preserves_file_mode() {
         use std::os::unix::fs::PermissionsExt;
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("script.sh");
+        let (_temp, workspace) = test_support::workspace();
+        let path = workspace.join("script.sh");
 
         // Create the file with an executable mode — the property
         // `write_atomic` has to preserve across the tmp+rename swap.
@@ -490,9 +490,9 @@ mod tests {
     #[cfg(unix)]
     fn test_write_atomic_preserves_symlink() {
         use std::os::unix::fs::symlink;
-        let temp = TempDir::new().unwrap();
-        let target = temp.path().join("real.txt");
-        let link = temp.path().join("link.txt");
+        let (_temp, workspace) = test_support::workspace();
+        let target = workspace.join("real.txt");
+        let link = workspace.join("link.txt");
 
         fs::write(&target, "original content").unwrap();
         symlink(&target, &link).unwrap();
@@ -515,8 +515,8 @@ mod tests {
 
     #[test]
     fn test_create_directory_and_list() {
-        let temp = TempDir::new().unwrap();
-        let fs_tool = FileSystemTool::new(temp.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         fs_tool.create_directory("subdir").unwrap();
         fs_tool.write_file("subdir/file.txt", "test").unwrap();
@@ -527,8 +527,8 @@ mod tests {
 
     #[test]
     fn test_list_nested_subdirectories() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let fs_tool = FileSystemTool::new(temp_dir.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         fs_tool.create_directory("parent/child").unwrap();
         fs_tool.write_file("parent/file1.txt", "test1").unwrap();
@@ -546,8 +546,8 @@ mod tests {
 
     #[test]
     fn test_file_size_limit() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let fs_tool = FileSystemTool::new(temp_dir.path().to_path_buf()).unwrap();
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
 
         let large_data = vec![0u8; 51 * 1024 * 1024];
         fs_tool
@@ -566,15 +566,15 @@ mod tests {
     fn test_symlink_escape_blocked() {
         use std::os::unix::fs::symlink;
 
-        let temp_workspace = tempfile::tempdir().unwrap();
-        let temp_outside = tempfile::tempdir().unwrap();
+        let (_workspace_tmp, workspace_path) = test_support::workspace();
+        let (_outside_tmp, outside_path) = test_support::workspace();
 
-        let fs_tool = FileSystemTool::new(temp_workspace.path().to_path_buf()).unwrap();
+        let fs_tool = FileSystemTool::new(workspace_path.clone()).unwrap();
 
-        let outside_file = temp_outside.path().join("secret.txt");
+        let outside_file = outside_path.join("secret.txt");
         fs::write(&outside_file, "secret data").unwrap();
 
-        let symlink_path = temp_workspace.path().join("escape_link");
+        let symlink_path = workspace_path.join("escape_link");
         symlink(&outside_file, &symlink_path).unwrap();
 
         let result = fs_tool.read_file("escape_link");
