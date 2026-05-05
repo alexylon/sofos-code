@@ -1,6 +1,6 @@
 /// Central configuration for Sofos. The actual file-size and bash-output
 /// caps live next to the code that enforces them — `MAX_FILE_SIZE` in
-/// `src/tools/filesystem.rs` (50 MB) and `MAX_OUTPUT_SIZE` in
+/// `src/tools/filesystem.rs` (50 MB) and `MAX_BASH_OUTPUT_BYTES` in
 /// `src/tools/bashexec.rs` (10 MB) — not here, so this struct only
 /// carries config values that the rest of the crate actually reads.
 ///

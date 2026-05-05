@@ -1,5 +1,26 @@
 use thiserror::Error;
 
+pub const DEFAULT_PARENT_DIR: &str = ".";
+
+/// Substrings that, when found in a `ToolExecution` error message,
+/// classify the error as an *expected* security block rather than an
+/// actual failure. Both casings of "blocked" / "Blocked" are listed
+/// because tool messages are constructed inline by call sites that
+/// don't share a casing convention.
+const BLOCKED_KEYWORDS: &[&str] = &[
+    "blocked",
+    "Blocked",
+    "denied",
+    "not allowed",
+    "not explicitly allowed",
+    "outside workspace",
+    "absolute paths",
+    "contains '..'",
+    "tilde paths",
+    "output redirection",
+    "here-doc",
+];
+
 #[derive(Error, Debug)]
 pub enum SofosError {
     #[error("API error: {0}")]
@@ -55,19 +76,7 @@ impl SofosError {
     pub fn is_blocked(&self) -> bool {
         match self {
             Self::PathViolation(_) => true,
-            Self::ToolExecution(msg) => {
-                msg.contains("blocked")
-                    || msg.contains("Blocked")
-                    || msg.contains("denied")
-                    || msg.contains("not allowed")
-                    || msg.contains("not explicitly allowed")
-                    || msg.contains("outside workspace")
-                    || msg.contains("absolute paths")
-                    || msg.contains("contains '..'")
-                    || msg.contains("tilde paths")
-                    || msg.contains("output redirection")
-                    || msg.contains("here-doc")
-            }
+            Self::ToolExecution(msg) => BLOCKED_KEYWORDS.iter().any(|kw| msg.contains(kw)),
             Self::McpError(_) => false,
             Self::Join(_) => false,
             Self::Context { source, .. } => source.is_blocked(),
@@ -81,7 +90,7 @@ impl SofosError {
                 let parent = std::path::Path::new(path)
                     .parent()
                     .and_then(|p| p.to_str())
-                    .unwrap_or(".");
+                    .unwrap_or(DEFAULT_PARENT_DIR);
                 Some(format!(
                     "Use list_directory on '{}' to see available files",
                     parent

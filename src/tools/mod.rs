@@ -8,7 +8,7 @@ pub mod types;
 pub mod utils;
 
 use crate::api::MorphClient;
-use crate::error::{Result, SofosError};
+use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
 use crate::ui::diff;
 use bashexec::BashExecutor;
@@ -30,6 +30,8 @@ pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+
+const SOFOS_USER_AGENT: &str = concat!("Sofos/", env!("CARGO_PKG_VERSION"));
 
 // Re-export MCP tool result types for use in response handler
 pub use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
@@ -96,7 +98,7 @@ pub struct ToolExecutor {
     safe_mode: bool,
     /// Whether interactive prompts (stdin) are available (false in tests/pipes)
     interactive: bool,
-    // Session-scoped path permissions for external directory access (not persisted)
+    // Not persisted across sessions.
     read_path_session_allowed: Arc<Mutex<HashSet<String>>>,
     read_path_session_denied: Arc<Mutex<HashSet<String>>>,
     write_path_session_allowed: Arc<Mutex<HashSet<String>>>,
@@ -633,7 +635,7 @@ impl ToolExecutor {
                     let parent_dir = std::path::Path::new(path)
                         .parent()
                         .and_then(|p| p.to_str())
-                        .unwrap_or(".");
+                        .unwrap_or(DEFAULT_PARENT_DIR);
                     SofosError::ToolExecution(format!(
                         "File not found: '{}'. Suggestion: Use list_directory with path '{}' to see available files.",
                         path, parent_dir
@@ -1368,7 +1370,7 @@ impl ToolExecutor {
 
                 let response = client
                     .get(url)
-                    .header("User-Agent", "Sofos/1.0")
+                    .header("User-Agent", SOFOS_USER_AGENT)
                     .send()
                     .await
                     .map_err(|e| SofosError::ToolExecution(format!("Fetch failed: {}", e)))?;

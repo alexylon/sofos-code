@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
-const MAX_OUTPUT_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
+const MAX_BASH_OUTPUT_BYTES: usize = 10 * 1024 * 1024;
 
 /// Return true when a command argument looks like a parent-directory
 /// reference (`..`, `../foo`, `foo/..`, `foo/../bar`). Substring matches
@@ -205,19 +205,19 @@ impl BashExecutor {
             .output()
             .map_err(|e| SofosError::ToolExecution(format!("Failed to execute command: {}", e)))?;
 
-        if output.stdout.len() > MAX_OUTPUT_SIZE {
+        if output.stdout.len() > MAX_BASH_OUTPUT_BYTES {
             return Err(SofosError::ToolExecution(format!(
                 "Command output too large ({} bytes). Maximum size is {} MB",
                 output.stdout.len(),
-                MAX_OUTPUT_SIZE / (1024 * 1024)
+                MAX_BASH_OUTPUT_BYTES / (1024 * 1024)
             )));
         }
 
-        if output.stderr.len() > MAX_OUTPUT_SIZE {
+        if output.stderr.len() > MAX_BASH_OUTPUT_BYTES {
             return Err(SofosError::ToolExecution(format!(
                 "Command error output too large ({} bytes). Maximum size is {} MB",
                 output.stderr.len(),
-                MAX_OUTPUT_SIZE / (1024 * 1024)
+                MAX_BASH_OUTPUT_BYTES / (1024 * 1024)
             )));
         }
 

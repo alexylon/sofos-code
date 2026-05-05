@@ -77,13 +77,10 @@ pub struct Repl {
     /// iterations so the user can redirect in-flight work without having
     /// to interrupt it.
     steer_queue: SteerQueue,
-    /// Text the TUI should print through its captured-stdout pipe right
-    /// after `OutputCapture` is installed. Collected in `main.rs` (logo,
-    /// workspace, model, reasoning/thinking, morph availability) so the
-    /// same lines that used to go to the real tty before the TUI took
-    /// over now flow through the history pipeline — keeping the viewport
-    /// from overwriting them on terminals whose cursor-position DSR
-    /// doesn't answer (e.g. Ghostty), where our fallback was `(0, 0)`.
+    /// Queued through the TUI's captured-stdout pipe so the banner
+    /// survives terminals whose cursor-position DSR doesn't answer
+    /// (e.g. Ghostty), where the fallback origin would let the viewport
+    /// overwrite the lines.
     startup_banner: String,
     /// Shared tokio runtime driving every `block_on` in the REPL
     /// (initial request, compaction summary, tool-list refresh). Built

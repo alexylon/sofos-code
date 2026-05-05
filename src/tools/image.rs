@@ -5,7 +5,7 @@ use crate::tools::utils::is_absolute_or_tilde;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::path::PathBuf;
 
-const MAX_IMAGE_SIZE: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_SIZE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageFormat {
@@ -186,11 +186,11 @@ impl ImageLoader {
         let metadata = std::fs::metadata(&canonical)
             .with_context(|| format!("Failed to read image metadata: {}", path))?;
 
-        if metadata.len() > MAX_IMAGE_SIZE {
+        if metadata.len() > MAX_IMAGE_SIZE_BYTES {
             return Err(SofosError::ToolExecution(format!(
                 "Image too large: {} (max: {} MB)",
                 path,
-                MAX_IMAGE_SIZE / (1024 * 1024)
+                MAX_IMAGE_SIZE_BYTES / (1024 * 1024)
             )));
         }
 

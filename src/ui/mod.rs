@@ -32,7 +32,13 @@ const CACHE_READ_RATE: f64 = 0.10;
 /// charge.
 const CACHE_CREATION_RATE: f64 = 1.25;
 
-/// Message severity levels for consistent UI feedback
+/// True for OpenAI model identifiers (`gpt-*`). Used by the cost
+/// and token-display paths to route into the OpenAI pricing /
+/// uncached-tokens branches.
+fn is_openai_model(model: &str) -> bool {
+    model.starts_with("gpt")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
     /// Security restrictions, permission denials - expected behavior
@@ -212,9 +218,9 @@ impl UI {
     /// banner on terminals that drop the cursor-position DSR
     /// (notably Ghostty).
     pub fn banner_text() -> String {
-        // "SOFOS" rendered at 3 rows — half the height of the previous
-        // 6-row ANSI Shadow figlet. Each letter is 3 columns wide with no
-        // separator between letters so the word reads as a single unit.
+        // "SOFOS" rendered at 3 rows × 3 columns per letter, no
+        // inter-letter separator (so the word reads as a single unit).
+        // Half the height of the previous 6-row ANSI Shadow figlet.
         const BANNER: [&str; 3] = [
             r" ╭─╮╭─╮╭─╮╭─╮╭─╮",
             r" ╰─╮│ │├─ │ │╰─╮",
@@ -339,7 +345,7 @@ impl UI {
         total_input_tokens: u32,
         cache_read_tokens: u32,
     ) -> u32 {
-        if model.starts_with("gpt") {
+        if is_openai_model(model) {
             total_input_tokens
         } else {
             total_input_tokens + cache_read_tokens
@@ -705,7 +711,7 @@ impl UI {
         // OpenAI's `input_tokens` is the total (cached + uncached);
         // Anthropic's is uncached new tokens only. Normalize to "tokens
         // billed at the full input rate" before pricing.
-        let uncached = if model.starts_with("gpt") {
+        let uncached = if is_openai_model(model) {
             input_tokens.saturating_sub(cache_read_tokens)
         } else {
             input_tokens

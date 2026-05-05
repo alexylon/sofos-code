@@ -1,15 +1,24 @@
 use crate::api::{Message, SystemPrompt, utils::truncate_at_char_boundary};
 use crate::config::SofosConfig;
 
+/// Hard floor on the number of messages `trim_if_needed` will keep,
+/// even when the per-message budget would normally drop more. Below
+/// this, conversations lose enough context that the model starts
+/// hallucinating prior tool results.
+const TRIM_MIN_MESSAGES: usize = 10;
+
+/// Per-end cap on retained characters when `truncate_tool_results`
+/// shortens a long tool output during compaction. The middle is
+/// replaced with an elision marker.
+const COMPACTION_TOOL_RESULT_KEEP_CHARS: usize = 500;
+
 #[derive(Clone)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
     system_prompt: Vec<SystemPrompt>,
     config: SofosConfig,
-    /// Set when `trim_if_needed` printed the floor-hit warning; cleared
-    /// the next time we end a trim under budget. Stops the warning from
-    /// firing on every message append once we're stuck at the 10-message
-    /// floor.
+    /// Latches the floor-hit warning so it fires once per stuck-at-floor
+    /// episode, not on every append.
     warned_at_floor: bool,
     /// Index of the message whose last block carries the secondary
     /// Anthropic `cache_control` marker (the "anchor"). Stays put across
@@ -300,17 +309,21 @@ Show imperial units only when the user explicitly asks for them."#,
         // The warning describes our internal trim heuristic, not the
         // model's API context window — those are different numbers.
         // The condition below means: we tried to trim down to budget
-        // but hit the 10-message floor. The model API will still accept
-        // the request; this just warns the user that auto-trim can't
-        // help further. Dedup with `warned_at_floor` so a long agent
-        // loop doesn't print the warning on every tool round-trip.
-        let at_floor = total_tokens > self.config.max_context_tokens && self.messages.len() <= 10;
+        // but hit the `TRIM_MIN_MESSAGES` floor. The model API will
+        // still accept the request; this just warns the user that
+        // auto-trim can't help further. Dedup with `warned_at_floor`
+        // so a long agent loop doesn't print the warning on every
+        // tool round-trip.
+        let at_floor = total_tokens > self.config.max_context_tokens
+            && self.messages.len() <= TRIM_MIN_MESSAGES;
         if at_floor {
             if !self.warned_at_floor {
                 eprintln!(
-                    "⚠️  Auto-trim hit the 10-message floor at ~{} tokens (budget {}). \
+                    "⚠️  Auto-trim hit the {floor}-message floor at ~{tokens} tokens (budget {budget}). \
                      Run /compact or /clear if responses start degrading.",
-                    total_tokens, self.config.max_context_tokens
+                    floor = TRIM_MIN_MESSAGES,
+                    tokens = total_tokens,
+                    budget = self.config.max_context_tokens,
                 );
                 self.warned_at_floor = true;
             }
@@ -573,7 +586,7 @@ Show imperial units only when the user explicitly asks for them."#,
         // stamp a marker on a now-mismatched position.
         self.cache_anchor_message_idx = None;
         let threshold = self.config.tool_result_truncate_threshold;
-        let keep_chars = 500;
+        let keep_chars = COMPACTION_TOOL_RESULT_KEEP_CHARS;
 
         for msg in self.messages[..up_to].iter_mut() {
             if let crate::api::MessageContent::Blocks { content } = &mut msg.content {

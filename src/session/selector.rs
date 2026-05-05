@@ -3,6 +3,11 @@ use crate::session::SessionMetadata;
 use colored::Colorize;
 use std::io::{self, Write};
 
+const SECONDS_PER_MINUTE: u64 = 60;
+const SECONDS_PER_HOUR: u64 = 60 * SECONDS_PER_MINUTE;
+const SECONDS_PER_DAY: u64 = 24 * SECONDS_PER_HOUR;
+const SECONDS_PER_WEEK: u64 = 7 * SECONDS_PER_DAY;
+
 pub fn select_session(sessions: Vec<SessionMetadata>) -> Result<Option<String>> {
     if sessions.is_empty() {
         println!("{}", "No saved sessions found.".yellow());
@@ -54,16 +59,16 @@ fn format_timestamp(timestamp: u64) -> String {
         .as_secs();
     let diff = now.saturating_sub(timestamp);
 
-    if diff < 60 {
+    if diff < SECONDS_PER_MINUTE {
         "just now".to_string()
-    } else if diff < 3600 {
-        let mins = diff / 60;
+    } else if diff < SECONDS_PER_HOUR {
+        let mins = diff / SECONDS_PER_MINUTE;
         format!("{} min{} ago", mins, if mins == 1 { "" } else { "s" })
-    } else if diff < 86400 {
-        let hours = diff / 3600;
+    } else if diff < SECONDS_PER_DAY {
+        let hours = diff / SECONDS_PER_HOUR;
         format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" })
-    } else if diff < 604800 {
-        let days = diff / 86400;
+    } else if diff < SECONDS_PER_WEEK {
+        let days = diff / SECONDS_PER_DAY;
         format!("{} day{} ago", days, if days == 1 { "" } else { "s" })
     } else {
         use chrono::{DateTime, Utc};

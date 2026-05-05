@@ -43,12 +43,8 @@ pub fn strip_paste_markers(input: &str) -> (String, Vec<usize>) {
     (cleaned.trim().to_string(), indices)
 }
 
-/// Ceiling on pasted clipboard images. Matches the 20 MB cap Anthropic
-/// imposes on base64-encoded image bodies in the Messages API — a
-/// larger screenshot would just get rejected at request time with a
-/// confusing 400. Checked on both the raw PNG buffer (encoder output)
-/// and the encoded base64 so a huge image never makes it into the
-/// conversation state.
+/// Matches the 20 MB cap Anthropic imposes on base64-encoded image
+/// bodies in the Messages API.
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
 pub fn get_clipboard_image() -> Option<PastedImage> {

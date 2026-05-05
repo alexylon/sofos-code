@@ -6,9 +6,13 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const API_BASE: &str = "https://api.anthropic.com/v1";
-const API_VERSION: &str = "2023-06-01";
-/// Header name for Anthropic feature opt-ins.
+const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
+/// Pinned `anthropic-version` header value. `2023-06-01` is the
+/// version the public Anthropic Messages API is documented against;
+/// bumping it changes streaming-event shapes and request fields, so
+/// any change here needs a smoke test against both streaming and
+/// non-streaming paths.
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 const BETA_HEADER_NAME: &str = "anthropic-beta";
 
 /// Universal beta token: shrinks tool-call envelopes. Supported on
@@ -112,7 +116,10 @@ impl AnthropicClient {
             HeaderValue::from_str(&api_key)
                 .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
         );
-        headers.insert("anthropic-version", HeaderValue::from_static(API_VERSION));
+        headers.insert(
+            "anthropic-version",
+            HeaderValue::from_static(ANTHROPIC_API_VERSION),
+        );
         // `anthropic-beta` is set per-request by `anthropic_beta_for`
         // so the compaction beta only ships when the target model
         // actually supports it.
@@ -126,7 +133,7 @@ impl AnthropicClient {
     pub async fn check_connectivity(&self) -> Result<()> {
         utils::check_api_connectivity(
             &self.client,
-            API_BASE,
+            ANTHROPIC_API_BASE,
             "Anthropic",
             "https://status.anthropic.com",
         )
@@ -157,7 +164,7 @@ impl AnthropicClient {
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
-        let url = format!("{}/messages", API_BASE);
+        let url = format!("{}/messages", ANTHROPIC_API_BASE);
         let request = Self::prepare_request(request);
         let beta = anthropic_beta_for(&request.model);
 
@@ -189,7 +196,7 @@ impl AnthropicClient {
         request.stream = Some(true);
         let beta = anthropic_beta_for(&request.model);
 
-        let url = format!("{}/messages", API_BASE);
+        let url = format!("{}/messages", ANTHROPIC_API_BASE);
 
         let response = utils::send_once(
             "Anthropic",

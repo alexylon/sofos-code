@@ -436,6 +436,7 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
     - `cargo clippy --all-targets -- -D warnings`
     - `cargo test --all`
 - Before finishing, review the change for bugs and corner cases.
+- After each final modification, suggest a clear one-line commit message.
 
 ---
 

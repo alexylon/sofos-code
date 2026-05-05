@@ -65,11 +65,6 @@ impl ResponseHandler {
         }
     }
 
-    /// Fold a `Usage` payload into the per-turn running totals carried
-    /// by `handle_response`. Centralised so the counter increments
-    /// stay consistent across the three sites that consume responses
-    /// (auto-continue after reasoning-only blocks, tool-result loop,
-    /// max-iterations summary).
     fn accumulate_usage(
         usage: &crate::api::Usage,
         total_input: &mut u32,

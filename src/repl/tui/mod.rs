@@ -40,6 +40,9 @@ use app::{App, Picker};
 use event::{Job, UiEvent};
 use output::OutputCapture;
 
+/// Background tick cadence — frame rate vs. event-loop responsiveness
+/// tradeoff. ~11 Hz is fast enough that streamed output looks fluid
+/// without burning CPU on a quiet conversation.
 const TICK_INTERVAL: Duration = Duration::from_millis(90);
 /// Maximum captured output lines coalesced into a single `insert_before`
 /// call. A high value amortises terminal I/O when a tool streams a lot of

@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
+const TOOL_CHOICE_AUTO: &str = "auto";
 
 #[derive(Clone)]
 pub struct OpenAIClient {
@@ -272,7 +273,7 @@ fn build_responses_body(request: &CreateMessageRequest) -> serde_json::Value {
 
         if !tools.is_empty() {
             body["tools"] = json!(tools);
-            body["tool_choice"] = json!("auto");
+            body["tool_choice"] = json!(TOOL_CHOICE_AUTO);
         }
     }
 
