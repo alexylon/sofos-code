@@ -115,10 +115,15 @@ fn main() -> Result<()> {
             crate::api::anthropic::effort_label(cli.reasoning_effort)
         ));
     } else if cli.reasoning_effort.is_enabled() {
+        // Display the per-effort tier budget actually sent
+        // (`request_builder` no longer reads the inert
+        // `--thinking-budget` flag) so the startup banner matches
+        // what hits the API.
+        let budget = crate::api::anthropic::legacy_thinking_budget(cli.reasoning_effort);
         startup_banner.push_str(&format!(
             "{} (budget: {} tokens)\n",
             "Extended thinking: enabled".bright_green(),
-            cli.thinking_budget
+            budget
         ));
     }
 

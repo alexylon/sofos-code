@@ -160,8 +160,16 @@ impl SofosError {
                         "Set OPENAI_API_KEY environment variable or use --openai-api-key flag"
                             .to_string(),
                     )
-                } else if msg.contains("thinking_budget") && msg.contains("max_tokens") {
-                    Some("Increase --max-tokens or decrease --thinking-budget".to_string())
+                } else if msg.contains("max_tokens") && msg.contains("thinking-budget ceiling") {
+                    // Matches the validation message in `Repl::new`. The
+                    // suggestion no longer mentions `--thinking-budget`
+                    // because that flag is inert — the legacy budget is
+                    // picked per-effort tier in `request_builder`, not
+                    // from the flag value.
+                    Some(format!(
+                        "Increase --max-tokens above {} or set --reasoning-effort off",
+                        crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
+                    ))
                 } else {
                     None
                 }
@@ -242,3 +250,40 @@ impl SofosError {
 }
 
 pub type Result<T> = std::result::Result<T, SofosError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: the validation message in `Repl::new` was rewritten
+    /// (`thinking_budget >= max_tokens` → `max_tokens <= legacy thinking-
+    /// budget ceiling`) when `/think` started picking budgets per-effort
+    /// instead of from the inert flag. The classifier here must still
+    /// recognise the new wording and surface a useful hint.
+    #[test]
+    fn config_hint_fires_on_new_max_tokens_validation_message() {
+        // Mirror the exact format string used at the validation site so
+        // a future rewording on either side breaks this test loudly.
+        let err = SofosError::Config(format!(
+            "max_tokens ({}) must exceed the legacy thinking-budget ceiling ({}). \
+             Use a higher --max-tokens or set --reasoning-effort off.",
+            crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH,
+            crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
+        ));
+        let hint = err.hint().expect("hint must fire on the new message");
+        assert!(
+            hint.contains("Increase --max-tokens"),
+            "hint should mention --max-tokens, got: {hint}"
+        );
+        assert!(
+            hint.contains(&crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH.to_string()),
+            "hint should embed the actual ceiling, got: {hint}"
+        );
+        // `--thinking-budget` is inert; the suggestion must not point
+        // users at a flag that no longer does anything.
+        assert!(
+            !hint.contains("--thinking-budget"),
+            "suggestion must not advise tweaking the inert --thinking-budget flag, got: {hint}"
+        );
+    }
+}

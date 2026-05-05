@@ -38,11 +38,12 @@ pub struct SessionState {
     /// so the displayed cost reflects what the provider actually
     /// bills, not the standard-tier rate.
     ///
-    /// TODO: persist this through `session/history.rs` so a
-    /// `--resume` of a session that already crossed the cliff keeps
-    /// showing the premium rate. Today the field resets to 0 on
-    /// resume, and the cost line under-reports until the very next
-    /// request crosses the threshold again.
+    /// All five counters above are persisted through
+    /// [`SessionTokenCounters`](crate::session::SessionTokenCounters)
+    /// so a `--resume` keeps the cost summary accurate and the cliff
+    /// detector remembers whether the threshold had already been
+    /// crossed. Session files written before persistence was added
+    /// default every counter to 0 via `#[serde(default)]`.
     pub peak_single_turn_input_tokens: u32,
 }
 

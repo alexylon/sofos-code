@@ -157,43 +157,17 @@ impl OpenAIClient {
                     }
                 }
                 "reasoning" => {
-                    // Pack the whole reasoning output item (id + every
-                    // summary entry + encrypted_content) into one block
-                    // so the next request can round-trip it as a single
-                    // `{type: "reasoning"}` input item. Splitting it
-                    // into one Summary block per entry would lose the
-                    // shared `id`/`encrypted_content` and force the
-                    // server to rederive the hidden chain-of-thought
-                    // on every tool round-trip.
                     let summary_texts: Vec<String> = item
                         .summary
                         .into_iter()
                         .filter(|s| s.summary_type == "summary_text" && !s.text.trim().is_empty())
                         .map(|s| s.text)
                         .collect();
-                    if let Some(rid) = item.id {
-                        // TODO: if `summary_texts` is empty AND
-                        // `item.encrypted_content` is None, we
-                        // round-trip an empty reasoning shell
-                        // (`{type: "reasoning", id, summary: []}`).
-                        // Theoretical wire-shape edge case — OpenAI
-                        // may reject it. Drop the block in that
-                        // configuration if it ever shows up in real
-                        // responses.
-                        content_blocks.push(ContentBlock::Reasoning {
-                            id: rid,
-                            summary: summary_texts,
-                            encrypted_content: item.encrypted_content,
-                        });
-                    } else {
-                        // No id means this isn't a real reasoning item
-                        // (e.g. an old payload predating the field) —
-                        // fall back to per-text Summary blocks so the
-                        // visible reasoning still surfaces.
-                        for text in summary_texts {
-                            content_blocks.push(ContentBlock::Summary { summary: text });
-                        }
-                    }
+                    content_blocks.extend(reasoning_item_to_blocks(
+                        item.id,
+                        summary_texts,
+                        item.encrypted_content,
+                    ));
                 }
                 _ => {
                     if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -577,6 +551,46 @@ struct OpenAIInputTokensDetails {
     cached_tokens: Option<u32>,
 }
 
+/// Convert a single OpenAI `reasoning` output item into the content
+/// blocks sofos stores in conversation history.
+///
+/// With an `id` present, the whole item (id + visible summary +
+/// encrypted CoT) packs into one [`ContentBlock::Reasoning`] so the
+/// next request can round-trip it as a single `{type: "reasoning"}`
+/// input — splitting into per-summary blocks would lose the shared
+/// `id`/`encrypted_content` and force the server to rederive the
+/// hidden chain-of-thought on every tool round-trip.
+///
+/// Two edge cases:
+/// 1. `id` present but neither summary nor encrypted_content — drop
+///    the block. The wire shape `{type: "reasoning", id, summary: []}`
+///    is rejected by some OpenAI models, and the block carries no
+///    signal worth round-tripping anyway.
+/// 2. No `id` (old payloads predating the field) — fall back to
+///    per-text [`ContentBlock::Summary`] blocks so the visible
+///    reasoning still surfaces.
+fn reasoning_item_to_blocks(
+    id: Option<String>,
+    summary_texts: Vec<String>,
+    encrypted_content: Option<String>,
+) -> Vec<ContentBlock> {
+    if let Some(rid) = id {
+        if summary_texts.is_empty() && encrypted_content.is_none() {
+            return Vec::new();
+        }
+        vec![ContentBlock::Reasoning {
+            id: rid,
+            summary: summary_texts,
+            encrypted_content,
+        }]
+    } else {
+        summary_texts
+            .into_iter()
+            .map(|text| ContentBlock::Summary { summary: text })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -755,5 +769,84 @@ mod tests {
         });
         let usage: OpenAIResponseUsage = serde_json::from_value(json).unwrap();
         assert!(usage.input_tokens_details.is_none());
+    }
+
+    #[test]
+    fn reasoning_item_drops_empty_shell_when_neither_summary_nor_encrypted() {
+        // `{type: "reasoning", id, summary: []}` with no
+        // encrypted_content carries no signal and some OpenAI models
+        // reject the wire shape — drop instead of round-tripping.
+        let blocks = reasoning_item_to_blocks(Some("rs_abc".to_string()), Vec::new(), None);
+        assert!(
+            blocks.is_empty(),
+            "empty reasoning shell must be dropped, got {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn reasoning_item_keeps_block_when_encrypted_content_present() {
+        // Encrypted CoT alone is enough signal to round-trip — the
+        // server uses it to resume hidden reasoning even with no
+        // visible summary.
+        let blocks = reasoning_item_to_blocks(
+            Some("rs_abc".to_string()),
+            Vec::new(),
+            Some("encrypted_blob".to_string()),
+        );
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Reasoning {
+                summary,
+                encrypted_content: Some(_),
+                ..
+            } if summary.is_empty()
+        ));
+    }
+
+    #[test]
+    fn reasoning_item_keeps_block_when_summary_present() {
+        let blocks = reasoning_item_to_blocks(
+            Some("rs_abc".to_string()),
+            vec!["thought".to_string()],
+            None,
+        );
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Reasoning { summary, .. } if summary == &vec!["thought".to_string()]
+        ));
+    }
+
+    #[test]
+    fn reasoning_item_keeps_block_when_both_summary_and_encrypted_present() {
+        // Common path — a reasoning model with `summary: "auto"` and
+        // `include[reasoning.encrypted_content]` returns both. Both
+        // must round-trip on the same block to preserve the link
+        // between the visible summary and the hidden CoT.
+        let blocks = reasoning_item_to_blocks(
+            Some("rs_abc".to_string()),
+            vec!["thought".to_string()],
+            Some("encrypted_blob".to_string()),
+        );
+        assert_eq!(blocks.len(), 1);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Reasoning {
+                summary,
+                encrypted_content: Some(_),
+                ..
+            } if summary == &vec!["thought".to_string()]
+        ));
+    }
+
+    #[test]
+    fn reasoning_item_without_id_falls_back_to_summary_blocks() {
+        // Old payloads predating the `id` field — the visible
+        // reasoning still surfaces but loses its round-trip handle.
+        let blocks = reasoning_item_to_blocks(None, vec!["a".to_string(), "b".to_string()], None);
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[0], ContentBlock::Summary { .. }));
+        assert!(matches!(blocks[1], ContentBlock::Summary { .. }));
     }
 }

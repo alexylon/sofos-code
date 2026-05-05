@@ -44,6 +44,32 @@ pub struct SessionMetadata {
     pub message_count: usize,
 }
 
+/// Snapshot of session token counters persisted alongside the
+/// conversation. Every field has `#[serde(default)]` so older session
+/// files (written before persistence was added) load with all counters
+/// at 0 — the cost line under-reports on resume of those old files
+/// until the next API call replenishes the totals, same as the pre-
+/// persistence behaviour. Files written after persistence was added
+/// round-trip every counter, so the cost summary stays accurate
+/// across a `--resume`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionTokenCounters {
+    #[serde(default)]
+    pub total_input_tokens: u32,
+    #[serde(default)]
+    pub total_output_tokens: u32,
+    #[serde(default)]
+    pub total_cache_read_tokens: u32,
+    #[serde(default)]
+    pub total_cache_creation_tokens: u32,
+    /// Largest input-token count observed on any single API call.
+    /// Used by `calculate_cost` to detect tiered-pricing cliffs
+    /// (gpt-5.4/5.5 flip the entire session to premium rates once
+    /// any prompt crosses 272K input tokens).
+    #[serde(default)]
+    pub peak_single_turn_input_tokens: u32,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -55,6 +81,10 @@ pub struct Session {
     pub system_prompt: Vec<SystemPrompt>,
     pub created_at: u64,
     pub updated_at: u64,
+    /// Token counters at save time. Flattened into the top level of
+    /// the JSON so each counter is its own key.
+    #[serde(default, flatten)]
+    pub token_counters: SessionTokenCounters,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -185,6 +215,7 @@ impl HistoryManager {
         messages: &[Message],
         display_messages: &[DisplayMessage],
         system_prompt: &[SystemPrompt],
+        token_counters: SessionTokenCounters,
     ) -> Result<()> {
         let _lock = self.acquire_save_lock()?;
 
@@ -213,6 +244,7 @@ impl HistoryManager {
             system_prompt: system_prompt.to_vec(),
             created_at,
             updated_at: now,
+            token_counters,
         };
 
         let content = serde_json::to_string_pretty(&session)?;
@@ -384,6 +416,7 @@ mod tests {
                 &messages,
                 &[],
                 std::slice::from_ref(&system_prompt),
+                SessionTokenCounters::default(),
             )
             .unwrap();
 
@@ -407,6 +440,7 @@ mod tests {
                 &[Message::user("First session")],
                 &[],
                 std::slice::from_ref(&system_prompt),
+                SessionTokenCounters::default(),
             )
             .unwrap();
 
@@ -419,6 +453,7 @@ mod tests {
                 &[Message::user("Second session")],
                 &[],
                 &[system_prompt],
+                SessionTokenCounters::default(),
             )
             .unwrap();
 
@@ -451,6 +486,69 @@ mod tests {
         }
     }
 
+    /// Every persisted token counter must survive save/load. Without
+    /// this, a `--resume` would reset the displayed cost (totals stay
+    /// at 0 until the next API call replenishes them) and the cliff
+    /// detector would forget that gpt-5.5 had already crossed 272K.
+    #[test]
+    fn all_token_counters_survive_save_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let session_id = HistoryManager::generate_session_id();
+        let system_prompt = SystemPrompt::new_cached_with_ttl("sys".to_string(), None);
+        let counters = SessionTokenCounters {
+            total_input_tokens: 123_456,
+            total_output_tokens: 7_890,
+            total_cache_read_tokens: 65_000,
+            total_cache_creation_tokens: 4_321,
+            // > 272K — the gpt-5.5 premium-tier cliff.
+            peak_single_turn_input_tokens: 300_000,
+        };
+
+        manager
+            .save_session(
+                &session_id,
+                &[Message::user("crossed the cliff")],
+                &[],
+                std::slice::from_ref(&system_prompt),
+                counters,
+            )
+            .unwrap();
+
+        let loaded = manager.load_session(&session_id).unwrap();
+        assert_eq!(loaded.token_counters, counters);
+    }
+
+    /// Older session files (written before persistence was added) have
+    /// no token-counter fields at all. `#[serde(default)]` on each
+    /// field of `SessionTokenCounters` must let them load with the
+    /// whole struct defaulting to all zeros, otherwise older session
+    /// files would fail to parse and the user would lose their saved
+    /// history.
+    #[test]
+    fn old_session_files_without_counter_fields_load_with_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        let session_id = "session_pre_persistence";
+        let session_path = manager.sessions_dir().join(format!("{}.json", session_id));
+        // Hand-rolled JSON missing every counter field — mirrors what
+        // an older sofos would have written. Timestamps are 0 because
+        // they don't matter for this test.
+        let legacy_json = serde_json::json!({
+            "id": session_id,
+            "api_messages": [],
+            "system_prompt": [],
+            "created_at": 0,
+            "updated_at": 0,
+        });
+        fs::write(&session_path, serde_json::to_string(&legacy_json).unwrap()).unwrap();
+
+        let loaded = manager.load_session(session_id).unwrap();
+        assert_eq!(loaded.token_counters, SessionTokenCounters::default());
+    }
+
     /// If a session file on disk is corrupted (hand-edited, partial
     /// write from a prior crash, schema drift), `save_session` must
     /// still succeed rather than bubbling the parse error and losing
@@ -470,6 +568,7 @@ mod tests {
             &[Message::user("After corruption")],
             &[],
             std::slice::from_ref(&system_prompt),
+            SessionTokenCounters::default(),
         );
         assert!(
             save_result.is_ok(),
@@ -518,6 +617,7 @@ mod tests {
                             &[Message::user(format!("writer {} save {}", w, n))],
                             &[],
                             std::slice::from_ref(&system_prompt),
+                            SessionTokenCounters::default(),
                         )
                         .unwrap();
                 }

@@ -14,7 +14,9 @@ use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlo
 use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
-use crate::session::{DisplayMessage, HistoryManager, SessionMetadata, SessionState};
+use crate::session::{
+    DisplayMessage, HistoryManager, SessionMetadata, SessionState, SessionTokenCounters,
+};
 use crate::tools::ToolExecutor;
 use crate::tools::image::{ImageLoader, ImageReference, extract_image_references};
 use crate::ui::{UI, set_safe_mode_cursor_style};
@@ -251,7 +253,13 @@ impl Repl {
             format!("effort: {}", crate::api::anthropic::effort_label(effort))
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
-                format!("thinking: {} tok", self.model_config.thinking_budget)
+                // The legacy non-adaptive shape's `budget_tokens` is
+                // picked from the effort tier in `request_builder`, not
+                // from the (inert) `--thinking-budget` flag. Display the
+                // value we actually send so the status line reflects
+                // reality.
+                let budget = crate::api::anthropic::legacy_thinking_budget(effort);
+                format!("thinking: {} tok", budget)
             } else {
                 "thinking: off".to_string()
             }
@@ -717,6 +725,13 @@ impl Repl {
             self.session_state.conversation.messages(),
             &self.session_state.display_messages,
             self.session_state.conversation.system_prompt(),
+            SessionTokenCounters {
+                total_input_tokens: self.session_state.total_input_tokens,
+                total_output_tokens: self.session_state.total_output_tokens,
+                total_cache_read_tokens: self.session_state.total_cache_read_tokens,
+                total_cache_creation_tokens: self.session_state.total_cache_creation_tokens,
+                peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
+            },
         )?;
 
         Ok(())
@@ -789,10 +804,15 @@ impl Repl {
             );
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
+                // Display the per-effort tier budget actually sent
+                // (`request_builder` no longer reads the inert
+                // `--thinking-budget` flag) so the `/think` output
+                // matches what hits the API.
+                let budget = crate::api::anthropic::legacy_thinking_budget(effort);
                 println!(
                     "\n{} (budget: {} tokens)\n",
                     "Extended thinking: enabled".bright_green(),
-                    self.model_config.thinking_budget
+                    budget
                 );
             } else {
                 println!("\n{}\n", "Extended thinking: disabled".bright_yellow());
@@ -871,6 +891,19 @@ impl Repl {
             .conversation
             .restore_messages(session.api_messages.clone());
         self.session_state.display_messages = session.display_messages.clone();
+        // Restore every persisted token counter so the cost summary
+        // stays accurate across the resume. Older session files written
+        // before persistence was added default the whole
+        // `token_counters` struct to all-zero via `#[serde(default)]`
+        // on each field, matching the pre-persistence behaviour for
+        // those old files.
+        self.session_state.total_input_tokens = session.token_counters.total_input_tokens;
+        self.session_state.total_output_tokens = session.token_counters.total_output_tokens;
+        self.session_state.total_cache_read_tokens = session.token_counters.total_cache_read_tokens;
+        self.session_state.total_cache_creation_tokens =
+            session.token_counters.total_cache_creation_tokens;
+        self.session_state.peak_single_turn_input_tokens =
+            session.token_counters.peak_single_turn_input_tokens;
 
         println!(
             "{} {} ({} messages)",

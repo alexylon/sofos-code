@@ -415,6 +415,10 @@ This prints:
 - [ ] Docs: Updated README if user-visible change?
 - [ ] UX: Error messages clear and actionable?
 
+## `notes/` directory
+
+Gitignored scratchpad for helper files the user asks to be created there — typically markdown (current proposal/plan files, side references during a refactor, etc.). Safe to read for context; nothing in `notes/` ships with the repo.
+
 ## Non-Negotiable Rules
 
 - Use idiomatic Rust and repository naming conventions.
