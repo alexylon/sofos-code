@@ -26,8 +26,9 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 pub struct App {
     /// Multi-line input widget.
     pub textarea: TextArea<'static>,
-    /// True while the worker is running a job.
-    pub busy: bool,
+    /// True while the worker is running a job. Mutated only via
+    /// `start_busy` / `finish_busy`.
+    busy: bool,
     /// Short label shown next to the spinner ("processing", "thinking", ...).
     pub busy_label: String,
     /// Jobs queued while the worker was busy. Drained FIFO once it becomes idle.
@@ -197,6 +198,10 @@ impl App {
         self.busy = false;
         self.busy_label.clear();
         self.busy_since = None;
+    }
+
+    pub fn busy(&self) -> bool {
+        self.busy
     }
 
     pub fn spinner_frame(&self) -> &'static str {

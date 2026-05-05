@@ -47,12 +47,6 @@ pub enum MessageSeverity {
     Warning,
     /// Actual failures (network, IO, parsing errors)
     Error,
-    /// Informational messages
-    #[allow(dead_code)]
-    Info,
-    /// Success messages
-    #[allow(dead_code)]
-    Success,
 }
 
 impl MessageSeverity {
@@ -62,84 +56,11 @@ impl MessageSeverity {
             Self::Blocked => "Blocked:".truecolor(br, bg, bb).bold(),
             Self::Warning => "Warning:".bright_yellow().bold(),
             Self::Error => "Error:".bright_red().bold(),
-            Self::Info => "Info:".bright_cyan().bold(),
-            Self::Success => "Success:".bright_green().bold(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn icon(&self) -> &'static str {
-        match self {
-            Self::Blocked => "🔒",
-            Self::Warning => "⚠️ ",
-            Self::Error => "✗",
-            Self::Info => "ℹ️ ",
-            Self::Success => "✓",
-        }
-    }
-}
-
-/// Structured message for consistent formatting (reserved for future use)
-#[allow(dead_code)]
-pub struct FormattedMessage {
-    pub severity: MessageSeverity,
-    pub title: String,
-    pub details: Option<String>,
-    pub hint: Option<String>,
-}
-
-#[allow(dead_code)]
-impl FormattedMessage {
-    pub fn blocked(title: impl Into<String>) -> Self {
-        Self {
-            severity: MessageSeverity::Blocked,
-            title: title.into(),
-            details: None,
-            hint: None,
-        }
-    }
-
-    pub fn warning(title: impl Into<String>) -> Self {
-        Self {
-            severity: MessageSeverity::Warning,
-            title: title.into(),
-            details: None,
-            hint: None,
-        }
-    }
-
-    pub fn error(title: impl Into<String>) -> Self {
-        Self {
-            severity: MessageSeverity::Error,
-            title: title.into(),
-            details: None,
-            hint: None,
-        }
-    }
-
-    pub fn with_details(mut self, details: impl Into<String>) -> Self {
-        self.details = Some(details.into());
-        self
-    }
-
-    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
-        self.hint = Some(hint.into());
-        self
-    }
-
-    pub fn print(&self) {
-        eprintln!("{} {}", self.severity.prefix(), self.title);
-        if let Some(ref details) = self.details {
-            eprintln!("  {}", details.dimmed());
-        }
-        if let Some(ref hint) = self.hint {
-            eprintln!("  {} {}", "Hint:".bright_cyan(), hint);
         }
     }
 }
 
 /// UI utilities for displaying messages, animations, and formatting
-#[allow(dead_code)]
 pub struct UI {
     highlighter: SyntaxHighlighter,
 }
@@ -203,11 +124,6 @@ impl UI {
                 eprintln!("  {} {}", "Hint:".bright_cyan(), hint);
             }
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn print_info(message: &str) {
-        Self::print_message(MessageSeverity::Info, message);
     }
 
     /// Return the ASCII-art banner as a ready-to-print string. The
@@ -714,11 +630,6 @@ fn set_cursor_style(style: SetCursorStyle) -> io::Result<()> {
 
 pub fn set_safe_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::BlinkingUnderScore)
-}
-
-#[allow(dead_code)]
-pub fn set_normal_mode_cursor_style() -> io::Result<()> {
-    set_cursor_style(SetCursorStyle::DefaultUserShape)
 }
 
 #[cfg(test)]

@@ -281,7 +281,7 @@ async fn event_loop(
                     // modal is open — the worker is blocked waiting for
                     // the user, not processing, so a spinning indicator
                     // would be misleading.
-                    if app.busy && app.confirmation.is_none() {
+                    if app.busy() && app.confirmation.is_none() {
                         app.advance_spinner();
                     }
                     break;
@@ -509,7 +509,7 @@ fn handle_idle_key(
 
     match key.code {
         KeyCode::Char('c') if ctrl => {
-            if app.busy {
+            if app.busy() {
                 // First Ctrl+C while busy: politely interrupt the
                 // running job. Second Ctrl+C while *still* busy means
                 // the worker isn't responding (panicked / deadlocked /
@@ -526,7 +526,7 @@ fn handle_idle_key(
                 request_shutdown(app, job_tx);
             }
         }
-        KeyCode::Char('d') if ctrl && !app.busy && app.textarea.is_empty() => {
+        KeyCode::Char('d') if ctrl && !app.busy() && app.textarea.is_empty() => {
             request_shutdown(app, job_tx);
         }
         KeyCode::Char('v') if ctrl => {
@@ -546,7 +546,7 @@ fn handle_idle_key(
         KeyCode::Down if alt && !ctrl => {
             app.history_next();
         }
-        KeyCode::Esc if app.busy => {
+        KeyCode::Esc if app.busy() => {
             interrupt.store(true, Ordering::SeqCst);
         }
         // Plain Enter (no shift/alt/ctrl) submits. Any *modified* Enter
@@ -900,7 +900,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
         None
     };
     let is_command = command.is_some();
-    let will_steer = app.busy && !is_command && images.is_empty();
+    let will_steer = app.busy() && !is_command && images.is_empty();
 
     // Echo the submitted line into the log so the user sees what they
     // sent, even while the worker is still processing or the message is
@@ -941,7 +941,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
     // trim rule only lives in one place.
     if let Some(cmd) = command {
         let job = Job::Command(cmd);
-        if app.busy {
+        if app.busy() {
             // Commands can't be injected mid-turn — they need to run
             // as their own job. Queue FIFO so they execute in the
             // order the user typed them once the current job ends.
@@ -968,7 +968,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
         text: cleaned,
         images,
     };
-    if app.busy {
+    if app.busy() {
         app.queue.push_back(job);
     } else {
         let _ = job_tx.send(job);

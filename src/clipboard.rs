@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 #[derive(Clone, Debug)]

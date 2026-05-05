@@ -57,15 +57,6 @@ impl ToolExecutionResult {
         }
     }
 
-    /// Check if this result has images
-    #[allow(dead_code)]
-    pub fn has_images(&self) -> bool {
-        match self {
-            ToolExecutionResult::Text(_) => false,
-            ToolExecutionResult::Structured(r) => !r.images.is_empty(),
-        }
-    }
-
     /// Get images if any
     pub fn images(&self) -> &[ImageData] {
         match self {

@@ -80,9 +80,4 @@ impl LlmClient {
             LlmClient::OpenAI(_) => "OpenAI",
         }
     }
-
-    #[allow(dead_code)]
-    pub fn is_anthropic(&self) -> bool {
-        matches!(self, LlmClient::Anthropic(_))
-    }
 }

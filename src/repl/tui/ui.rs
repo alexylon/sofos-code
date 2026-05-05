@@ -111,7 +111,7 @@ fn input_box_height(app: &mut App, area_width: u16) -> u16 {
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
-    let border_color = if app.busy {
+    let border_color = if app.busy() {
         Color::DarkGray
     } else {
         BORDER_IDLE
@@ -186,7 +186,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    if app.busy {
+    if app.busy() {
         let frame_ch = app.spinner_frame();
         spans.push(Span::styled(
             format!(" {} ", frame_ch),

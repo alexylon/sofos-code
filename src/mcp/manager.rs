@@ -21,21 +21,6 @@ pub struct ImageData {
     pub base64_data: String,
 }
 
-impl ToolResult {
-    #[allow(dead_code)]
-    pub fn text_only(text: String) -> Self {
-        Self {
-            text,
-            images: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn has_images(&self) -> bool {
-        !self.images.is_empty()
-    }
-}
-
 /// Manages multiple MCP server connections and their tools
 pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, McpClient>>>,
