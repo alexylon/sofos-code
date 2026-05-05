@@ -1028,6 +1028,135 @@ mod tests {
     }
 
     #[test]
+    fn test_trim_orphan_round_trips_through_both_provider_paths() {
+        // Multi-call scenario: trim severs the first ToolUse/ToolResult
+        // pair (call_lost); a later pair (call_keep) survives. The
+        // serialised request must not reference call_lost on either
+        // provider, and the surviving pair must round-trip intact.
+        // OpenAI rejects orphan function_call_output with "No tool call
+        // found for function call output with call_id …"; Anthropic
+        // rejects unmatched tool_result.tool_use_id at the validator.
+        use crate::api::CreateMessageRequest;
+        use crate::api::anthropic::sanitize_messages_for_anthropic;
+        use crate::api::openai::build_response_input;
+        use std::collections::HashSet;
+
+        let mut history = ConversationHistory::new();
+        history.config.max_messages = 4;
+
+        let messages = vec![
+            Message::user("initial query".to_string()),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "call_lost".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "a.rs"}),
+                cache_control: None,
+            }]),
+            Message::user_with_tool_results(vec![MessageContentBlock::ToolResult {
+                tool_use_id: "call_lost".to_string(),
+                content: "lost result".to_string(),
+                cache_control: None,
+            }]),
+            Message::assistant_with_blocks(vec![MessageContentBlock::ToolUse {
+                id: "call_keep".to_string(),
+                name: "read_file".to_string(),
+                input: serde_json::json!({"path": "b.rs"}),
+                cache_control: None,
+            }]),
+            Message::user_with_tool_results(vec![MessageContentBlock::ToolResult {
+                tool_use_id: "call_keep".to_string(),
+                content: "kept result".to_string(),
+                cache_control: None,
+            }]),
+            Message::user("next".to_string()),
+        ];
+        history.restore_messages(messages);
+
+        // OpenAI Responses path: every function_call_output must
+        // reference a prior function_call with the same call_id.
+        let request = CreateMessageRequest {
+            model: "gpt-5.5".to_string(),
+            max_tokens: 100,
+            messages: history.messages().to_vec(),
+            system: None,
+            tools: None,
+            stream: None,
+            thinking: None,
+            output_config: None,
+            reasoning: None,
+            prompt_cache_key: None,
+            context_management: None,
+        };
+        let openai_input = build_response_input(&request);
+        let mut seen_call_ids: HashSet<String> = HashSet::new();
+        let mut saw_kept_output = false;
+        for item in &openai_input {
+            match item.get("type").and_then(|v| v.as_str()) {
+                Some("function_call") => {
+                    let id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .expect("function_call must carry call_id");
+                    seen_call_ids.insert(id.to_string());
+                }
+                Some("function_call_output") => {
+                    let id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .expect("function_call_output must carry call_id");
+                    assert!(
+                        seen_call_ids.contains(id),
+                        "OpenAI function_call_output references unknown call_id {} \
+                         (would be rejected with 'No tool call found …')",
+                        id
+                    );
+                    if id == "call_keep" {
+                        saw_kept_output = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_kept_output,
+            "surviving function_call_output for call_keep was lost from OpenAI input"
+        );
+
+        // Anthropic Messages path: every tool_result.tool_use_id must
+        // reference a tool_use.id from a prior assistant turn.
+        let anthropic_msgs = sanitize_messages_for_anthropic(history.messages().to_vec());
+        let mut seen_tool_use_ids: HashSet<String> = HashSet::new();
+        let mut saw_kept_result = false;
+        for msg in &anthropic_msgs {
+            if let crate::api::MessageContent::Blocks { content } = &msg.content {
+                for block in content {
+                    match block {
+                        MessageContentBlock::ToolUse { id, .. } => {
+                            seen_tool_use_ids.insert(id.clone());
+                        }
+                        MessageContentBlock::ToolResult { tool_use_id, .. } => {
+                            assert!(
+                                seen_tool_use_ids.contains(tool_use_id),
+                                "Anthropic tool_result references unknown tool_use_id {} \
+                                 (rejected by tool_use_id validator)",
+                                tool_use_id
+                            );
+                            if tool_use_id == "call_keep" {
+                                saw_kept_result = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_kept_result,
+            "surviving tool_result for call_keep was lost from Anthropic messages"
+        );
+    }
+
+    #[test]
     fn test_message_limit_with_blocks() {
         let mut history = ConversationHistory::new();
 

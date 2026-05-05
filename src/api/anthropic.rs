@@ -488,7 +488,7 @@ struct WebSearchToolResultBlock {
     content: Vec<WebSearchResult>,
 }
 
-fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
+pub(crate) fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
         .map(|mut msg| {

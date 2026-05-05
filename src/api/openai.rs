@@ -280,7 +280,7 @@ fn build_responses_body(request: &CreateMessageRequest) -> serde_json::Value {
     body
 }
 
-fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
+pub(crate) fn build_response_input(request: &CreateMessageRequest) -> Vec<serde_json::Value> {
     let mut input = Vec::new();
 
     let text_part = |part_type: &str, text: &str| -> serde_json::Value {
