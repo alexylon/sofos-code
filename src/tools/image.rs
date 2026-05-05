@@ -194,7 +194,15 @@ impl ImageLoader {
             )));
         }
 
-        let extension = canonical.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let extension = canonical
+            .extension()
+            .and_then(|e| e.to_str())
+            .ok_or_else(|| {
+                SofosError::ToolExecution(format!(
+                    "Image file '{}' has a missing or non-UTF-8 extension. Supported formats: JPEG, PNG, GIF, WebP",
+                    path
+                ))
+            })?;
 
         let format = ImageFormat::from_extension(extension).ok_or_else(|| {
             SofosError::ToolExecution(format!(
