@@ -26,6 +26,18 @@ pub struct ConversationHistory {
     /// lookback window; advances only when it would otherwise fall out
     /// of range. Without this, a single iteration adding more than ~20
     /// blocks (wide multi-tool turn) would cold-miss every cache entry.
+    ///
+    /// Invariant — the anchor's index points at content that is
+    /// byte-stable in the prefix `messages[0..=anchor_idx]`. Any
+    /// `&mut self` operation that
+    ///   (a) inserts a message at or before the anchor,
+    ///   (b) drops a leading message,
+    ///   (c) mutates content inside `messages[0..=anchor_idx]`,
+    /// must call [`Self::invalidate_cache_anchor`] *before* returning.
+    /// Tail-only mutations (append a new message, edit
+    /// `messages.last_mut()`, pop the rolling) are safe because the
+    /// anchor sits strictly before the rolling by construction; the
+    /// next [`Self::maintain_cache_anchor`] re-validates the index.
     cache_anchor_message_idx: Option<usize>,
 }
 
@@ -303,7 +315,7 @@ Show imperial units only when the user explicitly asks for them."#,
         // position, since the prefix up to the anchor includes
         // `messages[0]`). Pure appends leave the anchor untouched.
         if self.messages.len() != len_before || stripped_orphan {
-            self.cache_anchor_message_idx = None;
+            self.invalidate_cache_anchor();
         }
 
         // The warning describes our internal trim heuristic, not the
@@ -407,6 +419,16 @@ Show imperial units only when the user explicitly asks for them."#,
 
     pub fn cache_anchor_message_idx(&self) -> Option<usize> {
         self.cache_anchor_message_idx
+    }
+
+    /// Drop the secondary cache-control breakpoint. Call this from any
+    /// mutator that changes content at or before the current anchor or
+    /// shifts indices into the anchored prefix; the next
+    /// [`Self::maintain_cache_anchor`] re-establishes the anchor from
+    /// the new state. Tail-only mutations (append, `last_mut`, pop the
+    /// rolling) leave the anchor valid and must NOT call this.
+    fn invalidate_cache_anchor(&mut self) {
+        self.cache_anchor_message_idx = None;
     }
 
     /// Drop leading messages whose content still references tool calls
@@ -583,7 +605,7 @@ Show imperial units only when the user explicitly asks for them."#,
         // In-place mutation of older message content changes the prefix
         // hash up to the anchor; invalidate so the next request doesn't
         // stamp a marker on a now-mismatched position.
-        self.cache_anchor_message_idx = None;
+        self.invalidate_cache_anchor();
         let threshold = self.config.tool_result_truncate_threshold;
         let keep_chars = COMPACTION_TOOL_RESULT_KEEP_CHARS;
 
@@ -683,7 +705,7 @@ Show imperial units only when the user explicitly asks for them."#,
         }
         // Front-drain + insert shifts every remaining index; the anchor
         // can't carry across this transformation.
-        self.cache_anchor_message_idx = None;
+        self.invalidate_cache_anchor();
         self.messages.drain(0..split_point);
         let summary_msg = Message::user(format!(
             "[Conversation Summary]\n\nThe following is a summary of our earlier conversation:\n\n{}",
@@ -791,13 +813,13 @@ Show imperial units only when the user explicitly asks for them."#,
 
     pub fn clear(&mut self) {
         self.messages.clear();
-        self.cache_anchor_message_idx = None;
+        self.invalidate_cache_anchor();
     }
 
     pub fn restore_messages(&mut self, messages: Vec<Message>) {
         // The new history has no relationship to the prior conversation;
         // any inherited anchor index is meaningless content-wise.
-        self.cache_anchor_message_idx = None;
+        self.invalidate_cache_anchor();
         self.messages = messages;
         self.trim_if_needed();
     }
@@ -1809,6 +1831,60 @@ mod tests {
         assert!(
             history.cache_anchor_message_idx().is_none(),
             "small restored history must leave anchor None"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_preserved_when_appending_to_last_user_blocks() {
+        // Pins the tail-only safety half of the field's invariant:
+        // append_text_to_last_user_blocks edits messages.last_mut() —
+        // the rolling — which by construction sits strictly after
+        // the anchor, so the anchored prefix bytes don't change.
+        let mut history = ConversationHistory::new();
+        for _ in 0..12 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let anchor_before = history
+            .cache_anchor_message_idx()
+            .expect("12 single-block messages cross the threshold");
+
+        let appended = history.append_text_to_last_user_blocks("steer".to_string());
+        assert!(appended, "tail is user-blocks, append should succeed");
+
+        assert_eq!(
+            history.cache_anchor_message_idx(),
+            Some(anchor_before),
+            "rolling-tail mutation must leave the anchor in place"
+        );
+    }
+
+    #[test]
+    fn cache_anchor_preserved_when_remove_last_message_pops_rolling() {
+        // Pop the rolling and confirm the anchor stays put. We keep
+        // the history wide enough that the new rolling is still
+        // strictly after the anchor, so maintain doesn't clear it
+        // on the idx < rolling_idx check.
+        let mut history = ConversationHistory::new();
+        for _ in 0..14 {
+            history.messages.push(blocks_msg_with("user", 1));
+        }
+        history.maintain_cache_anchor();
+        let anchor_before = history
+            .cache_anchor_message_idx()
+            .expect("14 single-block messages cross the threshold");
+        assert!(
+            anchor_before < history.messages.len() - 2,
+            "test relies on anchor being < rolling - 1 so popping the \
+             rolling doesn't push the anchor through the maintain bound"
+        );
+
+        history.remove_last_message();
+
+        assert_eq!(
+            history.cache_anchor_message_idx(),
+            Some(anchor_before),
+            "popping the rolling alone leaves the anchored prefix unchanged"
         );
     }
 }
