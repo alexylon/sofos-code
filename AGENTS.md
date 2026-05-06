@@ -430,7 +430,7 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
 - Add or update important tests and keep them self-contained.
 - After each important change, but only when we are ready to commit, update if relevant:
     - `README.md`
-    - `CHANGELOG.md` under `[Unreleased]`
+    - `CHANGELOG.md` under `[Unreleased]`. Stick to the standard Keep-a-Changelog categories (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) — do NOT add an `Internal` section. Pure refactors, dead-code removals, and test-only additions are not user-notable; leave them out. The changelog is for users, not contributors. Within each entry, describe the user-visible behaviour in plain English: no file paths, no bare `Type::method` shorthand, no Rust attribute syntax, no crate names. CLI flags, env vars, slash commands, and API wire formats are fine because the user encounters them directly.
 - Run:
     - `cargo fmt --all`
     - `cargo clippy --all-targets -- -D warnings`
