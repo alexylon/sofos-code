@@ -104,26 +104,26 @@ impl McpClient {
     }
 }
 
-/// Take the stdin and (buffered) stdout out of a freshly-spawned child.
-/// Returning `Err` here is essentially unreachable because
-/// `Command::spawn` with `Stdio::piped()` on both ends always populates
-/// `Child::stdin` / `Child::stdout`, but we still handle it — leaking
-/// a live `Child` out to `Drop` would fail to reap it (the std type
-/// doesn't wait).
-fn take_child_pipes(process: &mut Child, server_name: &str) -> Result<(ChildStdin, ChildStdout)> {
-    let stdin = process.stdin.take().ok_or_else(|| {
-        SofosError::McpError(format!(
-            "Failed to get stdin for MCP server '{}'",
-            server_name
-        ))
-    })?;
-    let stdout = process.stdout.take().ok_or_else(|| {
-        SofosError::McpError(format!(
-            "Failed to get stdout for MCP server '{}'",
-            server_name
-        ))
-    })?;
-    Ok((stdin, stdout))
+/// Take stdin/stdout from a freshly-spawned MCP child. Reaching the
+/// `Err` branch is practically unreachable — `Command::spawn` with
+/// `Stdio::piped()` on both ends always populates the pipes — but the
+/// type system doesn't enforce it. Owning the `Child` lets us reap it
+/// internally on the impossible branch, so a `?` at the call site
+/// can't accidentally leak a zombie via `Child::drop` (which doesn't
+/// wait).
+fn take_child_pipes(
+    mut process: Child,
+    server_name: &str,
+) -> Result<(Child, ChildStdin, ChildStdout)> {
+    if let (Some(stdin), Some(stdout)) = (process.stdin.take(), process.stdout.take()) {
+        return Ok((process, stdin, stdout));
+    }
+    let _ = process.kill();
+    let _ = process.wait();
+    Err(SofosError::McpError(format!(
+        "Failed to acquire stdin/stdout for MCP server '{}'",
+        server_name
+    )))
 }
 
 /// Write a single stdio message to the server (JSON-RPC request *or*
@@ -239,26 +239,17 @@ impl StdioClient {
             cmd.env(key, value);
         }
 
-        let mut process = cmd.spawn().map_err(|e| {
+        let process = cmd.spawn().map_err(|e| {
             SofosError::McpError(format!(
                 "Failed to start MCP server '{}': {}",
                 server_name, e
             ))
         })?;
 
-        // Take the pipes through a helper that reaps the child on
-        // error, so a (practically-impossible but not-type-proven)
-        // `None` from `take()` doesn't leak a zombie into the OS
-        // process table. Once the child is wrapped in `Self`, the
-        // `Drop` impl takes over.
-        let (stdin, stdout) = match take_child_pipes(&mut process, &server_name) {
-            Ok(pair) => pair,
-            Err(e) => {
-                let _ = process.kill();
-                let _ = process.wait();
-                return Err(e);
-            }
-        };
+        // `take_child_pipes` reaps the child if either pipe is missing,
+        // so the `?` here can't leak a zombie. Once the child is
+        // wrapped in `Self`, the `Drop` impl takes over.
+        let (process, stdin, stdout) = take_child_pipes(process, &server_name)?;
 
         let client = Self {
             server_name: server_name.clone(),
