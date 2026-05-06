@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-05-06
+
 ### Added
 
 - **Anthropic server-side compaction** is now enabled on Claude Opus 4.7, Opus 4.6, and Sonnet 4.6. Sofos sends the `compact-2026-01-12` beta header and a `context_management.edits[type=compact_20260112]` block on every request to those models; when the request crosses the per-model auto-compact threshold (~250K tokens), the API itself summarises older turns and returns a `compaction` content block, dropping the pre-compaction messages server-side on subsequent requests. No extra round-trip — the compaction summary arrives in the same response as the user's reply.
