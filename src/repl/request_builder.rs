@@ -9,21 +9,12 @@ pub struct RequestBuilder<'a> {
     conversation: &'a ConversationHistory,
     tools: Vec<Tool>,
     reasoning_effort: ReasoningEffort,
-    /// CLI-plumbed budget hint from `--thinking-budget`. No longer read
-    /// on Anthropic — the effort tier now maps to a fixed per-level
-    /// budget in `build()` so `/think low|medium|high` produce visibly
-    /// different outputs. Kept on the struct to avoid churning every
-    /// caller's signature; remove together with the `--thinking-budget`
-    /// CLI flag if the surface is ever pruned.
-    #[allow(dead_code)]
-    thinking_budget: u32,
     /// Stable per-session identifier sent as `prompt_cache_key` on the
     /// OpenAI Responses path. Anthropic ignores it.
     session_id: &'a str,
 }
 
 impl<'a> RequestBuilder<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: &'a LlmClient,
         model: &'a str,
@@ -31,7 +22,6 @@ impl<'a> RequestBuilder<'a> {
         conversation: &'a ConversationHistory,
         tools: Vec<Tool>,
         reasoning_effort: ReasoningEffort,
-        thinking_budget: u32,
         session_id: &'a str,
     ) -> Self {
         Self {
@@ -41,7 +31,6 @@ impl<'a> RequestBuilder<'a> {
             conversation,
             tools,
             reasoning_effort,
-            thinking_budget,
             session_id,
         }
     }
@@ -273,7 +262,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "session-abc",
         )
         .build();
@@ -296,7 +284,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();
@@ -318,7 +305,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();
@@ -471,7 +457,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();
@@ -511,7 +496,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();
@@ -545,7 +529,6 @@ mod tests {
                 &conv,
                 one_regular_tool(),
                 effort,
-                0,
                 "s1",
             )
             .build();
@@ -573,7 +556,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();
@@ -589,7 +571,6 @@ mod tests {
             &conv,
             one_regular_tool(),
             ReasoningEffort::Off,
-            0,
             "s1",
         )
         .build();

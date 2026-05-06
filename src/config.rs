@@ -53,10 +53,6 @@ pub struct ModelConfig {
     pub model: String,
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
-    /// Token budget for non-adaptive Anthropic extended thinking. Ignored
-    /// on OpenAI and on Anthropic adaptive (Opus 4.7+) where the server
-    /// picks the budget from `output_config.effort`.
-    pub thinking_budget: u32,
 }
 
 impl ModelConfig {
@@ -64,13 +60,11 @@ impl ModelConfig {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
-        thinking_budget: u32,
     ) -> Self {
         Self {
             model,
             max_tokens,
             reasoning_effort,
-            thinking_budget,
         }
     }
 

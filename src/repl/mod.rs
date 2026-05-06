@@ -37,7 +37,6 @@ pub struct ReplConfig {
     pub model: String,
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
-    pub thinking_budget: u32,
     pub safe_mode: bool,
 }
 
@@ -46,14 +45,12 @@ impl ReplConfig {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
-        thinking_budget: u32,
         safe_mode: bool,
     ) -> Self {
         Self {
             model,
             max_tokens,
             reasoning_effort,
-            thinking_budget,
             safe_mode,
         }
     }
@@ -139,11 +136,10 @@ impl Repl {
         }
 
         // Validate that `max_tokens` leaves room for the largest legacy
-        // thinking budget we might send. The actual budget is now picked
-        // per-effort in `request_builder` (Low=1024, Medium=5120,
-        // High=16384) rather than read from the user's `--thinking-budget`
-        // flag, so the invariant we need is `max_tokens > HIGH`. We check
-        // unconditionally on enabled-thinking sessions instead of also
+        // thinking budget we might send. The budget is picked per-effort
+        // in `request_builder` (Low=1024, Medium=5120, High=16384), so
+        // the invariant we need is `max_tokens > HIGH`. We check
+        // unconditionally on enabled-thinking sessions rather than
         // probing the model id, because the model can be swapped mid-
         // session via `/model` and we don't want a runtime 400.
         if config.reasoning_effort.is_enabled()
@@ -171,12 +167,8 @@ impl Repl {
 
         let session_id = HistoryManager::generate_session_id();
         let session_state = SessionState::new(session_id, conversation);
-        let model_config = ModelConfig::new(
-            config.model,
-            config.max_tokens,
-            config.reasoning_effort,
-            config.thinking_budget,
-        );
+        let model_config =
+            ModelConfig::new(config.model, config.max_tokens, config.reasoning_effort);
 
         let ui = UI::new();
 
@@ -250,11 +242,10 @@ impl Repl {
             format!("effort: {}", crate::api::anthropic::effort_label(effort))
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
-                // The legacy non-adaptive shape's `budget_tokens` is
-                // picked from the effort tier in `request_builder`, not
-                // from the (inert) `--thinking-budget` flag. Display the
-                // value we actually send so the status line reflects
-                // reality.
+                // The legacy non-adaptive shape's `budget_tokens` comes
+                // from the effort tier (mapping in `request_builder`).
+                // Show the value we actually send so the status line
+                // matches reality.
                 let budget = crate::api::anthropic::legacy_thinking_budget(effort);
                 format!("thinking: {} tok", budget)
             } else {
@@ -615,7 +606,6 @@ impl Repl {
             self.model_config.model.clone(),
             self.model_config.max_tokens,
             self.model_config.reasoning_effort,
-            self.model_config.thinking_budget,
             self.available_tools.clone(),
             use_streaming,
             Arc::clone(&self.interrupt_flag),
@@ -686,7 +676,6 @@ impl Repl {
             &self.session_state.conversation,
             self.get_available_tools(),
             self.model_config.reasoning_effort,
-            self.model_config.thinking_budget,
             &self.session_state.session_id,
         )
         .build()
@@ -801,10 +790,8 @@ impl Repl {
             );
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
-                // Display the per-effort tier budget actually sent
-                // (`request_builder` no longer reads the inert
-                // `--thinking-budget` flag) so the `/think` output
-                // matches what hits the API.
+                // Show the per-effort tier budget so the `/think`
+                // output matches what hits the API.
                 let budget = crate::api::anthropic::legacy_thinking_budget(effort);
                 println!(
                     "\n{} (budget: {} tokens)\n",

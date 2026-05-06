@@ -22,7 +22,6 @@ pub struct ResponseHandler {
     model: String,
     max_tokens: u32,
     reasoning_effort: crate::api::ReasoningEffort,
-    thinking_budget: u32,
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
     use_streaming: bool,
@@ -40,7 +39,6 @@ impl ResponseHandler {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
-        thinking_budget: u32,
         available_tools: Vec<crate::api::Tool>,
         use_streaming: bool,
         interrupt_flag: Arc<AtomicBool>,
@@ -55,7 +53,6 @@ impl ResponseHandler {
             model,
             max_tokens,
             reasoning_effort,
-            thinking_budget,
             config: SofosConfig::default(),
             available_tools,
             use_streaming,
@@ -713,7 +710,6 @@ impl ResponseHandler {
             &self.conversation,
             self.get_available_tools(),
             self.reasoning_effort,
-            self.thinking_budget,
             &self.session_id,
         )
         .build()

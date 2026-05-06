@@ -1,6 +1,13 @@
 use crate::error::SofosError;
 use clap::Parser;
 
+/// Default for the deprecated `--thinking-budget` flag. Kept as a named
+/// const so `main.rs` can warn when the user supplies a value that
+/// differs from this — anything else means the user expected the flag
+/// to do something it no longer does. Removable when the flag itself
+/// goes.
+pub const THINKING_BUDGET_DEFAULT: u32 = 5120;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "sofos",
@@ -55,12 +62,14 @@ pub struct Cli {
     #[arg(short = 'e', long, default_value = "medium")]
     pub reasoning_effort: crate::api::ReasoningEffort,
 
-    /// Vestigial. Currently inert on every path: legacy Anthropic uses
-    /// a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
-    /// Anthropic adaptive (Opus 4.7+) uses `output_config.effort`, and
-    /// OpenAI uses `reasoning.effort`. Kept for backwards-compatibility;
-    /// will be removed in a later release.
-    #[arg(long, default_value = "5120")]
+    /// Deprecated. The flag has no effect on any path: legacy Anthropic
+    /// uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
+    /// adaptive Anthropic (Opus 4.7+) uses `output_config.effort`, and
+    /// OpenAI uses `reasoning.effort`. The flag still parses so older
+    /// scripts don't break; `main.rs` warns at startup when a non-default
+    /// value is supplied. Hidden from `--help`. Will be removed in a
+    /// future release. Use `--reasoning-effort` to control thinking depth.
+    #[arg(long, default_value_t = THINKING_BUDGET_DEFAULT, hide = true)]
     pub thinking_budget: u32,
 
     #[arg(short, long)]

@@ -32,6 +32,13 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.thinking_budget != cli::THINKING_BUDGET_DEFAULT {
+        tracing::warn!(
+            "--thinking-budget is deprecated and has no effect on any provider path. \
+             Use --reasoning-effort to control thinking depth. The flag will be removed in a future release."
+        );
+    }
+
     // Historically the logo printed here, up front. It's now deferred:
     // in interactive mode the banner text is collected into
     // `startup_banner` below and replayed through the TUI's capture
@@ -85,9 +92,7 @@ fn main() -> Result<()> {
             crate::api::anthropic::effort_label(cli.reasoning_effort)
         ));
     } else if cli.reasoning_effort.is_enabled() {
-        // Display the per-effort tier budget actually sent
-        // (`request_builder` no longer reads the inert
-        // `--thinking-budget` flag) so the startup banner matches
+        // Show the per-effort tier budget so the startup banner matches
         // what hits the API.
         let budget = crate::api::anthropic::legacy_thinking_budget(cli.reasoning_effort);
         startup_banner.push_str(&format!(
@@ -121,7 +126,6 @@ fn main() -> Result<()> {
         cli.model,
         cli.max_tokens,
         cli.reasoning_effort,
-        cli.thinking_budget,
         cli.safe_mode,
     );
 
