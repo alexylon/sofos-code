@@ -79,10 +79,6 @@ impl ModelConfig {
     }
 }
 
-impl SofosConfig {
-    // No need for new() since Default::default() is the idiomatic way
-}
-
 /// Per-model trim-safety floor. Above this value the conversation
 /// trim drops older messages without summary as a last resort —
 /// auto-compaction (which preserves context) runs much earlier at

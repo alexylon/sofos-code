@@ -35,6 +35,12 @@ where
     }
 }
 
+/// Maps every `None` to [`SofosError::Config`]. This is a foot-gun —
+/// callers using these methods on a `None` that doesn't represent
+/// missing *configuration* (e.g. a runtime handle or a parse result)
+/// get the wrong variant, which leaks "config" semantics into
+/// [`SofosError::hint`] routing. Preserved for now; the right fix is
+/// a deliberate variant choice, not a refactor.
 impl<T> ResultExt<T> for Option<T> {
     fn context(self, msg: impl Into<String>) -> Result<T> {
         self.ok_or_else(|| SofosError::Config(msg.into()))
