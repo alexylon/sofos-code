@@ -41,6 +41,11 @@ const SGR_ITALIC: &str = "\x1b[3m";
 /// Heading Start and the restorer; restoring just `\x1b[36m` would silently
 /// drop the bold half.
 const SGR_HEADING: &str = "\x1b[1;36m";
+/// SGR code for the blockquote dim. Strong End (`\x1b[22m`) clears bold
+/// *and* faint, and inline Code/Link close with `\x1b[0m` which clears
+/// every attribute — so the restorer re-applies this when a tag closes
+/// inside a blockquote.
+const SGR_BLOCKQUOTE: &str = "\x1b[2m";
 
 /// True for OpenAI model identifiers (`gpt-*`). Used by the cost
 /// and token-display paths to route into the OpenAI pricing /
@@ -394,6 +399,7 @@ impl UI {
             bold: bool,
             italic: bool,
             in_heading: bool,
+            in_blockquote: bool,
         ) -> io::Result<()> {
             if bold {
                 write!(out, "{}", SGR_BOLD)?;
@@ -403,6 +409,9 @@ impl UI {
             }
             if in_heading {
                 write!(out, "{}", SGR_HEADING)?;
+            }
+            if in_blockquote {
+                write!(out, "{}", SGR_BLOCKQUOTE)?;
             }
             Ok(())
         }
@@ -415,6 +424,7 @@ impl UI {
         let mut bold = false;
         let mut italic = false;
         let mut in_heading = false;
+        let mut in_blockquote = false;
 
         for event in parser {
             match event {
@@ -433,7 +443,7 @@ impl UI {
                 Event::End(TagEnd::Strong) => {
                     bold = false;
                     write!(out, "\x1b[22m")?;
-                    restore_ambient(out, bold, italic, in_heading)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
                 }
                 Event::Start(Tag::Emphasis) => {
                     italic = true;
@@ -458,7 +468,7 @@ impl UI {
                 }
                 Event::Code(code) => {
                     write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
-                    restore_ambient(out, bold, italic, in_heading)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
                 }
                 Event::Text(text) => {
                     if in_code_block {
@@ -489,9 +499,11 @@ impl UI {
                     writeln!(out)?;
                 }
                 Event::Start(Tag::BlockQuote(_)) => {
-                    write!(out, "\x1b[2m> ")?;
+                    in_blockquote = true;
+                    write!(out, "{}> ", SGR_BLOCKQUOTE)?;
                 }
                 Event::End(TagEnd::BlockQuote(_)) => {
+                    in_blockquote = false;
                     writeln!(out, "\x1b[0m")?;
                 }
                 Event::Start(Tag::Link { dest_url, .. }) => {
@@ -504,7 +516,7 @@ impl UI {
                 }
                 Event::End(TagEnd::Link) => {
                     write!(out, "\x1b[0m\x1b]8;;\x07")?;
-                    restore_ambient(out, bold, italic, in_heading)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
                 }
                 Event::Rule => {
                     writeln!(out, "{}", "─".repeat(40).dimmed())?;
@@ -890,6 +902,59 @@ mod markdown_render_tests {
         assert!(
             after_link_close[..rest_idx].contains(SGR_HEADING),
             "heading style not restored between Link End and trailing text; segment={:?}",
+            &after_link_close[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn strong_in_blockquote_restores_dim() {
+        let out = render("> **bold** rest");
+        let after_strong_end = out
+            .split("\x1b[22m")
+            .nth(1)
+            .expect("Strong End must emit \\x1b[22m");
+        let rest_idx = after_strong_end
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_strong_end[..rest_idx].contains(SGR_BLOCKQUOTE),
+            "blockquote dim not restored between Strong End and trailing text; segment={:?}",
+            &after_strong_end[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn code_in_blockquote_restores_dim() {
+        let out = render("> `code` rest");
+        // The blockquote's own dim opens with \x1b[2m before the inline Code event;
+        // skip past that prefix so we land between Code's \x1b[0m and the trailing text.
+        let after_code_reset = out
+            .split("\x1b[0m")
+            .nth(1)
+            .expect("inline Code emits \\x1b[0m");
+        let rest_idx = after_code_reset
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_code_reset[..rest_idx].contains(SGR_BLOCKQUOTE),
+            "blockquote dim not restored between inline Code and trailing text; segment={:?}",
+            &after_code_reset[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn link_in_blockquote_restores_dim() {
+        let out = render("> [link](https://example.com) rest");
+        let after_link_close = out
+            .split("\x1b]8;;\x07")
+            .nth(1)
+            .expect("Link End must emit OSC 8 close");
+        let rest_idx = after_link_close
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_link_close[..rest_idx].contains(SGR_BLOCKQUOTE),
+            "blockquote dim not restored between Link End and trailing text; segment={:?}",
             &after_link_close[..rest_idx]
         );
     }
