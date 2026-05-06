@@ -32,6 +32,16 @@ const CACHE_READ_RATE: f64 = 0.10;
 /// charge.
 const CACHE_CREATION_RATE: f64 = 1.25;
 
+/// SGR code for bold-on. Shared between the markdown Strong Start handler
+/// and the ambient-style restorer so the two never drift apart.
+const SGR_BOLD: &str = "\x1b[1m";
+/// SGR code for italic-on. Shared between Emphasis Start and the restorer.
+const SGR_ITALIC: &str = "\x1b[3m";
+/// SGR code for the markdown heading style (bold + cyan). Shared between
+/// Heading Start and the restorer; restoring just `\x1b[36m` would silently
+/// drop the bold half.
+const SGR_HEADING: &str = "\x1b[1;36m";
+
 /// True for OpenAI model identifiers (`gpt-*`). Used by the cost
 /// and token-display paths to route into the OpenAI pricing /
 /// uncached-tokens branches.
@@ -369,10 +379,35 @@ impl UI {
     }
 
     pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
+        let mut out = stdout().lock();
+        self.render_markdown_to(&mut out, md)?;
+        out.flush()
+    }
+
+    fn render_markdown_to(&self, out: &mut impl io::Write, md: &str) -> io::Result<()> {
         use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
+        // Re-emit any ambient inline styles after a full SGR reset, so nested inline
+        // tags (Code/Link) and Strong don't leave the outer heading/strong/emphasis bare.
+        fn restore_ambient(
+            out: &mut impl io::Write,
+            bold: bool,
+            italic: bool,
+            in_heading: bool,
+        ) -> io::Result<()> {
+            if bold {
+                write!(out, "{}", SGR_BOLD)?;
+            }
+            if italic {
+                write!(out, "{}", SGR_ITALIC)?;
+            }
+            if in_heading {
+                write!(out, "{}", SGR_HEADING)?;
+            }
+            Ok(())
+        }
+
         let parser = Parser::new_ext(md, Options::all());
-        let mut out = stdout().lock();
 
         let mut in_code_block = false;
         let mut code_lang = String::new();
@@ -385,7 +420,7 @@ impl UI {
             match event {
                 Event::Start(Tag::Heading { .. }) => {
                     in_heading = true;
-                    write!(out, "\x1b[1;36m")?;
+                    write!(out, "{}", SGR_HEADING)?;
                 }
                 Event::End(TagEnd::Heading(_)) => {
                     in_heading = false;
@@ -393,18 +428,16 @@ impl UI {
                 }
                 Event::Start(Tag::Strong) => {
                     bold = true;
-                    write!(out, "\x1b[1m")?;
+                    write!(out, "{}", SGR_BOLD)?;
                 }
                 Event::End(TagEnd::Strong) => {
                     bold = false;
                     write!(out, "\x1b[22m")?;
-                    if italic {
-                        write!(out, "\x1b[3m")?;
-                    }
+                    restore_ambient(out, bold, italic, in_heading)?;
                 }
                 Event::Start(Tag::Emphasis) => {
                     italic = true;
-                    write!(out, "\x1b[3m")?;
+                    write!(out, "{}", SGR_ITALIC)?;
                 }
                 Event::End(TagEnd::Emphasis) => {
                     italic = false;
@@ -425,15 +458,7 @@ impl UI {
                 }
                 Event::Code(code) => {
                     write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
-                    if bold {
-                        write!(out, "\x1b[1m")?;
-                    }
-                    if italic {
-                        write!(out, "\x1b[3m")?;
-                    }
-                    if in_heading {
-                        write!(out, "\x1b[36m")?;
-                    }
+                    restore_ambient(out, bold, italic, in_heading)?;
                 }
                 Event::Text(text) => {
                     if in_code_block {
@@ -470,11 +495,16 @@ impl UI {
                     writeln!(out, "\x1b[0m")?;
                 }
                 Event::Start(Tag::Link { dest_url, .. }) => {
-                    write!(out, "\x1b[4;34m")?;
-                    let _ = dest_url;
+                    // OSC 8 URI terminates on BEL/ESC; bypass the wrapper if dest_url has any control byte.
+                    if dest_url.chars().any(|c| c.is_ascii_control()) {
+                        write!(out, "\x1b[4;34m")?;
+                    } else {
+                        write!(out, "\x1b]8;;{}\x07\x1b[4;34m", dest_url)?;
+                    }
                 }
                 Event::End(TagEnd::Link) => {
-                    write!(out, "\x1b[0m")?;
+                    write!(out, "\x1b[0m\x1b]8;;\x07")?;
+                    restore_ambient(out, bold, italic, in_heading)?;
                 }
                 Event::Rule => {
                     writeln!(out, "{}", "─".repeat(40).dimmed())?;
@@ -483,7 +513,7 @@ impl UI {
             }
         }
 
-        out.flush()
+        Ok(())
     }
 
     pub fn create_tool_display_message(
@@ -782,5 +812,102 @@ mod cost_tests {
         // Anthropic semantics branch (input_tokens is uncached).
         let cost = UI::calculate_cost("some-future-model", 1_000, 1_000, 0, 0, 1_000);
         approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
+    }
+}
+
+#[cfg(test)]
+mod markdown_render_tests {
+    use super::*;
+
+    fn render(md: &str) -> String {
+        let ui = UI::new();
+        let mut buf = Vec::new();
+        ui.render_markdown_to(&mut buf, md).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn link_emits_osc8_hyperlink_for_normal_url() {
+        let out = render("[example](https://example.com)");
+        assert!(
+            out.contains("\x1b]8;;https://example.com\x07"),
+            "OSC 8 opener with URL not found in: {:?}",
+            out
+        );
+        assert!(out.contains("example"), "link text not found");
+        assert!(
+            out.contains("\x1b]8;;\x07"),
+            "OSC 8 closer not found in: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn strong_in_heading_restores_heading_style() {
+        let out = render("# title with **bold** rest");
+        let after_strong_end = out
+            .split("\x1b[22m")
+            .nth(1)
+            .expect("Strong End must emit \\x1b[22m");
+        let rest_idx = after_strong_end
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_strong_end[..rest_idx].contains(SGR_HEADING),
+            "heading style not restored between Strong End and trailing text; segment={:?}",
+            &after_strong_end[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn code_in_heading_restores_heading_style() {
+        let out = render("# title with `code` rest");
+        // Inline Code closes with \x1b[0m before restore_ambient runs.
+        let after_code_reset = out
+            .split("\x1b[0m")
+            .nth(1)
+            .expect("inline Code emits \\x1b[0m");
+        let rest_idx = after_code_reset
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_code_reset[..rest_idx].contains(SGR_HEADING),
+            "heading style not restored between inline Code and trailing text; segment={:?}",
+            &after_code_reset[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn link_in_heading_restores_heading_style() {
+        let out = render("# title with [link](https://example.com) rest");
+        let after_link_close = out
+            .split("\x1b]8;;\x07")
+            .nth(1)
+            .expect("Link End must emit OSC 8 close");
+        let rest_idx = after_link_close
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_link_close[..rest_idx].contains(SGR_HEADING),
+            "heading style not restored between Link End and trailing text; segment={:?}",
+            &after_link_close[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn link_in_emphasis_restores_italic() {
+        let out = render("*italic [link](https://example.com) rest*");
+        let after_link_close = out
+            .split("\x1b]8;;\x07")
+            .nth(1)
+            .expect("Link End must emit OSC 8 close");
+        let rest_idx = after_link_close
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_link_close[..rest_idx].contains(SGR_ITALIC),
+            "italic not restored between Link End and trailing text; segment={:?}",
+            &after_link_close[..rest_idx]
+        );
     }
 }
