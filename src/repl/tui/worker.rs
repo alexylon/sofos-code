@@ -128,7 +128,11 @@ fn run(
             }
             Job::Command(cmd) => {
                 interrupt.store(false, Ordering::SeqCst);
-                let _ = ui_tx.send(UiEvent::WorkerBusy("command".into()));
+                let label = match cmd {
+                    crate::commands::Command::Compact => "compacting",
+                    _ => "command",
+                };
+                let _ = ui_tx.send(UiEvent::WorkerBusy(label.into()));
                 match run_command(repl, cmd, &ui_tx) {
                     Ok(CommandResult::Exit) => {
                         // Don't send `WorkerIdle` here — the UI would
