@@ -310,20 +310,21 @@ impl UI {
                 }
                 DisplayMessage::ToolExecution {
                     tool_name,
-                    tool_input: _,
+                    tool_input,
                     tool_output,
                 } => {
-                    if tool_name == "execute_bash" {
-                        if let Ok(input_val) = serde_json::from_value::<serde_json::Value>(
-                            serde_json::to_value(tool_output).unwrap_or_default(),
-                        ) {
-                            if let Some(command) = input_val.get("command").and_then(|v| v.as_str())
-                            {
-                                self.print_tool_header(tool_name, Some(command));
-                            }
-                        }
+                    let command = if tool_name == "execute_bash" {
+                        tool_input.get("command").and_then(|v| v.as_str())
                     } else {
-                        self.print_tool_header(tool_name, None);
+                        None
+                    };
+                    self.print_tool_header(tool_name, command);
+                    // `print_tool_header` doesn't terminate the bash
+                    // header with a newline — the live path relies on
+                    // the post-execution `println!()` to do that. Replay
+                    // it here so the header doesn't run into the output.
+                    if tool_name == "execute_bash" && command.is_some() {
+                        println!();
                     }
                     self.print_tool_output(tool_output);
                 }

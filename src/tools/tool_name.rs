@@ -132,6 +132,23 @@ impl ToolName {
                 let char_count = output.len();
                 format!("Fetched {} ({} chars)", url.bright_cyan(), char_count)
             }
+            ToolName::ExecuteBash => {
+                // Truncate the on-screen view. The full text still
+                // reaches the model via the tool_result block.
+                const MAX_DISPLAY_LINES: usize = 30;
+                let mut lines = output.lines();
+                let kept: Vec<&str> = lines.by_ref().take(MAX_DISPLAY_LINES).collect();
+                let hidden = lines.count();
+                if hidden == 0 {
+                    return output.to_string();
+                }
+                format!(
+                    "{}\n... ({} more line{} hidden)",
+                    kept.join("\n"),
+                    hidden,
+                    if hidden == 1 { "" } else { "s" }
+                )
+            }
             ToolName::SearchCode => {
                 let pattern = tool_input
                     .get("pattern")
@@ -212,5 +229,46 @@ mod tests {
     #[test]
     fn test_unknown_tool() {
         assert!(ToolName::from_str("unknown_tool").is_err());
+    }
+
+    #[test]
+    fn execute_bash_display_caps_long_output() {
+        let input = serde_json::json!({"command": "seq 1 100"});
+        let output: String = (1..=100)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let summary = ToolName::ExecuteBash.display_summary(&input, &output);
+
+        let line_count = summary.lines().count();
+        assert_eq!(line_count, 31, "expected 30 content lines + 1 footer");
+        assert!(summary.starts_with("1\n"));
+        assert!(summary.contains("\n30\n"));
+        assert!(!summary.contains("\n31\n"));
+        assert!(summary.ends_with("... (70 more lines hidden)"));
+    }
+
+    #[test]
+    fn execute_bash_display_passes_short_output_through() {
+        let input = serde_json::json!({"command": "echo hi"});
+        let output = "STDOUT:\nhi\n";
+
+        let summary = ToolName::ExecuteBash.display_summary(&input, output);
+
+        assert_eq!(summary, output);
+    }
+
+    #[test]
+    fn execute_bash_display_singular_footer() {
+        let input = serde_json::json!({"command": "seq 1 31"});
+        let output: String = (1..=31)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let summary = ToolName::ExecuteBash.display_summary(&input, &output);
+
+        assert!(summary.ends_with("... (1 more line hidden)"));
     }
 }

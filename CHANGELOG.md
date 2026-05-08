@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bash tool output is capped at 30 lines on screen** with a `... (N more lines hidden)` footer when longer. Long file dumps from `cat`, `head`, `tail`, `nl | sed -n '1,Np'`, and verbose builds no longer flood the terminal. The model still receives the full output (subject to the existing tool-output token cap), so context and follow-up reasoning are unaffected — only the on-screen view and the saved session transcript are shortened. Note: line-counting is `\n`-based, so a single multi-megabyte line (e.g. `cat binary | base64`) is still printed in full.
+
+### Fixed
+
+- **Session resume now shows the bash command above its output again.** The replay path was extracting the command from the wrong field (the saved output text instead of the saved input JSON), so the `Executing: <command>` header silently fell through to nothing on every replayed bash entry — users saw the output of a bash call but not which command produced it. Live execution was unaffected; only the `--resume` rendering was broken.
+
 ## [0.2.8] - 2026-05-06
 
 ### Added
