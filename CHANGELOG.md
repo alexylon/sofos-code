@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-05-08
+
 ### Changed
 
 - **Bash tool output is capped at 30 lines on screen** with a `... (N more lines hidden)` footer when longer. Long file dumps from `cat`, `head`, `tail`, `nl | sed -n '1,Np'`, and verbose builds no longer flood the terminal. The model still receives the full output (subject to the existing tool-output token cap), so context and follow-up reasoning are unaffected — only the on-screen view and the saved session transcript are shortened. Note: line-counting is `\n`-based, so a single multi-megabyte line (e.g. `cat binary | base64`) is still printed in full.
