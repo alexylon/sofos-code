@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-05-13
+
 ### Added
 
 - **Live streaming with formatted markdown on both providers.** Assistant responses now stream token-by-token on Anthropic and OpenAI, with headings, emphasis, lists, blockquotes, links, and fenced code blocks rendered in their final terminal styling as the text arrives — previously the reply appeared all at once on completion (Anthropic streaming was implemented but switched off; OpenAI streaming was a stub that called the non-streaming endpoint and delivered the response in a single chunk). The streamed output matches the one-shot render once the response completes. OpenAI safety refusals also stream live through the same channel as regular text.
