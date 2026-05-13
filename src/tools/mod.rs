@@ -1,4 +1,4 @@
-pub mod bashexec;
+pub mod bash;
 pub mod codesearch;
 pub mod executor;
 pub mod filesystem;

@@ -3,7 +3,7 @@ use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
 use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
 use crate::tools::ToolName;
-use crate::tools::bashexec::BashExecutor;
+use crate::tools::bash::BashExecutor;
 use crate::tools::codesearch::CodeSearchTool;
 use crate::tools::filesystem::FileSystemTool;
 use crate::tools::morph_validate;
