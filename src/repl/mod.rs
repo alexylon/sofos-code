@@ -393,7 +393,7 @@ impl Repl {
 
         let runtime = &self.runtime;
 
-        let use_streaming = false;
+        let use_streaming = true;
         let client_for_retry = self.client.clone();
 
         let response_result: Result<_> = if use_streaming {

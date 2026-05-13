@@ -488,6 +488,37 @@ where
     )))
 }
 
+/// Test-only helpers for driving the streaming parsers without an HTTP
+/// layer. Used by both `anthropic::tests` and `openai::tests` so the SSE
+/// wire format lives in one place.
+#[cfg(test)]
+pub(crate) mod sse_test_support {
+    use crate::error::Result;
+    use futures::stream::{self, Stream};
+    use serde_json::Value;
+
+    /// Build a synthetic SSE byte stream from a list of JSON events.
+    /// Each event is emitted as a single `data: {...}\n` chunk — adequate
+    /// for parser tests that don't need to exercise chunk-boundary
+    /// reassembly. Callers wanting to split events across chunks should
+    /// build their own iterator directly.
+    pub(crate) fn sse_stream_from_events(
+        events: Vec<Value>,
+    ) -> impl Stream<Item = Result<Vec<u8>>> + Unpin {
+        let chunks: Vec<Result<Vec<u8>>> = events
+            .into_iter()
+            .map(|event| {
+                let line = format!(
+                    "data: {}\n",
+                    serde_json::to_string(&event).expect("event is JSON-serializable")
+                );
+                Ok(line.into_bytes())
+            })
+            .collect();
+        stream::iter(chunks)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

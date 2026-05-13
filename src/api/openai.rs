@@ -1,9 +1,12 @@
 use super::types::*;
 use super::utils;
 use crate::error::{Result, SofosError};
+use futures::stream::{Stream, StreamExt};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const OPENAI_API_BASE: &str = "https://api.openai.com/v1";
 const TOOL_CHOICE_AUTO: &str = "auto";
@@ -42,6 +45,165 @@ impl OpenAIClient {
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
         self.call_responses(request).await
+    }
+
+    /// Streaming counterpart to [`create_openai_message`]. Fires
+    /// `on_text_delta` for each `response.output_text.delta` event and
+    /// `on_thinking_delta` for each `response.reasoning_summary_text.delta`
+    /// event. The final response is built from the full response object
+    /// embedded in `response.completed` / `response.incomplete`, so the
+    /// non-streaming and streaming paths converge on the same
+    /// [`build_response`] code — no parallel item-accumulation logic to
+    /// drift against the non-streaming serde path.
+    pub async fn create_message_streaming<FText, FThink>(
+        &self,
+        request: CreateMessageRequest,
+        on_text_delta: FText,
+        on_thinking_delta: FThink,
+        interrupt_flag: Arc<AtomicBool>,
+    ) -> Result<CreateMessageResponse>
+    where
+        FText: Fn(&str) + Send + Sync,
+        FThink: Fn(&str) + Send + Sync,
+    {
+        let mut body = build_responses_body(&request);
+        body["stream"] = json!(true);
+
+        let url = format!("{}/responses", OPENAI_API_BASE);
+        let response = utils::send_once("OpenAI", self.client.post(&url).json(&body)).await?;
+
+        let byte_stream = response.bytes_stream().map(|chunk_result| {
+            chunk_result.map_err(|e| SofosError::NetworkError(format!("Stream read error: {}", e)))
+        });
+        self.parse_stream(
+            byte_stream,
+            on_text_delta,
+            on_thinking_delta,
+            interrupt_flag,
+        )
+        .await
+    }
+
+    /// Drive a pre-built SSE byte stream through the OpenAI parser. Split
+    /// out from [`create_message_streaming`] so tests can feed
+    /// hand-crafted fixtures without an HTTP layer; production callers
+    /// reach this only via [`create_message_streaming`].
+    pub(crate) async fn parse_stream<S, B, FText, FThink>(
+        &self,
+        byte_stream: S,
+        on_text_delta: FText,
+        on_thinking_delta: FThink,
+        interrupt_flag: Arc<AtomicBool>,
+    ) -> Result<CreateMessageResponse>
+    where
+        S: Stream<Item = Result<B>> + Unpin,
+        B: AsRef<[u8]>,
+        FText: Fn(&str) + Send + Sync,
+        FThink: Fn(&str) + Send + Sync,
+    {
+        let mut byte_stream = byte_stream;
+        let mut buffer = String::new();
+        let mut final_response: Option<OpenAIResponse> = None;
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            if interrupt_flag.load(Ordering::SeqCst) {
+                return Err(SofosError::Interrupted);
+            }
+
+            let chunk = chunk_result?;
+            buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].to_string();
+                buffer = buffer[pos + 1..].to_string();
+
+                let line = line.trim_end();
+                let json_str = match line.strip_prefix("data: ") {
+                    Some("[DONE]") => continue,
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                let event: serde_json::Value = match serde_json::from_str(json_str) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            preview = %json_str.chars().take(200).collect::<String>(),
+                            "failed to parse OpenAI streaming event"
+                        );
+                        continue;
+                    }
+                };
+
+                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                match event_type {
+                    "response.output_text.delta" => {
+                        if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                            on_text_delta(delta);
+                        }
+                    }
+                    "response.reasoning_summary_text.delta" => {
+                        if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                            on_thinking_delta(delta);
+                        }
+                    }
+                    // Refusals are still user-facing model output — surface
+                    // them through the same callback as normal text so the
+                    // user sees a streaming refusal rather than a sudden
+                    // chunk on stream completion.
+                    "response.refusal.delta" => {
+                        if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                            on_text_delta(delta);
+                        }
+                    }
+                    // Both terminal-success events carry the same full
+                    // `response` object the non-streaming path receives;
+                    // routing them through `build_response` keeps
+                    // `status: "incomplete"` → `stop_reason: "max_tokens"`
+                    // mapping in one place.
+                    "response.completed" | "response.incomplete" => {
+                        if let Some(resp) = event.get("response") {
+                            match serde_json::from_value::<OpenAIResponse>(resp.clone()) {
+                                Ok(parsed) => final_response = Some(parsed),
+                                Err(e) => {
+                                    return Err(SofosError::Api(format!(
+                                        "Failed to parse OpenAI streaming final response: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    "response.failed" => {
+                        let error_msg = event
+                            .get("response")
+                            .and_then(|r| r.get("error"))
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("Unknown streaming error");
+                        return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
+                    }
+                    "error" => {
+                        let error_msg = event
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("Unknown streaming error");
+                        return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let parsed = final_response.ok_or_else(|| {
+            SofosError::Api(
+                "OpenAI stream ended without a response.completed/incomplete event".to_string(),
+            )
+        })?;
+
+        self.build_response(parsed)
     }
 
     async fn call_responses(&self, request: CreateMessageRequest) -> Result<CreateMessageResponse> {
@@ -849,5 +1011,198 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert!(matches!(blocks[0], ContentBlock::Summary { .. }));
         assert!(matches!(blocks[1], ContentBlock::Summary { .. }));
+    }
+
+    mod streaming {
+        use super::*;
+        use crate::api::utils::sse_test_support::sse_stream_from_events;
+        use serde_json::json;
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+
+        fn client() -> OpenAIClient {
+            OpenAIClient::new("test-key".to_string()).expect("client builds")
+        }
+
+        fn flag() -> Arc<AtomicBool> {
+            Arc::new(AtomicBool::new(false))
+        }
+
+        fn completed_response(text: &str) -> serde_json::Value {
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_test",
+                    "model": "gpt-5.5",
+                    "status": "completed",
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": text}]
+                    }],
+                    "usage": {"input_tokens": 5, "output_tokens": 3}
+                }
+            })
+        }
+
+        #[tokio::test]
+        async fn text_deltas_stream_through_callback_and_final_response_builds() {
+            let events = vec![
+                json!({"type": "response.created"}),
+                json!({"type": "response.output_text.delta", "delta": "Hello"}),
+                json!({"type": "response.output_text.delta", "delta": ", world"}),
+                completed_response("Hello, world"),
+            ];
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let think_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            let th = think_chunks.clone();
+
+            let stream = sse_stream_from_events(events);
+            let response = client()
+                .parse_stream(
+                    stream,
+                    move |s| t.lock().unwrap().push(s.to_string()),
+                    move |s| th.lock().unwrap().push(s.to_string()),
+                    flag(),
+                )
+                .await
+                .expect("parse_stream succeeds");
+
+            assert_eq!(
+                text_chunks.lock().unwrap().as_slice(),
+                &["Hello".to_string(), ", world".to_string()]
+            );
+            assert!(think_chunks.lock().unwrap().is_empty());
+            assert_eq!(response._id, "resp_test");
+            assert_eq!(response.content.len(), 1);
+            assert!(matches!(
+                &response.content[0],
+                ContentBlock::Text { text } if text == "Hello, world"
+            ));
+        }
+
+        #[tokio::test]
+        async fn reasoning_deltas_route_to_thinking_callback() {
+            let events = vec![
+                json!({"type": "response.reasoning_summary_text.delta", "delta": "step 1"}),
+                json!({"type": "response.reasoning_summary_text.delta", "delta": " then 2"}),
+                completed_response("done"),
+            ];
+
+            let think_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let th = think_chunks.clone();
+            let stream = sse_stream_from_events(events);
+
+            client()
+                .parse_stream(
+                    stream,
+                    |_| {},
+                    move |s| th.lock().unwrap().push(s.to_string()),
+                    flag(),
+                )
+                .await
+                .expect("parse_stream succeeds");
+
+            assert_eq!(
+                think_chunks.lock().unwrap().as_slice(),
+                &["step 1".to_string(), " then 2".to_string()]
+            );
+        }
+
+        #[tokio::test]
+        async fn refusal_deltas_stream_through_text_callback() {
+            // Refusal text is user-facing model output: it should reach
+            // the user via the same callback as normal text so they see
+            // the refusal stream in rather than appear all at once on
+            // completion.
+            let events = vec![
+                json!({"type": "response.refusal.delta", "delta": "I can't "}),
+                json!({"type": "response.refusal.delta", "delta": "help with that."}),
+                completed_response("I can't help with that."),
+            ];
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            let stream = sse_stream_from_events(events);
+
+            client()
+                .parse_stream(
+                    stream,
+                    move |s| t.lock().unwrap().push(s.to_string()),
+                    |_| {},
+                    flag(),
+                )
+                .await
+                .expect("parse_stream succeeds");
+
+            assert_eq!(
+                text_chunks.lock().unwrap().as_slice(),
+                &["I can't ".to_string(), "help with that.".to_string()]
+            );
+        }
+
+        #[tokio::test]
+        async fn response_failed_event_returns_api_error() {
+            let events = vec![
+                json!({"type": "response.output_text.delta", "delta": "partial"}),
+                json!({
+                    "type": "response.failed",
+                    "response": {"error": {"message": "rate limit hit"}}
+                }),
+            ];
+
+            let stream = sse_stream_from_events(events);
+            let err = client()
+                .parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("response.failed must surface as error");
+            assert!(
+                matches!(&err, SofosError::Api(msg) if msg.contains("rate limit hit")),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn stream_ending_without_completion_returns_api_error() {
+            let events = vec![json!({"type": "response.output_text.delta", "delta": "incomplete"})];
+            let stream = sse_stream_from_events(events);
+
+            let err = client()
+                .parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("missing completion event must surface");
+            assert!(
+                matches!(&err, SofosError::Api(msg) if msg.contains("response.completed")),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn incomplete_status_maps_to_max_tokens_stop_reason() {
+            // `response.incomplete` carries the same shape as
+            // `response.completed`; the non-streaming `build_response`
+            // path maps `status: "incomplete"` + reason `max_output_tokens`
+            // onto `stop_reason: "max_tokens"`. Pin that the streaming
+            // path inherits the mapping rather than reimplementing it.
+            let events = vec![json!({
+                "type": "response.incomplete",
+                "response": {
+                    "id": "resp_test",
+                    "model": "gpt-5.5",
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                    "output": [],
+                    "usage": {"input_tokens": 100, "output_tokens": 32}
+                }
+            })];
+
+            let stream = sse_stream_from_events(events);
+            let response = client()
+                .parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect("parse_stream succeeds on response.incomplete");
+            assert_eq!(response.stop_reason.as_deref(), Some("max_tokens"));
+        }
     }
 }

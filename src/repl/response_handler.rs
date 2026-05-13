@@ -417,8 +417,7 @@ impl ResponseHandler {
                         UI::create_tool_display_message(tool_name, tool_input, output.text());
 
                     if !display_output.is_empty() {
-                        let ui = UI::new();
-                        ui.print_tool_output(&display_output);
+                        UI::shared().print_tool_output(&display_output);
                     }
 
                     display_messages.push(DisplayMessage::ToolExecution {

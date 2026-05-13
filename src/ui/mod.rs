@@ -9,6 +9,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::execute;
 use std::io::{self, Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// Accent colour used for the startup banner and other attention-grabbing
 /// highlights in the legacy (non-TUI) `colored` output path. Matches the
@@ -85,6 +86,16 @@ impl UI {
         Self {
             highlighter: SyntaxHighlighter::new(),
         }
+    }
+
+    /// Process-wide shared `UI`. The underlying `SyntaxSet` and
+    /// `ThemeSet` are read-only after construction and the rendering
+    /// methods all take `&self`, so callers that only need to render
+    /// can borrow this instead of paying for a fresh syntect load each
+    /// time. Lazy: nothing is loaded until the first call.
+    pub fn shared() -> &'static UI {
+        static SHARED: OnceLock<UI> = OnceLock::new();
+        SHARED.get_or_init(UI::new)
     }
 
     pub fn print_message(severity: MessageSeverity, message: &str) {
@@ -615,10 +626,163 @@ impl UI {
     }
 }
 
-/// Handles real-time output during response streaming
+/// Return the byte offset of the last newline in `buf` that is **not**
+/// inside an open fenced code block. Lines opening with ``` toggle the
+/// fence state; the trailing newline of an open-fence line is therefore
+/// not a safe commit point.
+///
+/// Returns 0 when no safe newline exists yet (caller commits nothing).
+///
+/// **Known limitation:** the toggle treats any line whose first
+/// non-space character is ``` as a fence boundary regardless of the
+/// opening fence length. CommonMark allows nesting via longer fences
+/// (e.g., a 4-backtick block containing a 3-backtick line), and this
+/// algorithm miscounts those — pulldown still renders correctly, but
+/// the safe-commit point may be conservative or skewed inside such
+/// blocks. Rare in assistant output; accept the limitation.
+fn safe_commit_end(buf: &str) -> usize {
+    let mut fence_open = false;
+    let mut last_safe = 0usize;
+    let mut pos = 0usize;
+    for line in buf.split_inclusive('\n') {
+        if is_fence_line(line) {
+            fence_open = !fence_open;
+        }
+        pos += line.len();
+        if line.ends_with('\n') && !fence_open {
+            last_safe = pos;
+        }
+    }
+    last_safe
+}
+
+/// True when `line` opens or closes a fenced code block under CommonMark
+/// indentation rules: at most three leading spaces, then ```. A line
+/// with four or more leading spaces is part of an indented code block
+/// instead, even if its first non-space content is ```.
+fn is_fence_line(line: &str) -> bool {
+    let after_spaces = line.trim_start_matches(' ');
+    let indent = line.len() - after_spaces.len();
+    indent <= 3 && after_spaces.starts_with("```")
+}
+
+/// Newline-gated markdown renderer for streaming output. Accumulates
+/// deltas, and on every commit re-renders the full buffer prefix up to
+/// the last newline as markdown, emitting only the lines past what's
+/// already been printed. The partial last line is held back until the
+/// next newline or [`finalize`] arrives.
+///
+/// Modelled after `codex-rs/tui/src/markdown_stream.rs` — same invariant
+/// (no commit until newline), same convergence property (the sum of
+/// streamed emissions equals what a single non-streaming render of the
+/// full buffer would produce). The cost is one full re-render per
+/// committed chunk, which is acceptable because pulldown_cmark is fast
+/// and assistant turns rarely exceed a few KB.
+struct MarkdownStreamRenderer {
+    buffer: String,
+    committed_lines: usize,
+}
+
+impl MarkdownStreamRenderer {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            committed_lines: 0,
+        }
+    }
+
+    fn push_delta(&mut self, delta: &str) {
+        self.buffer.push_str(delta);
+    }
+
+    /// Render the buffer prefix up to the last "safe" newline — one
+    /// that's outside any open fenced code block — and return only the
+    /// lines past `committed_lines`. Returns an empty string when there
+    /// is no safe commit point yet.
+    ///
+    /// Fence-awareness matters because the markdown renderer synthesises
+    /// a closing border for an unclosed code fence; committing that
+    /// premature border leaves a wrong line on screen that we can't
+    /// unprint when the real closing fence arrives.
+    fn commit(&mut self) -> io::Result<String> {
+        let safe_end = safe_commit_end(&self.buffer);
+        if safe_end == 0 {
+            return Ok(String::new());
+        }
+        // Drop the trailing blank during commit: pulldown's render is
+        // not monotonic when a paragraph stays open across deltas (the
+        // End-of-Paragraph blank "moves" further down as more text
+        // arrives). Holding that trailing blank back means continuing
+        // text gets emitted on the next commit instead of being lost
+        // behind a prematurely-committed paragraph terminator.
+        let (new, total) = self.render_new_lines(&self.buffer[..safe_end], true)?;
+        self.committed_lines = total;
+        Ok(new)
+    }
+
+    /// Emit the residual: anything past `committed_lines`, including the
+    /// partial last line and any trailing blank line that `commit`
+    /// deliberately held back. Resets internal state so the renderer
+    /// can be reused for the next stream.
+    fn finalize(&mut self) -> io::Result<String> {
+        let mut source = self.buffer.clone();
+        // pulldown_cmark needs the trailing newline to close the last
+        // paragraph; without it the final line renders as if it were
+        // still being built.
+        if !source.ends_with('\n') {
+            source.push('\n');
+        }
+        let (new, _) = self.render_new_lines(&source, false)?;
+        self.buffer.clear();
+        self.committed_lines = 0;
+        Ok(new)
+    }
+
+    /// Render `source` and return the slice of rendered lines past
+    /// `committed_lines` plus the post-drop total line count. The total
+    /// is what `commit` writes back to `self.committed_lines`; `finalize`
+    /// drops it because it resets the counter anyway. When
+    /// `drop_trailing_blank` is true a trailing whitespace-only line is
+    /// excluded from both the emitted slice and the returned total —
+    /// see [`commit`] for why.
+    fn render_new_lines(
+        &self,
+        source: &str,
+        drop_trailing_blank: bool,
+    ) -> io::Result<(String, usize)> {
+        let mut buf: Vec<u8> = Vec::new();
+        UI::shared().render_markdown_to(&mut buf, source)?;
+        let rendered = String::from_utf8_lossy(&buf).into_owned();
+        let lines: Vec<&str> = rendered.split_inclusive('\n').collect();
+        let mut effective_len = lines.len();
+        if drop_trailing_blank && effective_len > 0 && lines[effective_len - 1].trim().is_empty() {
+            effective_len -= 1;
+        }
+        let new = if self.committed_lines >= effective_len {
+            String::new()
+        } else {
+            lines[self.committed_lines..effective_len].concat()
+        };
+        Ok((new, effective_len))
+    }
+}
+
+impl Default for MarkdownStreamRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Handles real-time output during response streaming. Visible
+/// assistant text is fed through a [`MarkdownStreamRenderer`] so
+/// headings, lists, emphasis, and code fences render with ANSI styling
+/// instead of leaking raw markdown to the terminal. Thinking deltas
+/// stay plain-dim because they're typically free-form prose and the
+/// extra rendering pass would only delay their display.
 pub struct StreamPrinter {
     thinking_started: AtomicBool,
     text_started: AtomicBool,
+    text_renderer: Mutex<MarkdownStreamRenderer>,
 }
 
 impl StreamPrinter {
@@ -626,6 +790,7 @@ impl StreamPrinter {
         Self {
             thinking_started: AtomicBool::new(false),
             text_started: AtomicBool::new(false),
+            text_renderer: Mutex::new(MarkdownStreamRenderer::new()),
         }
     }
 
@@ -652,15 +817,39 @@ impl StreamPrinter {
             }
             println!("{}", "Assistant:".bright_blue().bold());
         }
-        print!("{}", delta);
-        let _ = stdout().flush();
+        let to_print = {
+            let mut renderer = self.lock_text_renderer();
+            renderer.push_delta(delta);
+            renderer.commit().unwrap_or_default()
+        };
+        if !to_print.is_empty() {
+            print!("{}", to_print);
+            let _ = stdout().flush();
+        }
     }
 
     pub fn finish(&self) {
-        if self.text_started.load(Ordering::SeqCst) || self.thinking_started.load(Ordering::SeqCst)
-        {
+        if self.text_started.load(Ordering::SeqCst) {
+            let to_print = self.lock_text_renderer().finalize().unwrap_or_default();
+            if !to_print.is_empty() {
+                print!("{}", to_print);
+            }
+            // The finalised buffer ends with a newline, so the cursor
+            // is already at column 0 — no extra println! needed for
+            // text. Thinking-only finishes still want the trailing
+            // separator.
+            let _ = stdout().flush();
+        } else if self.thinking_started.load(Ordering::SeqCst) {
             println!();
         }
+    }
+
+    /// Acquire the renderer lock, recovering from poison so a panic in
+    /// one delta callback doesn't kill subsequent streaming output. A
+    /// partial markdown buffer is recoverable; the worst case is one
+    /// mid-stream paragraph rendering as plain text.
+    fn lock_text_renderer(&self) -> std::sync::MutexGuard<'_, MarkdownStreamRenderer> {
+        self.text_renderer.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -974,6 +1163,153 @@ mod markdown_render_tests {
             after_link_close[..rest_idx].contains(SGR_ITALIC),
             "italic not restored between Link End and trailing text; segment={:?}",
             &after_link_close[..rest_idx]
+        );
+    }
+}
+
+#[cfg(test)]
+mod markdown_stream_tests {
+    use super::*;
+
+    fn full_render(md: &str) -> String {
+        let ui = UI::new();
+        let mut buf = Vec::new();
+        ui.render_markdown_to(&mut buf, md).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    /// Drive the streaming renderer with the given delta sequence and
+    /// return the concatenation of every commit + finalize. The
+    /// streaming output must match what a one-shot render of the
+    /// concatenated deltas produces, otherwise the stream visibly drifts
+    /// from the canonical view.
+    fn stream(deltas: &[&str]) -> String {
+        let mut renderer = MarkdownStreamRenderer::new();
+        let mut out = String::new();
+        for d in deltas {
+            renderer.push_delta(d);
+            out.push_str(&renderer.commit().unwrap());
+        }
+        out.push_str(&renderer.finalize().unwrap());
+        out
+    }
+
+    #[test]
+    fn no_commit_until_newline() {
+        let mut r = MarkdownStreamRenderer::new();
+        r.push_delta("Hello, world");
+        assert!(
+            r.commit().unwrap().is_empty(),
+            "commit before newline must hold the line back"
+        );
+        r.push_delta("!\n");
+        let out = r.commit().unwrap();
+        assert!(out.contains("Hello, world!"), "got: {out:?}");
+    }
+
+    #[test]
+    fn finalize_emits_partial_last_line() {
+        let mut r = MarkdownStreamRenderer::new();
+        r.push_delta("partial without trailing newline");
+        assert!(r.commit().unwrap().is_empty());
+        let out = r.finalize().unwrap();
+        assert!(out.contains("partial"), "got: {out:?}");
+    }
+
+    #[test]
+    fn streamed_heading_matches_full_render() {
+        let md = "### Core loop\n";
+        let streamed = stream(&["### Core ", "loop\n"]);
+        let full = full_render(md);
+        assert_eq!(streamed, full, "streamed heading must match full render");
+    }
+
+    #[test]
+    fn streamed_numbered_list_matches_full_render() {
+        // The exact case the user reported: numbered list with bold
+        // inside an item must come out styled, not as raw markdown.
+        let md = "1. **You type a prompt**. then more text.\n2. **Second**.\n";
+        let streamed = stream(&[
+            "1. **You type a prompt**.",
+            " then more text.\n2. ",
+            "**Second**.\n",
+        ]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "streamed numbered list with bold must match full render"
+        );
+    }
+
+    #[test]
+    fn streamed_paragraphs_match_full_render() {
+        let md = "First paragraph.\n\nSecond paragraph with **bold**.\n";
+        let streamed = stream(&[
+            "First paragraph.\n",
+            "\nSecond paragraph",
+            " with **bold**.\n",
+        ]);
+        let full = full_render(md);
+        assert_eq!(streamed, full);
+    }
+
+    #[test]
+    fn streamed_fenced_code_matches_full_render() {
+        let md = "Here:\n\n```rust\nlet x = 1;\nlet y = 2;\n```\n";
+        let streamed = stream(&["Here:\n\n```", "rust\nlet x = 1;\n", "let y = 2;\n```\n"]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "streamed fenced code must match full render"
+        );
+    }
+
+    #[test]
+    fn indented_backticks_are_not_treated_as_fence() {
+        // CommonMark §4.5: a fenced code block opener allows at most
+        // 3 leading spaces. A line with 4+ leading spaces followed by
+        // ``` is part of an indented code block and must not toggle
+        // fence state — otherwise the streaming renderer stalls
+        // commits inside the surrounding indented block.
+        assert!(is_fence_line("```\n"));
+        assert!(is_fence_line(" ```\n"));
+        assert!(is_fence_line("  ```\n"));
+        assert!(is_fence_line("   ```\n"));
+        assert!(!is_fence_line("    ```\n"));
+        assert!(!is_fence_line("\t```\n"));
+        assert!(!is_fence_line("text```\n"));
+    }
+
+    #[test]
+    fn streamed_soft_break_paragraph_matches_full_render() {
+        // Two lines belonging to one paragraph (soft break, no blank
+        // line between). pulldown emits End-of-Paragraph blank only
+        // after the LAST text in the paragraph, so the rendered line
+        // count for the partial-paragraph prefix is shifted relative
+        // to the full-paragraph render — the regression this test
+        // pins is that the second line would get lost behind a
+        // prematurely-committed End-of-Paragraph blank.
+        let md = "line one\nline two\n";
+        let streamed = stream(&["line one\n", "line two\n"]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "second line of a soft-break paragraph must not be lost"
+        );
+    }
+
+    #[test]
+    fn finalize_resets_state_for_reuse() {
+        let mut r = MarkdownStreamRenderer::new();
+        r.push_delta("first turn\n");
+        let _ = r.commit().unwrap();
+        let _ = r.finalize().unwrap();
+
+        r.push_delta("second turn\n");
+        let out = r.commit().unwrap();
+        assert!(
+            out.contains("second turn"),
+            "renderer must be reusable after finalize; got {out:?}"
         );
     }
 }

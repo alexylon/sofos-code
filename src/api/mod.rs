@@ -56,13 +56,14 @@ impl LlmClient {
                     .await
             }
             LlmClient::OpenAI(client) => {
-                let response = client.create_openai_message(request).await?;
-                for block in &response.content {
-                    if let types::ContentBlock::Text { text } = block {
-                        on_text_delta(text);
-                    }
-                }
-                Ok(response)
+                client
+                    .create_message_streaming(
+                        request,
+                        on_text_delta,
+                        on_thinking_delta,
+                        interrupt_flag,
+                    )
+                    .await
             }
         }
     }

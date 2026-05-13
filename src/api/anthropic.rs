@@ -1,7 +1,7 @@
 use super::types::*;
 use super::utils;
 use crate::error::{Result, SofosError};
-use futures::stream::StreamExt;
+use futures::stream::{Stream, StreamExt};
 use reqwest::header::{HeaderMap, HeaderValue};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -207,7 +207,35 @@ impl AnthropicClient {
         )
         .await?;
 
-        let mut byte_stream = response.bytes_stream();
+        let byte_stream = response.bytes_stream().map(|chunk_result| {
+            chunk_result.map_err(|e| SofosError::NetworkError(format!("Stream read error: {}", e)))
+        });
+        Self::parse_stream(
+            byte_stream,
+            on_text_delta,
+            on_thinking_delta,
+            interrupt_flag,
+        )
+        .await
+    }
+
+    /// Drive a pre-built SSE byte stream through the Anthropic parser.
+    /// Split out from [`create_message_streaming`] so tests can feed
+    /// hand-crafted fixtures without an HTTP layer; production callers
+    /// reach this only via [`create_message_streaming`].
+    pub(crate) async fn parse_stream<S, B, FText, FThink>(
+        byte_stream: S,
+        on_text_delta: FText,
+        on_thinking_delta: FThink,
+        interrupt_flag: Arc<AtomicBool>,
+    ) -> Result<CreateMessageResponse>
+    where
+        S: Stream<Item = Result<B>> + Unpin,
+        B: AsRef<[u8]>,
+        FText: Fn(&str) + Send + Sync,
+        FThink: Fn(&str) + Send + Sync,
+    {
+        let mut byte_stream = byte_stream;
         let mut buffer = String::new();
 
         let mut message_id = String::new();
@@ -232,9 +260,8 @@ impl AnthropicClient {
                 return Err(SofosError::Interrupted);
             }
 
-            let chunk = chunk_result
-                .map_err(|e| SofosError::NetworkError(format!("Stream read error: {}", e)))?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            let chunk = chunk_result?;
+            buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
 
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].to_string();
@@ -720,5 +747,149 @@ mod tests {
         };
         assert_eq!(content.len(), 1, "Reasoning block must be dropped");
         assert!(matches!(content[0], MessageContentBlock::Text { .. }));
+    }
+
+    mod streaming {
+        use super::*;
+        use crate::api::utils::sse_test_support::sse_stream_from_events;
+        use serde_json::json;
+        use std::sync::Mutex;
+
+        fn flag() -> Arc<AtomicBool> {
+            Arc::new(AtomicBool::new(false))
+        }
+
+        #[tokio::test]
+        async fn text_block_streams_through_callback_and_aggregates_in_response() {
+            let events = vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_test",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 12, "cache_read_input_tokens": 3}
+                    }
+                }),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi "}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "there"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 7}
+                }),
+                json!({"type": "message_stop"}),
+            ];
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            let stream = sse_stream_from_events(events);
+
+            let response = AnthropicClient::parse_stream(
+                stream,
+                move |s| t.lock().unwrap().push(s.to_string()),
+                |_| {},
+                flag(),
+            )
+            .await
+            .expect("parse_stream succeeds");
+
+            assert_eq!(
+                text_chunks.lock().unwrap().as_slice(),
+                &["Hi ".to_string(), "there".to_string()]
+            );
+            assert_eq!(response._id, "msg_test");
+            assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+            assert_eq!(response.usage.input_tokens, 12);
+            assert_eq!(response.usage.output_tokens, 7);
+            assert_eq!(response.usage.cache_read_input_tokens, Some(3));
+            assert_eq!(response.content.len(), 1);
+            assert!(matches!(
+                &response.content[0],
+                ContentBlock::Text { text } if text == "Hi there"
+            ));
+        }
+
+        #[tokio::test]
+        async fn thinking_block_with_signature_streams_through_thinking_callback() {
+            // A `thinking` block must arrive with a `signature_delta`; the
+            // parser drops thinking blocks without one because echoing
+            // unsigned thinking back to the server 400s the next turn.
+            let events = vec![
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": "claude-opus-4-7", "usage": {"input_tokens": 5}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "let me think..."}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc123sig"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+            ];
+
+            let think_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let th = think_chunks.clone();
+            let stream = sse_stream_from_events(events);
+
+            let response = AnthropicClient::parse_stream(
+                stream,
+                |_| {},
+                move |s| th.lock().unwrap().push(s.to_string()),
+                flag(),
+            )
+            .await
+            .expect("parse_stream succeeds");
+
+            assert_eq!(
+                think_chunks.lock().unwrap().as_slice(),
+                &["let me think...".to_string()]
+            );
+            assert_eq!(response.content.len(), 1);
+            assert!(matches!(
+                &response.content[0],
+                ContentBlock::Thinking { thinking, signature }
+                if thinking == "let me think..." && signature == "abc123sig"
+            ));
+        }
+
+        #[tokio::test]
+        async fn thinking_block_without_signature_is_dropped() {
+            // Pins the invariant documented at `content_block_stop` /
+            // `Some("thinking")`: an unsigned thinking block can't be
+            // echoed back on the next turn, so the parser must not
+            // include it in the response.
+            let events = vec![
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": "claude-opus-4-7", "usage": {"input_tokens": 5}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "unsigned"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}}),
+            ];
+
+            let stream = sse_stream_from_events(events);
+            let response = AnthropicClient::parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect("parse_stream succeeds");
+            assert!(
+                response.content.is_empty(),
+                "unsigned thinking must be dropped, got {:?}",
+                response.content
+            );
+        }
+
+        #[tokio::test]
+        async fn error_event_returns_api_error() {
+            let events = vec![
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
+                json!({"type": "error", "error": {"message": "overloaded"}}),
+            ];
+
+            let stream = sse_stream_from_events(events);
+            let err = AnthropicClient::parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("error event must surface as error");
+            assert!(
+                matches!(&err, SofosError::Api(msg) if msg.contains("overloaded")),
+                "got: {err:?}"
+            );
+        }
     }
 }
