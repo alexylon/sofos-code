@@ -40,14 +40,14 @@ impl OpenAIClient {
         .await
     }
 
-    pub async fn create_openai_message(
+    pub async fn create_message(
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
         self.call_responses(request).await
     }
 
-    /// Streaming counterpart to [`create_openai_message`]. Fires
+    /// Streaming counterpart to [`create_message`]. Fires
     /// `on_text_delta` for each `response.output_text.delta` event and
     /// `on_thinking_delta` for each `response.reasoning_summary_text.delta`
     /// event. The final response is built from the full response object
@@ -1074,7 +1074,7 @@ mod tests {
                 &["Hello".to_string(), ", world".to_string()]
             );
             assert!(think_chunks.lock().unwrap().is_empty());
-            assert_eq!(response._id, "resp_test");
+            assert_eq!(response.id, "resp_test");
             assert_eq!(response.content.len(), 1);
             assert!(matches!(
                 &response.content[0],

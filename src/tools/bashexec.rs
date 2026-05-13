@@ -1,4 +1,5 @@
 use crate::error::{Result, SofosError};
+use crate::tools::ToolName;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
     MAX_TOOL_OUTPUT_TOKENS, TruncationKind, is_absolute_path, truncate_for_context,
@@ -637,10 +638,14 @@ impl BashExecutor {
         if command_without_stderr_redirect.contains('>')
             || command_without_stderr_redirect.contains(">>")
         {
-            let edit_hint = if self.has_morph {
-                "edit_file/morph_edit_file"
+            let edit_hint: String = if self.has_morph {
+                format!(
+                    "{}/{}",
+                    ToolName::EditFile.as_str(),
+                    ToolName::MorphEditFile.as_str()
+                )
             } else {
-                "edit_file"
+                ToolName::EditFile.as_str().to_string()
             };
             return format!(
                 "Command '{}' contains output redirection ('>' or '>>')\n\

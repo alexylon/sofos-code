@@ -21,7 +21,6 @@ use filesystem::FileSystemTool;
 use permissions::PermissionManager;
 use serde_json::Value;
 use std::time::Duration;
-use tool_name::ToolName;
 
 use crate::tools::types::get_read_only_tools;
 use crate::tools::utils::{
@@ -29,6 +28,7 @@ use crate::tools::utils::{
     MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, TruncationKind, confirm_destructive,
     is_absolute_or_tilde, truncate_for_context,
 };
+pub use tool_name::ToolName;
 pub use types::{add_code_search_tool, get_all_tools, get_all_tools_with_morph};
 
 use std::collections::HashSet;
@@ -321,7 +321,7 @@ impl ToolExecutor {
                 caller_path,
             ))
         } else {
-            self.fs_tool._workspace().join(caller_path)
+            self.fs_tool.workspace().join(caller_path)
         };
 
         let canonical = if must_exist {
@@ -367,7 +367,7 @@ impl ToolExecutor {
             canonical
         };
 
-        let is_inside_workspace = canonical.starts_with(self.fs_tool._workspace());
+        let is_inside_workspace = canonical.starts_with(self.fs_tool.workspace());
         let canonical_str = canonical.to_string_lossy().to_string();
         Ok(ResolvedPath {
             canonical,
@@ -406,7 +406,7 @@ impl ToolExecutor {
         canonical_str: &str,
         is_inside_workspace: bool,
     ) -> Result<()> {
-        let permission_manager = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+        let permission_manager = PermissionManager::new(self.fs_tool.workspace().to_path_buf())?;
 
         let (perm_original, matched_rule_original) =
             permission_manager.check_read_permission_with_source(path);
@@ -483,7 +483,7 @@ impl ToolExecutor {
         canonical_str: &str,
         canonical: &std::path::Path,
     ) -> Result<()> {
-        let permission_manager = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+        let permission_manager = PermissionManager::new(self.fs_tool.workspace().to_path_buf())?;
 
         // Enforce Write deny rules first
         if permission_manager.check_write_permission(canonical_str)
@@ -558,7 +558,7 @@ impl ToolExecutor {
         }
 
         // Ask user interactively
-        let mut pm = PermissionManager::new(self.fs_tool._workspace().to_path_buf())?;
+        let mut pm = PermissionManager::new(self.fs_tool.workspace().to_path_buf())?;
         let (allowed, remember) = pm.ask_user_path_permission(scope, dir_to_grant)?;
 
         if allowed {

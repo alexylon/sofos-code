@@ -1,7 +1,7 @@
 use crate::api::{ContentBlock, CreateMessageRequest, LlmClient};
 use crate::config::SofosConfig;
 use crate::error::{Result, SofosError};
-use crate::repl::SteerQueue;
+use crate::repl::SteerBuffer;
 use crate::repl::conversation::ConversationHistory;
 use crate::repl::request_builder::RequestBuilder;
 use crate::session::DisplayMessage;
@@ -26,7 +26,7 @@ pub struct ResponseHandler {
     available_tools: Vec<crate::api::Tool>,
     use_streaming: bool,
     interrupt_flag: Arc<AtomicBool>,
-    steer_queue: SteerQueue,
+    steer_buffer: SteerBuffer,
     session_id: String,
 }
 
@@ -42,7 +42,7 @@ impl ResponseHandler {
         available_tools: Vec<crate::api::Tool>,
         use_streaming: bool,
         interrupt_flag: Arc<AtomicBool>,
-        steer_queue: SteerQueue,
+        steer_buffer: SteerBuffer,
         session_id: String,
     ) -> Self {
         Self {
@@ -57,7 +57,7 @@ impl ResponseHandler {
             available_tools,
             use_streaming,
             interrupt_flag,
-            steer_queue,
+            steer_buffer,
             session_id,
         }
     }
@@ -87,7 +87,7 @@ impl ResponseHandler {
     /// swallows the user's mid-turn message.
     fn drain_steer_messages(&self) -> Option<String> {
         let mut queue = self
-            .steer_queue
+            .steer_buffer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if queue.is_empty() {
@@ -382,7 +382,7 @@ impl ResponseHandler {
                 );
             }
 
-            let command = if tool_name == "execute_bash" {
+            let command = if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
                 tool_input.get("command").and_then(|v| v.as_str())
             } else {
                 None
@@ -390,7 +390,7 @@ impl ResponseHandler {
             self.ui.print_tool_header(tool_name, command);
 
             // Hide cursor during bash execution
-            if tool_name == "execute_bash" {
+            if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
                 print!("\x1B[?25l");
                 let _ = std::io::stdout().flush();
             }
@@ -398,7 +398,7 @@ impl ResponseHandler {
             let result = self.tool_executor.execute(tool_name, tool_input).await;
 
             // Show cursor and add newline after bash execution completes
-            if tool_name == "execute_bash" {
+            if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
                 print!("\x1B[?25h");
                 println!();
             }

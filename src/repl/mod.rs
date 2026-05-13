@@ -31,7 +31,7 @@ use tokio::time::sleep;
 /// thread pushes text onto this vec when the worker is busy; the tool loop
 /// in [`ResponseHandler`] drains it between tool-call iterations and merges
 /// the accumulated text into the user turn that carries the tool results.
-pub type SteerQueue = Arc<Mutex<Vec<String>>>;
+pub type SteerBuffer = Arc<Mutex<Vec<String>>>;
 
 pub struct ReplConfig {
     pub model: String,
@@ -73,7 +73,7 @@ pub struct Repl {
     /// turn was already running. Drained by the tool loop between
     /// iterations so the user can redirect in-flight work without having
     /// to interrupt it.
-    steer_queue: SteerQueue,
+    steer_buffer: SteerBuffer,
     /// Queued through the TUI's captured-stdout pipe so the banner
     /// survives terminals whose cursor-position DSR doesn't answer
     /// (e.g. Ghostty), where the fallback origin would let the viewport
@@ -189,7 +189,7 @@ impl Repl {
             safe_mode: config.safe_mode,
             available_tools,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
-            steer_queue: Arc::new(Mutex::new(Vec::new())),
+            steer_buffer: Arc::new(Mutex::new(Vec::new())),
             startup_banner: String::new(),
             runtime,
         })
@@ -217,11 +217,11 @@ impl Repl {
         self.interrupt_flag = flag;
     }
 
-    /// Install the shared steer queue used by the TUI to inject mid-turn
+    /// Install the shared steer buffer used by the TUI to inject mid-turn
     /// user messages. Called once before the worker thread takes ownership
     /// so UI and worker share the same buffer.
-    pub fn install_steer_queue(&mut self, queue: SteerQueue) {
-        self.steer_queue = queue;
+    pub fn install_steer_buffer(&mut self, buffer: SteerBuffer) {
+        self.steer_buffer = buffer;
     }
 
     pub fn model_label(&self) -> String {
@@ -276,7 +276,7 @@ impl Repl {
         // Record turn start so we can show "Finished in Xs" when the
         // model is fully done (after every text reply, tool call, and
         // continuation). Steer messages typed mid-turn don't reset
-        // this — they're folded into the same turn via `SteerQueue` and
+        // this — they're folded into the same turn via `SteerBuffer` and
         // the same `process_message` call keeps running until the
         // agent loop exits.
         let turn_start = Instant::now();
@@ -609,7 +609,7 @@ impl Repl {
             self.available_tools.clone(),
             use_streaming,
             Arc::clone(&self.interrupt_flag),
-            Arc::clone(&self.steer_queue),
+            Arc::clone(&self.steer_buffer),
             self.session_state.session_id.clone(),
         );
 

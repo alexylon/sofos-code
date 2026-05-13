@@ -57,11 +57,16 @@ fn is_openai_model(model: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MessageSeverity {
-    /// Security restrictions, permission denials - expected behavior
+    /// Operation rejected as expected behaviour. Covers both
+    /// system-enforced policy (path traversal, output redirection,
+    /// outside-workspace access, structural validation) and
+    /// interactive user denial of a permission prompt. The display
+    /// prefix is `Blocked:` because the same UI path is reached
+    /// whether the system or the user refused the operation.
     Blocked,
-    /// Recoverable issues, non-critical problems
+    /// Recoverable issues, non-critical problems.
     Warning,
-    /// Actual failures (network, IO, parsing errors)
+    /// Actual failures (network, IO, parsing errors).
     Error,
 }
 
@@ -324,7 +329,7 @@ impl UI {
                     tool_input,
                     tool_output,
                 } => {
-                    let command = if tool_name == "execute_bash" {
+                    let command = if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
                         tool_input.get("command").and_then(|v| v.as_str())
                     } else {
                         None
@@ -334,7 +339,9 @@ impl UI {
                     // header with a newline — the live path relies on
                     // the post-execution `println!()` to do that. Replay
                     // it here so the header doesn't run into the output.
-                    if tool_name == "execute_bash" && command.is_some() {
+                    if tool_name == crate::tools::ToolName::ExecuteBash.as_str()
+                        && command.is_some()
+                    {
                         println!();
                     }
                     self.print_tool_output(tool_output);
@@ -369,7 +376,7 @@ impl UI {
     }
 
     pub fn print_tool_header(&self, tool_name: &str, command: Option<&str>) {
-        if tool_name == "execute_bash" {
+        if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
             if let Some(cmd) = command {
                 print!(
                     "{} {}",

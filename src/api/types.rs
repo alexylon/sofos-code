@@ -148,17 +148,14 @@ pub enum Tool {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // id / response_type / role / model are real wire fields kept for completeness
 pub struct CreateMessageResponse {
-    #[serde(rename = "id")]
-    pub _id: String,
+    pub id: String,
     #[serde(rename = "type")]
-    pub _response_type: String,
-    #[serde(rename = "role")]
-    pub _role: String,
+    pub response_type: String,
+    pub role: String,
     pub content: Vec<ContentBlock>,
-    #[serde(rename = "model")]
-    pub _model: String,
-    #[serde(rename = "stop_reason")]
+    pub model: String,
     pub stop_reason: Option<String>,
     pub usage: Usage,
 }

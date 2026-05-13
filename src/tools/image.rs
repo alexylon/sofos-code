@@ -1,5 +1,4 @@
-use crate::error::{Result, SofosError};
-use crate::error_ext::ResultExt;
+use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::is_absolute_or_tilde;
 use base64::{Engine, engine::general_purpose::STANDARD};

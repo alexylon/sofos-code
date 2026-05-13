@@ -829,14 +829,6 @@ Show imperial units only when the user explicitly asks for them."#,
         self.messages.pop();
         self.maintain_cache_anchor();
     }
-
-    pub fn _len(&self) -> usize {
-        self.messages.len()
-    }
-
-    pub fn _is_empty(&self) -> bool {
-        self.messages.is_empty()
-    }
 }
 
 impl Default for ConversationHistory {

@@ -103,6 +103,18 @@ pub fn effort_label(effort: super::types::ReasoningEffort) -> &'static str {
     }
 }
 
+/// Discriminant for the content block currently being assembled while
+/// parsing an Anthropic streaming response. Replaces the earlier
+/// `Option<String>` so the match in `content_block_stop` is exhaustive
+/// and unknown wire-level block types stay as `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamBlockKind {
+    Text,
+    Thinking,
+    ToolUse,
+    ServerToolUse,
+}
+
 #[derive(Clone)]
 pub struct AnthropicClient {
     client: reqwest::Client,
@@ -160,7 +172,7 @@ impl AnthropicClient {
         request
     }
 
-    pub async fn create_anthropic_message(
+    pub async fn create_message(
         &self,
         request: CreateMessageRequest,
     ) -> Result<CreateMessageResponse> {
@@ -247,7 +259,7 @@ impl AnthropicClient {
         let mut cache_creation_input_tokens: Option<u32> = None;
         let mut stop_reason: Option<String> = None;
 
-        let mut current_block_type: Option<String> = None;
+        let mut current_block_type: Option<StreamBlockKind> = None;
         let mut current_text = String::new();
         let mut current_thinking = String::new();
         let mut current_signature = String::new();
@@ -319,14 +331,17 @@ impl AnthropicClient {
                     "content_block_start" => {
                         if let Some(block) = event.get("content_block") {
                             let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            current_block_type = Some(btype.to_string());
-                            match btype {
-                                "text" => current_text.clear(),
+                            current_block_type = match btype {
+                                "text" => {
+                                    current_text.clear();
+                                    Some(StreamBlockKind::Text)
+                                }
                                 "thinking" => {
                                     current_thinking.clear();
                                     current_signature.clear();
+                                    Some(StreamBlockKind::Thinking)
                                 }
-                                "tool_use" | "server_tool_use" => {
+                                "tool_use" => {
                                     current_tool_id = block
                                         .get("id")
                                         .and_then(|v| v.as_str())
@@ -338,6 +353,21 @@ impl AnthropicClient {
                                         .unwrap_or("")
                                         .to_string();
                                     current_tool_json.clear();
+                                    Some(StreamBlockKind::ToolUse)
+                                }
+                                "server_tool_use" => {
+                                    current_tool_id = block
+                                        .get("id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    current_tool_name = block
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    current_tool_json.clear();
+                                    Some(StreamBlockKind::ServerToolUse)
                                 }
                                 "web_search_tool_result" => {
                                     if let Ok(result) =
@@ -350,7 +380,7 @@ impl AnthropicClient {
                                             content: result.content,
                                         });
                                     }
-                                    current_block_type = None;
+                                    None
                                 }
                                 // Server-side compaction
                                 // (`compact-2026-01-12` beta) emits a
@@ -377,10 +407,10 @@ impl AnthropicClient {
                                             content: content.to_string(),
                                         });
                                     }
-                                    current_block_type = None;
+                                    None
                                 }
-                                _ => {}
-                            }
+                                _ => None,
+                            };
                         }
                     }
                     "content_block_delta" => {
@@ -420,13 +450,13 @@ impl AnthropicClient {
                         }
                     }
                     "content_block_stop" => {
-                        match current_block_type.as_deref() {
-                            Some("text") => {
+                        match current_block_type {
+                            Some(StreamBlockKind::Text) => {
                                 content_blocks.push(ContentBlock::Text {
                                     text: current_text.clone(),
                                 });
                             }
-                            Some("thinking") => {
+                            Some(StreamBlockKind::Thinking) => {
                                 // Every legitimate thinking block the server emits
                                 // is paired with a signature. An empty signature
                                 // means no `signature_delta` ever arrived for this
@@ -442,7 +472,7 @@ impl AnthropicClient {
                                     });
                                 }
                             }
-                            Some("tool_use") => {
+                            Some(StreamBlockKind::ToolUse) => {
                                 let input = utils::parse_tool_arguments(
                                     &current_tool_name,
                                     &current_tool_json,
@@ -453,7 +483,7 @@ impl AnthropicClient {
                                     input,
                                 });
                             }
-                            Some("server_tool_use") => {
+                            Some(StreamBlockKind::ServerToolUse) => {
                                 let input = utils::parse_tool_arguments(
                                     &current_tool_name,
                                     &current_tool_json,
@@ -464,7 +494,7 @@ impl AnthropicClient {
                                     input,
                                 });
                             }
-                            _ => {}
+                            None => {}
                         }
                         current_block_type = None;
                     }
@@ -799,7 +829,7 @@ mod tests {
                 text_chunks.lock().unwrap().as_slice(),
                 &["Hi ".to_string(), "there".to_string()]
             );
-            assert_eq!(response._id, "msg_test");
+            assert_eq!(response.id, "msg_test");
             assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
             assert_eq!(response.usage.input_tokens, 12);
             assert_eq!(response.usage.output_tokens, 7);

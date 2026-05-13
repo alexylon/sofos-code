@@ -178,28 +178,6 @@ impl CodeSearchTool {
             )))
         }
     }
-
-    /// List available file types supported by ripgrep.
-    ///
-    /// Uses the resolved `rg_path` from the constructor so it honours
-    /// `SOFOS_RG_PATH` and the Homebrew / Linux fallback list. The
-    /// earlier implementation hard-coded `Command::new("rg")` which
-    /// silently fell back to PATH and broke wherever ripgrep wasn't
-    /// on PATH but had been found via the fallbacks.
-    pub fn _list_file_types(&self) -> Result<String> {
-        let output = Command::new(&self.rg_path)
-            .arg("--type-list")
-            .output()
-            .map_err(|e| SofosError::ToolExecution(format!("Failed to list file types: {}", e)))?;
-
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            Err(SofosError::ToolExecution(
-                "Failed to get ripgrep file types".to_string(),
-            ))
-        }
-    }
 }
 
 #[cfg(test)]

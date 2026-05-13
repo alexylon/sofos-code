@@ -1,5 +1,4 @@
-use crate::error::{Result, SofosError};
-use crate::error_ext::ResultExt;
+use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::utils::is_absolute_path;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -294,11 +293,6 @@ impl FileSystemTool {
         Ok(entries)
     }
 
-    pub fn _exists(&self, path: &str) -> Result<bool> {
-        let full_path = self.validate_path(path)?;
-        Ok(full_path.exists())
-    }
-
     pub fn delete_file(&self, path: &str) -> Result<()> {
         let full_path = self.validate_path(path)?;
 
@@ -375,7 +369,7 @@ impl FileSystemTool {
         Ok(())
     }
 
-    pub fn _workspace(&self) -> &Path {
+    pub fn workspace(&self) -> &Path {
         &self.workspace
     }
 }

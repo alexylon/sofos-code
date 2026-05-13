@@ -1,6 +1,5 @@
 use crate::api::{Message, SystemPrompt};
-use crate::error::{Result, SofosError};
-use crate::error_ext::ResultExt;
+use crate::error::{Result, ResultExt, SofosError};
 
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};

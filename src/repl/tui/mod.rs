@@ -33,7 +33,7 @@ use tokio::time::{Interval, interval};
 
 use crate::commands::{COMMANDS, Command};
 use crate::error::Result;
-use crate::repl::{Repl, SteerQueue};
+use crate::repl::{Repl, SteerBuffer};
 use crate::ui::UI;
 
 use app::{App, Picker};
@@ -168,8 +168,8 @@ pub fn run(mut repl: Repl) -> Result<()> {
     // user types while a turn is already running, and the worker's tool
     // loop drains it between iterations so the model can see the new
     // message before its next API call.
-    let steer_queue: SteerQueue = Arc::new(Mutex::new(Vec::new()));
-    repl.install_steer_queue(Arc::clone(&steer_queue));
+    let steer_buffer: SteerBuffer = Arc::new(Mutex::new(Vec::new()));
+    repl.install_steer_buffer(Arc::clone(&steer_buffer));
 
     let model_label = repl.model_label();
     // Grab the deferred startup text (logo + workspace / model / etc.)
@@ -202,7 +202,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
             ui_rx,
             job_tx.clone(),
             Arc::clone(&interrupt),
-            Arc::clone(&steer_queue),
+            Arc::clone(&steer_buffer),
         )
         .await
     });
@@ -249,7 +249,7 @@ async fn event_loop(
     mut ui_rx: UnboundedReceiver<UiEvent>,
     job_tx: std_mpsc::Sender<Job>,
     interrupt: Arc<AtomicBool>,
-    steer_queue: SteerQueue,
+    steer_buffer: SteerBuffer,
 ) -> Result<()> {
     let mut tick: Interval = interval(TICK_INTERVAL);
     // Track the last size we've rendered at so we can detect resizes
@@ -330,7 +330,7 @@ async fn event_loop(
                     } else if app.picker.is_some() {
                         handle_picker_key(app, key, &job_tx);
                     } else {
-                        handle_idle_key(app, key, &job_tx, &interrupt, &steer_queue);
+                        handle_idle_key(app, key, &job_tx, &interrupt, &steer_buffer);
                     }
                     break;
                 }
@@ -372,7 +372,7 @@ async fn event_loop(
                         // so a panic elsewhere doesn't eat the user's
                         // pending mid-turn messages.
                         let residual: Vec<String> = std::mem::take(
-                            &mut *steer_queue
+                            &mut *steer_buffer
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
                         );
@@ -497,7 +497,7 @@ fn handle_idle_key(
     key: KeyEvent,
     job_tx: &std_mpsc::Sender<Job>,
     interrupt: &Arc<AtomicBool>,
-    steer_queue: &SteerQueue,
+    steer_buffer: &SteerBuffer,
 ) {
     if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
         return;
@@ -567,7 +567,7 @@ fn handle_idle_key(
         //     the `DISAMBIGUATE_ESCAPE_CODES` flag so those terminals
         //     start delivering Shift+Enter with the SHIFT modifier set.
         KeyCode::Enter if !shift && !alt && !ctrl => {
-            submit_input(app, job_tx, steer_queue);
+            submit_input(app, job_tx, steer_buffer);
         }
         // Plain Tab on a `/…` line tries to complete the slash command;
         // otherwise it falls through to the textarea (indent).
@@ -859,7 +859,7 @@ fn handle_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc::Sender<Job
     }
 }
 
-fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &SteerQueue) {
+fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &SteerBuffer) {
     let raw = app.input_text();
     // Strip the circled-number markers Ctrl+V inserted and recover the
     // image indices they referred to. `cleaned` is the plain text we'll
@@ -957,7 +957,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_queue: &Ste
         // the user's mid-turn message. `into_inner` returns the same
         // `Vec` the panicking thread was holding; we're still the
         // only writer on the UI side.
-        steer_queue
+        steer_buffer
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(cleaned);

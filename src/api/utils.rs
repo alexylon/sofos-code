@@ -29,7 +29,7 @@ const JITTER_FACTOR: f64 = 0.3; // Add 0-30% random jitter
 const DEFAULT_CONTENT_TYPE: &str = "application/json";
 
 /// Response shape constants returned to the rest of the crate. All our
-/// providers assemble the same `{ _response_type: "message", _role:
+/// providers assemble the same `{ response_type: "message", role:
 /// "assistant" }` shell; centralised here so a protocol change lands
 /// in one place.
 const RESPONSE_TYPE_MESSAGE: &str = "message";
@@ -67,7 +67,7 @@ pub fn build_http_client(
 
 /// Assemble a [`CreateMessageResponse`] from the parts every provider
 /// extracts from its own response shape. Centralises the three
-/// non-provider-specific constant fields (`_response_type`, `_role`,
+/// non-provider-specific constant fields (`response_type`, `role`,
 /// wrapping `Usage`) so adding one more doesn't require touching every
 /// client.
 pub fn build_message_response(
@@ -78,11 +78,11 @@ pub fn build_message_response(
     usage: Usage,
 ) -> CreateMessageResponse {
     CreateMessageResponse {
-        _id: id,
-        _response_type: RESPONSE_TYPE_MESSAGE.to_string(),
-        _role: ROLE_ASSISTANT.to_string(),
+        id,
+        response_type: RESPONSE_TYPE_MESSAGE.to_string(),
+        role: ROLE_ASSISTANT.to_string(),
         content,
-        _model: model,
+        model,
         stop_reason,
         usage,
     }
@@ -633,10 +633,10 @@ mod tests {
                 cache_creation_input_tokens: Some(10),
             },
         );
-        assert_eq!(r._id, "id-42");
-        assert_eq!(r._model, "test-model");
-        assert_eq!(r._role, "assistant");
-        assert_eq!(r._response_type, "message");
+        assert_eq!(r.id, "id-42");
+        assert_eq!(r.model, "test-model");
+        assert_eq!(r.role, "assistant");
+        assert_eq!(r.response_type, "message");
         assert_eq!(r.stop_reason.as_deref(), Some("max_tokens"));
         assert_eq!(r.usage.input_tokens, 100);
         assert_eq!(r.usage.output_tokens, 50);

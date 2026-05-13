@@ -4,7 +4,6 @@ mod clipboard;
 mod commands;
 mod config;
 mod error;
-mod error_ext;
 mod mcp;
 mod repl;
 mod session;
