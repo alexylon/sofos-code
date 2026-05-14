@@ -374,7 +374,7 @@ mod tests {
         // rejects unmatched tool_result.tool_use_id at the validator.
         use crate::api::CreateMessageRequest;
         use crate::api::anthropic::wire::sanitize_messages_for_anthropic;
-        use crate::api::openai::build_response_input;
+        use crate::api::openai::wire::build_response_input;
         use std::collections::HashSet;
 
         let mut history = ConversationHistory::new();
