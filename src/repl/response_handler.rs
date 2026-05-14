@@ -258,6 +258,13 @@ impl ResponseHandler {
                         "Consider using --max-tokens with a higher value (current: {})",
                         self.max_tokens
                     );
+                    // Bail out instead of looping. A `max_tokens` cut
+                    // can land mid-`tool_use`, leaving the JSON for
+                    // the call truncated — feeding it back through
+                    // `process_content_blocks` and `execute_tools`
+                    // would either fail to parse or trigger a tool
+                    // call against half-formed input.
+                    break;
                 }
             }
 
@@ -298,9 +305,16 @@ impl ResponseHandler {
                     had_reasoning = true;
                 }
                 ContentBlock::Compaction { .. } => {
-                    // Server-side compaction summary already streamed live;
-                    // doesn't count as reasoning for the
-                    // auto-continue-after-reasoning-only branch.
+                    // Server-side compaction summary already streamed
+                    // live. Counts as reasoning so a Compaction-only
+                    // response (rare, but possible right after the
+                    // server folds older turns) doesn't fall into the
+                    // "Assistant returned an empty response" branch
+                    // and print a misleading warning. The OpenAI
+                    // auto-continue is gated on the OpenAI client so
+                    // setting this on Anthropic Compaction is a no-op
+                    // there.
+                    had_reasoning = true;
                 }
                 ContentBlock::Reasoning { .. } => {
                     had_reasoning = true;
@@ -414,6 +428,21 @@ impl ResponseHandler {
                             .starts_with("Directory deletion cancelled by user")
                     {
                         user_cancelled = true;
+                        // Synthesize cancellation results for every
+                        // tool that hasn't run yet. Every assistant
+                        // `ToolUse` block must be paired with a
+                        // matching `ToolResult` on the very next user
+                        // turn — Anthropic returns 400 on the next
+                        // request otherwise. Each skipped tool gets a
+                        // short note so the model sees why nothing
+                        // happened the next time it looks at this turn.
+                        for (skipped_id, _, _) in &tool_uses[i + 1..] {
+                            tool_results.push(crate::api::MessageContentBlock::ToolResult {
+                                tool_use_id: skipped_id.clone(),
+                                content: "Tool execution skipped: an earlier deletion in this batch was cancelled by the user.".to_string(),
+                                cache_control: None,
+                            });
+                        }
                         break;
                     }
                 }
