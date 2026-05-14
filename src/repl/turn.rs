@@ -12,7 +12,6 @@ use crate::tools::image::{ImageReference, extract_image_references};
 use crate::ui::UI;
 use colored::Colorize;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 impl Repl {
@@ -141,10 +140,9 @@ impl Repl {
 
         let runtime = &self.runtime;
 
-        let use_streaming = true;
         let client_for_retry = self.client.clone();
 
-        let response_result: Result<_> = if use_streaming {
+        let response_result: Result<_> = {
             let printer = Arc::new(crate::ui::StreamPrinter::new());
             let p_text = printer.clone();
             let p_think = printer.clone();
@@ -164,33 +162,6 @@ impl Repl {
             });
 
             printer.finish();
-            result
-        } else {
-            let interrupt_flag = Arc::clone(&self.interrupt_flag);
-            let client = self.client.clone();
-            let req = initial_request;
-            let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
-
-            let result = runtime.block_on(async {
-                tokio::select! {
-                    res = &mut request_handle => {
-                        match res {
-                            Ok(inner) => inner,
-                            Err(e) => Err(SofosError::Join(format!("{}", e)))
-                        }
-                    }
-                    _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
-                        request_handle.abort();
-                        Err(SofosError::Interrupted)
-                    }
-                }
-            });
-
-            if self.interrupt_flag.load(Ordering::SeqCst) {
-                self.handle_initial_interrupt();
-                return Ok(());
-            }
-
             result
         };
 
@@ -355,7 +326,6 @@ impl Repl {
             self.model_config.max_tokens,
             self.model_config.reasoning_effort,
             self.available_tools.clone(),
-            use_streaming,
             Arc::clone(&self.interrupt_flag),
             Arc::clone(&self.steer_buffer),
             self.session_state.session_id.clone(),

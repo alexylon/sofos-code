@@ -482,37 +482,35 @@ pub enum ImageSource {
 }
 
 impl MessageContentBlock {
-    pub fn from_content_block_for_api(block: &ContentBlock) -> Option<Self> {
+    pub fn from_content_block_for_api(block: &ContentBlock) -> Self {
         match block {
-            ContentBlock::Text { text } => Some(MessageContentBlock::Text {
+            ContentBlock::Text { text } => MessageContentBlock::Text {
                 text: text.clone(),
                 cache_control: None,
-            }),
-            // Claude's extended thinking
+            },
+            // Claude's extended thinking. When thinking is enabled the complete
+            // unmodified block (including signature) must round-trip to preserve
+            // reasoning continuity across tool use.
             ContentBlock::Thinking {
                 thinking,
                 signature,
-            } => {
-                // When thinking is enabled, we must include the complete unmodified thinking block
-                // with signature to maintain reasoning continuity during tool use
-                Some(MessageContentBlock::Thinking {
-                    thinking: thinking.clone(),
-                    signature: signature.clone(),
-                    cache_control: None,
-                })
-            }
+            } => MessageContentBlock::Thinking {
+                thinking: thinking.clone(),
+                signature: signature.clone(),
+                cache_control: None,
+            },
             // GPT's reasoning summary
-            ContentBlock::Summary { summary } => Some(MessageContentBlock::Summary {
+            ContentBlock::Summary { summary } => MessageContentBlock::Summary {
                 summary: summary.clone(),
                 cache_control: None,
-            }),
+            },
             // Anthropic server-side compaction summary; must be
             // round-tripped verbatim so the server can drop earlier
             // messages on the next turn.
-            ContentBlock::Compaction { content } => Some(MessageContentBlock::Compaction {
+            ContentBlock::Compaction { content } => MessageContentBlock::Compaction {
                 content: content.clone(),
                 cache_control: None,
-            }),
+            },
             // OpenAI Responses API reasoning item — round-trip with the
             // encrypted CoT blob so the model resumes its hidden chain
             // of thought across tool calls instead of rederiving it.
@@ -520,48 +518,37 @@ impl MessageContentBlock {
                 id,
                 summary,
                 encrypted_content,
-            } => Some(MessageContentBlock::Reasoning {
+            } => MessageContentBlock::Reasoning {
                 id: id.clone(),
                 summary: summary.clone(),
                 encrypted_content: encrypted_content.clone(),
                 cache_control: None,
-            }),
-            ContentBlock::ToolUse { id, name, input } => Some(MessageContentBlock::ToolUse {
+            },
+            ContentBlock::ToolUse { id, name, input } => MessageContentBlock::ToolUse {
                 id: id.clone(),
                 name: name.clone(),
                 input: input.clone(),
                 cache_control: None,
-            }),
-            ContentBlock::ServerToolUse { id, name, input } => {
-                Some(MessageContentBlock::ServerToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                    cache_control: None,
-                })
-            }
+            },
+            ContentBlock::ServerToolUse { id, name, input } => MessageContentBlock::ServerToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+                cache_control: None,
+            },
             ContentBlock::WebSearchToolResult {
                 tool_use_id,
                 content,
-            } => Some(MessageContentBlock::WebSearchToolResult {
+            } => MessageContentBlock::WebSearchToolResult {
                 tool_use_id: tool_use_id.clone(),
                 content: content.clone(),
                 cache_control: None,
-            }),
+            },
         }
     }
 }
 
 // Tool enum defined later with cache_control support
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum _ContentDelta {
-    #[serde(rename = "text_delta")]
-    TextDelta { text: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Usage {
@@ -573,37 +560,6 @@ pub struct Usage {
     /// separate creation counter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u32>,
-}
-
-// Streaming types
-#[derive(Debug, Deserialize)]
-pub struct _StreamEvent {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    #[serde(flatten)]
-    pub data: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum _StreamEventType {
-    #[serde(rename = "message_start")]
-    MessageStart { message: serde_json::Value },
-    #[serde(rename = "content_block_start")]
-    ContentBlockStart {
-        index: usize,
-        content_block: ContentBlock,
-    },
-    #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { index: usize, delta: _ContentDelta },
-    #[serde(rename = "content_block_stop")]
-    ContentBlockStop { index: usize },
-    #[serde(rename = "message_delta")]
-    MessageDelta { delta: serde_json::Value },
-    #[serde(rename = "message_stop")]
-    MessageStop,
-    #[serde(rename = "ping")]
-    Ping,
 }
 
 #[cfg(test)]

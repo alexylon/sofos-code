@@ -180,64 +180,6 @@ mod tests {
     }
 
     #[test]
-    fn test_append_text_to_last_user_blocks_extends_tool_results_turn() {
-        let mut history = ConversationHistory::new();
-        // Pair a user query + assistant ToolUse before the tool-results
-        // turn so `drop_leading_orphaned_tool_results` (called from
-        // `trim_if_needed`) doesn't drop our message as an orphan.
-        history.add_user_message("query".to_string());
-        history.add_assistant_with_blocks(vec![MessageContentBlock::ToolUse {
-            id: "call_xyz".to_string(),
-            name: "read_file".to_string(),
-            input: serde_json::json!({"path": "a.rs"}),
-            cache_control: None,
-        }]);
-        history.add_tool_results(vec![MessageContentBlock::ToolResult {
-            tool_use_id: "call_xyz".to_string(),
-            content: "file contents".to_string(),
-            cache_control: None,
-        }]);
-
-        let appended = history.append_text_to_last_user_blocks("hello".to_string());
-        assert!(appended, "append should succeed on a user-blocks tail");
-
-        let last = history.messages().last().unwrap();
-        assert_eq!(last.role, "user");
-        if let crate::api::MessageContent::Blocks { content } = &last.content {
-            assert_eq!(content.len(), 2, "expected ToolResult + Text");
-            assert!(matches!(
-                &content[0],
-                MessageContentBlock::ToolResult { .. }
-            ));
-            match &content[1] {
-                MessageContentBlock::Text { text, .. } => assert_eq!(text, "hello"),
-                _ => panic!("expected Text block at index 1"),
-            }
-        } else {
-            panic!("expected Blocks content");
-        }
-    }
-
-    #[test]
-    fn test_append_text_to_last_user_blocks_noop_when_last_is_text_only() {
-        let mut history = ConversationHistory::new();
-        history.add_user_message("just text".to_string());
-
-        let appended = history.append_text_to_last_user_blocks("suffix".to_string());
-        assert!(
-            !appended,
-            "append should refuse to extend a Text-variant user message"
-        );
-    }
-
-    #[test]
-    fn test_append_text_to_last_user_blocks_noop_on_empty_history() {
-        let mut history = ConversationHistory::new();
-        let appended = history.append_text_to_last_user_blocks("text".to_string());
-        assert!(!appended, "append should refuse on empty history");
-    }
-
-    #[test]
     fn test_drop_orphaned_tool_results_preserves_mixed_text_block() {
         // A user turn carrying `[ToolResult, Text]` models the mid-turn
         // steer flow: drain_steer_messages folded the user's text into
@@ -1145,31 +1087,6 @@ mod tests {
         assert!(
             history.cache_anchor_message_idx().is_none(),
             "small restored history must leave anchor None"
-        );
-    }
-
-    #[test]
-    fn cache_anchor_preserved_when_appending_to_last_user_blocks() {
-        // Pins the tail-only safety half of the field's invariant:
-        // append_text_to_last_user_blocks edits messages.last_mut() —
-        // the rolling — which by construction sits strictly after
-        // the anchor, so the anchored prefix bytes don't change.
-        let mut history = ConversationHistory::new();
-        for _ in 0..12 {
-            history.messages.push(blocks_msg_with("user", 1));
-        }
-        history.maintain_cache_anchor();
-        let anchor_before = history
-            .cache_anchor_message_idx()
-            .expect("12 single-block messages cross the threshold");
-
-        let appended = history.append_text_to_last_user_blocks("steer".to_string());
-        assert!(appended, "tail is user-blocks, append should succeed");
-
-        assert_eq!(
-            history.cache_anchor_message_idx(),
-            Some(anchor_before),
-            "rolling-tail mutation must leave the anchor in place"
         );
     }
 

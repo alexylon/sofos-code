@@ -17,7 +17,7 @@ use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
-use crate::session::{DisplayMessage, HistoryManager, SessionState};
+use crate::session::{HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
 use crate::tools::image::ImageLoader;
 use crate::ui::{UI, set_safe_mode_cursor_style};
@@ -415,26 +415,6 @@ impl Repl {
             .runtime
             .block_on(async { self.tool_executor.get_available_tools().await });
         self.available_tools = tools;
-    }
-
-    pub(super) fn handle_initial_interrupt(&mut self) {
-        println!(
-            "\n{}",
-            "Interrupted by user. You can now provide additional guidance.".bright_yellow()
-        );
-        println!();
-
-        let interrupt_msg = "INTERRUPT: The user pressed ESC to interrupt the request before receiving a response. \
-                             They want to provide additional guidance or clarification. Wait for their next message.";
-        self.session_state
-            .conversation
-            .add_user_message(interrupt_msg.to_string());
-
-        self.session_state
-            .display_messages
-            .push(DisplayMessage::UserMessage {
-                content: "[Interrupted - no response received]".to_string(),
-            });
     }
 
     fn get_available_tools(&self) -> Vec<crate::api::Tool> {

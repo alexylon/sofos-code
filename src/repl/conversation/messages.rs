@@ -28,30 +28,6 @@ impl ConversationHistory {
         self.trim_if_needed();
     }
 
-    /// Append a plain-text block to the last user message when it already
-    /// carries `Blocks` content (e.g. a user turn holding `ToolResult`
-    /// blocks). Returns `true` if the append happened, `false` if there
-    /// is no suitable user-role tail to extend — callers should fall
-    /// back to [`Self::add_user_message`] in that case.
-    ///
-    /// Used by the post-tool interrupt path to avoid emitting two
-    /// consecutive user messages (the tool-results turn plus an interrupt
-    /// notice), which OpenAI's strict role-alternation validator rejects.
-    pub fn append_text_to_last_user_blocks(&mut self, text: String) -> bool {
-        if let Some(last) = self.messages.last_mut() {
-            if last.role == "user" {
-                if let crate::api::MessageContent::Blocks { content } = &mut last.content {
-                    content.push(MessageContentBlock::Text {
-                        text,
-                        cache_control: None,
-                    });
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }

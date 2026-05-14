@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **`--verbose` (`-v`) CLI flag.** It parsed but never had any effect on any code path. Passing it now reports the usual unknown-argument error from clap. **Breaking change** for scripts that supplied `-v` decoratively.
+
 ## [0.2.10] - 2026-05-13
 
 ### Added

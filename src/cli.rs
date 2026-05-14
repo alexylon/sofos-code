@@ -72,9 +72,6 @@ pub struct Cli {
     #[arg(long, default_value_t = THINKING_BUDGET_DEFAULT, hide = true)]
     pub thinking_budget: u32,
 
-    #[arg(short, long)]
-    pub verbose: bool,
-
     /// Enable read-only mode
     #[arg(short, long)]
     pub safe_mode: bool,

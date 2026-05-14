@@ -24,7 +24,6 @@ pub struct ResponseHandler {
     reasoning_effort: crate::api::ReasoningEffort,
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
-    use_streaming: bool,
     interrupt_flag: Arc<AtomicBool>,
     steer_buffer: SteerBuffer,
     session_id: String,
@@ -40,7 +39,6 @@ impl ResponseHandler {
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
         available_tools: Vec<crate::api::Tool>,
-        use_streaming: bool,
         interrupt_flag: Arc<AtomicBool>,
         steer_buffer: SteerBuffer,
         session_id: String,
@@ -55,7 +53,6 @@ impl ResponseHandler {
             reasoning_effort,
             config: SofosConfig::default(),
             available_tools,
-            use_streaming,
             interrupt_flag,
             steer_buffer,
             session_id,
@@ -138,19 +135,6 @@ impl ResponseHandler {
                 self.process_content_blocks(&content_blocks);
 
             if !text_output.is_empty() {
-                if !self.use_streaming {
-                    // Separate consecutive assistant turns (e.g. a
-                    // continuation after a tool call) with a blank line so
-                    // they don't run into each other visually.
-                    if iteration > 1 {
-                        println!();
-                    }
-                    println!("{}", "Assistant:".bright_blue().bold());
-                    for text in &text_output {
-                        self.ui.print_assistant_text(text)?;
-                    }
-                }
-
                 let combined_text = text_output.join("\n");
                 display_messages.push(DisplayMessage::AssistantMessage {
                     content: combined_text,
@@ -160,7 +144,7 @@ impl ResponseHandler {
             if !content_blocks.is_empty() {
                 let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
                     .iter()
-                    .filter_map(crate::api::MessageContentBlock::from_content_block_for_api)
+                    .map(crate::api::MessageContentBlock::from_content_block_for_api)
                     .collect();
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);
@@ -173,7 +157,7 @@ impl ResponseHandler {
                 && had_reasoning
                 && matches!(self.client, LlmClient::OpenAI(_))
             {
-                let response = self.get_next_response(&[], display_messages).await?;
+                let response = self.get_next_response().await?;
 
                 Self::accumulate_usage(
                     &response.usage,
@@ -248,7 +232,7 @@ impl ResponseHandler {
                 return Ok(());
             }
 
-            let response = self.get_next_response(&tool_uses, display_messages).await?;
+            let response = self.get_next_response().await?;
 
             Self::accumulate_usage(
                 &response.usage,
@@ -307,36 +291,18 @@ impl ResponseHandler {
                         text_output.push(text.clone());
                     }
                 }
-                ContentBlock::Thinking { thinking, .. } => {
-                    if !self.use_streaming {
-                        self.ui.print_thinking(thinking);
-                    }
+                ContentBlock::Thinking { .. } => {
                     had_reasoning = true;
                 }
-                ContentBlock::Summary { summary } => {
-                    if !self.use_streaming {
-                        self.ui.print_thinking(summary);
-                    }
+                ContentBlock::Summary { .. } => {
                     had_reasoning = true;
                 }
-                ContentBlock::Compaction { content } => {
-                    // Surface the compaction summary so the user can
-                    // see what the server kept after dropping older
-                    // turns. Doesn't count as reasoning for the
+                ContentBlock::Compaction { .. } => {
+                    // Server-side compaction summary already streamed live;
+                    // doesn't count as reasoning for the
                     // auto-continue-after-reasoning-only branch.
-                    if !self.use_streaming {
-                        self.ui.print_thinking(&format!(
-                            "[server compacted earlier conversation]\n{}",
-                            content
-                        ));
-                    }
                 }
-                ContentBlock::Reasoning { summary, .. } => {
-                    if !self.use_streaming {
-                        for line in summary {
-                            self.ui.print_thinking(line);
-                        }
-                    }
+                ContentBlock::Reasoning { .. } => {
                     had_reasoning = true;
                 }
                 ContentBlock::ToolUse { id, name, input } => {
@@ -483,11 +449,7 @@ impl ResponseHandler {
         Ok((tool_results, user_cancelled))
     }
 
-    async fn get_next_response(
-        &mut self,
-        tool_uses: &[(String, String, serde_json::Value)],
-        display_messages: &mut Vec<DisplayMessage>,
-    ) -> Result<crate::api::CreateMessageResponse> {
+    async fn get_next_response(&mut self) -> Result<crate::api::CreateMessageResponse> {
         if std::env::var("SOFOS_DEBUG").is_ok() {
             eprintln!("=== About to generate response ===");
             eprintln!("\n=== DEBUG: Conversation before API call ===");
@@ -505,75 +467,23 @@ impl ResponseHandler {
             eprintln!("===========================================\n");
         }
 
-        if self.use_streaming {
-            let printer = Arc::new(crate::ui::StreamPrinter::new());
-            let p_text = printer.clone();
-            let p_think = printer.clone();
-            let interrupt = Arc::clone(&self.interrupt_flag);
-
-            let request = self.build_request();
-            let response_result = self
-                .client
-                .create_message_streaming(
-                    request,
-                    move |t| p_text.on_text_delta(t),
-                    move |t| p_think.on_thinking_delta(t),
-                    interrupt,
-                )
-                .await;
-
-            printer.finish();
-            return response_result;
-        }
+        let printer = Arc::new(crate::ui::StreamPrinter::new());
+        let p_text = printer.clone();
+        let p_think = printer.clone();
+        let interrupt = Arc::clone(&self.interrupt_flag);
 
         let request = self.build_request();
-        let client = self.client.clone();
         let response_result = self
-            .run_interruptible(async move { client.create_message(request).await })
+            .client
+            .create_message_streaming(
+                request,
+                move |t| p_text.on_text_delta(t),
+                move |t| p_think.on_thinking_delta(t),
+                interrupt,
+            )
             .await;
 
-        if self.interrupt_flag.load(Ordering::SeqCst) {
-            println!(
-                "\n{}",
-                "Processing interrupted by user. You can now provide additional guidance."
-                    .bright_yellow()
-            );
-            println!();
-
-            let tools_executed: Vec<String> =
-                tool_uses.iter().map(|(_, name, _)| name.clone()).collect();
-
-            let interrupt_msg = format!(
-                "INTERRUPT: The user pressed ESC while waiting for your response after tool execution. \
-                 Tools that were executed: {}. The user wants to provide additional guidance before you continue. \
-                 Wait for their next message.",
-                tools_executed.join(", ")
-            );
-
-            // Fold the interrupt notice into the existing tool-results
-            // user turn rather than pushing a second consecutive user
-            // message. Two user messages in a row pass Anthropic's
-            // validator but fail OpenAI's strict role-alternation check,
-            // which surfaces as a "roles must alternate" 400 on the next
-            // request. Fall back to a standalone message only if there's
-            // no user-blocks tail to extend (e.g. trim dropped it).
-            if !self
-                .conversation
-                .append_text_to_last_user_blocks(interrupt_msg.clone())
-            {
-                self.conversation.add_user_message(interrupt_msg);
-            }
-
-            display_messages.push(DisplayMessage::UserMessage {
-                content: format!(
-                    "[Interrupted after executing: {}]",
-                    tools_executed.join(", ")
-                ),
-            });
-
-            return Err(SofosError::Interrupted);
-        }
-
+        printer.finish();
         response_result
     }
 
@@ -593,9 +503,9 @@ impl ResponseHandler {
     /// `Send + 'static`, so the future's captures must be owned (or
     /// `Arc`d).
     ///
-    /// Shared by `get_next_response` and `handle_max_iterations`: both
-    /// want ESC to abort an in-flight HTTP request instead of blocking
-    /// the user until the server responds.
+    /// Used by `handle_max_iterations` so ESC can abort the in-flight
+    /// summary request rather than blocking the user until the server
+    /// responds.
     async fn run_interruptible<T>(
         &self,
         fut: impl std::future::Future<Output = Result<T>> + Send + 'static,
@@ -682,7 +592,7 @@ impl ResponseHandler {
                 let message_blocks: Vec<crate::api::MessageContentBlock> = response
                     .content
                     .iter()
-                    .filter_map(crate::api::MessageContentBlock::from_content_block_for_api)
+                    .map(crate::api::MessageContentBlock::from_content_block_for_api)
                     .collect();
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);

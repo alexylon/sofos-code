@@ -176,22 +176,6 @@ impl UI {
         Ok(())
     }
 
-    pub fn print_thinking(&self, thinking: &str) {
-        if thinking.trim().is_empty() {
-            return;
-        }
-        let (tr, tg, tb) = THINKING_RGB;
-        println!("\n{}", "Thinking:".truecolor(tr, tg, tb).bold().dimmed());
-        // Style each line individually so every captured line carries its
-        // own SGR wrapper. The TUI pipe reader splits on '\n' and parses
-        // each line in isolation, which would drop the style from every
-        // line after the first if we wrapped the whole block at once.
-        for line in thinking.lines() {
-            println!("{}", line.dimmed().italic());
-        }
-        println!();
-    }
-
     pub fn print_tool_header(&self, tool_name: &str, command: Option<&str>) {
         if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
             if let Some(cmd) = command {
