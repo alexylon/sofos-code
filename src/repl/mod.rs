@@ -1,7 +1,10 @@
+pub mod compaction;
 pub mod conversation;
 mod request_builder;
 mod response_handler;
+pub mod sessions;
 pub mod tui;
+pub mod turn;
 
 pub use conversation::ConversationHistory;
 pub use request_builder::RequestBuilder;
@@ -10,21 +13,19 @@ pub use response_handler::ResponseHandler;
 use std::io::IsTerminal;
 
 use crate::api::LlmClient::Anthropic;
-use crate::api::{CreateMessageRequest, ImageSource, LlmClient, MessageContentBlock, MorphClient};
+use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
-use crate::session::{
-    DisplayMessage, HistoryManager, SessionMetadata, SessionState, SessionTokenCounters,
-};
+use crate::session::{DisplayMessage, HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
-use crate::tools::image::{ImageLoader, ImageReference, extract_image_references};
+use crate::tools::image::ImageLoader;
 use crate::ui::{UI, set_safe_mode_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::time::sleep;
 
 /// Shared buffer used by the TUI to inject user messages mid-turn. The UI
@@ -57,28 +58,28 @@ impl ReplConfig {
 }
 
 pub struct Repl {
-    client: LlmClient,
-    tool_executor: ToolExecutor,
-    history_manager: HistoryManager,
-    image_loader: ImageLoader,
-    ui: UI,
-    model_config: ModelConfig,
-    session_state: SessionState,
-    safe_mode: bool,
-    available_tools: Vec<crate::api::Tool>,
+    pub(super) client: LlmClient,
+    pub(super) tool_executor: ToolExecutor,
+    pub(super) history_manager: HistoryManager,
+    pub(super) image_loader: ImageLoader,
+    pub(super) ui: UI,
+    pub(super) model_config: ModelConfig,
+    pub(super) session_state: SessionState,
+    pub(super) safe_mode: bool,
+    pub(super) available_tools: Vec<crate::api::Tool>,
     /// Interrupt flag shared with the TUI. Set to `true` when the user presses
     /// ESC/Ctrl+C during an AI turn; checked by the API request loop.
-    interrupt_flag: Arc<AtomicBool>,
+    pub(super) interrupt_flag: Arc<AtomicBool>,
     /// Shared buffer of pending steering messages the user typed while a
     /// turn was already running. Drained by the tool loop between
     /// iterations so the user can redirect in-flight work without having
     /// to interrupt it.
-    steer_buffer: SteerBuffer,
+    pub(super) steer_buffer: SteerBuffer,
     /// Queued through the TUI's captured-stdout pipe so the banner
     /// survives terminals whose cursor-position DSR doesn't answer
     /// (e.g. Ghostty), where the fallback origin would let the viewport
     /// overwrite the lines.
-    startup_banner: String,
+    pub(super) startup_banner: String,
     /// Shared tokio runtime driving every `block_on` in the REPL
     /// (initial request, compaction summary, tool-list refresh). Built
     /// once in [`Self::new`] and reused for the lifetime of the `Repl`.
@@ -88,7 +89,7 @@ pub struct Repl {
     /// prone under sustained load. Works because the TUI worker runs
     /// on a plain `std::thread` (see `tui/worker.rs`), so the REPL's
     /// owned runtime is the only tokio context on that thread.
-    runtime: tokio::runtime::Runtime,
+    pub(super) runtime: tokio::runtime::Runtime,
 }
 
 impl Repl {
@@ -228,10 +229,6 @@ impl Repl {
         self.model_config.model.clone()
     }
 
-    pub fn list_saved_sessions(&self) -> Result<Vec<SessionMetadata>> {
-        self.history_manager.list_sessions()
-    }
-
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
         let effort = self.model_config.reasoning_effort;
@@ -268,407 +265,8 @@ impl Repl {
         }
     }
 
-    pub fn process_message(
-        &mut self,
-        user_input: &str,
-        pasted_images: Vec<crate::clipboard::PastedImage>,
-    ) -> Result<()> {
-        // Record turn start so we can show "Finished in Xs" when the
-        // model is fully done (after every text reply, tool call, and
-        // continuation). Steer messages typed mid-turn don't reset
-        // this — they're folded into the same turn via `SteerBuffer` and
-        // the same `process_message` call keeps running until the
-        // agent loop exits.
-        let turn_start = Instant::now();
-        let (remaining_text, image_refs) = extract_image_references(user_input);
-
-        let has_images = !image_refs.is_empty() || !pasted_images.is_empty();
-
-        if !image_refs.is_empty() {
-            println!(
-                "{} Detected {} image reference(s)",
-                "🔍".bright_cyan(),
-                image_refs.len()
-            );
-        }
-
-        let content_blocks = if has_images {
-            let mut blocks: Vec<MessageContentBlock> = Vec::new();
-
-            for pasted in &pasted_images {
-                blocks.push(MessageContentBlock::Image {
-                    source: ImageSource::Base64 {
-                        media_type: pasted.media_type.clone(),
-                        data: pasted.base64_data.clone(),
-                    },
-                    cache_control: None,
-                });
-            }
-            let mut failed_images: Vec<String> = Vec::new();
-
-            // Load images first (Claude recommends images before text)
-            for img_ref in &image_refs {
-                match self.image_loader.load_image(img_ref) {
-                    Ok(source) => {
-                        let api_source = match source {
-                            crate::tools::image::ImageSource::Base64 { media_type, data } => {
-                                ImageSource::Base64 { media_type, data }
-                            }
-                            crate::tools::image::ImageSource::Url { url } => {
-                                ImageSource::Url { url }
-                            }
-                        };
-                        blocks.push(MessageContentBlock::Image {
-                            source: api_source,
-                            cache_control: None,
-                        });
-
-                        let path_str = match img_ref {
-                            ImageReference::LocalPath(p) => format!("local: {}", p),
-                            ImageReference::WebUrl(u) => format!("url: {}", u),
-                        };
-                        println!("{} {}", "📷 Image loaded:".bright_cyan(), path_str.dimmed());
-                    }
-                    Err(e) => {
-                        let path_str = match img_ref {
-                            ImageReference::LocalPath(p) => p.clone(),
-                            ImageReference::WebUrl(u) => u.clone(),
-                        };
-                        let error_msg = format!("[Failed to load image '{}': {}]", path_str, e);
-                        failed_images.push(error_msg);
-                        println!(
-                            "\n{} {}\n",
-                            "⚠️  Failed to load image:".bright_yellow().bold(),
-                            e
-                        );
-                    }
-                }
-            }
-
-            let mut text_parts: Vec<String> = Vec::new();
-
-            if !remaining_text.trim().is_empty() {
-                text_parts.push(remaining_text.clone());
-            }
-
-            if !failed_images.is_empty() {
-                text_parts.extend(failed_images);
-            }
-
-            if !text_parts.is_empty() {
-                blocks.push(MessageContentBlock::Text {
-                    text: text_parts.join("\n\n"),
-                    cache_control: None,
-                });
-            } else if blocks.is_empty() {
-                return Err(SofosError::ToolExecution(
-                    "No valid images or text in message".to_string(),
-                ));
-            }
-
-            Some(blocks)
-        } else {
-            None
-        };
-
-        if let Some(blocks) = content_blocks {
-            self.session_state.conversation.add_user_with_blocks(blocks);
-        } else {
-            self.session_state
-                .conversation
-                .add_user_message(user_input.to_string());
-        }
-
-        self.session_state
-            .display_messages
-            .push(DisplayMessage::UserMessage {
-                content: user_input.to_string(),
-            });
-
-        if self.session_state.conversation.needs_compaction() {
-            let _ = self.compact_conversation(false);
-        }
-
-        let initial_request = self.build_initial_request();
-
-        let runtime = &self.runtime;
-
-        let use_streaming = true;
-        let client_for_retry = self.client.clone();
-
-        let response_result: Result<_> = if use_streaming {
-            let printer = Arc::new(crate::ui::StreamPrinter::new());
-            let p_text = printer.clone();
-            let p_think = printer.clone();
-            let interrupt = Arc::clone(&self.interrupt_flag);
-
-            let client = self.client.clone();
-            let req = initial_request;
-            let result = runtime.block_on(async move {
-                client
-                    .create_message_streaming(
-                        req,
-                        move |t| p_text.on_text_delta(t),
-                        move |t| p_think.on_thinking_delta(t),
-                        interrupt,
-                    )
-                    .await
-            });
-
-            printer.finish();
-            result
-        } else {
-            let interrupt_flag = Arc::clone(&self.interrupt_flag);
-            let client = self.client.clone();
-            let req = initial_request;
-            let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
-
-            let result = runtime.block_on(async {
-                tokio::select! {
-                    res = &mut request_handle => {
-                        match res {
-                            Ok(inner) => inner,
-                            Err(e) => Err(SofosError::Join(format!("{}", e)))
-                        }
-                    }
-                    _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
-                        request_handle.abort();
-                        Err(SofosError::Interrupted)
-                    }
-                }
-            });
-
-            if self.interrupt_flag.load(Ordering::SeqCst) {
-                self.handle_initial_interrupt();
-                return Ok(());
-            }
-
-            result
-        };
-
-        // Handle API errors, especially those related to invalid images
-        let response = match response_result {
-            Ok(resp) => resp,
-            Err(e) => {
-                // Check if this is an image-related API error
-                if let SofosError::Api(ref msg) = e {
-                    let is_400_error = msg.contains("400");
-                    let is_image_error = msg.contains("Unable to download")
-                        || msg.contains("invalid_request_error")
-                        || msg.contains("verify the URL");
-
-                    // Check if current message OR conversation has images
-                    let current_has_images = !image_refs.is_empty();
-                    let conversation_has_images = self
-                        .session_state
-                        .conversation
-                        .messages()
-                        .iter()
-                        .any(|msg| {
-                            use crate::api::{MessageContent, MessageContentBlock};
-                            if let MessageContent::Blocks { content } = &msg.content {
-                                content
-                                    .iter()
-                                    .any(|block| matches!(block, MessageContentBlock::Image { .. }))
-                            } else {
-                                false
-                            }
-                        });
-
-                    let has_images = current_has_images || conversation_has_images;
-
-                    if is_400_error && is_image_error && has_images {
-                        println!(
-                            "\n{} One or more image URLs in the conversation could not be loaded by the API\n",
-                            "⚠️  Image loading error:".bright_yellow().bold()
-                        );
-
-                        // Backup conversation before mutating, in case the retry also fails
-                        let conversation_backup =
-                            self.session_state.conversation.messages().to_vec();
-
-                        self.session_state.conversation.remove_last_message();
-
-                        // Remove ALL images from conversation
-                        let messages = self.session_state.conversation.messages();
-                        let mut cleaned_messages = Vec::new();
-
-                        for msg in messages {
-                            use crate::api::{Message, MessageContent, MessageContentBlock};
-                            let cleaned_msg = match &msg.content {
-                                MessageContent::Blocks { content } => {
-                                    let filtered_blocks: Vec<MessageContentBlock> = content
-                                        .iter()
-                                        .filter(|block| {
-                                            !matches!(block, MessageContentBlock::Image { .. })
-                                        })
-                                        .cloned()
-                                        .collect();
-
-                                    if filtered_blocks.is_empty() {
-                                        continue;
-                                    } else {
-                                        Message {
-                                            role: msg.role.clone(),
-                                            content: MessageContent::Blocks {
-                                                content: filtered_blocks,
-                                            },
-                                        }
-                                    }
-                                }
-                                _ => msg.clone(),
-                            };
-                            cleaned_messages.push(cleaned_msg);
-                        }
-
-                        self.session_state.conversation.clear();
-                        self.session_state
-                            .conversation
-                            .restore_messages(cleaned_messages);
-
-                        let error_message = if !image_refs.is_empty() {
-                            "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
-                        } else {
-                            "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
-                        }.to_string();
-
-                        self.session_state
-                            .conversation
-                            .add_user_message(error_message);
-                        let new_request = self.build_initial_request();
-
-                        println!("{}", "Retrying request without images...".dimmed());
-                        println!();
-
-                        match runtime
-                            .block_on(async { client_for_retry.create_message(new_request).await })
-                        {
-                            Ok(resp) => resp,
-                            Err(retry_err) => {
-                                // Restore original conversation on retry failure
-                                self.session_state.conversation.clear();
-                                self.session_state
-                                    .conversation
-                                    .restore_messages(conversation_backup);
-                                // Add error context instead of removing user message
-                                self.session_state
-                                    .conversation
-                                    .add_assistant_with_blocks(vec![
-                                        crate::api::MessageContentBlock::Text {
-                                            text: format!(
-                                                "[Image loading failed and retry also failed: {}. \
-                                             Your message is preserved above.]",
-                                                retry_err
-                                            ),
-                                            cache_control: None,
-                                        },
-                                    ]);
-                                return Err(retry_err);
-                            }
-                        }
-                    } else {
-                        // Add error context so the AI knows what happened on next turn
-                        self.session_state
-                            .conversation
-                            .add_assistant_with_blocks(vec![
-                                crate::api::MessageContentBlock::Text {
-                                    text: format!(
-                                        "[API error: {}. I was unable to process your request.]",
-                                        msg
-                                    ),
-                                    cache_control: None,
-                                },
-                            ]);
-                        return Err(e);
-                    }
-                } else {
-                    // Add error context so the AI knows what happened on next turn
-                    self.session_state
-                        .conversation
-                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
-                            text: format!(
-                                "[System error: {}. I was unable to process your request.]",
-                                e
-                            ),
-                            cache_control: None,
-                        }]);
-                    return Err(e);
-                }
-            }
-        };
-
-        self.session_state.add_usage(&response.usage);
-
-        let mut handler = ResponseHandler::new(
-            self.client.clone(),
-            self.tool_executor.clone(),
-            self.session_state.conversation.clone(),
-            self.model_config.model.clone(),
-            self.model_config.max_tokens,
-            self.model_config.reasoning_effort,
-            self.available_tools.clone(),
-            use_streaming,
-            Arc::clone(&self.interrupt_flag),
-            Arc::clone(&self.steer_buffer),
-            self.session_state.session_id.clone(),
-        );
-
-        let result = runtime.block_on(handler.handle_response(
-            response.content,
-            &mut self.session_state.display_messages,
-            &mut self.session_state.total_input_tokens,
-            &mut self.session_state.total_output_tokens,
-            &mut self.session_state.total_cache_read_tokens,
-            &mut self.session_state.total_cache_creation_tokens,
-            &mut self.session_state.peak_single_turn_input_tokens,
-        ));
-
-        // Always preserve conversation state so the AI retains context on retry
-        self.session_state.conversation = handler.conversation().clone();
-
-        match result {
-            Ok(_) => {
-                println!(
-                    "{}",
-                    UI::format_turn_finished(turn_start.elapsed()).dimmed()
-                );
-                Ok(())
-            }
-            Err(SofosError::Interrupted) => Ok(()),
-            Err(e) => {
-                // Add error context so the AI knows what happened on next turn.
-                // Check last message role to maintain proper alternation —
-                // the conversation could end on either role depending on where
-                // the error occurred (e.g. after assistant reasoning vs after tool results).
-                let error_text = format!(
-                    "[System error during processing: {}. Previous actions are preserved above.]",
-                    e
-                );
-                let last_role = self
-                    .session_state
-                    .conversation
-                    .messages()
-                    .last()
-                    .map(|m| m.role.as_str());
-                if last_role == Some("assistant") {
-                    // Last message is assistant — add user error context
-                    self.session_state.conversation.add_user_message(error_text);
-                } else {
-                    // Last message is user (tool results) or empty — add assistant error context
-                    self.session_state
-                        .conversation
-                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
-                            text: error_text,
-                            cache_control: None,
-                        }]);
-                }
-                Err(e)
-            }
-        }
-    }
-
     /// Build initial request for user message
-    fn build_initial_request(&self) -> CreateMessageRequest {
+    pub(super) fn build_initial_request(&self) -> CreateMessageRequest {
         RequestBuilder::new(
             &self.client,
             &self.model_config.model,
@@ -699,30 +297,6 @@ impl Repl {
         Ok(())
     }
 
-    // Public methods for command implementations
-
-    pub fn save_current_session(&self) -> Result<()> {
-        if self.session_state.conversation.messages().is_empty() {
-            return Ok(());
-        }
-
-        self.history_manager.save_session(
-            &self.session_state.session_id,
-            self.session_state.conversation.messages(),
-            &self.session_state.display_messages,
-            self.session_state.conversation.system_prompt(),
-            SessionTokenCounters {
-                total_input_tokens: self.session_state.total_input_tokens,
-                total_output_tokens: self.session_state.total_output_tokens,
-                total_cache_read_tokens: self.session_state.total_cache_read_tokens,
-                total_cache_creation_tokens: self.session_state.total_cache_creation_tokens,
-                peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
-            },
-        )?;
-
-        Ok(())
-    }
-
     pub fn get_session_summary(&self) -> tui::event::ExitSummary {
         tui::event::ExitSummary {
             model: self.model_config.model.clone(),
@@ -742,29 +316,6 @@ impl Repl {
             .conversation
             .add_user_message("The session history has been cleared".to_string());
         println!("\n{}\n", "Conversation history cleared.".bright_yellow());
-        Ok(())
-    }
-
-    pub fn handle_resume_command(&mut self) -> Result<()> {
-        let sessions = self.history_manager.list_sessions()?;
-
-        if sessions.is_empty() {
-            println!("{}", "No saved sessions found.".yellow());
-            return Ok(());
-        }
-
-        let selected_id = crate::session::select_session(sessions)?;
-
-        if let Some(session_id) = selected_id {
-            self.load_session_by_id(&session_id)?;
-            println!(
-                "{} {}",
-                "Session loaded:".bright_green(),
-                "Continue your conversation below".dimmed()
-            );
-            println!();
-        }
-
         Ok(())
     }
 
@@ -866,43 +417,7 @@ impl Repl {
         self.available_tools = tools;
     }
 
-    pub fn load_session_by_id(&mut self, session_id: &str) -> Result<()> {
-        let session = self.history_manager.load_session(session_id)?;
-
-        self.session_state.session_id = session.id.clone();
-        self.session_state.conversation.clear();
-        self.session_state
-            .conversation
-            .restore_messages(session.api_messages.clone());
-        self.session_state.display_messages = session.display_messages.clone();
-        // Restore every persisted token counter so the cost summary
-        // stays accurate across the resume. Older session files written
-        // before persistence was added default the whole
-        // `token_counters` struct to all-zero via `#[serde(default)]`
-        // on each field, matching the pre-persistence behaviour for
-        // those old files.
-        self.session_state.total_input_tokens = session.token_counters.total_input_tokens;
-        self.session_state.total_output_tokens = session.token_counters.total_output_tokens;
-        self.session_state.total_cache_read_tokens = session.token_counters.total_cache_read_tokens;
-        self.session_state.total_cache_creation_tokens =
-            session.token_counters.total_cache_creation_tokens;
-        self.session_state.peak_single_turn_input_tokens =
-            session.token_counters.peak_single_turn_input_tokens;
-
-        println!(
-            "{} {} ({} messages)",
-            "Loaded session:".bright_green(),
-            session.id,
-            session.api_messages.len()
-        );
-        println!();
-
-        self.ui.display_session(&session)?;
-
-        Ok(())
-    }
-
-    fn handle_initial_interrupt(&mut self) {
+    pub(super) fn handle_initial_interrupt(&mut self) {
         println!(
             "\n{}",
             "Interrupted by user. You can now provide additional guidance.".bright_yellow()
@@ -926,164 +441,8 @@ impl Repl {
         self.available_tools.clone()
     }
 
-    /// Compact the conversation by truncating tool results and summarizing older messages.
-    /// Returns Ok(true) if compaction was performed, Ok(false) if skipped.
-    pub fn compact_conversation(&mut self, force: bool) -> Result<bool> {
-        if !force && !self.session_state.conversation.needs_compaction() {
-            return Ok(false);
-        }
-
-        let tokens_before = self.session_state.conversation.estimate_total_tokens();
-
-        // Phase 1: Truncate large tool results in older messages
-        let split_point = self.session_state.conversation.compaction_split_point();
-        if split_point == 0 {
-            if force {
-                println!("\n{}\n", "Not enough messages to compact.".bright_yellow());
-            }
-            return Ok(false);
-        }
-
-        self.session_state
-            .conversation
-            .truncate_tool_results(split_point);
-
-        if !force && !self.session_state.conversation.needs_compaction() {
-            let tokens_after = self.session_state.conversation.estimate_total_tokens();
-            println!(
-                "\n{} {} -> {} tokens (tool results truncated)\n",
-                "Compacted:".bright_green(),
-                tokens_before,
-                tokens_after
-            );
-            return Ok(true);
-        }
-
-        // Phase 2: Summarize older messages via the LLM
-        let older_messages: Vec<_> =
-            self.session_state.conversation.messages()[..split_point].to_vec();
-        let serialized = ConversationHistory::serialize_messages_for_summary(&older_messages);
-
-        let summary_system = vec![crate::api::SystemPrompt::new_cached_with_ttl(
-            "You are a conversation summarizer. Produce a detailed but concise summary of the following \
-             coding assistant conversation. Preserve:\n\
-             1. All file paths mentioned or modified\n\
-             2. Key decisions made and their rationale\n\
-             3. Current state of any ongoing task\n\
-             4. Any errors encountered and how they were resolved\n\n\
-             Format as structured sections. Do NOT include raw file contents or verbose tool output — \
-             just what was done and decided."
-                .to_string(),
-            None,
-        )];
-
-        let summary_request = CreateMessageRequest {
-            model: self.model_config.model.clone(),
-            max_tokens: 4096,
-            messages: vec![crate::api::Message::user(serialized)],
-            system: Some(summary_system),
-            tools: None,
-            stream: None,
-            thinking: None,
-            output_config: None,
-            reasoning: None,
-            // Reuse the session id so the summarization call shares the
-            // OpenAI prompt-cache shard with the rest of the session.
-            prompt_cache_key: Some(self.session_state.session_id.clone()),
-            // The summarization call is itself a one-shot request, not
-            // a long-running conversation, so server-side compaction
-            // would be a no-op even on supported models.
-            context_management: None,
-        };
-
-        let interrupt_flag = Arc::clone(&self.interrupt_flag);
-        let client = self.client.clone();
-        let mut request_handle = self
-            .runtime
-            .spawn(async move { client.create_message(summary_request).await });
-
-        let response_result = self.runtime.block_on(async {
-            tokio::select! {
-                res = &mut request_handle => {
-                    match res {
-                        Ok(inner) => inner,
-                        Err(e) => Err(SofosError::Join(format!("{}", e)))
-                    }
-                }
-                _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
-                    request_handle.abort();
-                    Err(SofosError::Interrupted)
-                }
-            }
-        });
-
-        match response_result {
-            Ok(response) => {
-                let summary_text: String = response
-                    .content
-                    .iter()
-                    .filter_map(|block| {
-                        if let crate::api::ContentBlock::Text { text } = block {
-                            Some(text.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                if summary_text.len() < 50 {
-                    UI::print_warning(
-                        "Compaction produced an insufficient summary. Falling back to trimming.",
-                    );
-                    self.session_state.conversation.fallback_trim();
-                    return Ok(false);
-                }
-
-                self.session_state
-                    .conversation
-                    .replace_with_summary(summary_text, split_point);
-
-                self.session_state.add_usage(&response.usage);
-
-                let tokens_after = self.session_state.conversation.estimate_total_tokens();
-                println!(
-                    "{} {} -> {} tokens (saved {}%)",
-                    "Compacted:".bright_green(),
-                    tokens_before,
-                    tokens_after,
-                    if tokens_before > 0 {
-                        100 - (tokens_after * 100 / tokens_before)
-                    } else {
-                        0
-                    }
-                );
-
-                Ok(true)
-            }
-            Err(SofosError::Interrupted) => {
-                UI::print_warning("Compaction interrupted. Falling back to trimming.");
-                self.session_state.conversation.fallback_trim();
-                Ok(false)
-            }
-            Err(e) => {
-                UI::print_warning(&format!(
-                    "Compaction failed: {}. Falling back to trimming.",
-                    e
-                ));
-                self.session_state.conversation.fallback_trim();
-                Ok(false)
-            }
-        }
-    }
-
-    pub fn handle_compact_command(&mut self) -> Result<()> {
-        self.compact_conversation(true)?;
-        Ok(())
-    }
-
     /// Await the interrupt flag in an async-friendly loop (50ms poll).
-    async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
+    pub(super) async fn wait_for_interrupt(flag: Arc<AtomicBool>) {
         while !flag.load(Ordering::Relaxed) {
             sleep(Duration::from_millis(50)).await;
         }

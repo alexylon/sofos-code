@@ -341,13 +341,20 @@ src/
 ├── cli.rs               # CLI argument parsing
 ├── clipboard.rs         # Clipboard image paste (Ctrl+V)
 ├── error.rs             # Error types
-├── error_ext.rs         # Error extensions
 ├── config.rs            # Configuration
 │
 ├── api/                 # API clients
-│   ├── anthropic.rs     # Claude API client (+ streaming)
-│   ├── openai.rs        # OpenAI API client
+│   ├── anthropic/       # Claude API client
+│   │   ├── client.rs        # HTTP entry points
+│   │   ├── wire.rs          # Request and response shapes
+│   │   └── stream.rs        # SSE parser for streaming
+│   ├── openai/          # OpenAI API client
+│   │   ├── client.rs        # HTTP entry points
+│   │   ├── wire.rs          # Request and response shapes
+│   │   └── stream.rs        # SSE parser for streaming
 │   ├── morph.rs         # Morph Apply API client
+│   ├── model_info.rs    # Per-model capabilities and pricing
+│   ├── truncate.rs      # Tool-result trimming for context budgets
 │   ├── types.rs         # Message types and serialization
 │   └── utils.rs         # Retries, error handling
 │
@@ -355,18 +362,31 @@ src/
 │   ├── config.rs        # Server configuration loading
 │   ├── protocol.rs      # Protocol types (JSON-RPC)
 │   ├── client.rs        # Client implementations (stdio, HTTP)
-│   └── manager.rs       # Server connection management
+│   ├── manager.rs       # Server connection management
+│   └── transport/       # Wire transports
+│       ├── stdio.rs         # Child-process stdio transport
+│       └── http.rs          # Streamable HTTP transport
 │
 ├── repl/                # REPL components
-│   ├── mod.rs           # Core Repl state and process_message
-│   ├── conversation.rs  # Message history and compaction
+│   ├── mod.rs           # Repl struct, config, status, reasoning and safe-mode handlers
+│   ├── turn.rs          # process_message: per-turn driver and image-retry path
+│   ├── compaction.rs    # Conversation compaction (truncate plus summarise)
+│   ├── sessions.rs      # Save, load and resume saved sessions
+│   ├── conversation/    # Message history
+│   │   ├── messages.rs      # Add, restore and clear messages
+│   │   ├── compaction.rs    # Truncate tool results and replace prefix with summary
+│   │   ├── lifecycle.rs     # System prompt and feature wiring
+│   │   └── tokens.rs        # Token-budget tracking
 │   ├── request_builder.rs   # API request construction
 │   ├── response_handler.rs  # Response and tool iteration
 │   └── tui/             # Ratatui front end
-│       ├── mod.rs             # Event loop and wiring
+│       ├── mod.rs             # Entry point and wiring
 │       ├── app.rs             # UI state (log, input, queue, picker)
 │       ├── ui.rs              # Rendering
 │       ├── event.rs           # Job / UiEvent channel payloads
+│       ├── event_loop.rs      # Main event pump
+│       ├── input.rs           # Input box state and editing
+│       ├── keymap.rs          # Key bindings
 │       ├── worker.rs          # Background thread that owns the Repl
 │       ├── output.rs          # Stdout/stderr capture via dup2
 │       ├── inline_terminal.rs # Custom ratatui Terminal (resize-safe)
@@ -375,27 +395,47 @@ src/
 │       └── sgr.rs             # SGR escape helpers
 │
 ├── session/             # Session management
-│   ├── history.rs       # Session persistence
+│   ├── history/         # On-disk session storage
+│   │   ├── manager.rs       # Save, load and list orchestration
+│   │   ├── model.rs         # Serialised session shape
+│   │   ├── index.rs         # Sessions index file
+│   │   ├── preview.rs       # First-line previews for the picker
+│   │   └── instructions.rs  # Custom instructions loader
 │   ├── state.rs         # Runtime session state
 │   └── selector.rs      # Session selection TUI
 │
 ├── tools/               # Tool implementations
+│   ├── executor.rs      # Tool dispatch
+│   ├── resolve.rs       # Path resolution and workspace gating
 │   ├── filesystem.rs    # File operations (read, write, edit, chunked append)
-│   ├── bashexec.rs      # Bash execution + confirmation gate
+│   ├── bash/            # Bash execution
+│   │   ├── executor.rs      # Spawn and capture
+│   │   ├── validate.rs      # Forbidden-command and structural checks
+│   │   └── output.rs        # Output formatting and truncation
 │   ├── codesearch.rs    # Code search (ripgrep)
-│   ├── image.rs         # Image detection + loading for message content
-│   ├── permissions.rs   # 3-tier permission system
+│   ├── image.rs         # Image detection and loading for message content
+│   ├── permissions/     # 3-tier permission system
+│   │   ├── manager.rs       # PermissionManager core
+│   │   ├── settings.rs      # Config loading
+│   │   ├── pattern.rs       # Rule-string parsing
+│   │   ├── scope.rs         # Read / Write / Bash-path matching
+│   │   └── command_parse.rs # Shell tokenisation and compound splitting
+│   ├── morph_validate.rs # Pre-flight checks for morph_edit_file
 │   ├── tool_name.rs     # Type-safe tool name enum
 │   ├── types.rs         # Tool definitions for the API
 │   ├── utils.rs         # Confirmations, truncation, HTML-to-text
+│   ├── test_support.rs  # Shared test helpers
 │   └── tests.rs         # Tool integration tests
 │
 ├── ui/                  # UI components
-│   ├── mod.rs           # UI utilities, markdown renderer
+│   ├── mod.rs           # UI utilities, prompts and banners
+│   ├── markdown.rs      # Markdown renderer (block and streaming)
 │   ├── syntax.rs        # Syntax highlighting
+│   ├── cost.rs          # Cost calculation and session summary
+│   ├── session_display.rs # Replay saved sessions in the TUI
 │   └── diff.rs          # Syntax-highlighted diffs with line numbers
 │
-└── commands/            # Built-in commands
+└── commands/            # Built-in commands (/clear, /resume, /compact, /think, /s, /n)
     └── builtin.rs       # Command implementations
 ```
 

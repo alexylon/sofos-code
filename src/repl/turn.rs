@@ -1,0 +1,417 @@
+//! Single-turn driver: takes one user message (plus any pasted or
+//! referenced images), kicks off the initial API request, and hands the
+//! response off to [`crate::repl::ResponseHandler`] for the tool loop.
+//! Also owns the image-error retry path that strips images from the
+//! conversation and retries once before surfacing the failure.
+
+use crate::api::{ImageSource, MessageContentBlock};
+use crate::error::{Result, SofosError};
+use crate::repl::{Repl, ResponseHandler};
+use crate::session::DisplayMessage;
+use crate::tools::image::{ImageReference, extract_image_references};
+use crate::ui::UI;
+use colored::Colorize;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Instant;
+
+impl Repl {
+    pub fn process_message(
+        &mut self,
+        user_input: &str,
+        pasted_images: Vec<crate::clipboard::PastedImage>,
+    ) -> Result<()> {
+        // Record turn start so we can show "Finished in Xs" when the
+        // model is fully done (after every text reply, tool call, and
+        // continuation). Steer messages typed mid-turn don't reset
+        // this — they're folded into the same turn via `SteerBuffer` and
+        // the same `process_message` call keeps running until the
+        // agent loop exits.
+        let turn_start = Instant::now();
+        let (remaining_text, image_refs) = extract_image_references(user_input);
+
+        let has_images = !image_refs.is_empty() || !pasted_images.is_empty();
+
+        if !image_refs.is_empty() {
+            println!(
+                "{} Detected {} image reference(s)",
+                "🔍".bright_cyan(),
+                image_refs.len()
+            );
+        }
+
+        let content_blocks = if has_images {
+            let mut blocks: Vec<MessageContentBlock> = Vec::new();
+
+            for pasted in &pasted_images {
+                blocks.push(MessageContentBlock::Image {
+                    source: ImageSource::Base64 {
+                        media_type: pasted.media_type.clone(),
+                        data: pasted.base64_data.clone(),
+                    },
+                    cache_control: None,
+                });
+            }
+            let mut failed_images: Vec<String> = Vec::new();
+
+            // Load images first (Claude recommends images before text)
+            for img_ref in &image_refs {
+                match self.image_loader.load_image(img_ref) {
+                    Ok(source) => {
+                        let api_source = match source {
+                            crate::tools::image::ImageSource::Base64 { media_type, data } => {
+                                ImageSource::Base64 { media_type, data }
+                            }
+                            crate::tools::image::ImageSource::Url { url } => {
+                                ImageSource::Url { url }
+                            }
+                        };
+                        blocks.push(MessageContentBlock::Image {
+                            source: api_source,
+                            cache_control: None,
+                        });
+
+                        let path_str = match img_ref {
+                            ImageReference::LocalPath(p) => format!("local: {}", p),
+                            ImageReference::WebUrl(u) => format!("url: {}", u),
+                        };
+                        println!("{} {}", "📷 Image loaded:".bright_cyan(), path_str.dimmed());
+                    }
+                    Err(e) => {
+                        let path_str = match img_ref {
+                            ImageReference::LocalPath(p) => p.clone(),
+                            ImageReference::WebUrl(u) => u.clone(),
+                        };
+                        let error_msg = format!("[Failed to load image '{}': {}]", path_str, e);
+                        failed_images.push(error_msg);
+                        println!(
+                            "\n{} {}\n",
+                            "⚠️  Failed to load image:".bright_yellow().bold(),
+                            e
+                        );
+                    }
+                }
+            }
+
+            let mut text_parts: Vec<String> = Vec::new();
+
+            if !remaining_text.trim().is_empty() {
+                text_parts.push(remaining_text.clone());
+            }
+
+            if !failed_images.is_empty() {
+                text_parts.extend(failed_images);
+            }
+
+            if !text_parts.is_empty() {
+                blocks.push(MessageContentBlock::Text {
+                    text: text_parts.join("\n\n"),
+                    cache_control: None,
+                });
+            } else if blocks.is_empty() {
+                return Err(SofosError::ToolExecution(
+                    "No valid images or text in message".to_string(),
+                ));
+            }
+
+            Some(blocks)
+        } else {
+            None
+        };
+
+        if let Some(blocks) = content_blocks {
+            self.session_state.conversation.add_user_with_blocks(blocks);
+        } else {
+            self.session_state
+                .conversation
+                .add_user_message(user_input.to_string());
+        }
+
+        self.session_state
+            .display_messages
+            .push(DisplayMessage::UserMessage {
+                content: user_input.to_string(),
+            });
+
+        if self.session_state.conversation.needs_compaction() {
+            let _ = self.compact_conversation(false);
+        }
+
+        let initial_request = self.build_initial_request();
+
+        let runtime = &self.runtime;
+
+        let use_streaming = true;
+        let client_for_retry = self.client.clone();
+
+        let response_result: Result<_> = if use_streaming {
+            let printer = Arc::new(crate::ui::StreamPrinter::new());
+            let p_text = printer.clone();
+            let p_think = printer.clone();
+            let interrupt = Arc::clone(&self.interrupt_flag);
+
+            let client = self.client.clone();
+            let req = initial_request;
+            let result = runtime.block_on(async move {
+                client
+                    .create_message_streaming(
+                        req,
+                        move |t| p_text.on_text_delta(t),
+                        move |t| p_think.on_thinking_delta(t),
+                        interrupt,
+                    )
+                    .await
+            });
+
+            printer.finish();
+            result
+        } else {
+            let interrupt_flag = Arc::clone(&self.interrupt_flag);
+            let client = self.client.clone();
+            let req = initial_request;
+            let mut request_handle = runtime.spawn(async move { client.create_message(req).await });
+
+            let result = runtime.block_on(async {
+                tokio::select! {
+                    res = &mut request_handle => {
+                        match res {
+                            Ok(inner) => inner,
+                            Err(e) => Err(SofosError::Join(format!("{}", e)))
+                        }
+                    }
+                    _ = Self::wait_for_interrupt(Arc::clone(&interrupt_flag)) => {
+                        request_handle.abort();
+                        Err(SofosError::Interrupted)
+                    }
+                }
+            });
+
+            if self.interrupt_flag.load(Ordering::SeqCst) {
+                self.handle_initial_interrupt();
+                return Ok(());
+            }
+
+            result
+        };
+
+        // Handle API errors, especially those related to invalid images
+        let response = match response_result {
+            Ok(resp) => resp,
+            Err(e) => {
+                // Check if this is an image-related API error
+                if let SofosError::Api(ref msg) = e {
+                    let is_400_error = msg.contains("400");
+                    let is_image_error = msg.contains("Unable to download")
+                        || msg.contains("invalid_request_error")
+                        || msg.contains("verify the URL");
+
+                    // Check if current message OR conversation has images
+                    let current_has_images = !image_refs.is_empty();
+                    let conversation_has_images = self
+                        .session_state
+                        .conversation
+                        .messages()
+                        .iter()
+                        .any(|msg| {
+                            use crate::api::{MessageContent, MessageContentBlock};
+                            if let MessageContent::Blocks { content } = &msg.content {
+                                content
+                                    .iter()
+                                    .any(|block| matches!(block, MessageContentBlock::Image { .. }))
+                            } else {
+                                false
+                            }
+                        });
+
+                    let has_images = current_has_images || conversation_has_images;
+
+                    if is_400_error && is_image_error && has_images {
+                        println!(
+                            "\n{} One or more image URLs in the conversation could not be loaded by the API\n",
+                            "⚠️  Image loading error:".bright_yellow().bold()
+                        );
+
+                        // Backup conversation before mutating, in case the retry also fails
+                        let conversation_backup =
+                            self.session_state.conversation.messages().to_vec();
+
+                        self.session_state.conversation.remove_last_message();
+
+                        // Remove ALL images from conversation
+                        let messages = self.session_state.conversation.messages();
+                        let mut cleaned_messages = Vec::new();
+
+                        for msg in messages {
+                            use crate::api::{Message, MessageContent, MessageContentBlock};
+                            let cleaned_msg = match &msg.content {
+                                MessageContent::Blocks { content } => {
+                                    let filtered_blocks: Vec<MessageContentBlock> = content
+                                        .iter()
+                                        .filter(|block| {
+                                            !matches!(block, MessageContentBlock::Image { .. })
+                                        })
+                                        .cloned()
+                                        .collect();
+
+                                    if filtered_blocks.is_empty() {
+                                        continue;
+                                    } else {
+                                        Message {
+                                            role: msg.role.clone(),
+                                            content: MessageContent::Blocks {
+                                                content: filtered_blocks,
+                                            },
+                                        }
+                                    }
+                                }
+                                _ => msg.clone(),
+                            };
+                            cleaned_messages.push(cleaned_msg);
+                        }
+
+                        self.session_state.conversation.clear();
+                        self.session_state
+                            .conversation
+                            .restore_messages(cleaned_messages);
+
+                        let error_message = if !image_refs.is_empty() {
+                            "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
+                        } else {
+                            "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
+                        }.to_string();
+
+                        self.session_state
+                            .conversation
+                            .add_user_message(error_message);
+                        let new_request = self.build_initial_request();
+
+                        println!("{}", "Retrying request without images...".dimmed());
+                        println!();
+
+                        match runtime
+                            .block_on(async { client_for_retry.create_message(new_request).await })
+                        {
+                            Ok(resp) => resp,
+                            Err(retry_err) => {
+                                // Restore original conversation on retry failure
+                                self.session_state.conversation.clear();
+                                self.session_state
+                                    .conversation
+                                    .restore_messages(conversation_backup);
+                                // Add error context instead of removing user message
+                                self.session_state
+                                    .conversation
+                                    .add_assistant_with_blocks(vec![
+                                        crate::api::MessageContentBlock::Text {
+                                            text: format!(
+                                                "[Image loading failed and retry also failed: {}. \
+                                             Your message is preserved above.]",
+                                                retry_err
+                                            ),
+                                            cache_control: None,
+                                        },
+                                    ]);
+                                return Err(retry_err);
+                            }
+                        }
+                    } else {
+                        // Add error context so the AI knows what happened on next turn
+                        self.session_state
+                            .conversation
+                            .add_assistant_with_blocks(vec![
+                                crate::api::MessageContentBlock::Text {
+                                    text: format!(
+                                        "[API error: {}. I was unable to process your request.]",
+                                        msg
+                                    ),
+                                    cache_control: None,
+                                },
+                            ]);
+                        return Err(e);
+                    }
+                } else {
+                    // Add error context so the AI knows what happened on next turn
+                    self.session_state
+                        .conversation
+                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
+                            text: format!(
+                                "[System error: {}. I was unable to process your request.]",
+                                e
+                            ),
+                            cache_control: None,
+                        }]);
+                    return Err(e);
+                }
+            }
+        };
+
+        self.session_state.add_usage(&response.usage);
+
+        let mut handler = ResponseHandler::new(
+            self.client.clone(),
+            self.tool_executor.clone(),
+            self.session_state.conversation.clone(),
+            self.model_config.model.clone(),
+            self.model_config.max_tokens,
+            self.model_config.reasoning_effort,
+            self.available_tools.clone(),
+            use_streaming,
+            Arc::clone(&self.interrupt_flag),
+            Arc::clone(&self.steer_buffer),
+            self.session_state.session_id.clone(),
+        );
+
+        let result = runtime.block_on(handler.handle_response(
+            response.content,
+            &mut self.session_state.display_messages,
+            &mut self.session_state.total_input_tokens,
+            &mut self.session_state.total_output_tokens,
+            &mut self.session_state.total_cache_read_tokens,
+            &mut self.session_state.total_cache_creation_tokens,
+            &mut self.session_state.peak_single_turn_input_tokens,
+        ));
+
+        // Always preserve conversation state so the AI retains context on retry
+        self.session_state.conversation = handler.conversation().clone();
+
+        match result {
+            Ok(_) => {
+                println!(
+                    "{}",
+                    UI::format_turn_finished(turn_start.elapsed()).dimmed()
+                );
+                Ok(())
+            }
+            Err(SofosError::Interrupted) => Ok(()),
+            Err(e) => {
+                // Add error context so the AI knows what happened on next turn.
+                // Check last message role to maintain proper alternation —
+                // the conversation could end on either role depending on where
+                // the error occurred (e.g. after assistant reasoning vs after tool results).
+                let error_text = format!(
+                    "[System error during processing: {}. Previous actions are preserved above.]",
+                    e
+                );
+                let last_role = self
+                    .session_state
+                    .conversation
+                    .messages()
+                    .last()
+                    .map(|m| m.role.as_str());
+                if last_role == Some("assistant") {
+                    // Last message is assistant — add user error context
+                    self.session_state.conversation.add_user_message(error_text);
+                } else {
+                    // Last message is user (tool results) or empty — add assistant error context
+                    self.session_state
+                        .conversation
+                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
+                            text: error_text,
+                            cache_control: None,
+                        }]);
+                }
+                Err(e)
+            }
+        }
+    }
+}
