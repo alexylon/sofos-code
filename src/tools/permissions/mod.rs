@@ -1,123 +1,19 @@
+pub mod command_parse;
+pub mod pattern;
+pub mod settings;
+
+pub use settings::PermissionSettings;
+
 use crate::error::{Result, SofosError};
-use crate::tools::utils::{ConfirmationType, confirm_multi_choice, is_absolute_path};
+use crate::tools::permissions::pattern::BLANKET_BASH;
+use crate::tools::utils::{ConfirmationType, confirm_multi_choice};
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
 const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
 const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
-
-/// POSIX shell control keywords that punctuate compound commands but
-/// don't introduce one of their own. Stripped from segment heads so the
-/// next non-keyword token is the base command we actually want to inspect.
-const COMPOUND_KEYWORDS: &[&str] = &[
-    "do", "done", "then", "else", "elif", "fi", "case", "esac", "{", "}", "(",
-];
-
-/// Loop / conditional headers whose tail *is* a real command —
-/// `while CMD; do ...`, `until CMD; do ...`, `if CMD; then ...`. The
-/// keyword itself is skipped, and the rest of the segment is parsed
-/// like any other command.
-const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"];
-
-/// Loop headers whose segment is a word list, *not* a command —
-/// `for VAR in WORDS`. Matching one means the segment carries no
-/// base command at all and should yield no entry.
-const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
-
-/// Bare `"Bash"` in an `allow` or `deny` list acts as a blanket rule
-/// over all bash commands. In `allow` it auto-passes everything except
-/// the built-in forbidden set (`rm`, `chmod`, `sudo`, …); in `deny` it
-/// auto-rejects everything. Deny beats allow when both lists contain
-/// the blanket entry.
-const BLANKET_BASH: &str = "Bash";
-
-/// Match POSIX-shell `KEY=value` assignment tokens: the key starts with
-/// a letter or underscore, is alphanumeric+`_` throughout, and is
-/// followed by `=`. Used by `extract_base_command` to skip leading
-/// env prefixes so `FOO=bar rm -rf /` is classified as a `rm`
-/// invocation (and therefore caught by the forbidden-command set),
-/// not as a never-heard-of `FOO=bar` command.
-fn is_env_assignment(tok: &str) -> bool {
-    let Some((key, _)) = tok.split_once('=') else {
-        return false;
-    };
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionSettings {
-    pub permissions: Permissions,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Permissions {
-    pub allow: Vec<String>,
-    pub deny: Vec<String>,
-    #[serde(default)]
-    pub ask: Vec<String>,
-}
-
-impl Default for PermissionSettings {
-    fn default() -> Self {
-        Self {
-            permissions: Permissions {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                ask: Vec::new(),
-            },
-        }
-    }
-}
-
-impl PermissionSettings {
-    /// Merge two permission settings, with other taking precedence for conflicts
-    fn merge(&mut self, other: Self) {
-        let mut seen = HashSet::new();
-
-        for entry in &other.permissions.allow {
-            seen.insert(entry.clone());
-        }
-        for entry in &other.permissions.deny {
-            seen.insert(entry.clone());
-        }
-        for entry in &other.permissions.ask {
-            seen.insert(entry.clone());
-        }
-
-        let mut merged_allow = other.permissions.allow.clone();
-        for entry in &self.permissions.allow {
-            if !seen.contains(entry) {
-                merged_allow.push(entry.clone());
-            }
-        }
-
-        let mut merged_deny = other.permissions.deny.clone();
-        for entry in &self.permissions.deny {
-            if !seen.contains(entry) {
-                merged_deny.push(entry.clone());
-            }
-        }
-
-        let mut merged_ask = other.permissions.ask.clone();
-        for entry in &self.permissions.ask {
-            if !seen.contains(entry) {
-                merged_ask.push(entry.clone());
-            }
-        }
-
-        self.permissions.allow = merged_allow;
-        self.permissions.deny = merged_deny;
-        self.permissions.ask = merged_ask;
-    }
-}
 
 pub struct PermissionManager {
     settings: PermissionSettings,
@@ -439,28 +335,6 @@ impl PermissionManager {
         None
     }
 
-    /// Extract path patterns from Bash() entries.
-    /// Only treats entries as path grants if the content is absolute or
-    /// a tilde path AND contains a glob char. Plain commands like
-    /// Bash(npm test) are not path patterns. `is_absolute_path` handles
-    /// Unix (`/tmp/**`), Windows drive-letter (`C:\Users\**`), and UNC
-    /// paths on every platform — using `Path::is_absolute` alone would
-    /// mis-classify a Unix-style `Bash(/var/log/**)` config entry as a
-    /// command pattern when the binary runs on Windows.
-    fn extract_bash_path_pattern(entry: &str) -> Option<&str> {
-        let trimmed = entry.trim();
-        if let Some(rest) = trimmed.strip_prefix("Bash(") {
-            if let Some(end) = rest.rfind(')') {
-                let content = &rest[..end];
-                let looks_like_path = content.starts_with('~') || is_absolute_path(content);
-                if looks_like_path && content.contains('*') {
-                    return Some(content);
-                }
-            }
-        }
-        None
-    }
-
     fn save_settings(&self) -> Result<()> {
         if let Some(parent) = self.local_settings_path.parent() {
             fs::create_dir_all(parent).map_err(|e| {
@@ -476,42 +350,6 @@ impl PermissionManager {
         })?;
 
         Ok(())
-    }
-
-    fn normalize_command(command: &str) -> String {
-        format!("Bash({})", command.trim())
-    }
-
-    fn normalize_read(path: &str) -> String {
-        format!("Read({})", path.trim())
-    }
-
-    fn normalize_write(path: &str) -> String {
-        format!("Write({})", path.trim())
-    }
-
-    fn extract_base_command(command: &str) -> &str {
-        let command = command.trim();
-
-        let without_prefix = if let Some(stripped) = command.strip_prefix("Bash(") {
-            if let Some(end) = stripped.find(')') {
-                &stripped[..end]
-            } else {
-                stripped
-            }
-        } else {
-            command
-        };
-
-        // Skip any leading env-var assignments: `FOO=bar rm -rf /`
-        // runs `rm`, not `FOO=bar`. Without this, a shell prefix would
-        // bypass both the forbidden-command set and any remembered
-        // allow/deny decisions keyed to the real command name.
-        without_prefix
-            .split_whitespace()
-            .find(|tok| !is_env_assignment(tok))
-            .or_else(|| without_prefix.split_whitespace().next())
-            .unwrap_or(without_prefix)
     }
 
     /// Look up the user's home directory in a way that works on both
@@ -877,107 +715,6 @@ impl PermissionManager {
         Ok((confirmed, remember))
     }
 
-    /// Quote-aware split of a compound command on shell separators
-    /// (`;`, `\n`, `|`, `||`, `&&`). Lone `&` is preserved so that
-    /// `2>&1` stays glued to its preceding token. Quoted regions are
-    /// kept whole so `echo 'a; b'` doesn't split mid-string.
-    ///
-    /// Does NOT descend into `$(...)` command substitution or backtick
-    /// substitution — a `rm` smuggled inside `echo $(rm bad)` is
-    /// invisible to this splitter (and to the rest of the permission
-    /// system, both before and after this change). Closing that hole
-    /// would require yielding the inner sub-commands as separate
-    /// segments and is intentionally out of scope here.
-    fn split_compound_command(command: &str) -> Vec<String> {
-        let mut segments: Vec<String> = Vec::new();
-        let mut current = String::new();
-        let mut chars = command.chars().peekable();
-        let mut quote: Option<char> = None;
-
-        while let Some(c) = chars.next() {
-            if let Some(q) = quote {
-                current.push(c);
-                if c == q {
-                    quote = None;
-                }
-                continue;
-            }
-            match c {
-                '\'' | '"' => {
-                    quote = Some(c);
-                    current.push(c);
-                }
-                ';' | '\n' => Self::push_segment(&mut segments, &mut current),
-                '|' => {
-                    if chars.peek() == Some(&'|') {
-                        chars.next();
-                    }
-                    Self::push_segment(&mut segments, &mut current);
-                }
-                '&' if chars.peek() == Some(&'&') => {
-                    chars.next();
-                    Self::push_segment(&mut segments, &mut current);
-                }
-                _ => current.push(c),
-            }
-        }
-        Self::push_segment(&mut segments, &mut current);
-        segments
-    }
-
-    fn push_segment(segments: &mut Vec<String>, current: &mut String) {
-        let trimmed = current.trim();
-        if !trimmed.is_empty() {
-            segments.push(trimmed.to_string());
-        }
-        current.clear();
-    }
-
-    /// Strip leading shell-control prefixes from a segment and return
-    /// the next "real" command (base + args). Returns `None` for
-    /// segments that carry no command of their own — `for VAR in WORDS`
-    /// loop headers, bare `done` / `fi` / `esac` closers, or shell
-    /// comments (`# anything`).
-    fn extract_segment_base_with_args(segment: &str) -> Option<(&str, Vec<&str>)> {
-        let mut tokens = segment.split_whitespace().peekable();
-        while let Some(&tok) = tokens.peek() {
-            if COMPOUND_HEADERS_NO_BODY.contains(&tok) {
-                return None;
-            }
-            if is_env_assignment(tok)
-                || COMPOUND_KEYWORDS.contains(&tok)
-                || COMPOUND_HEADERS_WITH_BODY.contains(&tok)
-            {
-                tokens.next();
-                continue;
-            }
-            break;
-        }
-        let base = tokens.next()?;
-        // A bare `#` (or token starting with `#`) at the head of a
-        // segment marks the rest as a comment — `ls; # tail msg`
-        // splits to `["ls", "# tail msg"]`, and the second segment is
-        // entirely commentary, not a command. Treating it as a base
-        // would force a needless Ask prompt for what the shell ignores.
-        if base.starts_with('#') {
-            return None;
-        }
-        let args: Vec<&str> = tokens.collect();
-        Some((base, args))
-    }
-
-    /// Base-command names of every sub-command in a compound shell.
-    /// Empty for a single command with no separators (callers fall back
-    /// to `extract_base_command` in that case).
-    fn enumerate_compound_bases(command: &str) -> Vec<String> {
-        Self::split_compound_command(command)
-            .iter()
-            .filter_map(|seg| {
-                Self::extract_segment_base_with_args(seg).map(|(base, _)| base.to_string())
-            })
-            .collect()
-    }
-
     /// Heuristic: does `command` carry line-number / line-range args that
     /// make the exact string un-rememberable? Walks every sub-command of
     /// a compound shell looking for:
@@ -1149,6 +886,7 @@ pub enum CommandPermission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::permissions::command_parse::is_env_assignment;
     use std::sync::Mutex;
     use tempfile::TempDir;
 
