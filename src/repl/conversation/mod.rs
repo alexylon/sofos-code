@@ -537,6 +537,26 @@ mod tests {
     }
 
     #[test]
+    fn test_compaction_split_point_preserve_zero_does_not_panic() {
+        // A user-set `compaction_preserve_recent = 0` used to seed
+        // `split = messages.len()` and then index `messages[split]`
+        // on the role-boundary walk, panicking out-of-bounds. With
+        // the clamp in place the call must return a valid index.
+        let mut history = ConversationHistory::new();
+        history.config.compaction_preserve_recent = 0;
+
+        for i in 0..10 {
+            history.messages.push(Message::user(format!("msg {}", i)));
+        }
+
+        let split = history.compaction_split_point();
+        assert!(
+            split < history.messages.len(),
+            "split point must remain in range when preserve_recent is 0"
+        );
+    }
+
+    #[test]
     fn test_truncate_tool_results() {
         let mut history = ConversationHistory::new();
         history.config.tool_result_truncate_threshold = 100;

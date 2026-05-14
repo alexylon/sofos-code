@@ -93,5 +93,4 @@ impl ConversationHistory {
         self.messages = messages;
         self.trim_if_needed();
     }
-
 }

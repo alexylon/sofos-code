@@ -133,7 +133,15 @@ impl Repl {
             });
 
         if self.session_state.conversation.needs_compaction() {
-            let _ = self.compact_conversation(false);
+            // Inner failure paths already surface a warning through
+            // `UI::print_warning` and fall back to `fallback_trim`,
+            // so the user is never left without compaction. The
+            // outer `Err` arm is only reachable from future failure
+            // modes added to the helper, but log it through tracing
+            // rather than swallowing it silently.
+            if let Err(e) = self.compact_conversation(false) {
+                tracing::warn!(error = %e, "auto-compaction returned an error");
+            }
         }
 
         let initial_request = self.build_initial_request();
@@ -178,12 +186,8 @@ impl Repl {
                         || msg.contains("verify the URL");
 
                     let current_has_images = !image_refs.is_empty();
-                    let conversation_has_images = self
-                        .session_state
-                        .conversation
-                        .messages()
-                        .iter()
-                        .any(|m| {
+                    let conversation_has_images =
+                        self.session_state.conversation.messages().iter().any(|m| {
                             use crate::api::{MessageContent, MessageContentBlock};
                             if let MessageContent::Blocks { content } = &m.content {
                                 content
@@ -212,9 +216,7 @@ impl Repl {
                                 MessageContent::Blocks { content } => {
                                     let filtered: Vec<MessageContentBlock> = content
                                         .iter()
-                                        .filter(|b| {
-                                            !matches!(b, MessageContentBlock::Image { .. })
-                                        })
+                                        .filter(|b| !matches!(b, MessageContentBlock::Image { .. }))
                                         .cloned()
                                         .collect();
                                     if filtered.is_empty() {

@@ -37,7 +37,14 @@ impl ConversationHistory {
             return 0;
         }
 
-        let mut split = self.messages.len().saturating_sub(preserve);
+        // Clamp to `len - 1` so the indexing in the role-boundary walk
+        // below is in-range even when the configured preserve count is
+        // zero (default is 20, but a user-set 0 used to panic here).
+        let mut split = self
+            .messages
+            .len()
+            .saturating_sub(preserve)
+            .min(self.messages.len() - 1);
 
         // Walk backward to land on a user-role message boundary
         while split > 0 && self.messages[split].role != "user" {

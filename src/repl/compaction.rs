@@ -73,9 +73,12 @@ impl Repl {
             thinking: None,
             output_config: None,
             reasoning: None,
-            // Reuse the session id so the summarization call shares the
-            // OpenAI prompt-cache shard with the rest of the session.
-            prompt_cache_key: Some(self.session_state.session_id.clone()),
+            // Use a distinct cache key for the summary call. The
+            // summarization system prompt and serialized-history user
+            // turn share nothing with regular turns, so reusing the
+            // session id would just thrash the OpenAI prompt-cache
+            // shard between the two prefixes.
+            prompt_cache_key: Some(format!("{}-summary", self.session_state.session_id)),
             // The summarization call is itself a one-shot request, not
             // a long-running conversation, so server-side compaction
             // would be a no-op even on supported models.
@@ -105,6 +108,11 @@ impl Repl {
 
         match response_result {
             Ok(response) => {
+                // Bill the summary call before the length gate; the
+                // tokens are spent regardless of whether the summary
+                // ends up being used or discarded by the fallback.
+                self.session_state.add_usage(&response.usage);
+
                 let summary_text: String = response
                     .content
                     .iter()
@@ -130,19 +138,22 @@ impl Repl {
                     .conversation
                     .replace_with_summary(summary_text, split_point);
 
-                self.session_state.add_usage(&response.usage);
-
                 let tokens_after = self.session_state.conversation.estimate_total_tokens();
+                let saved_percent = if tokens_before > 0 {
+                    // The summary can be longer than what it replaced
+                    // on short histories. Saturate so the "saved" line
+                    // reports 0% instead of underflowing the subtraction.
+                    let shrunk = tokens_before.saturating_sub(tokens_after);
+                    shrunk * 100 / tokens_before
+                } else {
+                    0
+                };
                 println!(
                     "{} {} -> {} tokens (saved {}%)",
                     "Compacted:".bright_green(),
                     tokens_before,
                     tokens_after,
-                    if tokens_before > 0 {
-                        100 - (tokens_after * 100 / tokens_before)
-                    } else {
-                        0
-                    }
+                    saved_percent
                 );
 
                 Ok(true)
