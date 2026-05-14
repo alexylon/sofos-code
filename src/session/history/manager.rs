@@ -1,0 +1,197 @@
+//! High-level [`HistoryManager`] facade and the on-disk layout it
+//! enforces. Owns the per-workspace `.sofos/sessions/` directory plus
+//! the save-lock that serialises concurrent writers, and is the public
+//! entry point every caller uses to persist or reload a session.
+
+use crate::api::{Message, SystemPrompt};
+use crate::error::{Result, SofosError};
+use crate::session::history::atomic_write;
+use crate::session::history::index::{INDEX_FILE, SessionIndex};
+use crate::session::history::model::{DisplayMessage, Session, SessionTokenCounters};
+use std::fs::{self, File, OpenOptions};
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub(super) const SOFOS_DIR: &str = ".sofos";
+pub(super) const SESSIONS_DIR: &str = "sessions";
+/// Per-workspace lock file the session subsystem grabs exclusively for
+/// the duration of every `save_session` / `delete_session` call.
+/// Serialises the read-modify-write of `index.json` across concurrent
+/// sofos processes working in the same directory — without it, two
+/// instances racing each other can each read the stale index, append
+/// their own entry, and then clobber the other's update with their
+/// own `atomic_write`, silently losing session metadata.
+const SAVE_LOCK_FILE: &str = ".save.lock";
+
+pub struct HistoryManager {
+    pub(super) workspace: PathBuf,
+}
+
+impl HistoryManager {
+    pub fn new(workspace: PathBuf) -> Result<Self> {
+        let manager = Self { workspace };
+        manager.ensure_directories()?;
+        Ok(manager)
+    }
+
+    fn ensure_directories(&self) -> Result<()> {
+        let sofos_dir = self.workspace.join(SOFOS_DIR);
+        let sessions_dir = sofos_dir.join(SESSIONS_DIR);
+
+        fs::create_dir_all(&sessions_dir).map_err(|e| {
+            SofosError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to create .sofos directories: {}", e),
+            ))
+        })?;
+
+        let index_path = sessions_dir.join(INDEX_FILE);
+        if !index_path.exists() {
+            let index = SessionIndex {
+                sessions: Vec::new(),
+            };
+            let content = serde_json::to_string_pretty(&index)?;
+            atomic_write(&index_path, &content)?;
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn sessions_dir(&self) -> PathBuf {
+        self.workspace.join(SOFOS_DIR).join(SESSIONS_DIR)
+    }
+
+    pub(super) fn index_path(&self) -> PathBuf {
+        self.sessions_dir().join(INDEX_FILE)
+    }
+
+    fn save_lock_path(&self) -> PathBuf {
+        self.sessions_dir().join(SAVE_LOCK_FILE)
+    }
+
+    /// Acquire an exclusive OS-level lock on the save-lock file for
+    /// the lifetime of the returned `File`; the OS releases the lock
+    /// when the handle drops, including on crash.
+    fn acquire_save_lock(&self) -> Result<File> {
+        let path = self.save_lock_path();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|e| {
+                SofosError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to open session save-lock {:?}: {}", path, e),
+                ))
+            })?;
+        file.lock().map_err(|e| {
+            SofosError::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to acquire session save-lock: {}", e),
+            ))
+        })?;
+        Ok(file)
+    }
+
+    pub fn generate_session_id() -> String {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_millis();
+        format!("session_{}", timestamp)
+    }
+
+    pub fn save_session(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        display_messages: &[DisplayMessage],
+        system_prompt: &[SystemPrompt],
+        token_counters: SessionTokenCounters,
+    ) -> Result<()> {
+        let _lock = self.acquire_save_lock()?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::ZERO)
+            .as_secs();
+
+        let session_path = self.sessions_dir().join(format!("{}.json", session_id));
+
+        // Preserve `created_at` from any prior save. If the old file is
+        // unreadable or no longer parses (user edited it, disk
+        // corruption, schema change), fall back to `now` rather than
+        // propagating the error — losing the in-memory conversation to
+        // save a `created_at` stamp would be an awful trade.
+        let created_at = match fs::read_to_string(&session_path) {
+            Ok(raw) => match serde_json::from_str::<Session>(&raw) {
+                Ok(existing) => existing.created_at,
+                Err(e) => {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        error = %e,
+                        "failed to parse prior session save; resetting created_at to now"
+                    );
+                    now
+                }
+            },
+            Err(_) => now,
+        };
+        let session = Session {
+            id: session_id.to_string(),
+            api_messages: messages.to_vec(),
+            display_messages: display_messages.to_vec(),
+            system_prompt: system_prompt.to_vec(),
+            created_at,
+            updated_at: now,
+            token_counters,
+        };
+
+        let content = serde_json::to_string_pretty(&session)?;
+        atomic_write(&session_path, &content)?;
+
+        self.update_index(&session)?;
+
+        Ok(())
+    }
+
+    pub fn load_session(&self, session_id: &str) -> Result<Session> {
+        let session_path = self.sessions_dir().join(format!("{}.json", session_id));
+
+        if !session_path.exists() {
+            return Err(SofosError::Config(format!(
+                "Session '{}' not found",
+                session_id
+            )));
+        }
+
+        let content = fs::read_to_string(session_path)?;
+        let session: Session = serde_json::from_str(&content)?;
+
+        Ok(session)
+    }
+
+    #[allow(dead_code)]
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let _lock = self.acquire_save_lock()?;
+
+        let session_path = self.sessions_dir().join(format!("{}.json", session_id));
+
+        if session_path.exists() {
+            fs::remove_file(session_path)?;
+        }
+
+        let index_path = self.index_path();
+        if index_path.exists() {
+            let mut index: SessionIndex = serde_json::from_str(&fs::read_to_string(&index_path)?)?;
+            index.sessions.retain(|s| s.id != session_id);
+
+            let content = serde_json::to_string_pretty(&index)?;
+            atomic_write(&index_path, &content)?;
+        }
+
+        Ok(())
+    }
+}
