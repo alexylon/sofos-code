@@ -6,6 +6,7 @@ All notable changes to Sofos are documented in this file.
 
 ### Fixed
 
+- **Ctrl+Enter now inserts a newline in the TUI input box, matching Shift+Enter and Alt+Enter.** Earlier the keystroke was silently swallowed by the textarea router, even though the placeholder text and the dispatch comments already documented it as a fallback newline binding for terminals that do not deliver Shift+Enter distinctly.
 - **Setting `compaction_preserve_recent` to `0` no longer crashes the next compaction.** The split-point lookup used to index one past the end of the message list and panic. It now clamps to the last valid index, so a zero-preserve configuration just compacts everything older than the very last message.
 - **The summary call's token usage is now counted toward the session total.** When auto-compaction got a usable response from the model but the summary was too short to apply (fell back to plain trimming), sofos used to discard the response without billing it; the spend now lands on the session counters in every Ok path.
 - **The auto-compaction summary call no longer fights the prompt cache.** The one-shot summary used to share the OpenAI prompt-cache shard with the regular session, so the two distinct prefixes evicted each other on every compaction. The summary call now uses a `"<session>-summary"` shard of its own.

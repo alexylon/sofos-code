@@ -226,8 +226,11 @@ impl App {
     /// Route a key event into the textarea (idle) or picker (overlay).
     pub fn handle_textarea_input(&mut self, key: KeyEvent) {
         let input = key_to_input(key);
-        // Ignore Enter here — the caller handles submission.
-        if matches!(input.key, Key::Enter) && !input.shift && !input.alt {
+        // Ignore plain Enter here — the caller handles submission.
+        // Modified Enter (Shift/Alt/Ctrl) falls through so the
+        // textarea inserts a newline, matching the fallback bindings
+        // documented at the input dispatch site.
+        if matches!(input.key, Key::Enter) && !input.shift && !input.alt && !input.ctrl {
             return;
         }
         self.textarea.input(input);
@@ -350,6 +353,31 @@ mod tests {
         a.textarea.insert_str("hello");
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         a.handle_textarea_input(shift_enter);
+        assert_eq!(a.textarea.lines(), &["hello", ""]);
+    }
+
+    #[test]
+    fn ctrl_enter_inserts_newline_through_textarea_handler() {
+        // Ctrl+Enter is documented at the input dispatch site as a
+        // fallback newline binding for terminals that don't deliver
+        // Shift+Enter distinctly. The early-return used to drop the
+        // event because only Shift and Alt were checked.
+        let mut a = app();
+        a.textarea.insert_str("hello");
+        let ctrl_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
+        a.handle_textarea_input(ctrl_enter);
+        assert_eq!(a.textarea.lines(), &["hello", ""]);
+    }
+
+    #[test]
+    fn alt_enter_inserts_newline_through_textarea_handler() {
+        // Mirror of the Shift+Enter test; pinned so a future tweak
+        // to the early-return guard does not silently regress the
+        // documented Alt+Enter fallback.
+        let mut a = app();
+        a.textarea.insert_str("hello");
+        let alt_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        a.handle_textarea_input(alt_enter);
         assert_eq!(a.textarea.lines(), &["hello", ""]);
     }
 
