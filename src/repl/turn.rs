@@ -169,31 +169,30 @@ impl Repl {
         let response = match response_result {
             Ok(resp) => resp,
             Err(e) => {
-                // Check if this is an image-related API error
+                // Try to recover from an image-loading 400 by stripping every
+                // image block from the conversation and retrying once.
                 if let SofosError::Api(ref msg) = e {
                     let is_400_error = msg.contains("400");
                     let is_image_error = msg.contains("Unable to download")
                         || msg.contains("invalid_request_error")
                         || msg.contains("verify the URL");
 
-                    // Check if current message OR conversation has images
                     let current_has_images = !image_refs.is_empty();
                     let conversation_has_images = self
                         .session_state
                         .conversation
                         .messages()
                         .iter()
-                        .any(|msg| {
+                        .any(|m| {
                             use crate::api::{MessageContent, MessageContentBlock};
-                            if let MessageContent::Blocks { content } = &msg.content {
+                            if let MessageContent::Blocks { content } = &m.content {
                                 content
                                     .iter()
-                                    .any(|block| matches!(block, MessageContentBlock::Image { .. }))
+                                    .any(|b| matches!(b, MessageContentBlock::Image { .. }))
                             } else {
                                 false
                             }
                         });
-
                     let has_images = current_has_images || conversation_has_images;
 
                     if is_400_error && is_image_error && has_images {
@@ -202,42 +201,33 @@ impl Repl {
                             "⚠️  Image loading error:".bright_yellow().bold()
                         );
 
-                        // Backup conversation before mutating, in case the retry also fails
-                        let conversation_backup =
-                            self.session_state.conversation.messages().to_vec();
-
-                        self.session_state.conversation.remove_last_message();
-
-                        // Remove ALL images from conversation
-                        let messages = self.session_state.conversation.messages();
-                        let mut cleaned_messages = Vec::new();
-
-                        for msg in messages {
+                        // Strip every Image block in place. Surrounding text
+                        // survives so the user's actual prompt isn't lost on
+                        // the retry. A message that was image-only gets
+                        // dropped entirely.
+                        let mut cleaned_messages: Vec<crate::api::Message> = Vec::new();
+                        for m in self.session_state.conversation.messages() {
                             use crate::api::{Message, MessageContent, MessageContentBlock};
-                            let cleaned_msg = match &msg.content {
+                            let cleaned = match &m.content {
                                 MessageContent::Blocks { content } => {
-                                    let filtered_blocks: Vec<MessageContentBlock> = content
+                                    let filtered: Vec<MessageContentBlock> = content
                                         .iter()
-                                        .filter(|block| {
-                                            !matches!(block, MessageContentBlock::Image { .. })
+                                        .filter(|b| {
+                                            !matches!(b, MessageContentBlock::Image { .. })
                                         })
                                         .cloned()
                                         .collect();
-
-                                    if filtered_blocks.is_empty() {
+                                    if filtered.is_empty() {
                                         continue;
-                                    } else {
-                                        Message {
-                                            role: msg.role.clone(),
-                                            content: MessageContent::Blocks {
-                                                content: filtered_blocks,
-                                            },
-                                        }
+                                    }
+                                    Message {
+                                        role: m.role.clone(),
+                                        content: MessageContent::Blocks { content: filtered },
                                     }
                                 }
-                                _ => msg.clone(),
+                                _ => m.clone(),
                             };
-                            cleaned_messages.push(cleaned_msg);
+                            cleaned_messages.push(cleaned);
                         }
 
                         self.session_state.conversation.clear();
@@ -245,72 +235,109 @@ impl Repl {
                             .conversation
                             .restore_messages(cleaned_messages);
 
-                        let error_message = if !image_refs.is_empty() {
+                        let system_note = if !image_refs.is_empty() {
                             "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
                         } else {
                             "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
-                        }.to_string();
-
-                        self.session_state
+                        };
+                        if !self
+                            .session_state
                             .conversation
-                            .add_user_message(error_message);
+                            .append_text_to_last_user_blocks(system_note.to_string())
+                        {
+                            self.session_state
+                                .conversation
+                                .add_user_message(system_note.to_string());
+                        }
+
+                        // Backup the cleaned state so a retry failure
+                        // restores the image-free conversation rather than
+                        // the image-laden one that caused the 400.
+                        let conversation_backup =
+                            self.session_state.conversation.messages().to_vec();
+
                         let new_request = self.build_initial_request();
 
                         println!("{}", "Retrying request without images...".dimmed());
                         println!();
 
-                        match runtime
-                            .block_on(async { client_for_retry.create_message(new_request).await })
-                        {
+                        // Stream the retry with the same interrupt support
+                        // as the initial request so ESC works during the
+                        // second attempt.
+                        let printer = Arc::new(crate::ui::StreamPrinter::new());
+                        let p_text = printer.clone();
+                        let p_think = printer.clone();
+                        let interrupt = Arc::clone(&self.interrupt_flag);
+                        let client = client_for_retry.clone();
+                        let req = new_request;
+                        let retry_result = runtime.block_on(async move {
+                            client
+                                .create_message_streaming(
+                                    req,
+                                    move |t| p_text.on_text_delta(t),
+                                    move |t| p_think.on_thinking_delta(t),
+                                    interrupt,
+                                )
+                                .await
+                        });
+                        printer.finish();
+
+                        match retry_result {
                             Ok(resp) => resp,
                             Err(retry_err) => {
-                                // Restore original conversation on retry failure
                                 self.session_state.conversation.clear();
                                 self.session_state
                                     .conversation
                                     .restore_messages(conversation_backup);
-                                // Add error context instead of removing user message
-                                self.session_state
+                                let failure_note = format!(
+                                    "[SYSTEM ERROR: Image loading failed and the retry also failed: {}.]",
+                                    retry_err
+                                );
+                                if !self
+                                    .session_state
                                     .conversation
-                                    .add_assistant_with_blocks(vec![
-                                        crate::api::MessageContentBlock::Text {
-                                            text: format!(
-                                                "[Image loading failed and retry also failed: {}. \
-                                             Your message is preserved above.]",
-                                                retry_err
-                                            ),
-                                            cache_control: None,
-                                        },
-                                    ]);
+                                    .append_text_to_last_user_blocks(failure_note.clone())
+                                {
+                                    self.session_state
+                                        .conversation
+                                        .add_user_message(failure_note);
+                                }
                                 return Err(retry_err);
                             }
                         }
                     } else {
-                        // Add error context so the AI knows what happened on next turn
-                        self.session_state
+                        // Non-image API error. Append a system note to the
+                        // user turn that triggered the failure rather than
+                        // fabricating an assistant turn (which would make
+                        // the model think it wrote the error string on the
+                        // next turn).
+                        let note = format!(
+                            "[SYSTEM ERROR: API error: {}. The request did not produce a response.]",
+                            msg
+                        );
+                        if !self
+                            .session_state
                             .conversation
-                            .add_assistant_with_blocks(vec![
-                                crate::api::MessageContentBlock::Text {
-                                    text: format!(
-                                        "[API error: {}. I was unable to process your request.]",
-                                        msg
-                                    ),
-                                    cache_control: None,
-                                },
-                            ]);
+                            .append_text_to_last_user_blocks(note.clone())
+                        {
+                            self.session_state.conversation.add_user_message(note);
+                        }
                         return Err(e);
                     }
                 } else {
-                    // Add error context so the AI knows what happened on next turn
-                    self.session_state
+                    // Non-API error (transport, IO, ...). Same approach as
+                    // the non-image API branch.
+                    let note = format!(
+                        "[SYSTEM ERROR: {}. The request did not produce a response.]",
+                        e
+                    );
+                    if !self
+                        .session_state
                         .conversation
-                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
-                            text: format!(
-                                "[System error: {}. I was unable to process your request.]",
-                                e
-                            ),
-                            cache_control: None,
-                        }]);
+                        .append_text_to_last_user_blocks(note.clone())
+                    {
+                        self.session_state.conversation.add_user_message(note);
+                    }
                     return Err(e);
                 }
             }

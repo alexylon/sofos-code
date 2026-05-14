@@ -1091,31 +1091,69 @@ mod tests {
     }
 
     #[test]
-    fn cache_anchor_preserved_when_remove_last_message_pops_rolling() {
-        // Pop the rolling and confirm the anchor stays put. We keep
-        // the history wide enough that the new rolling is still
-        // strictly after the anchor, so maintain doesn't clear it
-        // on the idx < rolling_idx check.
+    fn append_text_to_last_user_blocks_extends_user_blocks_turn() {
+        // The image-retry and API-error paths in `turn.rs` append a
+        // `[SYSTEM ERROR: ...]` text block to whatever user turn
+        // triggered the failure. The user message produced by
+        // `add_user_with_blocks` is the variant we care about most
+        // (tool-results and image-bearing turns both land here), so
+        // pin its append behaviour.
         let mut history = ConversationHistory::new();
-        for _ in 0..14 {
-            history.messages.push(blocks_msg_with("user", 1));
+        history.add_user_with_blocks(vec![MessageContentBlock::Text {
+            text: "query".to_string(),
+            cache_control: None,
+        }]);
+        let appended = history.append_text_to_last_user_blocks("note".to_string());
+        assert!(appended, "Blocks tail should accept an append");
+        let last = history.messages().last().unwrap();
+        if let crate::api::MessageContent::Blocks { content } = &last.content {
+            assert_eq!(content.len(), 2);
+            match &content[1] {
+                MessageContentBlock::Text { text, .. } => assert_eq!(text, "note"),
+                other => panic!("expected appended Text block, got {:?}", other),
+            }
+        } else {
+            panic!("expected Blocks content");
         }
-        history.maintain_cache_anchor();
-        let anchor_before = history
-            .cache_anchor_message_idx()
-            .expect("14 single-block messages cross the threshold");
-        assert!(
-            anchor_before < history.messages.len() - 2,
-            "test relies on anchor being < rolling - 1 so popping the \
-             rolling doesn't push the anchor through the maintain bound"
-        );
+    }
 
-        history.remove_last_message();
+    #[test]
+    fn append_text_to_last_user_blocks_extends_user_text_turn() {
+        // The non-image API-error path appends to a plain-text user
+        // turn (the most common case for `add_user_message`). Both
+        // strings end up in a single `Text` value separated by a
+        // blank line so the system note reads as its own paragraph.
+        let mut history = ConversationHistory::new();
+        history.add_user_message("query".to_string());
+        let appended = history.append_text_to_last_user_blocks("note".to_string());
+        assert!(appended, "Text tail should accept an append");
+        let last = history.messages().last().unwrap();
+        if let crate::api::MessageContent::Text { content } = &last.content {
+            assert_eq!(content, "query\n\nnote");
+        } else {
+            panic!("expected Text content");
+        }
+    }
 
-        assert_eq!(
-            history.cache_anchor_message_idx(),
-            Some(anchor_before),
-            "popping the rolling alone leaves the anchored prefix unchanged"
-        );
+    #[test]
+    fn append_text_to_last_user_blocks_refuses_assistant_tail() {
+        // Callers fall back to `add_user_message` when the helper
+        // returns false; this test pins that the helper does refuse
+        // an assistant tail rather than corrupting the role.
+        let mut history = ConversationHistory::new();
+        history.add_user_message("query".to_string());
+        history.add_assistant_with_blocks(vec![MessageContentBlock::Text {
+            text: "reply".to_string(),
+            cache_control: None,
+        }]);
+        let appended = history.append_text_to_last_user_blocks("note".to_string());
+        assert!(!appended, "assistant tail must not be extended");
+    }
+
+    #[test]
+    fn append_text_to_last_user_blocks_refuses_empty_history() {
+        let mut history = ConversationHistory::new();
+        let appended = history.append_text_to_last_user_blocks("note".to_string());
+        assert!(!appended, "empty history has no tail to extend");
     }
 }

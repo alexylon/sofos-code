@@ -28,6 +28,41 @@ impl ConversationHistory {
         self.trim_if_needed();
     }
 
+    /// Append `text` to the last message if it's a user turn. Returns
+    /// `true` on success; `false` when there is no user-role tail to
+    /// extend (caller should fall back to `add_user_message`).
+    ///
+    /// Used by the API-error and image-retry paths in `turn.rs` to
+    /// attach a `[SYSTEM ERROR: ...]` note to the user turn that
+    /// triggered the failure, instead of fabricating an assistant
+    /// message (which would make the model think it wrote the note)
+    /// or appending a second user message (which OpenAI's strict
+    /// role-alternation validator rejects).
+    pub fn append_text_to_last_user_blocks(&mut self, text: String) -> bool {
+        let Some(last) = self.messages.last_mut() else {
+            return false;
+        };
+        if last.role != "user" {
+            return false;
+        }
+        match &mut last.content {
+            crate::api::MessageContent::Blocks { content } => {
+                content.push(MessageContentBlock::Text {
+                    text,
+                    cache_control: None,
+                });
+                true
+            }
+            crate::api::MessageContent::Text { content } => {
+                if !content.is_empty() {
+                    content.push_str("\n\n");
+                }
+                content.push_str(&text);
+                true
+            }
+        }
+    }
+
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
@@ -59,9 +94,4 @@ impl ConversationHistory {
         self.trim_if_needed();
     }
 
-    /// Remove the last message from the conversation (used for error recovery)
-    pub fn remove_last_message(&mut self) {
-        self.messages.pop();
-        self.maintain_cache_anchor();
-    }
 }
