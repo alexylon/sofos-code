@@ -71,4 +71,20 @@ pub struct Session {
     /// the JSON so each counter is its own key.
     #[serde(default, flatten)]
     pub token_counters: SessionTokenCounters,
+    /// Model id the session was last running on. Restored on
+    /// `--resume` so the conversation stays on the same provider
+    /// (Anthropic-only blocks like `thinking` and `compaction` would
+    /// otherwise choke an OpenAI wire layer that the user might
+    /// inadvertently switch to via `--model`). `None` in files
+    /// written before this field existed — falls back to the CLI
+    /// value in that case.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Whether the session was in safe (read-only) mode at save
+    /// time. Restored on `--resume` so the tool grant matches what
+    /// the user had configured. `None` in files written before this
+    /// field existed — falls back to the CLI value in that case.
+    /// (`bool` has no natural "unset" sentinel, hence `Option`.)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_mode: Option<bool>,
 }

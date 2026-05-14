@@ -36,6 +36,16 @@ impl ConversationHistory {
         &self.system_prompt
     }
 
+    /// Replace the system prompt wholesale (used when restoring a
+    /// saved session so the resumed conversation keeps the same
+    /// system context the assistant was answering against). The
+    /// cache anchor is invalidated because the cached prefix bytes
+    /// change with the system prompt.
+    pub fn set_system_prompt(&mut self, system_prompt: Vec<SystemPrompt>) {
+        self.system_prompt = system_prompt;
+        self.invalidate_cache_anchor();
+    }
+
     pub fn clear(&mut self) {
         self.messages.clear();
         self.invalidate_cache_anchor();

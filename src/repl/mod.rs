@@ -283,8 +283,15 @@ impl Repl {
         let symbol = if self.safe_mode { ":" } else { ">" };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
-        self.process_message(prompt, vec![])?;
-        self.save_current_session()?;
+        // Capture the turn result so we can persist the session even
+        // when the turn errored out — without this the user can't
+        // `--resume` after any failed -p invocation. Save failures are
+        // logged as warnings rather than overriding the original error.
+        let turn_result = self.process_message(prompt, vec![]);
+        if let Err(e) = self.save_current_session() {
+            tracing::warn!(error = %e, "failed to save session after non-interactive turn");
+        }
+        turn_result?;
         UI::display_session_summary(
             &self.model_config.model,
             self.session_state.total_input_tokens,

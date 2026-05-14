@@ -67,6 +67,8 @@ mod tests {
                 &[],
                 std::slice::from_ref(&system_prompt),
                 SessionTokenCounters::default(),
+                "",
+                false,
             )
             .unwrap();
 
@@ -91,6 +93,8 @@ mod tests {
                 &[],
                 std::slice::from_ref(&system_prompt),
                 SessionTokenCounters::default(),
+                "",
+                false,
             )
             .unwrap();
 
@@ -104,6 +108,8 @@ mod tests {
                 &[],
                 &[system_prompt],
                 SessionTokenCounters::default(),
+                "",
+                false,
             )
             .unwrap();
 
@@ -163,6 +169,8 @@ mod tests {
                 &[],
                 std::slice::from_ref(&system_prompt),
                 counters,
+                "",
+                false,
             )
             .unwrap();
 
@@ -219,6 +227,8 @@ mod tests {
             &[],
             std::slice::from_ref(&system_prompt),
             SessionTokenCounters::default(),
+            "",
+            false,
         );
         assert!(
             save_result.is_ok(),
@@ -268,6 +278,8 @@ mod tests {
                             &[],
                             std::slice::from_ref(&system_prompt),
                             SessionTokenCounters::default(),
+                            "",
+                            false,
                         )
                         .unwrap();
                 }
@@ -286,5 +298,88 @@ mod tests {
             writer_count,
             "all writers' ids should survive in the index: {sessions:?}"
         );
+    }
+
+    /// `model` and `safe_mode` must round-trip through save/load so the
+    /// resumed session stays on the same provider and tool grant. The
+    /// flatten on `token_counters` lives at the same JSON level, so this
+    /// test also pins that there's no name collision.
+    #[test]
+    fn model_and_safe_mode_survive_save_and_load() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let session_id = HistoryManager::generate_session_id();
+        let system_prompt = SystemPrompt::new_cached_with_ttl("sys".to_string(), None);
+
+        manager
+            .save_session(
+                &session_id,
+                &[Message::user("hi")],
+                &[],
+                std::slice::from_ref(&system_prompt),
+                SessionTokenCounters::default(),
+                "claude-opus-4-7",
+                true,
+            )
+            .unwrap();
+
+        let loaded = manager.load_session(&session_id).unwrap();
+        assert_eq!(loaded.model.as_deref(), Some("claude-opus-4-7"));
+        assert_eq!(loaded.safe_mode, Some(true));
+    }
+
+    /// Older session files written before `model` and `safe_mode` existed
+    /// must still load, with both fields defaulting to their empty values
+    /// so the in-memory state on `--resume` falls back to whatever the
+    /// CLI selected.
+    #[test]
+    fn legacy_session_without_model_or_safe_mode_loads_with_defaults() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let session_id = "session_pre_model";
+        let session_path = manager.sessions_dir().join(format!("{}.json", session_id));
+        let legacy_json = serde_json::json!({
+            "id": session_id,
+            "api_messages": [],
+            "system_prompt": [],
+            "created_at": 0,
+            "updated_at": 0,
+        });
+        fs::write(&session_path, serde_json::to_string(&legacy_json).unwrap()).unwrap();
+
+        let loaded = manager.load_session(session_id).unwrap();
+        assert!(loaded.model.is_none());
+        assert!(loaded.safe_mode.is_none());
+    }
+
+    /// `save_session` / `load_session` must refuse session ids that would
+    /// escape the sessions directory when interpolated into a path —
+    /// `Repl::load_session_by_id` is `pub` and reachable from `--resume`
+    /// with a user-controlled string. The generator only emits
+    /// `session_<timestamp>`, so this is defensive against external
+    /// callers, not the happy path.
+    #[test]
+    fn save_and_load_reject_traversing_session_ids() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let system_prompt = SystemPrompt::new_cached_with_ttl("sys".to_string(), None);
+
+        for bad in ["..", ".", "../escape", "a/b", "a\\b", ""] {
+            let save_err = manager
+                .save_session(
+                    bad,
+                    &[Message::user("x")],
+                    &[],
+                    std::slice::from_ref(&system_prompt),
+                    SessionTokenCounters::default(),
+                    "",
+                    false,
+                )
+                .err();
+            assert!(save_err.is_some(), "save_session must reject '{}'", bad);
+
+            let load_err = manager.load_session(bad).err();
+            assert!(load_err.is_some(), "load_session must reject '{}'", bad);
+        }
     }
 }

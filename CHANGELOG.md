@@ -4,6 +4,17 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--resume` now restores the model the session was saved under** *when both belong to the same provider*. Previously the resumed session ran under whatever `--model` value was on the command line, which could mix Anthropic-only content blocks (extended thinking, server-side compaction) into an OpenAI request and produce wire-format errors. If the saved model uses a different provider than the CLI value, sofos refuses to resume and asks the user to re-launch with the matching `--model` (the underlying HTTP client is provider-bound at startup, so silently swapping the model name across providers would just create a different wire mismatch).
+- **`--resume` now restores safe mode** from the saved session, so the resumed tool grant matches what the user had configured at save time.
+- **`--resume` now restores the saved system prompt.** Earlier resumes silently rebuilt the prompt from the current workspace, which could disagree with what the assistant had been answering against (different tool availability, different `AGENTS.md`).
+- **`-p`/`--prompt` invocations now save the session even when the turn errors out.** Previously a failed non-interactive turn left no on-disk session, so `--resume` couldn't bring the user back to whatever state was reached.
+
+### Security
+
+- **Session ids passed to `--resume` are validated.** Ids containing path separators (`/`, `\`), or that are exactly `.` or `..`, are rejected with a clear error instead of being interpolated into a filesystem path. The interactive picker never produces such ids; this protects callers that pass an external string.
+
 ### Removed
 
 - **`--verbose` (`-v`) CLI flag.** It parsed but never had any effect on any code path. Passing it now reports the usual unknown-argument error from clap. **Breaking change** for scripts that supplied `-v` decoratively.

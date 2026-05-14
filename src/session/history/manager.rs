@@ -103,6 +103,26 @@ impl HistoryManager {
         format!("session_{}", timestamp)
     }
 
+    /// Reject session ids that could escape the sessions directory
+    /// when interpolated into a path. The generator only produces
+    /// `session_<timestamp>` strings, so anything containing a path
+    /// separator or `..` came from an external caller (e.g.
+    /// `--resume <id>`) and must not be trusted.
+    fn validate_session_id(session_id: &str) -> Result<()> {
+        if session_id.is_empty()
+            || session_id == "."
+            || session_id == ".."
+            || session_id.contains(['/', '\\'])
+        {
+            return Err(SofosError::Config(format!(
+                "Invalid session id '{}'",
+                session_id
+            )));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn save_session(
         &self,
         session_id: &str,
@@ -110,7 +130,10 @@ impl HistoryManager {
         display_messages: &[DisplayMessage],
         system_prompt: &[SystemPrompt],
         token_counters: SessionTokenCounters,
+        model: &str,
+        safe_mode: bool,
     ) -> Result<()> {
+        Self::validate_session_id(session_id)?;
         let _lock = self.acquire_save_lock()?;
 
         let now = SystemTime::now()
@@ -147,6 +170,8 @@ impl HistoryManager {
             created_at,
             updated_at: now,
             token_counters,
+            model: Some(model.to_string()),
+            safe_mode: Some(safe_mode),
         };
 
         let content = serde_json::to_string_pretty(&session)?;
@@ -158,6 +183,7 @@ impl HistoryManager {
     }
 
     pub fn load_session(&self, session_id: &str) -> Result<Session> {
+        Self::validate_session_id(session_id)?;
         let session_path = self.sessions_dir().join(format!("{}.json", session_id));
 
         if !session_path.exists() {
@@ -175,6 +201,7 @@ impl HistoryManager {
 
     #[allow(dead_code)]
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        Self::validate_session_id(session_id)?;
         let _lock = self.acquire_save_lock()?;
 
         let session_path = self.sessions_dir().join(format!("{}.json", session_id));
