@@ -1,585 +1,36 @@
-use super::types::*;
-use super::utils;
-use crate::error::{Result, SofosError};
-use futures::stream::{Stream, StreamExt};
-use reqwest::header::{HeaderMap, HeaderValue};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+//! Anthropic Messages API client. The submodules carry the four
+//! concerns:
+//!
+//! - [`client`] — HTTP client construction, connectivity check, and
+//!   the non-streaming `create_message` path.
+//! - [`wire`] — request transformation, per-model beta-header
+//!   selection, and the public reasoning-effort helpers.
+//! - [`stream`] — the SSE parser and the streaming `create_message`
+//!   path; both feed `parse_stream` so the streaming and non-streaming
+//!   call shapes match one-to-one.
 
-const ANTHROPIC_API_BASE: &str = "https://api.anthropic.com/v1";
-/// Pinned `anthropic-version` header value. `2023-06-01` is the
-/// version the public Anthropic Messages API is documented against;
-/// bumping it changes streaming-event shapes and request fields, so
-/// any change here needs a smoke test against both streaming and
-/// non-streaming paths.
-const ANTHROPIC_API_VERSION: &str = "2023-06-01";
-const BETA_HEADER_NAME: &str = "anthropic-beta";
+pub mod client;
+pub mod stream;
+pub mod wire;
 
-/// Universal beta token: shrinks tool-call envelopes. Supported on
-/// every model in the registry, so it ships unconditionally.
-const BETA_TOKEN_EFFICIENT: &str = "token-efficient-tools-2025-02-19";
-
-/// Server-side compaction beta. Gated per-request by [`anthropic_beta_for`]
-/// based on `ModelInfo::supports_server_compaction` so a Haiku 4.5
-/// request doesn't depend on Anthropic's "ignore unknown beta tokens"
-/// policy. The runtime header value comes from
-/// [`BETA_TOKEN_EFFICIENT_AND_COMPACT`] (which embeds this string as a
-/// literal); this const exists so the drift-detection test can verify
-/// the literal stays in sync with its components.
-#[allow(dead_code)]
-const BETA_COMPACT: &str = "compact-2026-01-12";
-
-/// Pre-joined string sent when both betas ship. Spelled out as a
-/// literal because `concat!` only works on literals (so it can't
-/// reference [`BETA_TOKEN_EFFICIENT`]/[`BETA_COMPACT`] directly).
-/// The `beta_with_compact_matches_components` test enforces it stays
-/// in sync with its components.
-const BETA_TOKEN_EFFICIENT_AND_COMPACT: &str =
-    "token-efficient-tools-2025-02-19,compact-2026-01-12";
-
-/// Compute the `anthropic-beta` header value for a single request.
-/// Adds `compact-2026-01-12` when the target model advertises server-
-/// side compaction, otherwise returns the base token unchanged.
-fn anthropic_beta_for(model: &str) -> &'static str {
-    if super::model_info::lookup(model).supports_server_compaction {
-        BETA_TOKEN_EFFICIENT_AND_COMPACT
-    } else {
-        BETA_TOKEN_EFFICIENT
-    }
-}
-
-/// Per-effort `budget_tokens` value for Anthropic's *legacy* non-adaptive
-/// extended-thinking shape (`{type: "enabled", budget_tokens}`). Models
-/// that require adaptive thinking (Opus 4.7+) ignore these and drive
-/// effort through `output_config.effort` instead.
-pub const LEGACY_THINKING_BUDGET_LOW: u32 = 1024;
-pub const LEGACY_THINKING_BUDGET_MEDIUM: u32 = 5120;
-pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
-
-/// Anthropic's documented minimum trigger value for the
-/// `compact_20260112` context-edit. Triggers below this 400 the
-/// request, so the request builder clamps `auto_compact_at` against
-/// this floor.
-pub const COMPACTION_TRIGGER_FLOOR: u32 = 50_000;
-
-/// Map a [`ReasoningEffort`] to the legacy `budget_tokens` value.
-/// `Off` defensively collapses to `LOW` so callers that forget to
-/// pre-guard with `is_enabled()` don't panic; the request builder
-/// still gates the whole legacy branch behind `is_enabled()` so the
-/// `Off` arm is unreachable in practice.
-pub fn legacy_thinking_budget(effort: super::types::ReasoningEffort) -> u32 {
-    use super::types::ReasoningEffort;
-    match effort {
-        ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
-        ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
-        ReasoningEffort::High => LEGACY_THINKING_BUDGET_HIGH,
-    }
-}
-
-/// Return true for models that *only* accept `thinking.type = "adaptive"`
-/// (paired with `output_config.effort`) and reject the legacy
-/// `{type: "enabled", budget_tokens: N}` shape with HTTP 400.
-///
-/// The set is owned by [`crate::api::ModelInfo`]; this thin wrapper
-/// preserves the call shape used by `request_builder` and `repl::mod`
-/// without forcing those sites to dereference the struct just to
-/// check one bool.
-pub fn requires_adaptive_thinking(model: &str) -> bool {
-    super::model_info::lookup(model).requires_adaptive_thinking
-}
-
-/// Map a [`ReasoningEffort`] to the string Anthropic's adaptive thinking
-/// expects in `output_config.effort` (Opus 4.7+). The API accepts
-/// `low` / `medium` / `high`; `Off` collapses to `low` because adaptive
-/// thinking has no off-switch — the conversation may already carry
-/// thinking blocks that the server cross-checks against the request,
-/// and dropping `output_config` would 400 the next turn.
-pub fn effort_label(effort: super::types::ReasoningEffort) -> &'static str {
-    use super::types::ReasoningEffort;
-    match effort {
-        ReasoningEffort::Off | ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-    }
-}
-
-/// Discriminant for the content block currently being assembled while
-/// parsing an Anthropic streaming response. Replaces the earlier
-/// `Option<String>` so the match in `content_block_stop` is exhaustive
-/// and unknown wire-level block types stay as `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamBlockKind {
-    Text,
-    Thinking,
-    ToolUse,
-    ServerToolUse,
-}
-
-#[derive(Clone)]
-pub struct AnthropicClient {
-    client: reqwest::Client,
-}
-
-impl AnthropicClient {
-    pub fn new(api_key: String) -> Result<Self> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&api_key)
-                .map_err(|e| SofosError::Config(format!("Invalid API key format: {}", e)))?,
-        );
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static(ANTHROPIC_API_VERSION),
-        );
-        // `anthropic-beta` is set per-request by `anthropic_beta_for`
-        // so the compaction beta only ships when the target model
-        // actually supports it.
-
-        let client = utils::build_http_client(headers, utils::REQUEST_TIMEOUT)?;
-
-        Ok(Self { client })
-    }
-
-    /// Check if we can reach the API endpoint
-    pub async fn check_connectivity(&self) -> Result<()> {
-        utils::check_api_connectivity(
-            &self.client,
-            ANTHROPIC_API_BASE,
-            "Anthropic",
-            "https://status.anthropic.com",
-        )
-        .await
-    }
-
-    fn prepare_request(mut request: CreateMessageRequest) -> CreateMessageRequest {
-        request.messages = sanitize_messages_for_anthropic(request.messages);
-
-        // OpenAI-only; drop before serializing for Anthropic.
-        request.prompt_cache_key = None;
-
-        if let Some(tools) = request.tools.take() {
-            let filtered: Vec<Tool> = tools
-                .into_iter()
-                .filter(|t| !matches!(t, Tool::OpenAIWebSearch { tool_type: _ }))
-                .collect();
-
-            if !filtered.is_empty() {
-                request.tools = Some(filtered);
-            }
-        }
-
-        request
-    }
-
-    pub async fn create_message(
-        &self,
-        request: CreateMessageRequest,
-    ) -> Result<CreateMessageResponse> {
-        let url = format!("{}/messages", ANTHROPIC_API_BASE);
-        let request = Self::prepare_request(request);
-        let beta = anthropic_beta_for(&request.model);
-
-        let response = utils::send_once(
-            "Anthropic",
-            self.client
-                .post(&url)
-                .header(BETA_HEADER_NAME, beta)
-                .json(&request),
-        )
-        .await?;
-
-        let result = response.json::<CreateMessageResponse>().await?;
-        Ok(result)
-    }
-
-    pub async fn create_message_streaming<FText, FThink>(
-        &self,
-        request: CreateMessageRequest,
-        on_text_delta: FText,
-        on_thinking_delta: FThink,
-        interrupt_flag: Arc<AtomicBool>,
-    ) -> Result<CreateMessageResponse>
-    where
-        FText: Fn(&str) + Send + Sync,
-        FThink: Fn(&str) + Send + Sync,
-    {
-        let mut request = Self::prepare_request(request);
-        request.stream = Some(true);
-        let beta = anthropic_beta_for(&request.model);
-
-        let url = format!("{}/messages", ANTHROPIC_API_BASE);
-
-        let response = utils::send_once(
-            "Anthropic",
-            self.client
-                .post(&url)
-                .header(BETA_HEADER_NAME, beta)
-                .json(&request),
-        )
-        .await?;
-
-        let byte_stream = response.bytes_stream().map(|chunk_result| {
-            chunk_result.map_err(|e| SofosError::NetworkError(format!("Stream read error: {}", e)))
-        });
-        Self::parse_stream(
-            byte_stream,
-            on_text_delta,
-            on_thinking_delta,
-            interrupt_flag,
-        )
-        .await
-    }
-
-    /// Drive a pre-built SSE byte stream through the Anthropic parser.
-    /// Split out from [`create_message_streaming`] so tests can feed
-    /// hand-crafted fixtures without an HTTP layer; production callers
-    /// reach this only via [`create_message_streaming`].
-    pub(crate) async fn parse_stream<S, B, FText, FThink>(
-        byte_stream: S,
-        on_text_delta: FText,
-        on_thinking_delta: FThink,
-        interrupt_flag: Arc<AtomicBool>,
-    ) -> Result<CreateMessageResponse>
-    where
-        S: Stream<Item = Result<B>> + Unpin,
-        B: AsRef<[u8]>,
-        FText: Fn(&str) + Send + Sync,
-        FThink: Fn(&str) + Send + Sync,
-    {
-        let mut byte_stream = byte_stream;
-        let mut buffer = String::new();
-
-        let mut message_id = String::new();
-        let mut model_name = String::new();
-        let mut content_blocks: Vec<ContentBlock> = Vec::new();
-        let mut input_tokens: u32 = 0;
-        let mut output_tokens: u32 = 0;
-        let mut cache_read_input_tokens: Option<u32> = None;
-        let mut cache_creation_input_tokens: Option<u32> = None;
-        let mut stop_reason: Option<String> = None;
-
-        let mut current_block_type: Option<StreamBlockKind> = None;
-        let mut current_text = String::new();
-        let mut current_thinking = String::new();
-        let mut current_signature = String::new();
-        let mut current_tool_id = String::new();
-        let mut current_tool_name = String::new();
-        let mut current_tool_json = String::new();
-
-        while let Some(chunk_result) = byte_stream.next().await {
-            if interrupt_flag.load(Ordering::SeqCst) {
-                return Err(SofosError::Interrupted);
-            }
-
-            let chunk = chunk_result?;
-            buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
-
-            while let Some(pos) = buffer.find('\n') {
-                let line = buffer[..pos].to_string();
-                buffer = buffer[pos + 1..].to_string();
-
-                let line = line.trim_end();
-                let json_str = match line.strip_prefix("data: ") {
-                    Some("[DONE]") => continue,
-                    Some(s) => s,
-                    None => continue,
-                };
-
-                let event: serde_json::Value = match serde_json::from_str(json_str) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::debug!(
-                            error = %e,
-                            preview = %json_str.chars().take(200).collect::<String>(),
-                            "failed to parse Anthropic streaming event"
-                        );
-                        continue;
-                    }
-                };
-
-                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                match event_type {
-                    "message_start" => {
-                        if let Some(msg) = event.get("message") {
-                            message_id = msg
-                                .get("id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            model_name = msg
-                                .get("model")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            if let Some(u) = msg.get("usage") {
-                                input_tokens =
-                                    u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0)
-                                        as u32;
-                                cache_read_input_tokens = u
-                                    .get("cache_read_input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|n| n as u32);
-                                cache_creation_input_tokens = u
-                                    .get("cache_creation_input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .map(|n| n as u32);
-                            }
-                        }
-                    }
-                    "content_block_start" => {
-                        if let Some(block) = event.get("content_block") {
-                            let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            current_block_type = match btype {
-                                "text" => {
-                                    current_text.clear();
-                                    Some(StreamBlockKind::Text)
-                                }
-                                "thinking" => {
-                                    current_thinking.clear();
-                                    current_signature.clear();
-                                    Some(StreamBlockKind::Thinking)
-                                }
-                                "tool_use" => {
-                                    current_tool_id = block
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    current_tool_name = block
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    current_tool_json.clear();
-                                    Some(StreamBlockKind::ToolUse)
-                                }
-                                "server_tool_use" => {
-                                    current_tool_id = block
-                                        .get("id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    current_tool_name = block
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
-                                    current_tool_json.clear();
-                                    Some(StreamBlockKind::ServerToolUse)
-                                }
-                                "web_search_tool_result" => {
-                                    if let Ok(result) =
-                                        serde_json::from_value::<WebSearchToolResultBlock>(
-                                            block.clone(),
-                                        )
-                                    {
-                                        content_blocks.push(ContentBlock::WebSearchToolResult {
-                                            tool_use_id: result.tool_use_id,
-                                            content: result.content,
-                                        });
-                                    }
-                                    None
-                                }
-                                // Server-side compaction
-                                // (`compact-2026-01-12` beta) emits a
-                                // `compaction` content block with the
-                                // full summary in `content`. Mirror
-                                // the non-streaming serde path so the
-                                // next turn can round-trip the summary
-                                // and Anthropic doesn't re-compact.
-                                "compaction" => {
-                                    // Mirror the existing "drop malformed
-                                    // payloads silently" pattern used by
-                                    // `web_search_tool_result` above. The
-                                    // non-streaming serde path would error
-                                    // on a missing `content`; in streaming
-                                    // we don't want to kill the whole
-                                    // response over one block, so skip it
-                                    // — losing the summary forces a
-                                    // re-compact next turn but doesn't
-                                    // 400 the request.
-                                    if let Some(content) =
-                                        block.get("content").and_then(|v| v.as_str())
-                                    {
-                                        content_blocks.push(ContentBlock::Compaction {
-                                            content: content.to_string(),
-                                        });
-                                    }
-                                    None
-                                }
-                                _ => None,
-                            };
-                        }
-                    }
-                    "content_block_delta" => {
-                        if let Some(delta) = event.get("delta") {
-                            let dtype = delta.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                            match dtype {
-                                "text_delta" => {
-                                    if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
-                                        current_text.push_str(text);
-                                        on_text_delta(text);
-                                    }
-                                }
-                                "thinking_delta" => {
-                                    if let Some(thinking) =
-                                        delta.get("thinking").and_then(|v| v.as_str())
-                                    {
-                                        current_thinking.push_str(thinking);
-                                        on_thinking_delta(thinking);
-                                    }
-                                }
-                                "signature_delta" => {
-                                    if let Some(sig) =
-                                        delta.get("signature").and_then(|v| v.as_str())
-                                    {
-                                        current_signature.push_str(sig);
-                                    }
-                                }
-                                "input_json_delta" => {
-                                    if let Some(json_part) =
-                                        delta.get("partial_json").and_then(|v| v.as_str())
-                                    {
-                                        current_tool_json.push_str(json_part);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    "content_block_stop" => {
-                        match current_block_type {
-                            Some(StreamBlockKind::Text) => {
-                                content_blocks.push(ContentBlock::Text {
-                                    text: current_text.clone(),
-                                });
-                            }
-                            Some(StreamBlockKind::Thinking) => {
-                                // Every legitimate thinking block the server emits
-                                // is paired with a signature. An empty signature
-                                // means no `signature_delta` ever arrived for this
-                                // block — echoing it back on the next turn would
-                                // fail server-side verification and 400 the whole
-                                // request. Drop the block; an empty-thinking
-                                // adaptive block *with* a real signature (Opus 4.7
-                                // `display: "omitted"`) is still preserved.
-                                if !current_signature.is_empty() {
-                                    content_blocks.push(ContentBlock::Thinking {
-                                        thinking: current_thinking.clone(),
-                                        signature: current_signature.clone(),
-                                    });
-                                }
-                            }
-                            Some(StreamBlockKind::ToolUse) => {
-                                let input = utils::parse_tool_arguments(
-                                    &current_tool_name,
-                                    &current_tool_json,
-                                );
-                                content_blocks.push(ContentBlock::ToolUse {
-                                    id: current_tool_id.clone(),
-                                    name: current_tool_name.clone(),
-                                    input,
-                                });
-                            }
-                            Some(StreamBlockKind::ServerToolUse) => {
-                                let input = utils::parse_tool_arguments(
-                                    &current_tool_name,
-                                    &current_tool_json,
-                                );
-                                content_blocks.push(ContentBlock::ServerToolUse {
-                                    id: current_tool_id.clone(),
-                                    name: current_tool_name.clone(),
-                                    input,
-                                });
-                            }
-                            None => {}
-                        }
-                        current_block_type = None;
-                    }
-                    "message_delta" => {
-                        if let Some(delta) = event.get("delta") {
-                            stop_reason = delta
-                                .get("stop_reason")
-                                .and_then(|v| v.as_str())
-                                .map(String::from);
-                        }
-                        if let Some(u) = event.get("usage") {
-                            output_tokens =
-                                u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        }
-                    }
-                    "error" => {
-                        let error_msg = event
-                            .get("error")
-                            .and_then(|e| e.get("message"))
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("Unknown streaming error");
-                        return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        Ok(utils::build_message_response(
-            message_id,
-            model_name,
-            content_blocks,
-            stop_reason,
-            Usage {
-                input_tokens,
-                output_tokens,
-                cache_read_input_tokens,
-                cache_creation_input_tokens,
-            },
-        ))
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct WebSearchToolResultBlock {
-    tool_use_id: String,
-    #[serde(default)]
-    content: Vec<WebSearchResult>,
-}
-
-pub(crate) fn sanitize_messages_for_anthropic(messages: Vec<Message>) -> Vec<Message> {
-    messages
-        .into_iter()
-        .map(|mut msg| {
-            if let MessageContent::Blocks { content } = msg.content {
-                let filtered_content = content
-                    .into_iter()
-                    .filter_map(|block| match block {
-                        // OpenAI reasoning summary block — not part of
-                        // Anthropic's content-block schema; the server
-                        // would reject the unknown type.
-                        MessageContentBlock::Summary { .. } => None,
-                        // OpenAI Responses API reasoning item, packed
-                        // with `id` + `encrypted_content`. Carries no
-                        // meaning to Anthropic and uses a `type`
-                        // string the server doesn't recognise. Drop
-                        // before sending so a session that switched
-                        // providers doesn't 400 on the next turn.
-                        MessageContentBlock::Reasoning { .. } => None,
-                        other => Some(other),
-                    })
-                    .collect();
-
-                msg.content = MessageContent::Blocks {
-                    content: filtered_content,
-                };
-            }
-            msg
-        })
-        .collect()
-}
+pub use client::AnthropicClient;
+pub use wire::{
+    COMPACTION_TRIGGER_FLOOR, LEGACY_THINKING_BUDGET_HIGH, effort_label, legacy_thinking_budget,
+    requires_adaptive_thinking,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::anthropic::stream::parse_stream;
+    use crate::api::anthropic::wire::{
+        BETA_COMPACT, BETA_TOKEN_EFFICIENT, BETA_TOKEN_EFFICIENT_AND_COMPACT,
+        LEGACY_THINKING_BUDGET_LOW, LEGACY_THINKING_BUDGET_MEDIUM, anthropic_beta_for,
+        prepare_request, sanitize_messages_for_anthropic,
+    };
+    use crate::api::types::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn test_client_creation() {
@@ -646,7 +97,6 @@ mod tests {
 
     #[test]
     fn legacy_thinking_budget_helper_scales_with_effort() {
-        use super::super::types::ReasoningEffort;
         assert_eq!(
             legacy_thinking_budget(ReasoningEffort::Low),
             LEGACY_THINKING_BUDGET_LOW
@@ -676,7 +126,6 @@ mod tests {
 
     #[test]
     fn effort_label_maps_reasoning_levels() {
-        use super::super::types::ReasoningEffort;
         assert_eq!(effort_label(ReasoningEffort::Off), "low");
         assert_eq!(effort_label(ReasoningEffort::Low), "low");
         assert_eq!(effort_label(ReasoningEffort::Medium), "medium");
@@ -744,7 +193,7 @@ mod tests {
             context_management: None,
         };
 
-        let prepared = AnthropicClient::prepare_request(request);
+        let prepared = prepare_request(request);
         assert!(prepared.prompt_cache_key.is_none());
     }
 
@@ -816,7 +265,7 @@ mod tests {
             let t = text_chunks.clone();
             let stream = sse_stream_from_events(events);
 
-            let response = AnthropicClient::parse_stream(
+            let response = parse_stream(
                 stream,
                 move |s| t.lock().unwrap().push(s.to_string()),
                 |_| {},
@@ -859,7 +308,7 @@ mod tests {
             let th = think_chunks.clone();
             let stream = sse_stream_from_events(events);
 
-            let response = AnthropicClient::parse_stream(
+            let response = parse_stream(
                 stream,
                 |_| {},
                 move |s| th.lock().unwrap().push(s.to_string()),
@@ -895,7 +344,7 @@ mod tests {
             ];
 
             let stream = sse_stream_from_events(events);
-            let response = AnthropicClient::parse_stream(stream, |_| {}, |_| {}, flag())
+            let response = parse_stream(stream, |_| {}, |_| {}, flag())
                 .await
                 .expect("parse_stream succeeds");
             assert!(
@@ -913,11 +362,11 @@ mod tests {
             ];
 
             let stream = sse_stream_from_events(events);
-            let err = AnthropicClient::parse_stream(stream, |_| {}, |_| {}, flag())
+            let err = parse_stream(stream, |_| {}, |_| {}, flag())
                 .await
                 .expect_err("error event must surface as error");
             assert!(
-                matches!(&err, SofosError::Api(msg) if msg.contains("overloaded")),
+                matches!(&err, crate::error::SofosError::Api(msg) if msg.contains("overloaded")),
                 "got: {err:?}"
             );
         }
