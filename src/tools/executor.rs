@@ -1064,6 +1064,17 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
 
+                // Resolve before prompting so we can surface "file not
+                // found" without first asking for confirmation, and so
+                // the Write-access check on external paths happens
+                // BEFORE the user types y/n (consistent with
+                // `write_file` / `edit_file`).
+                let resolved = self.resolve_existing(path)?;
+
+                if !resolved.is_inside_workspace {
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
+                }
+
                 let confirmed = confirm_destructive(&format!("Delete file '{}'?", path))?;
 
                 if !confirmed {
@@ -1073,13 +1084,24 @@ impl ToolExecutor {
                     )));
                 }
 
-                self.fs_tool.delete_file(path)?;
+                if resolved.is_inside_workspace {
+                    self.fs_tool.delete_file(path)?;
+                } else {
+                    self.fs_tool
+                        .delete_file_with_outside_access(&resolved.canonical_str)?;
+                }
                 Ok(format!("Successfully deleted file '{}'", path))
             }
             ToolName::DeleteDirectory => {
                 let path = input["path"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'path' parameter".to_string())
                 })?;
+
+                let resolved = self.resolve_existing(path)?;
+
+                if !resolved.is_inside_workspace {
+                    self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
+                }
 
                 let confirmed = confirm_destructive(&format!(
                     "Delete directory '{}' and all its contents?",
@@ -1093,7 +1115,12 @@ impl ToolExecutor {
                     )));
                 }
 
-                self.fs_tool.delete_directory(path)?;
+                if resolved.is_inside_workspace {
+                    self.fs_tool.delete_directory(path)?;
+                } else {
+                    self.fs_tool
+                        .delete_directory_with_outside_access(&resolved.canonical_str)?;
+                }
                 Ok(format!("Successfully deleted directory '{}'", path))
             }
             ToolName::MoveFile => {

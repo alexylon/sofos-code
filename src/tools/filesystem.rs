@@ -1,17 +1,36 @@
 use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::utils::is_absolute_path;
+use rand::RngExt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Write as _;
+use std::path::{Component, Path, PathBuf};
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50MB limit
 
-/// Write `content` to `path` atomically: stage a sibling `<name>.sofos.tmp`
-/// first, then rename it over the destination. On the same filesystem
-/// `rename` is a single inode swap, so a crash / OOM / interrupt partway
-/// through the write leaves the original file intact instead of corrupting
-/// it with a half-written replacement. If staging or renaming fails, the
-/// temp file is best-effort cleaned up so a stray `.sofos.tmp` doesn't
-/// accumulate next to the real file.
+/// Upper bound on retries when reserving the random-suffix temp file
+/// during atomic writes. The 64-bit suffix makes a collision astronomically
+/// unlikely, so this only fires if something in the environment is
+/// pathologically degenerate (broken RNG, attacker spraying every name).
+/// A small cap is enough to mask a one-off bad draw without letting a
+/// real failure mode spin indefinitely.
+const ATOMIC_TMP_MAX_RETRIES: usize = 8;
+
+/// Write `content` to `path` atomically: stage a sibling
+/// `<name>.sofos.tmp.<random>` first, then rename it over the destination.
+/// On the same filesystem `rename` is a single inode swap, so a crash /
+/// OOM / interrupt partway through the write leaves the original file
+/// intact instead of corrupting it with a half-written replacement. If
+/// staging or renaming fails, the temp file is best-effort cleaned up so
+/// a stray `.sofos.tmp.<random>` doesn't accumulate next to the real
+/// file.
+///
+/// The random suffix matters for security: an earlier implementation
+/// used a fixed `.sofos.tmp` filename, which another process could
+/// pre-create — for instance as a symlink to an attacker-controlled
+/// path — and our write would then follow the symlink and clobber the
+/// target. With an unpredictable suffix the attacker can't race the
+/// name, and `O_EXCL` (via `create_new`) turns any unexpected pre-existing
+/// file into a hard error rather than a silent write-through.
 ///
 /// When `path` is a symlink we resolve it up front and stage the temp
 /// file next to the *real* file, so `rename` replaces the target and
@@ -28,16 +47,15 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     // to preserve, so fall back to the caller-supplied path.
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
-    let tmp_path = {
-        let mut s = target.as_os_str().to_os_string();
-        s.push(".sofos.tmp");
-        PathBuf::from(s)
-    };
-
-    if let Err(e) = fs::write(&tmp_path, content) {
+    // Reserve a unique temp sibling and write through the exclusive
+    // handle we just got — no reopen window for a symlink swap.
+    let (tmp_path, mut tmp_file) = create_tmp_sibling(&target)?;
+    if let Err(e) = tmp_file.write_all(content.as_bytes()) {
+        drop(tmp_file);
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
     }
+    drop(tmp_file);
 
     // Preserve the existing file's permission bits. Best-effort: if
     // `metadata` fails (new file, race) or `set_permissions` fails
@@ -57,6 +75,45 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
         return Err(e);
     }
     Ok(())
+}
+
+/// Reserve a fresh `<target>.sofos.tmp.<hex>` sibling file using
+/// `O_EXCL`-style exclusive create, returning both the path and the
+/// open handle so the caller writes through the handle we just owned
+/// (no reopen race against a symlink swap). The 64 bits of randomness
+/// make a collision astronomically unlikely; the small retry loop covers
+/// the pathological case so we don't fail a legitimate write on one bad
+/// draw.
+fn create_tmp_sibling(target: &Path) -> std::io::Result<(PathBuf, fs::File)> {
+    use std::io::ErrorKind;
+
+    let mut rng = rand::rng();
+    let mut last_err: Option<std::io::Error> = None;
+    for _ in 0..ATOMIC_TMP_MAX_RETRIES {
+        let suffix: u64 = rng.random();
+        let mut s = target.as_os_str().to_os_string();
+        s.push(format!(".sofos.tmp.{:016x}", suffix));
+        let candidate = PathBuf::from(s);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "exhausted retries reserving atomic-write temp file",
+        )
+    }))
 }
 
 /// Append `content` to `path`, creating the file if it doesn't exist.
@@ -115,7 +172,16 @@ impl FileSystemTool {
             ));
         }
 
-        if path.contains("..") {
+        // Reject only real `..` path components — a substring match would
+        // also reject legitimate filenames like `my..file.txt` or
+        // `cache..old/note.md`. The canonical check below is still the
+        // ultimate guard against escapes via symlinks, but stopping the
+        // traversal here gives a clearer error message and avoids
+        // letting `..` segments mix with workspace-relative joins.
+        if Path::new(path)
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+        {
             return Err(SofosError::PathViolation(
                 "Parent directory traversal (..) is not allowed".to_string(),
             ));
@@ -295,34 +361,59 @@ impl FileSystemTool {
 
     pub fn delete_file(&self, path: &str) -> Result<()> {
         let full_path = self.validate_path(path)?;
-
-        if !full_path.exists() {
-            return Err(SofosError::FileNotFound(path.to_string()));
-        }
-
-        if !full_path.is_file() {
-            return Err(SofosError::InvalidPath(format!("'{}' is not a file", path)));
-        }
-
-        fs::remove_file(&full_path)?;
-        Ok(())
+        Self::remove_file_at(&full_path, path)
     }
 
     pub fn delete_directory(&self, path: &str) -> Result<()> {
         let full_path = self.validate_path(path)?;
+        Self::remove_directory_at(&full_path, path)
+    }
 
-        if !full_path.exists() {
-            return Err(SofosError::FileNotFound(path.to_string()));
+    /// Delete a file that may be outside the workspace. Counterpart to
+    /// `write_file_with_outside_access` — used after the user has
+    /// explicitly granted Write access to the external path. Without
+    /// this, `delete_file` rejected every external path even with a
+    /// Write grant, while `write_file` / `edit_file` honoured it: an
+    /// asymmetry that surprised users.
+    pub fn delete_file_with_outside_access(&self, path: &str) -> Result<()> {
+        let target = PathBuf::from(path);
+        Self::remove_file_at(&target, path)
+    }
+
+    /// Delete a directory that may be outside the workspace. Same
+    /// rationale as [`Self::delete_file_with_outside_access`].
+    pub fn delete_directory_with_outside_access(&self, path: &str) -> Result<()> {
+        let target = PathBuf::from(path);
+        Self::remove_directory_at(&target, path)
+    }
+
+    /// Shared remove-file logic for the two delete entry points.
+    fn remove_file_at(target: &Path, label: &str) -> Result<()> {
+        if !target.exists() {
+            return Err(SofosError::FileNotFound(label.to_string()));
         }
-
-        if !full_path.is_dir() {
+        if !target.is_file() {
             return Err(SofosError::InvalidPath(format!(
-                "'{}' is not a directory",
-                path
+                "'{}' is not a file",
+                label
             )));
         }
+        fs::remove_file(target)?;
+        Ok(())
+    }
 
-        fs::remove_dir_all(&full_path)?;
+    /// Shared remove-directory logic for the two delete entry points.
+    fn remove_directory_at(target: &Path, label: &str) -> Result<()> {
+        if !target.exists() {
+            return Err(SofosError::FileNotFound(label.to_string()));
+        }
+        if !target.is_dir() {
+            return Err(SofosError::InvalidPath(format!(
+                "'{}' is not a directory",
+                label
+            )));
+        }
+        fs::remove_dir_all(target)?;
         Ok(())
     }
 
@@ -386,6 +477,20 @@ mod tests {
 
         assert!(fs_tool.validate_path("../etc/passwd").is_err());
         assert!(fs_tool.validate_path("foo/../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn validate_path_allows_double_dot_in_filename() {
+        // A filename that happens to contain `..` as a substring (but
+        // isn't a `..` path component) is legitimate — earlier versions
+        // wrongly rejected names like `my..file.txt` with a
+        // `path.contains("..")` substring check.
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
+
+        assert!(fs_tool.validate_path("my..file.txt").is_ok());
+        assert!(fs_tool.validate_path("cache..old/note.md").is_ok());
+        assert!(fs_tool.validate_path("foo..bar/baz..qux.txt").is_ok());
     }
 
     #[test]
@@ -481,6 +586,47 @@ mod tests {
     }
 
     #[test]
+    fn write_atomic_uses_unpredictable_temp_filename() {
+        // Predictable `.sofos.tmp` was a TOCTOU vector — an attacker who
+        // could write to the same directory might pre-create that name
+        // (potentially as a symlink). The replacement uses a random
+        // suffix and exclusive-create, so two back-to-back writes pick
+        // different temp paths and the literal fixed name is never
+        // reused.
+        let (_temp, workspace) = test_support::workspace();
+        let path = workspace.join("note.md");
+
+        // First, plant the historically predictable name so the new
+        // path generator must avoid it. `write_atomic` cannot rely on
+        // a fixed name to clobber it.
+        let predictable = workspace.join("note.md.sofos.tmp");
+        fs::write(&predictable, "decoy").unwrap();
+
+        write_atomic(&path, "first").unwrap();
+        write_atomic(&path, "second").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        // The fixed-name decoy is untouched, proving we no longer write
+        // through it.
+        assert_eq!(fs::read_to_string(&predictable).unwrap(), "decoy");
+
+        // No stray temp files survive on the happy path.
+        let leftovers: Vec<_> = fs::read_dir(&workspace)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("note.md.sofos.tmp.")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "atomic write must clean up its random temp files"
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn test_write_atomic_preserves_symlink() {
         use std::os::unix::fs::symlink;
@@ -553,6 +699,62 @@ mod tests {
 
         let err = result.unwrap_err();
         assert!(matches!(err, SofosError::ToolExecution(_)));
+    }
+
+    #[test]
+    fn delete_file_with_outside_access_removes_external_file() {
+        // Counterpart to write_file_with_outside_access: when the
+        // executor has already cleared the Write grant, the FS tool
+        // must delete the canonical external file without re-imposing
+        // the workspace prefix. Previously this method did not exist;
+        // `delete_file` rejected every external path even with a Write
+        // grant, while `write_file` honoured it. The new method closes
+        // the asymmetry.
+        let (_workspace_tmp, workspace_path) = test_support::workspace();
+        let (_outside_tmp, outside_path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(workspace_path).unwrap();
+
+        let outside_file = outside_path.join("to_delete.txt");
+        fs::write(&outside_file, "delete me").unwrap();
+        assert!(outside_file.exists());
+
+        fs_tool
+            .delete_file_with_outside_access(&outside_file.to_string_lossy())
+            .unwrap();
+
+        assert!(!outside_file.exists());
+    }
+
+    #[test]
+    fn delete_directory_with_outside_access_removes_external_directory() {
+        let (_workspace_tmp, workspace_path) = test_support::workspace();
+        let (_outside_tmp, outside_path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(workspace_path).unwrap();
+
+        let outside_dir = outside_path.join("nested/dir");
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(outside_dir.join("file.txt"), "contents").unwrap();
+        assert!(outside_dir.exists());
+
+        fs_tool
+            .delete_directory_with_outside_access(&outside_dir.to_string_lossy())
+            .unwrap();
+
+        assert!(!outside_dir.exists());
+        // The parent directory of the removed dir is left untouched.
+        assert!(outside_path.join("nested").exists());
+    }
+
+    #[test]
+    fn delete_with_outside_access_reports_missing_file() {
+        let (_workspace_tmp, workspace_path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(workspace_path).unwrap();
+
+        let nonexistent = std::path::PathBuf::from("/this/path/definitely/does/not/exist");
+        let err = fs_tool
+            .delete_file_with_outside_access(&nonexistent.to_string_lossy())
+            .unwrap_err();
+        assert!(matches!(err, SofosError::FileNotFound(_)));
     }
 
     #[test]

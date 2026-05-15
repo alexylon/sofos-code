@@ -36,6 +36,13 @@ All notable changes to Sofos are documented in this file.
 ### Security
 
 - **Session ids passed to `--resume` are validated.** Ids containing path separators (`/`, `\`), or that are exactly `.` or `..`, are rejected with a clear error instead of being interpolated into a filesystem path. The interactive picker never produces such ids; this protects callers that pass an external string.
+- **Atomic file writes now stage through a temp file with an unpredictable name.** The earlier fixed `<file>.sofos.tmp` suffix let any process that could write to the same directory plant a file (potentially a symlink to elsewhere) at that exact path between the moment sofos started a write and the moment it created the temp file, redirecting the write to an attacker-chosen target. The staged name now includes 64 bits of randomness and is created exclusively, so a pre-existing file at that path produces a hard error instead of being clobbered through.
+- **Workspace path validation no longer rejects filenames that just *contain* `..` as a substring.** Names like `my..file.txt` or `cache..old/note.md` were refused by an over-eager substring check, even though they have no `..` traversal component. The check now walks real path components, so it still blocks `..` traversal but accepts legitimate names with embedded double dots.
+- **The resolve fallback now classifies workspace membership lexically.** When sofos couldn't find any existing ancestor to canonicalise against (a degenerate path-shape case during write resolution), an earlier version trusted the caller-supplied path string to decide whether the target was inside the workspace, which mis-classified a workspace-relative `../../etc/passwd` as inside. The fallback now collapses `.` / `..` components first and compares the lexical result against the workspace prefix.
+
+### Changed
+
+- **`delete_file` and `delete_directory` now accept external paths once the user grants Write access**, matching how `write_file` and `edit_file` already behaved. Earlier they rejected every path outside the workspace, which was confusing for users who had explicitly authorised the broader directory for writes.
 
 ### Removed
 
