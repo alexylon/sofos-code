@@ -175,9 +175,12 @@ pub fn parse_tool_arguments(name: &str, args: &str) -> serde_json::Value {
 
     // Truncated mid-string: the response terminated without closing the
     // open string literal and the enclosing object. Close the string,
-    // trim the trailing comma if we cut mid-key, and tack on `}`.
-    if trimmed.starts_with('{') {
-        let mut candidate = escape_control_chars_in_json_strings(trimmed);
+    // trim the trailing comma if we cut mid-key, and tack on `}`. Build
+    // on top of `escaped` rather than re-running the escape pass on
+    // `trimmed`, so the intra-JSON trailing-comma stripping done above
+    // isn't discarded for this attempt.
+    if escaped.starts_with('{') {
+        let mut candidate = escaped.clone();
         if string_is_open(&candidate) {
             candidate.push('"');
         }
@@ -343,14 +346,30 @@ pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
     i
 }
 
-/// Only `ServerError` triggers a retry — transport failures and 4xx
-/// statuses fail fast.
+/// Upper bound applied to the `Retry-After` value advertised by a 429
+/// response. 60 seconds is comfortably above the burst-limit windows
+/// the APIs we integrate with use in practice, and short enough that
+/// an extreme value (a misbehaving or malicious server asking for
+/// hours) can't lock sofos for an unreasonable wait.
+const MAX_RATE_LIMIT_RETRY_AFTER: Duration = Duration::from_secs(60);
+
+/// `ServerError` and `RateLimited` trigger a retry — transport failures
+/// and other 4xx statuses fail fast. `RateLimited` carries the
+/// `Retry-After` value the server asked for, capped at
+/// [`MAX_RATE_LIMIT_RETRY_AFTER`]; the retry loop is also capped at one
+/// extra attempt for this variant so an ongoing limit doesn't burn
+/// through every retry slot waiting.
 #[derive(Debug)]
 pub enum ApiCallError {
     Transport(reqwest::Error),
     /// Body already drained for error reporting.
     ServerError {
         status: reqwest::StatusCode,
+        body: String,
+    },
+    /// HTTP 429. Body already drained for error reporting.
+    RateLimited {
+        retry_after: Option<Duration>,
         body: String,
     },
     /// Body already drained for error reporting.
@@ -362,16 +381,34 @@ pub enum ApiCallError {
 
 impl ApiCallError {
     fn is_retryable(&self) -> bool {
-        matches!(self, Self::ServerError { .. })
+        matches!(self, Self::ServerError { .. } | Self::RateLimited { .. })
     }
 
     fn describe(&self) -> String {
         match self {
             Self::Transport(e) => format!("Request failed: {}", e),
             Self::ServerError { status, .. } => format!("Server error {}", status),
+            Self::RateLimited { retry_after, .. } => match retry_after {
+                Some(d) => format!("Rate limited (retry after {:?})", d),
+                None => "Rate limited".to_string(),
+            },
             Self::ClientError { status, .. } => format!("Client error {}", status),
         }
     }
+}
+
+/// Read the `Retry-After` header in its seconds-since-now form and clamp
+/// the result to [`MAX_RATE_LIMIT_RETRY_AFTER`]. RFC 7231 also allows an
+/// HTTP-date form, but every API we integrate with uses the seconds
+/// form for 429s, so the date form falls back to `None` and the retry
+/// loop uses its default exponential delay.
+fn parse_retry_after_header(headers: &HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .map(|d| d.min(MAX_RATE_LIMIT_RETRY_AFTER))
 }
 
 /// Drains the body on non-2xx so the caller can report it; 2xx responses
@@ -384,9 +421,18 @@ pub async fn classify_response(
     if status.is_success() {
         return Ok(response);
     }
+    // Grab `Retry-After` before draining the body — `text().await`
+    // consumes the response and the headers go with it.
+    let retry_after = if status.as_u16() == 429 {
+        parse_retry_after_header(response.headers())
+    } else {
+        None
+    };
     let body = response.text().await.unwrap_or_default();
     if status.is_server_error() {
         Err(ApiCallError::ServerError { status, body })
+    } else if status.as_u16() == 429 {
+        Err(ApiCallError::RateLimited { retry_after, body })
     } else {
         Err(ApiCallError::ClientError { status, body })
     }
@@ -425,33 +471,55 @@ fn api_call_error_to_sofos(service_name: &str, attempts: u32, e: ApiCallError) -
                 service_name, status, attempts, body
             ))
         }
+        ApiCallError::RateLimited { retry_after, body } => SofosError::Api(format!(
+            "{} rate-limited (HTTP 429{}) after {} attempt(s): {}",
+            service_name,
+            match retry_after {
+                Some(d) => format!(", server asked for {:?}", d),
+                None => String::new(),
+            },
+            attempts,
+            body
+        )),
     }
 }
 
-/// Only retries 5xx responses — timeouts, connection errors, and 4xx
-/// all fail fast, since retrying those either re-burns expensive work
-/// or re-hits a deterministic client error.
+/// Retries 5xx responses and 429 rate-limit responses; transport
+/// failures and other 4xx statuses fail fast, since retrying those
+/// either re-burns expensive work or re-hits a deterministic client
+/// error. A 429 is retried at most once, using the server-supplied
+/// `Retry-After` delay (capped at [`MAX_RATE_LIMIT_RETRY_AFTER`]) when
+/// present and the exponential-backoff delay otherwise.
 pub async fn with_retries<F, Fut, T>(service_name: &str, operation: F) -> Result<T>
 where
     F: Fn() -> Fut,
     Fut: Future<Output = std::result::Result<T, ApiCallError>>,
 {
     let mut retry_delay = Duration::from_millis(INITIAL_RETRY_DELAY_MS);
+    let mut next_delay_override: Option<Duration> = None;
+    let mut rate_limit_attempts: u32 = 0;
+    const MAX_RATE_LIMIT_RETRIES: u32 = 1;
 
     for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
+            // Server-supplied `Retry-After` wins over the
+            // exponential-backoff schedule for one iteration. Jitter is
+            // applied either way so a synchronised retry storm from
+            // many clients on the same shared limit doesn't all wake
+            // up at the same instant.
+            let base_delay = next_delay_override.take().unwrap_or(retry_delay);
             let jitter = rand::rng().random_range(0.0..JITTER_FACTOR);
-            let jittered_delay = retry_delay.mul_f64(1.0 + jitter);
+            let jittered_delay = base_delay.mul_f64(1.0 + jitter);
 
             tracing::warn!(
                 service = service_name,
                 attempt = attempt,
                 max_retries = MAX_RETRIES,
                 delay_ms = jittered_delay.as_millis() as u64,
-                "Retrying API request after server error"
+                "Retrying API request after retryable error"
             );
             eprintln!(
-                " {} server error, retrying in {:?}... (attempt {}/{})",
+                " {} retrying in {:?}... (attempt {}/{})",
                 format!("{}:", service_name).bright_yellow(),
                 jittered_delay,
                 attempt,
@@ -465,7 +533,20 @@ where
             Ok(result) => return Ok(result),
             Err(e) => {
                 let retryable = e.is_retryable();
-                if attempt < MAX_RETRIES && retryable {
+                let is_rate_limited = matches!(e, ApiCallError::RateLimited { .. });
+                if is_rate_limited {
+                    rate_limit_attempts += 1;
+                    if let ApiCallError::RateLimited {
+                        retry_after: Some(d),
+                        ..
+                    } = &e
+                    {
+                        next_delay_override = Some(*d);
+                    }
+                }
+                let rate_limit_cap_reached =
+                    is_rate_limited && rate_limit_attempts > MAX_RATE_LIMIT_RETRIES;
+                if attempt < MAX_RETRIES && retryable && !rate_limit_cap_reached {
                     continue;
                 }
                 let attempts = attempt + 1;
@@ -524,9 +605,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_call_error_is_retryable_only_for_server_error() {
+    fn api_call_error_is_retryable_for_server_error_and_rate_limited() {
         let server = ApiCallError::ServerError {
             status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            body: String::new(),
+        };
+        let rate_limited = ApiCallError::RateLimited {
+            retry_after: Some(Duration::from_secs(2)),
             body: String::new(),
         };
         let client = ApiCallError::ClientError {
@@ -534,7 +619,98 @@ mod tests {
             body: String::new(),
         };
         assert!(server.is_retryable());
+        assert!(rate_limited.is_retryable());
         assert!(!client.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn with_retries_retries_rate_limited_once_then_surrenders() {
+        // 429 used to fall into `ClientError` and fail on the first
+        // attempt; now it retries exactly once, honouring the
+        // server-supplied delay but capped so a long limit doesn't
+        // burn through every retry slot.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<&'static str> = with_retries("Test", || {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                Err(ApiCallError::RateLimited {
+                    retry_after: Some(Duration::from_millis(1)),
+                    body: "slow down".into(),
+                })
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "rate-limited responses retry exactly once (one initial attempt plus one retry)"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_retries_rate_limited_then_success_returns_value() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let result: Result<&'static str> = with_retries("Test", || {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Err(ApiCallError::RateLimited {
+                        retry_after: Some(Duration::from_millis(1)),
+                        body: "slow down".into(),
+                    })
+                } else {
+                    Ok("done")
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn parse_retry_after_reads_seconds_form() {
+        let mut headers = HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, HeaderValue::from_static("7"));
+        assert_eq!(
+            parse_retry_after_header(&headers),
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_clamps_oversized_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            HeaderValue::from_static("9999999"),
+        );
+        assert_eq!(
+            parse_retry_after_header(&headers),
+            Some(MAX_RATE_LIMIT_RETRY_AFTER)
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_returns_none_for_http_date_form() {
+        // The HTTP-date form is valid per RFC 7231 but no API we
+        // integrate with uses it for 429. Falling back to `None`
+        // lets the retry loop pick its default exponential delay
+        // rather than hard-failing on the parse.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert!(parse_retry_after_header(&headers).is_none());
+    }
+
+    #[test]
+    fn parse_retry_after_returns_none_when_header_absent() {
+        assert!(parse_retry_after_header(&HeaderMap::new()).is_none());
     }
 
     #[tokio::test]
@@ -811,6 +987,25 @@ mod tests {
     fn parse_args_array_root_returned_as_is() {
         let v = parse_tool_arguments("read_file", "[1,2,3]");
         assert!(v.is_array());
+    }
+
+    #[test]
+    fn parse_args_truncated_payload_keeps_intra_json_trailing_comma_fix() {
+        // Regression: the truncation-repair branch used to re-build
+        // its candidate from `trimmed` and re-run only the control-char
+        // escape. The intra-JSON `,]` / `,}` strip done earlier was
+        // discarded for this branch, so a payload that needed BOTH
+        // repairs (an internal trailing comma AND the missing closing
+        // brace) fell through to the raw-arguments fallback.
+        let v = parse_tool_arguments("write_file", r#"{"path":"a","items":[1,2,]"#);
+        assert_eq!(
+            v["path"], "a",
+            "the truncation branch must consume the comma-stripped intermediate"
+        );
+        let items = v["items"].as_array().expect("items array recovered");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], 1);
+        assert_eq!(items[1], 2);
     }
 
     #[test]
