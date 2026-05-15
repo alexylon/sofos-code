@@ -80,6 +80,12 @@ pub struct Repl {
     /// (e.g. Ghostty), where the fallback origin would let the viewport
     /// overwrite the lines.
     pub(super) startup_banner: String,
+    /// Per-server "✓ MCP server 'X' initialized (N tools)" lines built
+    /// during [`Self::new`]. Held separately from `startup_banner` so
+    /// `main.rs` can splice them in after its own workspace/model
+    /// header before handing the combined banner back for the TUI to
+    /// replay through its capture pipe.
+    pub(super) mcp_init_lines: String,
     /// Shared tokio runtime driving every `block_on` in the REPL
     /// (initial request, compaction summary, tool-list refresh). Built
     /// once in [`Self::new`] and reused for the lifetime of the `Repl`.
@@ -105,12 +111,12 @@ impl Repl {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| SofosError::Config(format!("Failed to create async runtime: {}", e)))?;
 
-        let mcp_manager = runtime.block_on(async {
+        let (mcp_manager, mcp_init_lines) = runtime.block_on(async {
             match McpManager::new(workspace.clone()).await {
-                Ok(manager) => Some(manager),
+                Ok((manager, block)) => (Some(manager), block),
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to initialize MCP manager");
-                    None
+                    (None, String::new())
                 }
             }
         });
@@ -192,6 +198,7 @@ impl Repl {
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             steer_buffer: Arc::new(Mutex::new(Vec::new())),
             startup_banner: String::new(),
+            mcp_init_lines,
             runtime,
         })
     }
@@ -210,6 +217,13 @@ impl Repl {
 
     pub(crate) fn take_startup_banner(&mut self) -> String {
         std::mem::take(&mut self.startup_banner)
+    }
+
+    /// Drain the "MCP server '…' initialized" lines collected during
+    /// [`Self::new`] so the caller can splice them into the startup
+    /// banner.
+    pub(crate) fn take_mcp_init_lines(&mut self) -> String {
+        std::mem::take(&mut self.mcp_init_lines)
     }
 
     /// Install the interrupt flag used by the TUI to signal ESC/Ctrl+C during

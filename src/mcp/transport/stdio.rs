@@ -38,20 +38,24 @@ fn take_child_pipes(
 }
 
 /// Drain the child's stderr line-by-line on a blocking worker and route
-/// each line through `tracing::warn!` tagged with the server name. The
-/// previous transport used `Stdio::null()` for stderr, so a misconfigured
-/// or crashing MCP server gave the user no clue what was wrong — the
-/// only signal was an opaque "failed to parse" or "connection closed"
-/// downstream. Capturing through `tracing` keeps the noise out of the
-/// foreground TUI but makes the diagnostics discoverable via
-/// `SOFOS_LOG=warn` or wherever the user has tracing pointed.
+/// each line through `tracing::debug!` tagged with the server name.
+/// Servers reserve stdout for JSON-RPC and emit their own INFO/DEBUG
+/// logs to stderr, so treating every line as a warning floods the
+/// default-level (WARN) log with normal startup chatter. Real failures
+/// still surface as WARN from the connect / list-tools paths in
+/// `manager.rs`; raw stderr is opt-in via `RUST_LOG=debug`.
+///
+/// ANSI escapes are stripped before logging because tracing's default
+/// formatter renders control bytes as `\x1b[…]` literals, which is what
+/// the user actually sees on the terminal otherwise.
 fn spawn_stderr_reader(server_name: String, stderr: ChildStderr) {
     tokio::task::spawn_blocking(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             match line {
                 Ok(text) => {
-                    tracing::warn!(server = %server_name, "mcp stderr: {}", text);
+                    let clean = strip_ansi_escapes(&text);
+                    tracing::debug!(server = %server_name, "mcp stderr: {}", clean);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -64,6 +68,29 @@ fn spawn_stderr_reader(server_name: String, stderr: ChildStderr) {
             }
         }
     });
+}
+
+/// Remove CSI sequences (`ESC [ … final-byte`) and the bare `ESC` so log
+/// lines stay readable when the child wraps its output in ANSI styling.
+/// Final bytes of a CSI run sit in `0x40..=0x7e`; we also tolerate a
+/// stray `ESC` with no following bracket by skipping the next char.
+fn strip_ansi_escapes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        if let Some('[') = chars.next() {
+            for cc in chars.by_ref() {
+                if matches!(cc, '\x40'..='\x7e') {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Write a single stdio message to the server (JSON-RPC request *or*
@@ -351,5 +378,29 @@ impl StdioClient {
             )
             .await?;
         parse_call_tool_response(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_ansi_escapes;
+
+    #[test]
+    fn strips_csi_color_run() {
+        let input = "\x1b[2m2026-05-15T22:34:54.965614Z\x1b[0m \x1b[32m INFO\x1b[0m start";
+        assert_eq!(
+            strip_ansi_escapes(input),
+            "2026-05-15T22:34:54.965614Z  INFO start"
+        );
+    }
+
+    #[test]
+    fn passes_plain_text_through() {
+        assert_eq!(strip_ansi_escapes("no escapes here"), "no escapes here");
+    }
+
+    #[test]
+    fn drops_bare_escape() {
+        assert_eq!(strip_ansi_escapes("a\x1bXb"), "ab");
     }
 }

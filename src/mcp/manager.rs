@@ -44,12 +44,21 @@ pub struct McpManager {
 }
 
 impl McpManager {
-    pub async fn new(workspace: PathBuf) -> Result<Self> {
+    /// Returns the manager and a pre-formatted startup block for the
+    /// caller to fold into the TUI banner. The block is empty when no
+    /// servers connected; otherwise it carries an `MCP servers:` header
+    /// followed by one indented `✓ name (N tools)` bullet per server,
+    /// matching the workspace/model section above it. Printing this
+    /// block here would land on the raw terminal before `OutputCapture`
+    /// is installed, and the inline viewport scrolls it off-screen when
+    /// it anchors.
+    pub async fn new(workspace: PathBuf) -> Result<(Self, String)> {
         let server_configs = load_mcp_config(&workspace);
 
         let mut clients: HashMap<String, Arc<McpClient>> = HashMap::new();
         let mut tools_by_server: HashMap<String, Vec<McpTool>> = HashMap::new();
         let mut tool_to_server: HashMap<String, String> = HashMap::new();
+        let mut bullets = String::new();
 
         for (server_name, config) in server_configs {
             match McpClient::connect(server_name.clone(), config).await {
@@ -65,12 +74,12 @@ impl McpManager {
                             }
                             tools_by_server.insert(server_name.clone(), tools);
                             clients.insert(server_name.clone(), Arc::new(client));
-                            println!(
-                                "{} MCP server '{}' initialized ({} tools)",
+                            bullets.push_str(&format!(
+                                "  {} {} ({} tools)\n",
                                 "✓".bright_green(),
                                 server_name.bright_cyan(),
                                 tool_count
-                            );
+                            ));
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -91,11 +100,17 @@ impl McpManager {
             }
         }
 
-        Ok(Self {
+        let manager = Self {
             clients: Arc::new(Mutex::new(clients)),
             tools_by_server: Arc::new(tools_by_server),
             tool_to_server: Arc::new(tool_to_server),
-        })
+        };
+        let init_block = if bullets.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n{}", "MCP servers:".bright_green(), bullets)
+        };
+        Ok((manager, init_block))
     }
 
     /// Get all available MCP tools from all connected servers.

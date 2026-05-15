@@ -126,8 +126,6 @@ fn main() -> Result<()> {
         }
     });
 
-    startup_banner.push('\n');
-
     if !interactive_mode {
         print!("{}", startup_banner);
     }
@@ -140,8 +138,17 @@ fn main() -> Result<()> {
     );
 
     let mut repl = Repl::new(client, config, workspace.clone(), morph_client)?;
+    // MCP block sits flush below the workspace/model labels (no blank
+    // line in between), then a single trailing newline separates the
+    // banner from the welcome (interactive) or the next CLI output
+    // (one-shot). When there are no servers the trailing `\n` alone
+    // gives the same blank-line separator the old banner had.
+    let mcp_section = format!("{}\n", repl.take_mcp_init_lines());
     if interactive_mode {
+        startup_banner.push_str(&mcp_section);
         repl.set_startup_banner(startup_banner);
+    } else {
+        print!("{}", mcp_section);
     }
 
     if cli.resume {
