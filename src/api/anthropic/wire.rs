@@ -39,12 +39,12 @@ pub(super) const BETA_TOKEN_EFFICIENT_AND_COMPACT: &str =
     "token-efficient-tools-2025-02-19,compact-2026-01-12";
 
 /// Pick the `anthropic-beta` value for `model`. Compaction is gated
-/// on the model family because older models 400 on the unknown beta.
+/// off the same `ModelInfo::supports_server_compaction` flag the
+/// request builder uses to attach the `context_management` field, so
+/// the beta header and the body field can never disagree about which
+/// models speak server-side compaction.
 pub(super) fn anthropic_beta_for(model: &str) -> &'static str {
-    let supports_compact = model.starts_with("claude-opus-4-")
-        || model.starts_with("claude-sonnet-4-6")
-        || model.starts_with("claude-sonnet-4-7");
-    if supports_compact {
+    if crate::api::model_info::lookup(model).supports_server_compaction {
         BETA_TOKEN_EFFICIENT_AND_COMPACT
     } else {
         BETA_TOKEN_EFFICIENT

@@ -33,6 +33,14 @@ struct WebSearchToolResultBlock {
     content: Vec<WebSearchResult>,
 }
 
+/// Saturating `u64 -> u32` conversion used on token-count fields
+/// arriving on the wire as `u64`. The `Usage` struct still stores
+/// `u32`, so a pathological million-plus-token turn is reported as
+/// `u32::MAX` rather than silently wrapping around to a small number.
+fn saturate_u32(n: u64) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
 impl AnthropicClient {
     pub async fn create_message_streaming<FText, FThink>(
         &self,
@@ -90,7 +98,13 @@ where
     FThink: Fn(&str) + Send + Sync,
 {
     let mut byte_stream = byte_stream;
-    let mut buffer = String::new();
+    // Hold raw bytes across chunks. Decoding each HTTP chunk eagerly
+    // through `String::from_utf8_lossy` used to corrupt any multi-byte
+    // codepoint that straddled a chunk boundary into a U+FFFD glyph,
+    // both in the streamed callbacks and the aggregated response.
+    // Buffering bytes and only decoding at SSE line boundaries keeps
+    // codepoints intact.
+    let mut buffer: Vec<u8> = Vec::new();
 
     let mut message_id = String::new();
     let mut model_name = String::new();
@@ -115,11 +129,17 @@ where
         }
 
         let chunk = chunk_result?;
-        buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        buffer.extend_from_slice(chunk.as_ref());
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].to_string();
-            buffer = buffer[pos + 1..].to_string();
+        while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
+            // The complete line is in-buffer, so codepoints aren't
+            // split across chunks. `from_utf8_lossy` still tolerates
+            // genuinely malformed payloads without panicking.
+            let line = String::from_utf8_lossy(&buffer[..pos]).into_owned();
+            // Drop the line plus its trailing `\n` in place — this used
+            // to reallocate the rest of the buffer on every iteration,
+            // turning long SSE responses into an O(n^2) parser.
+            buffer.drain(..=pos);
 
             let line = line.trim_end();
             let json_str = match line.strip_prefix("data: ") {
@@ -156,16 +176,17 @@ where
                             .unwrap_or("")
                             .to_string();
                         if let Some(u) = msg.get("usage") {
-                            input_tokens =
-                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            input_tokens = saturate_u32(
+                                u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                            );
                             cache_read_input_tokens = u
                                 .get("cache_read_input_tokens")
                                 .and_then(|v| v.as_u64())
-                                .map(|n| n as u32);
+                                .map(saturate_u32);
                             cache_creation_input_tokens = u
                                 .get("cache_creation_input_tokens")
                                 .and_then(|v| v.as_u64())
-                                .map(|n| n as u32);
+                                .map(saturate_u32);
                         }
                     }
                 }
@@ -211,13 +232,21 @@ where
                                 Some(StreamBlockKind::ServerToolUse)
                             }
                             "web_search_tool_result" => {
-                                if let Ok(result) = serde_json::from_value::<WebSearchToolResultBlock>(
+                                match serde_json::from_value::<WebSearchToolResultBlock>(
                                     block.clone(),
                                 ) {
-                                    content_blocks.push(ContentBlock::WebSearchToolResult {
-                                        tool_use_id: result.tool_use_id,
-                                        content: result.content,
-                                    });
+                                    Ok(result) => {
+                                        content_blocks.push(ContentBlock::WebSearchToolResult {
+                                            tool_use_id: result.tool_use_id,
+                                            content: result.content,
+                                        });
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            error = %e,
+                                            "dropping malformed web_search_tool_result block"
+                                        );
+                                    }
                                 }
                                 None
                             }
@@ -229,21 +258,22 @@ where
                             // next turn can round-trip the summary
                             // and Anthropic doesn't re-compact.
                             "compaction" => {
-                                // Mirror the existing "drop malformed
-                                // payloads silently" pattern used by
-                                // `web_search_tool_result` above. The
-                                // non-streaming serde path would error
-                                // on a missing `content`; in streaming
-                                // we don't want to kill the whole
-                                // response over one block, so skip it
-                                // — losing the summary forces a
-                                // re-compact next turn but doesn't
-                                // 400 the request.
+                                // The non-streaming serde path would
+                                // error on a missing `content`; in
+                                // streaming we don't kill the whole
+                                // response over one block, so skip and
+                                // log instead. Losing the summary
+                                // forces a re-compact next turn but
+                                // doesn't 400 the request.
                                 if let Some(content) = block.get("content").and_then(|v| v.as_str())
                                 {
                                     content_blocks.push(ContentBlock::Compaction {
                                         content: content.to_string(),
                                     });
+                                } else {
+                                    tracing::debug!(
+                                        "dropping compaction block with missing or non-string content"
+                                    );
                                 }
                                 None
                             }
@@ -338,8 +368,9 @@ where
                             .map(String::from);
                     }
                     if let Some(u) = event.get("usage") {
-                        output_tokens =
-                            u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        output_tokens = saturate_u32(
+                            u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                        );
                     }
                 }
                 "error" => {

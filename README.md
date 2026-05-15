@@ -121,7 +121,7 @@ sofos
 
 **Message queueing:** Keep typing while the AI is working. Pressing Enter queues the message; queued messages are sent automatically once the current turn finishes. The hint line shows the queue count.
 
-**Multi-line input:** `Shift+Enter` inserts a newline; `Enter` alone submits.
+**Multi-line input:** `Shift+Enter` inserts a newline; `Enter` alone submits. On terminals that do not deliver `Shift+Enter` distinctly (Apple Terminal.app and many defaults), use `Alt+Enter` or `Ctrl+Enter` as a fallback newline binding.
 
 **Scrollback:** Sofos runs as an inline viewport at the bottom of your terminal — the rest of the terminal is normal scrollback, so use your terminal emulator's own scrollbar, mouse wheel, and text selection / copy-paste.
 

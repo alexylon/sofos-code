@@ -84,6 +84,34 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_beta_for_matches_model_info_predicate() {
+        // The beta header and the request body's `context_management`
+        // are gated off the same `ModelInfo::supports_server_compaction`
+        // flag. An earlier version used a separate prefix list here that
+        // could disagree with `ModelInfo` — e.g. `claude-opus-4-5` would
+        // pick up the compaction beta even though the body never carried
+        // the matching field. Cross-check the two sources of truth so any
+        // future drift surfaces here instead of as a wire-format 400.
+        for model in [
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-opus-4-5",
+            "claude-sonnet-3-7",
+            "some-unknown-future-model",
+        ] {
+            let expected = crate::api::model_info::lookup(model).supports_server_compaction;
+            let header = anthropic_beta_for(model);
+            assert_eq!(
+                header.contains(BETA_COMPACT),
+                expected,
+                "{model}: beta header must agree with model info on compaction support"
+            );
+        }
+    }
+
+    #[test]
     fn beta_with_compact_matches_components() {
         // `BETA_TOKEN_EFFICIENT_AND_COMPACT` is a literal that must
         // stay in lockstep with its two component consts. Catch drift
@@ -369,6 +397,127 @@ mod tests {
                 matches!(&err, crate::error::SofosError::Api(msg) if msg.contains("overloaded")),
                 "got: {err:?}"
             );
+        }
+
+        #[tokio::test]
+        async fn multibyte_codepoint_split_across_chunks_is_preserved() {
+            // Reproduces the pre-fix corruption: a UTF-8 codepoint
+            // straddling two HTTP chunks used to be decoded chunk-by-
+            // chunk through `from_utf8_lossy`, replacing the split
+            // bytes with U+FFFD in both the streamed callback and the
+            // aggregated response. Split a single SSE line — and a
+            // single codepoint within it — across two chunks here.
+            use futures::stream;
+            let line = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": "café"}
+                }))
+                .unwrap()
+            );
+            let bytes = line.into_bytes();
+            // "café" is `caf` + 0xc3 0xa9. Find the 0xc3 0xa9 pair and
+            // split between them so the codepoint genuinely spans two
+            // chunks rather than landing on a clean boundary.
+            let split_at = bytes
+                .windows(2)
+                .position(|w| w == [0xc3, 0xa9])
+                .expect("UTF-8 encoding of café contains 0xc3 0xa9")
+                + 1;
+            let prefix = bytes[..split_at].to_vec();
+            let suffix = bytes[split_at..].to_vec();
+
+            let start = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({
+                    "type": "message_start",
+                    "message": {"id": "msg_mb", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}
+                }))
+                .unwrap()
+            )
+            .into_bytes();
+            let block_start = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({
+                    "type": "content_block_start", "index": 0,
+                    "content_block": {"type": "text", "text": ""}
+                }))
+                .unwrap()
+            )
+            .into_bytes();
+            let block_stop = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({"type": "content_block_stop", "index": 0})).unwrap()
+            )
+            .into_bytes();
+            let message_delta = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 1}
+                }))
+                .unwrap()
+            )
+            .into_bytes();
+
+            let chunks: Vec<crate::error::Result<Vec<u8>>> = vec![
+                Ok(start),
+                Ok(block_start),
+                Ok(prefix),
+                Ok(suffix),
+                Ok(block_stop),
+                Ok(message_delta),
+            ];
+            let byte_stream = stream::iter(chunks);
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            let response = parse_stream(
+                byte_stream,
+                move |s| t.lock().unwrap().push(s.to_string()),
+                |_| {},
+                flag(),
+            )
+            .await
+            .expect("parse_stream succeeds");
+
+            let streamed = text_chunks.lock().unwrap().concat();
+            assert_eq!(streamed, "café", "streamed text must not contain U+FFFD");
+            assert!(
+                matches!(&response.content[0], ContentBlock::Text { text } if text == "café"),
+                "aggregated text must round-trip the multibyte codepoint"
+            );
+        }
+
+        #[tokio::test]
+        async fn oversized_input_tokens_saturate_at_u32_max() {
+            // `Usage::input_tokens` is `u32`, but Anthropic ships the
+            // count as a JSON number that parses through `as_u64`. A
+            // pathologically large turn used to wrap around silently
+            // (`u32` truncation on `as u32`); now it saturates at the
+            // ceiling so the cost line is at worst over-reported, not
+            // wrapped to a tiny number.
+            let events = vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_big",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {"input_tokens": 9_999_999_999u64}
+                    }
+                }),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 9_999_999_999u64}}),
+            ];
+
+            let stream = sse_stream_from_events(events);
+            let response = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect("parse_stream succeeds");
+            assert_eq!(response.usage.input_tokens, u32::MAX);
+            assert_eq!(response.usage.output_tokens, u32::MAX);
         }
     }
 }
