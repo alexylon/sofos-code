@@ -420,6 +420,12 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
     }
 
     let mut content_blocks = Vec::new();
+    // Transitional and Azure-style backends sometimes emit the same
+    // tool call in both the legacy `message.tool_calls` shape and the
+    // current top-level `function_call` shape. Track ids that have
+    // already landed so a single tool call doesn't end up executed
+    // twice on the next round-trip.
+    let mut seen_tool_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for item in response_parsed.output {
         match item.item_type.as_str() {
             "message" => {
@@ -431,6 +437,9 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
 
                 if let Some(tool_calls) = item.tool_calls {
                     for call in tool_calls {
+                        if !seen_tool_ids.insert(call.id.clone()) {
+                            continue;
+                        }
                         let input = utils::parse_tool_arguments(&call.name, &call.arguments);
                         content_blocks.push(ContentBlock::ToolUse {
                             id: call.id,
@@ -444,6 +453,9 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
                 if let (Some(name), Some(arguments), Some(call_id)) =
                     (item.name, item.arguments, item.call_id)
                 {
+                    if !seen_tool_ids.insert(call_id.clone()) {
+                        continue;
+                    }
                     let input = utils::parse_tool_arguments(&name, &arguments);
                     content_blocks.push(ContentBlock::ToolUse {
                         id: call_id,
@@ -505,6 +517,13 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
             Some("max_tokens".to_string())
         }
         (Some("incomplete"), Some(other)) => Some(other.to_string()),
+        // Anthropic always sets `stop_reason` on a normal stop. Map the
+        // OpenAI `status: "completed"` to the same `"end_turn"` value
+        // so downstream `if let Some(stop_reason) = ...` branches treat
+        // a successful OpenAI turn the same as a successful Anthropic
+        // one, instead of falling into the "no stop reason" branch and
+        // missing the normal-completion case for OpenAI only.
+        (Some("completed"), _) => Some("end_turn".to_string()),
         _ => None,
     };
 

@@ -73,7 +73,13 @@ where
     FThink: Fn(&str) + Send + Sync,
 {
     let mut byte_stream = byte_stream;
-    let mut buffer = String::new();
+    // Hold raw bytes across chunks. Decoding each HTTP chunk eagerly
+    // through `String::from_utf8_lossy` used to corrupt any multi-byte
+    // codepoint that straddled a chunk boundary into a U+FFFD glyph,
+    // both in the streamed callbacks and the aggregated response.
+    // Buffering bytes and only decoding at SSE line boundaries keeps
+    // codepoints intact.
+    let mut buffer: Vec<u8> = Vec::new();
     let mut final_response: Option<OpenAIResponse> = None;
 
     while let Some(chunk_result) = byte_stream.next().await {
@@ -82,11 +88,25 @@ where
         }
 
         let chunk = chunk_result?;
-        buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        buffer.extend_from_slice(chunk.as_ref());
 
-        while let Some(pos) = buffer.find('\n') {
-            let line = buffer[..pos].to_string();
-            buffer = buffer[pos + 1..].to_string();
+        while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
+            // Re-check the interrupt flag between lines so a single
+            // multi-event chunk (notably the terminal `response.completed`
+            // chunk, which can carry many lines at once) still aborts
+            // promptly under ESC instead of running every line first.
+            if interrupt_flag.load(Ordering::SeqCst) {
+                return Err(SofosError::Interrupted);
+            }
+
+            // The complete line is in-buffer, so codepoints aren't
+            // split across chunks. `from_utf8_lossy` still tolerates
+            // genuinely malformed payloads without panicking.
+            let line = String::from_utf8_lossy(&buffer[..pos]).into_owned();
+            // Drop the line plus its trailing `\n` in place — this used
+            // to reallocate the rest of the buffer on every iteration,
+            // turning long SSE responses into an O(n^2) parser.
+            buffer.drain(..=pos);
 
             let line = line.trim_end();
             let json_str = match line.strip_prefix("data: ") {
@@ -157,9 +177,17 @@ where
                     return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
                 }
                 "error" => {
+                    // Two shapes seen in the wild: a nested
+                    // `{error: {message: "..."}}` envelope (most common
+                    // on the `/responses` endpoint) and a flat
+                    // `{message: "..."}` envelope. Try the nested form
+                    // first; fall back to the flat one so neither
+                    // shape arrives as "Unknown streaming error".
                     let error_msg = event
-                        .get("message")
+                        .get("error")
+                        .and_then(|e| e.get("message"))
                         .and_then(|m| m.as_str())
+                        .or_else(|| event.get("message").and_then(|m| m.as_str()))
                         .unwrap_or("Unknown streaming error");
                     return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
                 }

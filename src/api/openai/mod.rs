@@ -441,6 +441,213 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn nested_error_envelope_surfaces_through_api_error() {
+            // OpenAI's `/responses` endpoint commonly emits the nested
+            // `{type: "error", error: {message: "..."}}` shape. The
+            // earlier parser only inspected `event.get("message")` and
+            // dropped the nested message text into "Unknown streaming
+            // error", losing the diagnostic.
+            let events = vec![json!({
+                "type": "error",
+                "error": {"message": "context_length_exceeded"}
+            })];
+
+            let stream = sse_stream_from_events(events);
+            let err = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("nested error event must surface as error");
+            assert!(
+                matches!(&err, SofosError::Api(msg) if msg.contains("context_length_exceeded")),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn flat_error_envelope_still_surfaces_through_api_error() {
+            // Flat `{type: "error", message: "..."}` shape is also
+            // tolerated so neither envelope arrives as "Unknown
+            // streaming error".
+            let events = vec![json!({"type": "error", "message": "rate_limit_exceeded"})];
+
+            let stream = sse_stream_from_events(events);
+            let err = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("flat error event must surface as error");
+            assert!(
+                matches!(&err, SofosError::Api(msg) if msg.contains("rate_limit_exceeded")),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn multibyte_codepoint_split_across_chunks_is_preserved() {
+            // Reproduces the pre-fix corruption: a UTF-8 codepoint
+            // straddling two HTTP chunks used to be decoded chunk-by-
+            // chunk through `from_utf8_lossy`, replacing the split
+            // bytes with U+FFFD. Split a single delta line across
+            // two chunks within the codepoint itself.
+            use futures::stream;
+            let delta_line = format!(
+                "data: {}\n",
+                serde_json::to_string(&json!({
+                    "type": "response.output_text.delta",
+                    "delta": "café"
+                }))
+                .unwrap()
+            );
+            let bytes = delta_line.into_bytes();
+            let split_at = bytes
+                .windows(2)
+                .position(|w| w == [0xc3, 0xa9])
+                .expect("UTF-8 encoding of café contains 0xc3 0xa9")
+                + 1;
+            let prefix = bytes[..split_at].to_vec();
+            let suffix = bytes[split_at..].to_vec();
+            let completion = format!(
+                "data: {}\n",
+                serde_json::to_string(&completed_response("café")).unwrap()
+            )
+            .into_bytes();
+
+            let chunks: Vec<crate::error::Result<Vec<u8>>> =
+                vec![Ok(prefix), Ok(suffix), Ok(completion)];
+            let byte_stream = stream::iter(chunks);
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            parse_stream(
+                byte_stream,
+                move |s| t.lock().unwrap().push(s.to_string()),
+                |_| {},
+                flag(),
+            )
+            .await
+            .expect("parse_stream succeeds");
+
+            let streamed = text_chunks.lock().unwrap().concat();
+            assert_eq!(streamed, "café", "streamed text must not contain U+FFFD");
+        }
+
+        #[tokio::test]
+        async fn interrupt_set_mid_buffer_stops_before_the_next_line() {
+            // The parser used to check the interrupt flag only between
+            // HTTP chunks. A single chunk carrying many SSE lines
+            // (notably the terminal `response.completed` chunk) would
+            // process every line before noticing the flag. The new
+            // inner check picks the flag up between lines, so an ESC
+            // press during the burst aborts on the very next line.
+            use futures::stream;
+            let flag = Arc::new(AtomicBool::new(false));
+            let f = flag.clone();
+            let first = format!(
+                "data: {}\n",
+                serde_json::to_string(
+                    &json!({"type": "response.output_text.delta", "delta": "one"})
+                )
+                .unwrap()
+            );
+            let second = format!(
+                "data: {}\n",
+                serde_json::to_string(
+                    &json!({"type": "response.output_text.delta", "delta": "two"})
+                )
+                .unwrap()
+            );
+            // One chunk that carries both lines back-to-back.
+            let combined = [first.as_bytes(), second.as_bytes()].concat();
+            let chunks: Vec<crate::error::Result<Vec<u8>>> = vec![Ok(combined)];
+            let byte_stream = stream::iter(chunks);
+
+            let text_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let t = text_chunks.clone();
+            let err = parse_stream(
+                byte_stream,
+                move |s| {
+                    t.lock().unwrap().push(s.to_string());
+                    // After the first delta lands, raise the flag so the
+                    // inner-loop check fires before line two is parsed.
+                    f.store(true, std::sync::atomic::Ordering::SeqCst);
+                },
+                |_| {},
+                flag.clone(),
+            )
+            .await
+            .expect_err("interrupt mid-buffer must abort");
+            assert!(matches!(err, SofosError::Interrupted), "got: {err:?}");
+            assert_eq!(
+                text_chunks.lock().unwrap().as_slice(),
+                &["one".to_string()],
+                "the second delta must not reach the callback after the flag is set"
+            );
+        }
+
+        #[tokio::test]
+        async fn duplicate_tool_calls_across_legacy_and_top_level_shapes_are_deduped() {
+            // Transitional and Azure-style backends sometimes emit
+            // the same tool call in both the legacy `message.tool_calls`
+            // shape and the current top-level `function_call` shape.
+            // Without dedup the call would execute twice on the next
+            // round-trip. Pin that the parser keeps only the first copy.
+            let events = vec![json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_dup",
+                    "model": "gpt-5.5",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [],
+                            "tool_calls": [
+                                {"id": "call_42", "name": "read_file", "arguments": "{\"path\":\"x\"}"}
+                            ]
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_42",
+                            "name": "read_file",
+                            "arguments": "{\"path\":\"x\"}"
+                        }
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 3}
+                }
+            })];
+            let stream = sse_stream_from_events(events);
+            let response = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect("parse_stream succeeds");
+            let tool_uses: Vec<_> = response
+                .content
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::ToolUse { .. }))
+                .collect();
+            assert_eq!(
+                tool_uses.len(),
+                1,
+                "duplicate tool calls with the same id must collapse to one"
+            );
+            assert!(matches!(
+                &tool_uses[0],
+                ContentBlock::ToolUse { id, .. } if id == "call_42"
+            ));
+        }
+
+        #[tokio::test]
+        async fn completed_status_carries_end_turn_stop_reason() {
+            // OpenAI used to leave `stop_reason` as `None` on a normal
+            // stop because the parser only mapped `status: "incomplete"`.
+            // Anthropic always sets a `stop_reason`, so downstream code
+            // that checks `if let Some(_) = stop_reason` would treat
+            // OpenAI normal stops differently. Pin the convergence.
+            let events = vec![completed_response("done")];
+            let stream = sse_stream_from_events(events);
+            let response = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect("parse_stream succeeds");
+            assert_eq!(response.stop_reason.as_deref(), Some("end_turn"));
+        }
+
+        #[tokio::test]
         async fn incomplete_status_maps_to_max_tokens_stop_reason() {
             // `response.incomplete` carries the same shape as
             // `response.completed`; the non-streaming `build_response`

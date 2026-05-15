@@ -99,7 +99,17 @@ impl MorphClient {
         })
         .await?;
 
-        let result: MorphResponse = response.json().await?;
+        // Convert both the body read and the JSON decode into a single
+        // `SofosError::Api` value, matching the wrapping the other
+        // provider clients use for response decode failures. The raw
+        // `reqwest::Error` from `response.json().await?` lost the
+        // "Morph" context once it bubbled out of this function.
+        let body = response
+            .text()
+            .await
+            .map_err(|e| SofosError::Api(format!("Failed to read Morph response body: {}", e)))?;
+        let result: MorphResponse = serde_json::from_str(&body)
+            .map_err(|e| SofosError::Api(format!("Failed to parse Morph response: {}", e)))?;
 
         let choice = result
             .choices
