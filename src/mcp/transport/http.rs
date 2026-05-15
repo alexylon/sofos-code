@@ -9,6 +9,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Bound on the TCP/TLS connect phase for the HTTP MCP transport.
+/// Without this, a network outage waits the full request timeout
+/// (`MCP_REQUEST_TIMEOUT`, currently 120 s) before failing — confusing
+/// when the user just wants a quick "server unreachable" signal.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct HttpClient {
     server_name: String,
@@ -29,9 +36,13 @@ impl HttpClient {
         // A bare `reqwest::Client::new()` uses no request timeout at
         // all, so a slow remote MCP server could stall a turn forever.
         // Set the shared MCP ceiling at client-construction time so
-        // every call-site inherits it without extra threading.
+        // every call-site inherits it without extra threading. The
+        // connect timeout is shorter than the overall ceiling so an
+        // unreachable host fails fast instead of holding the full
+        // request budget on DNS / TCP / TLS.
         let client = reqwest::Client::builder()
             .timeout(MCP_REQUEST_TIMEOUT)
+            .connect_timeout(HTTP_CONNECT_TIMEOUT)
             .build()
             .map_err(|e| SofosError::McpError(format!("Failed to build MCP HTTP client: {}", e)))?;
 
@@ -57,6 +68,36 @@ impl HttpClient {
             .await?;
 
         let _init_result: InitializeResult = serde_json::from_value(response)?;
+
+        // The MCP spec requires the client to confirm the handshake
+        // with a `notifications/initialized` message before sending any
+        // other request. The stdio transport already did this; HTTP
+        // didn't, which caused strict servers to reject every later
+        // request as "not initialized".
+        self.send_notification_initialized().await?;
+
+        Ok(())
+    }
+
+    async fn send_notification_initialized(&self) -> Result<()> {
+        // JSON-RPC notification: no `id`, no response expected.
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        });
+
+        let mut req = self.client.post(&self.url).json(&notification);
+
+        for (key, value) in &self.headers {
+            req = req.header(key, value);
+        }
+
+        req.send().await.map_err(|e| {
+            SofosError::McpError(format!(
+                "Failed to send `notifications/initialized` to MCP server '{}': {}",
+                self.server_name, e
+            ))
+        })?;
 
         Ok(())
     }

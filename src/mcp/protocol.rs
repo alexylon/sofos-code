@@ -1,12 +1,32 @@
+//! MCP protocol message types.
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// MCP Protocol Messages
+/// JSON-RPC permits a request id to be a number, a string, or null.
+/// Sofos always *sends* numeric ids, but earlier versions also expected
+/// the server's response id to be numeric — a server replying with a
+/// string id (which the spec allows) failed to deserialise and the
+/// whole transport dropped with a generic parse error. The `untagged`
+/// enum below accepts either shape on the wire while keeping numeric
+/// outgoing ids easy to construct.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Id {
+    Number(u64),
+    String(String),
+}
+
+impl From<u64> for Id {
+    fn from(value: u64) -> Self {
+        Id::Number(value)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
-    pub id: u64,
+    pub id: Id,
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
@@ -16,7 +36,7 @@ impl JsonRpcRequest {
     pub fn new(id: u64, method: String, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
-            id,
+            id: Id::Number(id),
             method,
             params,
         }
@@ -26,7 +46,7 @@ impl JsonRpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
     pub jsonrpc: String,
-    pub id: u64,
+    pub id: Id,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

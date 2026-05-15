@@ -450,7 +450,7 @@ impl ToolExecutor {
     pub async fn execute(&self, tool_name: &str, input: &Value) -> Result<ToolExecutionResult> {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
-            if mcp_manager.is_mcp_tool(tool_name).await {
+            if mcp_manager.is_mcp_tool(tool_name) {
                 let mut result = mcp_manager.execute_tool(tool_name, input).await?;
                 cap_mcp_response(&mut result);
                 return Ok(ToolExecutionResult::Structured(result));

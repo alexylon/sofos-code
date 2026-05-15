@@ -1,7 +1,7 @@
 use crate::error::{Result, SofosError};
 use crate::mcp::client::McpClient;
 use crate::mcp::config::load_mcp_config;
-use crate::mcp::protocol::{CallToolResult, ToolContent};
+use crate::mcp::protocol::{CallToolResult, McpTool, ToolContent};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,18 +21,35 @@ pub struct ImageData {
     pub base64_data: String,
 }
 
-/// Manages multiple MCP server connections and their tools
+/// Manages multiple MCP server connections and their tools.
+///
+/// `clients` wraps each `McpClient` in `Arc` so callers can clone the
+/// handle out of the map and drop the outer lock before awaiting on a
+/// server. The previous implementation held the outer lock across
+/// `client.call_tool(...).await`, which serialised every tool call
+/// across every server.
+///
+/// `tools_by_server` is a snapshot of each server's tool list taken at
+/// construction time. The earlier `get_all_tools` re-called
+/// `client.list_tools` on every invocation, which meant every TUI
+/// refresh hit each remote MCP server with a fresh round-trip.
+///
+/// `tool_to_server` is also a snapshot — it never mutates after
+/// construction, so it lives behind an `Arc<HashMap>` rather than a
+/// `Mutex` and `is_mcp_tool` serves from it lock-free.
 pub struct McpManager {
-    clients: Arc<Mutex<HashMap<String, McpClient>>>,
-    tool_to_server: Arc<Mutex<HashMap<String, String>>>,
+    clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
+    tools_by_server: Arc<HashMap<String, Vec<McpTool>>>,
+    tool_to_server: Arc<HashMap<String, String>>,
 }
 
 impl McpManager {
     pub async fn new(workspace: PathBuf) -> Result<Self> {
         let server_configs = load_mcp_config(&workspace);
 
-        let mut clients = HashMap::new();
-        let mut tool_to_server = HashMap::new();
+        let mut clients: HashMap<String, Arc<McpClient>> = HashMap::new();
+        let mut tools_by_server: HashMap<String, Vec<McpTool>> = HashMap::new();
+        let mut tool_to_server: HashMap<String, String> = HashMap::new();
 
         for (server_name, config) in server_configs {
             match McpClient::connect(server_name.clone(), config).await {
@@ -41,12 +58,13 @@ impl McpManager {
                     match client.list_tools().await {
                         Ok(tools) => {
                             let tool_count = tools.len();
-                            for tool in tools {
+                            for tool in &tools {
                                 // Prefix tool name with server name to avoid conflicts
                                 let prefixed_name = format!("{}_{}", server_name, tool.name);
                                 tool_to_server.insert(prefixed_name, server_name.to_string());
                             }
-                            clients.insert(server_name.clone(), client);
+                            tools_by_server.insert(server_name.clone(), tools);
+                            clients.insert(server_name.clone(), Arc::new(client));
                             println!(
                                 "{} MCP server '{}' initialized ({} tools)",
                                 "✓".bright_green(),
@@ -75,40 +93,30 @@ impl McpManager {
 
         Ok(Self {
             clients: Arc::new(Mutex::new(clients)),
-            tool_to_server: Arc::new(Mutex::new(tool_to_server)),
+            tools_by_server: Arc::new(tools_by_server),
+            tool_to_server: Arc::new(tool_to_server),
         })
     }
 
-    /// Get all available MCP tools from all connected servers
+    /// Get all available MCP tools from all connected servers.
+    ///
+    /// Served from the cache built at construction time — no remote
+    /// round-trip per call. MCP server tool lists are stable for the
+    /// lifetime of a session, so refreshing on every TUI tick is pure
+    /// network noise.
     pub async fn get_all_tools(&self) -> Result<Vec<crate::api::Tool>> {
-        let clients = self.clients.lock().await;
         let mut all_tools = Vec::new();
-
-        for (server_name, client) in clients.iter() {
-            match client.list_tools().await {
-                Ok(tools) => {
-                    for mcp_tool in tools {
-                        // Prefix tool name with server name
-                        let prefixed_name = format!("{}_{}", server_name, mcp_tool.name);
-
-                        all_tools.push(crate::api::Tool::Regular {
-                            name: prefixed_name,
-                            description: format!("[MCP: {}] {}", server_name, mcp_tool.description),
-                            input_schema: mcp_tool.input_schema,
-                            cache_control: None,
-                        });
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        server = %server_name,
-                        error = %e,
-                        "failed to list tools from MCP server"
-                    );
-                }
+        for (server_name, tools) in self.tools_by_server.iter() {
+            for mcp_tool in tools {
+                let prefixed_name = format!("{}_{}", server_name, mcp_tool.name);
+                all_tools.push(crate::api::Tool::Regular {
+                    name: prefixed_name,
+                    description: format!("[MCP: {}] {}", server_name, mcp_tool.description),
+                    input_schema: mcp_tool.input_schema.clone(),
+                    cache_control: None,
+                });
             }
         }
-
         Ok(all_tools)
     }
 
@@ -118,17 +126,23 @@ impl McpManager {
         tool_name: &str,
         input: &serde_json::Value,
     ) -> Result<ToolResult> {
-        let tool_to_server = self.tool_to_server.lock().await;
-        let clients = self.clients.lock().await;
-
-        // Find which server owns this tool
-        let server_name = tool_to_server
+        // Find which server owns this tool — `tool_to_server` is
+        // immutable so the lookup is lock-free.
+        let server_name = self
+            .tool_to_server
             .get(tool_name)
             .ok_or_else(|| SofosError::McpError(format!("Unknown MCP tool: {}", tool_name)))?;
 
-        let client = clients.get(server_name).ok_or_else(|| {
-            SofosError::McpError(format!("MCP server '{}' not connected", server_name))
-        })?;
+        // Clone the client `Arc` out under the lock, then drop the lock
+        // before awaiting. The earlier version held the outer lock
+        // across `.await`, which serialised every tool call across
+        // every server.
+        let client = {
+            let clients = self.clients.lock().await;
+            clients.get(server_name).cloned().ok_or_else(|| {
+                SofosError::McpError(format!("MCP server '{}' not connected", server_name))
+            })?
+        };
 
         let original_tool_name = tool_name
             .strip_prefix(&format!("{}_", server_name))
@@ -141,10 +155,11 @@ impl McpManager {
         Ok(format_tool_result(result))
     }
 
-    /// Check if a tool name belongs to an MCP server
-    pub async fn is_mcp_tool(&self, tool_name: &str) -> bool {
-        let tool_to_server = self.tool_to_server.lock().await;
-        tool_to_server.contains_key(tool_name)
+    /// Check if a tool name belongs to an MCP server. The lookup is
+    /// lock-free because `tool_to_server` is immutable after
+    /// construction.
+    pub fn is_mcp_tool(&self, tool_name: &str) -> bool {
+        self.tool_to_server.contains_key(tool_name)
     }
 }
 
@@ -197,6 +212,7 @@ impl Clone for McpManager {
     fn clone(&self) -> Self {
         Self {
             clients: Arc::clone(&self.clients),
+            tools_by_server: Arc::clone(&self.tools_by_server),
             tool_to_server: Arc::clone(&self.tool_to_server),
         }
     }

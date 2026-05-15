@@ -7,30 +7,63 @@ use crate::mcp::config::McpServerConfig;
 use crate::mcp::protocol::*;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Take stdin/stdout from a freshly-spawned MCP child. Reaching the
-/// `Err` branch is practically unreachable — `Command::spawn` with
-/// `Stdio::piped()` on both ends always populates the pipes — but the
-/// type system doesn't enforce it. Owning the `Child` lets us reap it
-/// internally on the impossible branch, so a `?` at the call site
+/// Take stdin/stdout/stderr from a freshly-spawned MCP child. Reaching
+/// the `Err` branch is practically unreachable — `Command::spawn` with
+/// `Stdio::piped()` on all three ends always populates the pipes — but
+/// the type system doesn't enforce it. Owning the `Child` lets us reap
+/// it internally on the impossible branch, so a `?` at the call site
 /// can't accidentally leak a zombie via `Child::drop` (which doesn't
 /// wait).
 fn take_child_pipes(
     mut process: Child,
     server_name: &str,
-) -> Result<(Child, ChildStdin, ChildStdout)> {
-    if let (Some(stdin), Some(stdout)) = (process.stdin.take(), process.stdout.take()) {
-        return Ok((process, stdin, stdout));
+) -> Result<(Child, ChildStdin, ChildStdout, ChildStderr)> {
+    if let (Some(stdin), Some(stdout), Some(stderr)) = (
+        process.stdin.take(),
+        process.stdout.take(),
+        process.stderr.take(),
+    ) {
+        return Ok((process, stdin, stdout, stderr));
     }
     let _ = process.kill();
     let _ = process.wait();
     Err(SofosError::McpError(format!(
-        "Failed to acquire stdin/stdout for MCP server '{}'",
+        "Failed to acquire stdin/stdout/stderr for MCP server '{}'",
         server_name
     )))
+}
+
+/// Drain the child's stderr line-by-line on a blocking worker and route
+/// each line through `tracing::warn!` tagged with the server name. The
+/// previous transport used `Stdio::null()` for stderr, so a misconfigured
+/// or crashing MCP server gave the user no clue what was wrong — the
+/// only signal was an opaque "failed to parse" or "connection closed"
+/// downstream. Capturing through `tracing` keeps the noise out of the
+/// foreground TUI but makes the diagnostics discoverable via
+/// `SOFOS_LOG=warn` or wherever the user has tracing pointed.
+fn spawn_stderr_reader(server_name: String, stderr: ChildStderr) {
+    tokio::task::spawn_blocking(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            match line {
+                Ok(text) => {
+                    tracing::warn!(server = %server_name, "mcp stderr: {}", text);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        server = %server_name,
+                        "mcp stderr read failed: {}",
+                        e
+                    );
+                    break;
+                }
+            }
+        }
+    });
 }
 
 /// Write a single stdio message to the server (JSON-RPC request *or*
@@ -64,12 +97,25 @@ fn stdio_write_blocking(
 /// parsed `JsonRpcResponse` envelope (not the `result` payload) so the
 /// caller can distinguish a server-reported error from a transport
 /// failure.
+///
+/// Holds `request_lock` for the full write+read cycle: the previous
+/// version locked stdin for the write, released, then locked stdout for
+/// the read. If two requests overlapped, the read side could pick up
+/// the *other* request's response — JSON-RPC ids let the caller catch
+/// the mismatch, but only after deserialisation. Coupling the two
+/// halves under one lock makes the contract straightforward: one
+/// request fully completes before the next starts.
 fn stdio_request_blocking(
     server_name: &str,
+    request_lock: &Arc<Mutex<()>>,
     stdin: &Arc<Mutex<ChildStdin>>,
     stdout: &Arc<Mutex<BufReader<ChildStdout>>>,
     request_json: &str,
 ) -> Result<JsonRpcResponse> {
+    let _request_guard = request_lock
+        .lock()
+        .map_err(|e| SofosError::McpError(format!("Failed to lock MCP request mutex: {}", e)))?;
+
     stdio_write_blocking(server_name, stdin, request_json)?;
 
     let mut stdout_guard = stdout
@@ -107,6 +153,9 @@ pub struct StdioClient {
     process: Arc<Mutex<Child>>,
     stdin: Arc<Mutex<ChildStdin>>,
     stdout: Arc<Mutex<BufReader<ChildStdout>>>,
+    /// Serialises full request-response cycles. See `stdio_request_blocking`
+    /// for why write+read must stay coupled.
+    request_lock: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
 }
 
@@ -140,7 +189,7 @@ impl StdioClient {
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::piped());
 
         for (key, value) in env_vars {
             cmd.env(key, value);
@@ -153,16 +202,21 @@ impl StdioClient {
             ))
         })?;
 
-        // `take_child_pipes` reaps the child if either pipe is missing,
+        // `take_child_pipes` reaps the child if any pipe is missing,
         // so the `?` here can't leak a zombie. Once the child is
         // wrapped in `Self`, the `Drop` impl takes over.
-        let (process, stdin, stdout) = take_child_pipes(process, &server_name)?;
+        let (process, stdin, stdout, stderr) = take_child_pipes(process, &server_name)?;
+
+        // Drain stderr into `tracing` so server diagnostics aren't
+        // silently dropped on the floor.
+        spawn_stderr_reader(server_name.clone(), stderr);
 
         let client = Self {
             server_name: server_name.clone(),
             process: Arc::new(Mutex::new(process)),
             stdin: Arc::new(Mutex::new(stdin)),
             stdout: Arc::new(Mutex::new(BufReader::new(stdout))),
+            request_lock: Arc::new(Mutex::new(())),
             next_id: Arc::new(AtomicU64::new(1)),
         };
 
@@ -240,11 +294,12 @@ impl StdioClient {
         let request_json = serde_json::to_string(&request)?;
 
         let server_name = self.server_name.clone();
+        let request_lock = Arc::clone(&self.request_lock);
         let stdin = Arc::clone(&self.stdin);
         let stdout = Arc::clone(&self.stdout);
         let response = self
             .run_with_timeout("request", move || {
-                stdio_request_blocking(&server_name, &stdin, &stdout, &request_json)
+                stdio_request_blocking(&server_name, &request_lock, &stdin, &stdout, &request_json)
             })
             .await?;
 

@@ -48,13 +48,29 @@ impl McpServerConfig {
     }
 }
 
+/// Locate the user's home directory using the platform-native variable.
+/// Previously this read `HOME` directly, which is correct on Unix but
+/// always missing on Windows (Windows uses `USERPROFILE`), so the global
+/// MCP config at `~/.sofos/config.toml` was silently skipped for every
+/// Windows user. Returns `None` when the variable is unset.
+fn user_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
 /// Load MCP configuration from both global and local config files
 pub fn load_mcp_config(workspace: &Path) -> HashMap<String, McpServerConfig> {
     let mut servers = HashMap::new();
 
     // Try to load global config from ~/.sofos/config.toml
-    if let Some(home) = std::env::var_os("HOME") {
-        let global_config_path = PathBuf::from(home).join(".sofos/config.toml");
+    if let Some(home) = user_home_dir() {
+        let global_config_path = home.join(".sofos/config.toml");
         if let Ok(global_servers) = load_mcp_config_from_file(&global_config_path) {
             servers.extend(global_servers);
         }
@@ -79,18 +95,29 @@ fn load_mcp_config_from_file(
     let content = std::fs::read_to_string(path)?;
     let config: McpConfig = toml::from_str(&content)?;
 
-    // Validate all server configs
-    for (name, server_config) in &config.mcp_servers {
-        if let Err(e) = server_config.validate() {
-            tracing::warn!(
-                server = %name,
-                error = %e,
-                "invalid MCP server config; skipping"
-            );
+    // Drop invalid entries at load time. The previous version logged a
+    // warning but still returned them, which made every later step
+    // (connect, list_tools) re-fail with the generic "Invalid MCP
+    // server configuration" error — useless without the original
+    // reason. Filtering here keeps the warning informative while
+    // removing the noise downstream.
+    let mut servers = HashMap::new();
+    for (name, server_config) in config.mcp_servers {
+        match server_config.validate() {
+            Ok(()) => {
+                servers.insert(name, server_config);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    server = %name,
+                    error = %e,
+                    "invalid MCP server config; skipping"
+                );
+            }
         }
     }
 
-    Ok(config.mcp_servers)
+    Ok(servers)
 }
 
 #[cfg(test)]
@@ -132,6 +159,49 @@ headers = { "Authorization" = "Bearer token" }
         assert_eq!(server.url, Some("https://example.com/mcp".to_string()));
         assert!(!server.is_stdio());
         assert!(server.is_http());
+    }
+
+    #[test]
+    fn load_filters_out_invalid_server_entries() {
+        // The loader used to log a warning and return invalid entries,
+        // which then re-failed with the opaque "Invalid MCP server
+        // configuration" error on every later request. Bad entries are
+        // now dropped at parse time so only well-formed entries survive.
+        let workspace = tempfile::tempdir().unwrap();
+        let config_dir = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.local.toml"),
+            r#"
+[mcp-servers.valid-stdio]
+command = "/usr/bin/server"
+
+[mcp-servers.invalid-empty]
+# neither command nor url — should be dropped
+
+[mcp-servers.invalid-both]
+command = "/usr/bin/server"
+url = "https://example.com/mcp"
+"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_config(workspace.path());
+        assert!(
+            servers.contains_key("valid-stdio"),
+            "well-formed entry must survive: {:?}",
+            servers.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !servers.contains_key("invalid-empty"),
+            "empty entry must be filtered: {:?}",
+            servers.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !servers.contains_key("invalid-both"),
+            "ambiguous entry must be filtered: {:?}",
+            servers.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
