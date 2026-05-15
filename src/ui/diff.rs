@@ -16,7 +16,11 @@ fn shared_syntax_set() -> &'static SyntaxSet {
 
 /// Shared dark theme used for diff highlighting. Same rationale as
 /// [`shared_syntax_set`] — `ThemeSet::load_defaults` is several
-/// megabytes of theme data that doesn't change between calls.
+/// megabytes of theme data that doesn't change between calls. Falls
+/// back to any other bundled theme, then to a default-constructed one,
+/// if the named theme is ever removed upstream — keeps the diff
+/// renderer panic-free rather than dying mid-edit on a future syntect
+/// reorganisation.
 fn shared_diff_theme() -> &'static Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
     THEME.get_or_init(|| {
@@ -24,7 +28,8 @@ fn shared_diff_theme() -> &'static Theme {
         theme_set
             .themes
             .remove("base16-ocean.dark")
-            .expect("base16-ocean.dark is bundled with the syntect defaults")
+            .or_else(|| theme_set.themes.into_values().next())
+            .unwrap_or_default()
     })
 }
 

@@ -32,6 +32,7 @@ All notable changes to Sofos are documented in this file.
 - **`--resume` now restores safe mode** from the saved session, so the resumed tool grant matches what the user had configured at save time.
 - **`--resume` now restores the saved system prompt.** Earlier resumes silently rebuilt the prompt from the current workspace, which could disagree with what the assistant had been answering against (different tool availability, different `AGENTS.md`).
 - **`-p`/`--prompt` invocations now save the session even when the turn errors out.** Previously a failed non-interactive turn left no on-disk session, so `--resume` couldn't bring the user back to whatever state was reached.
+- **Session token counters saturate at their 32-bit ceiling instead of wrapping.** Very long sessions that crossed 4.29 billion tokens used to wrap to a tiny number in release builds and panic in debug. The displayed totals now stay at the ceiling instead, which keeps the cost summary honest as a lower bound.
 
 ### Security
 
@@ -45,18 +46,17 @@ All notable changes to Sofos are documented in this file.
 - **The HTTP MCP transport now fails fast when the server is unreachable.** Earlier a TCP/TLS connect would wait the full 120-second request timeout before giving up. The new 10-second connect timeout lets the user see "server unreachable" promptly while leaving the longer ceiling in place for legitimate slow responses.
 - **The global MCP config at `~/.sofos/config.toml` now loads on Windows too.** The loader read `HOME` directly, which Unix sets but Windows does not, so the file was silently skipped for every Windows user. The loader now uses `USERPROFILE` on Windows and `HOME` elsewhere.
 - **Invalid MCP server entries are dropped at config load time.** Earlier they were retained and surfaced later as a generic "Invalid MCP server configuration" error on every request, with the original reason only visible in the load-time warning. Bad entries now never make it into the live server set.
-- **stderr from stdio MCP servers is captured and surfaced through tracing** instead of being routed to `/dev/null`. Server-side stack traces and start-up errors used to vanish, leaving an opaque "parse error" or "connection closed" as the only downstream signal.
+- **stderr from stdio MCP servers is captured and logged at warning level** instead of being routed to `/dev/null`. Server-side stack traces and start-up errors used to vanish, leaving an opaque "parse error" or "connection closed" as the only downstream signal.
 - **Concurrent MCP stdio requests can no longer pick up each other's responses.** The transport used to lock stdin for the write and stdout for the read separately, so two overlapping requests could read out of order. The full request/response cycle now runs under a single per-client lock.
 - **MCP tool listings are now served from a cache built at start-up.** Earlier `get_all_tools` re-fetched every server's tool list on every call, which meant each TUI refresh fired a network round-trip per HTTP MCP server. Tool lists are stable for the session, so the cache returns immediately.
 - **MCP tool calls no longer serialise across servers.** The manager used to hold its outer mutex across the awaited tool call, so a slow call to server A blocked every concurrent call to server B. The mutex is now dropped before the await; calls to different servers run in parallel.
-- **Session token counters saturate at their 32-bit ceiling instead of wrapping.** Very long sessions that crossed 4.29 billion tokens used to wrap to a tiny number in release builds and panic in debug. The displayed totals now stay at the ceiling instead, which keeps the cost summary honest as a lower bound.
-- **Syntax-highlighted diffs load their assets once per process.** Each `edit_file` / `write_file` / `morph_edit_file` call used to reload the bundled syntax and theme definitions (several megabytes) before rendering the diff. The assets now live behind a one-time initialiser, so subsequent diffs reuse them.
-- **`--check-connection` paired with `--prompt` now warns instead of silently dropping the prompt.** The connectivity check exits before any prompt processing runs, so combining the two flags never produced the prompt response the user expected. The warning makes the unused flag visible without changing the exit semantics.
 
 ### Changed
 
 - **`delete_file` and `delete_directory` now accept external paths once the user grants Write access**, matching how `write_file` and `edit_file` already behaved. Earlier they rejected every path outside the workspace, which was confusing for users who had explicitly authorised the broader directory for writes.
 - **Path globs no longer let `*` cross directory boundaries.** Both the `glob_files` tool and the permission-rule compiler now compile patterns with `literal_separator(true)`, so a pattern like `*.rs` matches Rust files at the current depth only and a `Read(./logs/*)` permission rule applies only to direct children of `./logs/`. Recursive matches still work through `**` (e.g. `**/*.rs`, `Read(./logs/**)`). **Breaking change** for permission rules that relied on `*` walking subdirectories — replace `*` with `**` to keep the old reach.
+- **Syntax-highlighted diffs load their assets once per process.** Each `edit_file` / `write_file` / `morph_edit_file` call used to reload the bundled syntax and theme definitions (several megabytes) before rendering the diff. The assets now live behind a one-time initialiser, so subsequent diffs reuse them.
+- **`--check-connection` paired with `--prompt` now warns instead of silently dropping the prompt.** The connectivity check exits before any prompt processing runs, so combining the two flags never produced the prompt response the user expected. The warning makes the unused flag visible without changing the exit semantics.
 
 ### Removed
 
