@@ -26,6 +26,14 @@ use std::time::Duration;
 
 const SOFOS_USER_AGENT: &str = concat!("Sofos/", env!("CARGO_PKG_VERSION"));
 
+/// Hard cap on the raw HTTP body `web_fetch` will accept. The post-fetch
+/// pipeline runs HTML stripping and then truncates to ~64 KB of text
+/// before handing anything to the model, so far less than 64 MB is ever
+/// "visible". The cap exists to bound how much memory a single tool call
+/// can pull in before that pipeline runs, so a pathological URL serving
+/// gigabytes (or a misreported Content-Length) cannot OOM the process.
+const MAX_WEB_FETCH_BODY_BYTES: usize = 64 * 1024 * 1024;
+
 /// Result from tool execution that can contain text and/or images
 #[derive(Debug, Clone)]
 pub enum ToolExecutionResult {
@@ -722,8 +730,15 @@ impl ToolExecutor {
                 )?;
                 let search_dir = resolved.canonical;
 
+                // `literal_separator(true)` keeps `*` from crossing `/`,
+                // so `*.rs` matches only top-level Rust files and not
+                // every Rust file in every subdirectory. Recursive matches
+                // still work via `**`. The previous default let a casual
+                // `*.rs` quietly walk arbitrary depths, which surprised
+                // users and broadened any pattern based on the file name
+                // alone into a workspace-wide hit.
                 let glob = globset::GlobBuilder::new(pattern)
-                    .literal_separator(false)
+                    .literal_separator(true)
                     .build()
                     .map_err(|e| SofosError::ToolExecution(format!("Invalid glob pattern: {}", e)))?
                     .compile_matcher();
@@ -1215,6 +1230,8 @@ impl ToolExecutor {
                 Ok(result)
             }
             ToolName::WebFetch => {
+                use futures::StreamExt;
+
                 let url = input["url"].as_str().ok_or_else(|| {
                     SofosError::ToolExecution("Missing 'url' parameter".to_string())
                 })?;
@@ -1245,10 +1262,48 @@ impl ToolExecutor {
                     )));
                 }
 
-                let body = response
-                    .text()
-                    .await
-                    .map_err(|e| SofosError::ToolExecution(format!("Read body failed: {}", e)))?;
+                // Reject the request before downloading anything if the
+                // server already announces an oversized body. The
+                // streaming cap below catches the unreported case too.
+                if let Some(announced) = response.content_length() {
+                    if announced > MAX_WEB_FETCH_BODY_BYTES as u64 {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Response from {} announces {} bytes, which exceeds the {} MB web_fetch cap; aborted before downloading.",
+                            url,
+                            announced,
+                            MAX_WEB_FETCH_BODY_BYTES / (1024 * 1024)
+                        )));
+                    }
+                }
+
+                // Stream the body chunk-by-chunk and abort as soon as the
+                // running total crosses the cap. Reading through
+                // `response.text()` would buffer the whole body into
+                // RAM first, so a pathological URL serving gigabytes
+                // could OOM the process even though the trailing
+                // truncation below would have shown only the first
+                // ~64 KB of characters anyway.
+                let mut stream = response.bytes_stream();
+                let mut raw: Vec<u8> = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.map_err(|e| {
+                        SofosError::ToolExecution(format!("Read body failed: {}", e))
+                    })?;
+                    if raw.len().saturating_add(chunk.len()) > MAX_WEB_FETCH_BODY_BYTES {
+                        return Err(SofosError::ToolExecution(format!(
+                            "Response from {} exceeded the {} MB web_fetch cap mid-stream; aborted.",
+                            url,
+                            MAX_WEB_FETCH_BODY_BYTES / (1024 * 1024)
+                        )));
+                    }
+                    raw.extend_from_slice(&chunk);
+                }
+                // The cap protects RAM; the downstream `html_to_text` +
+                // truncation handles the eventual model-visible size.
+                // Non-UTF-8 charsets fall through to lossy decoding,
+                // which matches what the post-fetch `html_to_text`
+                // pipeline expects.
+                let body = String::from_utf8_lossy(&raw).into_owned();
 
                 let text = crate::tools::utils::html_to_text(&body);
 

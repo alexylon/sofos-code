@@ -60,6 +60,54 @@ mod tests {
     }
 
     #[test]
+    fn read_glob_single_star_does_not_cross_separator() {
+        // Regression: a `Read(./secrets/*)` deny rule used to match
+        // files at every depth under `secrets/` because the globset
+        // default lets `*` swallow `/`. With `literal_separator(true)`
+        // it only matches direct children. Recursive matches still
+        // work through `**`, which the second sub-test covers.
+        //
+        // We exercise this through a deny rule rather than an allow
+        // rule because `check_read_permission` returns `Allowed` both
+        // when an allow rule matches AND as the default when no rule
+        // matches — the deny path is the one with a falsifiable
+        // result either way.
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/*)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert_eq!(
+            manager.check_read_permission("./secrets/creds.json"),
+            CommandPermission::Denied,
+            "direct child of ./secrets/ must still match the single-star deny"
+        );
+        assert_eq!(
+            manager.check_read_permission("./secrets/nested/creds.json"),
+            CommandPermission::Allowed,
+            "`*` must not cross `/`, so the nested file is NOT covered by the deny"
+        );
+
+        // The recursive form keeps the historical broad behaviour for
+        // anyone who actually wants every-depth coverage.
+        let mut recursive = PermissionSettings::default();
+        recursive
+            .permissions
+            .deny
+            .push("Read(./secrets/**)".to_string());
+        let recursive_manager = create_test_manager(recursive, &temp_dir);
+        assert_eq!(
+            recursive_manager.check_read_permission("./secrets/nested/creds.json"),
+            CommandPermission::Denied,
+            "`**` must still walk every depth under ./secrets/"
+        );
+    }
+
+    #[test]
     fn test_read_exact_and_wildcard_matching() {
         let temp_dir = TempDir::new().unwrap();
         let mut settings = PermissionSettings::default();

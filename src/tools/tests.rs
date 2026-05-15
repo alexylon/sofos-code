@@ -437,6 +437,53 @@ async fn test_glob_files_finds_matches() {
 }
 
 #[tokio::test]
+async fn glob_files_star_does_not_cross_path_separator() {
+    // Regression: `*.rs` used to match every Rust file at every depth
+    // because the globset default lets `*` swallow `/`. With
+    // `literal_separator(true)` it matches only top-level Rust files;
+    // recursive walks must use `**/*.rs` explicitly.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    std::fs::write(workspace.path().join("top.rs"), "").unwrap();
+    let nested = workspace.path().join("src/inner");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("deep.rs"), "").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("glob_files", &json!({"pattern": "*.rs"}))
+        .await
+        .unwrap();
+    let text = result.text().to_string();
+    assert!(
+        text.contains("top.rs"),
+        "top-level top.rs must still match `*.rs`: {text}"
+    );
+    assert!(
+        !text.contains("deep.rs"),
+        "`*.rs` must NOT walk into subdirectories: {text}"
+    );
+
+    // `**/*.rs` still finds everything; this is the recursive opt-in.
+    let recursive = executor
+        .execute("glob_files", &json!({"pattern": "**/*.rs"}))
+        .await
+        .unwrap();
+    let recursive_text = recursive.text().to_string();
+    assert!(recursive_text.contains("top.rs"));
+    assert!(recursive_text.contains("deep.rs"));
+}
+
+#[tokio::test]
 async fn test_glob_files_skips_default_excludes() {
     // `glob_files("**/*.rs")` must not descend into `target/`,
     // `node_modules/`, `.git/`, etc. by default — a broad pattern over

@@ -253,28 +253,32 @@ impl PermissionManager {
         let mut allow_builder = GlobSetBuilder::new();
         let mut deny_builder = GlobSetBuilder::new();
 
+        // Compile every permission pattern with `literal_separator(true)`
+        // so that `*` does not cross `/`. A casual `Read(/etc/*.conf)`
+        // rule used to broaden into every `*.conf` file under any depth
+        // of `/etc`, because the globset default lets `*` swallow path
+        // separators. Recursive matches still work through `**`.
+        let compile_path_glob = |pattern: &str| -> Result<Glob> {
+            globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| {
+                    SofosError::ToolExecution(format!("Invalid glob pattern '{}': {}", pattern, e))
+                })
+        };
+
         let add_patterns = |builder: &mut GlobSetBuilder, entries: &[String]| -> Result<()> {
             for entry in entries {
                 if let Some(pattern) = extract_fn(entry) {
                     let expanded_pattern = Self::expand_tilde(pattern);
-                    let glob = Glob::new(&expanded_pattern).map_err(|e| {
-                        SofosError::ToolExecution(format!(
-                            "Invalid glob pattern '{}': {}",
-                            pattern, e
-                        ))
-                    })?;
+                    let glob = compile_path_glob(&expanded_pattern)?;
                     builder.add(glob);
 
                     // For patterns ending with /**, also allow the base directory itself.
                     // e.g. Read(/some/path/**) should also match /some/path for list_directory.
                     if expanded_pattern.ends_with("/**") {
                         let base = &expanded_pattern[..expanded_pattern.len() - 3];
-                        let base_glob = Glob::new(base).map_err(|e| {
-                            SofosError::ToolExecution(format!(
-                                "Invalid glob base pattern '{}': {}",
-                                base, e
-                            ))
-                        })?;
+                        let base_glob = compile_path_glob(base)?;
                         builder.add(base_glob);
                     }
                 }
