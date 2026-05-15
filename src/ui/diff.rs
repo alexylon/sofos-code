@@ -1,8 +1,32 @@
 use colored::Colorize;
 use similar::{ChangeTag, TextDiff};
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Color, Style, ThemeSet};
+use syntect::highlighting::{Color, Style, Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
+
+/// Shared syntax definitions. Each `SyntaxSet::load_defaults_newlines`
+/// call deserialises several megabytes of bundled syntax data. Loading
+/// once at first use keeps the per-diff cost down to a lookup instead
+/// of a fresh decode every time `generate_contextual_diff` runs.
+fn shared_syntax_set() -> &'static SyntaxSet {
+    static SET: OnceLock<SyntaxSet> = OnceLock::new();
+    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// Shared dark theme used for diff highlighting. Same rationale as
+/// [`shared_syntax_set`] — `ThemeSet::load_defaults` is several
+/// megabytes of theme data that doesn't change between calls.
+fn shared_diff_theme() -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        let mut theme_set = ThemeSet::load_defaults();
+        theme_set
+            .themes
+            .remove("base16-ocean.dark")
+            .expect("base16-ocean.dark is bundled with the syntect defaults")
+    })
+}
 
 const DELETE_BG: Color = Color {
     r: 0x5e,
@@ -47,9 +71,8 @@ pub fn generate_contextual_diff(
     let diff = TextDiff::from_lines(original, modified);
     let mut output = Vec::new();
 
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let theme_set = ThemeSet::load_defaults();
-    let theme = &theme_set.themes["base16-ocean.dark"];
+    let syntax_set = shared_syntax_set();
+    let theme = shared_diff_theme();
 
     let ext = file_path.rsplit('.').next().unwrap_or("");
     let syntax = syntax_set
@@ -85,7 +108,7 @@ pub fn generate_contextual_diff(
                 let s: String = match change.tag() {
                     ChangeTag::Delete => {
                         let highlighted =
-                            highlight_line_with_bg(code, DELETE_BG, &mut hl_delete, &syntax_set);
+                            highlight_line_with_bg(code, DELETE_BG, &mut hl_delete, syntax_set);
                         format!(
                             "{}\x1b[48;2;{};{};{}m- \x1b[0m{}",
                             dim_num, DELETE_BG.r, DELETE_BG.g, DELETE_BG.b, highlighted
@@ -93,7 +116,7 @@ pub fn generate_contextual_diff(
                     }
                     ChangeTag::Insert => {
                         let highlighted =
-                            highlight_line_with_bg(code, INSERT_BG, &mut hl_insert, &syntax_set);
+                            highlight_line_with_bg(code, INSERT_BG, &mut hl_insert, syntax_set);
                         format!(
                             "{}\x1b[48;2;{};{};{}m+ \x1b[0m{}",
                             dim_num, INSERT_BG.r, INSERT_BG.g, INSERT_BG.b, highlighted
@@ -101,7 +124,7 @@ pub fn generate_contextual_diff(
                     }
                     ChangeTag::Equal => {
                         let ranges: Vec<(Style, &str)> = hl_equal
-                            .highlight_line(code, &syntax_set)
+                            .highlight_line(code, syntax_set)
                             .unwrap_or_default();
                         let mut line = format!("{}  ", dim_num);
                         for (style, text) in &ranges {

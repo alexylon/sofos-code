@@ -50,6 +50,17 @@ fn main() -> Result<()> {
     let client = build_llm_client(&cli);
 
     if cli.check_connection {
+        // `--prompt` is silently ignored when paired with
+        // `--check-connection` because the connectivity check exits
+        // before any prompt processing runs. Surface that explicitly
+        // so scripts that combine the two don't quietly drop their
+        // input.
+        if cli.prompt.is_some() {
+            tracing::warn!(
+                "--prompt is ignored when --check-connection is set; \
+                 only the connectivity check will run."
+            );
+        }
         return check_api_connectivity(&client);
     }
 

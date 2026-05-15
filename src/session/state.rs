@@ -1,6 +1,51 @@
 use crate::repl::conversation::ConversationHistory;
 use crate::session::DisplayMessage;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::Usage;
+    use crate::repl::conversation::ConversationHistory;
+
+    fn usage_with_inputs(input_tokens: u32, output_tokens: u32) -> Usage {
+        Usage {
+            input_tokens,
+            output_tokens,
+            cache_read_input_tokens: None,
+            cache_creation_input_tokens: None,
+        }
+    }
+
+    #[test]
+    fn add_usage_saturates_at_u32_ceiling() {
+        // A long-running session that crosses 2^32 tokens used to wrap
+        // silently in release and panic in debug. Saturation keeps the
+        // displayed total truthful as a lower bound.
+        let mut state = SessionState::new("test".to_string(), ConversationHistory::new());
+        state.total_input_tokens = u32::MAX - 5;
+        state.total_output_tokens = u32::MAX - 5;
+
+        state.add_usage(&usage_with_inputs(10, 10));
+
+        assert_eq!(state.total_input_tokens, u32::MAX);
+        assert_eq!(state.total_output_tokens, u32::MAX);
+    }
+
+    #[test]
+    fn add_usage_normal_path_unchanged() {
+        // The non-saturating path keeps its previous semantics so the
+        // shift to `saturating_add` doesn't perturb cost reporting in
+        // the common case.
+        let mut state = SessionState::new("test".to_string(), ConversationHistory::new());
+        state.add_usage(&usage_with_inputs(1_000, 200));
+        state.add_usage(&usage_with_inputs(2_500, 600));
+
+        assert_eq!(state.total_input_tokens, 3_500);
+        assert_eq!(state.total_output_tokens, 800);
+        assert_eq!(state.peak_single_turn_input_tokens, 2_500);
+    }
+}
+
 /// Manages the state of a single REPL session
 #[derive(Clone)]
 pub struct SessionState {
@@ -73,10 +118,22 @@ impl SessionState {
     }
 
     pub fn add_usage(&mut self, usage: &crate::api::Usage) {
-        self.total_input_tokens += usage.input_tokens;
-        self.total_output_tokens += usage.output_tokens;
-        self.total_cache_read_tokens += usage.cache_read_input_tokens.unwrap_or(0);
-        self.total_cache_creation_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
+        // `saturating_add` instead of `+=`: each counter is `u32`, and a
+        // session that survives across `--resume` invocations
+        // accumulates over multiple turns. The 4.29-billion ceiling is
+        // well above any realistic single session, but a wraparound
+        // would silently corrupt the displayed cost summary, and a
+        // debug build would panic. Saturating at the ceiling keeps the
+        // displayed total honest about "at least this many" rather
+        // than wrapping to a tiny number.
+        self.total_input_tokens = self.total_input_tokens.saturating_add(usage.input_tokens);
+        self.total_output_tokens = self.total_output_tokens.saturating_add(usage.output_tokens);
+        self.total_cache_read_tokens = self
+            .total_cache_read_tokens
+            .saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+        self.total_cache_creation_tokens = self
+            .total_cache_creation_tokens
+            .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
         // Per-call high-water mark on input tokens. For OpenAI, the
         // figure already includes cached input (the provider's
         // documented basis for the 272K premium cliff); for Anthropic,

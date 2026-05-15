@@ -49,6 +49,9 @@ All notable changes to Sofos are documented in this file.
 - **Concurrent MCP stdio requests can no longer pick up each other's responses.** The transport used to lock stdin for the write and stdout for the read separately, so two overlapping requests could read out of order. The full request/response cycle now runs under a single per-client lock.
 - **MCP tool listings are now served from a cache built at start-up.** Earlier `get_all_tools` re-fetched every server's tool list on every call, which meant each TUI refresh fired a network round-trip per HTTP MCP server. Tool lists are stable for the session, so the cache returns immediately.
 - **MCP tool calls no longer serialise across servers.** The manager used to hold its outer mutex across the awaited tool call, so a slow call to server A blocked every concurrent call to server B. The mutex is now dropped before the await; calls to different servers run in parallel.
+- **Session token counters saturate at their 32-bit ceiling instead of wrapping.** Very long sessions that crossed 4.29 billion tokens used to wrap to a tiny number in release builds and panic in debug. The displayed totals now stay at the ceiling instead, which keeps the cost summary honest as a lower bound.
+- **Syntax-highlighted diffs load their assets once per process.** Each `edit_file` / `write_file` / `morph_edit_file` call used to reload the bundled syntax and theme definitions (several megabytes) before rendering the diff. The assets now live behind a one-time initialiser, so subsequent diffs reuse them.
+- **`--check-connection` paired with `--prompt` now warns instead of silently dropping the prompt.** The connectivity check exits before any prompt processing runs, so combining the two flags never produced the prompt response the user expected. The warning makes the unused flag visible without changing the exit semantics.
 
 ### Changed
 
