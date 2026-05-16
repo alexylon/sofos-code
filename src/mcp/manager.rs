@@ -1,12 +1,18 @@
 use crate::error::{Result, SofosError};
 use crate::mcp::client::McpClient;
-use crate::mcp::config::load_mcp_config;
+use crate::mcp::config::{SafeModeAccess, load_mcp_config};
 use crate::mcp::protocol::{CallToolResult, McpTool, ToolContent};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Separator inserted between an MCP server name and a tool name to form
+/// the prefixed identifier the model sees. Triple underscore is unlikely
+/// to appear inside a tool or server name; the registration step rejects
+/// any name that contains it, so the reverse lookup is unambiguous.
+pub const MCP_NAME_SEPARATOR: &str = "___";
 
 /// Structured tool result that can contain both text and image data
 #[derive(Debug, Clone)]
@@ -41,6 +47,28 @@ pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     tools_by_server: Arc<HashMap<String, Vec<McpTool>>>,
     tool_to_server: Arc<HashMap<String, String>>,
+    safe_mode_by_server: Arc<HashMap<String, SafeModeAccess>>,
+}
+
+/// Reject server and tool names that contain the prefix separator or
+/// that would produce an empty identifier. Names are otherwise accepted
+/// as-is; provider-level character validation happens on the prefixed
+/// name when the tool list is sent.
+fn validate_mcp_name(kind: &str, name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(SofosError::McpError(format!("MCP {} name is empty", kind)));
+    }
+    if name.contains(MCP_NAME_SEPARATOR) {
+        return Err(SofosError::McpError(format!(
+            "MCP {} name '{}' contains the reserved separator '{}'",
+            kind, name, MCP_NAME_SEPARATOR
+        )));
+    }
+    Ok(())
+}
+
+pub fn prefixed_tool_name(server: &str, tool: &str) -> String {
+    format!("{}{}{}", server, MCP_NAME_SEPARATOR, tool)
 }
 
 impl McpManager {
@@ -58,38 +86,61 @@ impl McpManager {
         let mut clients: HashMap<String, Arc<McpClient>> = HashMap::new();
         let mut tools_by_server: HashMap<String, Vec<McpTool>> = HashMap::new();
         let mut tool_to_server: HashMap<String, String> = HashMap::new();
+        let mut safe_mode_by_server: HashMap<String, SafeModeAccess> = HashMap::new();
         let mut bullets = String::new();
 
         for (server_name, config) in server_configs {
+            if let Err(e) = validate_mcp_name("server", &server_name) {
+                tracing::warn!(server = %server_name, error = %e, "skipping MCP server");
+                continue;
+            }
+            let server_safe_mode = config.safe_mode;
             match McpClient::connect(server_name.clone(), config).await {
-                Ok(client) => {
-                    // Get tools from this server
-                    match client.list_tools().await {
-                        Ok(tools) => {
-                            let tool_count = tools.len();
-                            for tool in &tools {
-                                // Prefix tool name with server name to avoid conflicts
-                                let prefixed_name = format!("{}_{}", server_name, tool.name);
-                                tool_to_server.insert(prefixed_name, server_name.to_string());
+                Ok(client) => match client.list_tools().await {
+                    Ok(tools) => {
+                        let mut accepted: Vec<McpTool> = Vec::with_capacity(tools.len());
+                        for tool in tools {
+                            if let Err(e) = validate_mcp_name("tool", &tool.name) {
+                                tracing::warn!(
+                                    server = %server_name,
+                                    tool = %tool.name,
+                                    error = %e,
+                                    "skipping MCP tool with reserved separator in its name"
+                                );
+                                continue;
                             }
-                            tools_by_server.insert(server_name.clone(), tools);
-                            clients.insert(server_name.clone(), Arc::new(client));
-                            bullets.push_str(&format!(
-                                "  {} {} ({} tools)\n",
-                                "✓".bright_green(),
-                                server_name.bright_cyan(),
-                                tool_count
-                            ));
+                            let prefixed = prefixed_tool_name(&server_name, &tool.name);
+                            if let Some(existing) = tool_to_server.get(&prefixed) {
+                                tracing::warn!(
+                                    new_server = %server_name,
+                                    existing_server = %existing,
+                                    tool = %tool.name,
+                                    "MCP tool name collision; keeping the first registration"
+                                );
+                                continue;
+                            }
+                            tool_to_server.insert(prefixed, server_name.clone());
+                            accepted.push(tool);
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                server = %server_name,
-                                error = %e,
-                                "failed to list tools from MCP server"
-                            );
-                        }
+                        let tool_count = accepted.len();
+                        tools_by_server.insert(server_name.clone(), accepted);
+                        clients.insert(server_name.clone(), Arc::new(client));
+                        safe_mode_by_server.insert(server_name.clone(), server_safe_mode);
+                        bullets.push_str(&format!(
+                            "  {} {} ({} tools)\n",
+                            "✓".bright_green(),
+                            server_name.bright_cyan(),
+                            tool_count
+                        ));
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(
+                            server = %server_name,
+                            error = %e,
+                            "failed to list tools from MCP server"
+                        );
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(
                         server = %server_name,
@@ -104,6 +155,7 @@ impl McpManager {
             clients: Arc::new(Mutex::new(clients)),
             tools_by_server: Arc::new(tools_by_server),
             tool_to_server: Arc::new(tool_to_server),
+            safe_mode_by_server: Arc::new(safe_mode_by_server),
         };
         let init_block = if bullets.is_empty() {
             String::new()
@@ -113,6 +165,25 @@ impl McpManager {
         Ok((manager, init_block))
     }
 
+    /// Names of servers that have at least one tool registered. The
+    /// caller can use these to compose a startup warning when safe
+    /// mode is on but no server has opted in.
+    pub fn server_names_for_safe_mode(&self, included: bool) -> Vec<String> {
+        self.safe_mode_by_server
+            .iter()
+            .filter(|(_, access)| access.is_available_in_safe_mode() == included)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    pub fn is_server_available_in_safe_mode(&self, server: &str) -> bool {
+        self.safe_mode_by_server
+            .get(server)
+            .copied()
+            .unwrap_or_default()
+            .is_available_in_safe_mode()
+    }
+
     /// Get all available MCP tools from all connected servers.
     ///
     /// Served from the cache built at construction time — no remote
@@ -120,10 +191,24 @@ impl McpManager {
     /// lifetime of a session, so refreshing on every TUI tick is pure
     /// network noise.
     pub async fn get_all_tools(&self) -> Result<Vec<crate::api::Tool>> {
+        Ok(self.collect_tools(false))
+    }
+
+    /// Get only the MCP tools whose servers opted into safe mode. Used
+    /// by the tool executor to filter the tool list shown to the model
+    /// when the user is in safe mode.
+    pub async fn get_safe_mode_tools(&self) -> Result<Vec<crate::api::Tool>> {
+        Ok(self.collect_tools(true))
+    }
+
+    fn collect_tools(&self, safe_mode: bool) -> Vec<crate::api::Tool> {
         let mut all_tools = Vec::new();
         for (server_name, tools) in self.tools_by_server.iter() {
+            if safe_mode && !self.is_server_available_in_safe_mode(server_name) {
+                continue;
+            }
             for mcp_tool in tools {
-                let prefixed_name = format!("{}_{}", server_name, mcp_tool.name);
+                let prefixed_name = prefixed_tool_name(server_name, &mcp_tool.name);
                 all_tools.push(crate::api::Tool::Regular {
                     name: prefixed_name,
                     description: format!("[MCP: {}] {}", server_name, mcp_tool.description),
@@ -132,7 +217,7 @@ impl McpManager {
                 });
             }
         }
-        Ok(all_tools)
+        all_tools
     }
 
     /// Execute an MCP tool call
@@ -160,7 +245,7 @@ impl McpManager {
         };
 
         let original_tool_name = tool_name
-            .strip_prefix(&format!("{}_", server_name))
+            .strip_prefix(&format!("{}{}", server_name, MCP_NAME_SEPARATOR))
             .unwrap_or(tool_name);
 
         let result = client
@@ -175,6 +260,10 @@ impl McpManager {
     /// construction.
     pub fn is_mcp_tool(&self, tool_name: &str) -> bool {
         self.tool_to_server.contains_key(tool_name)
+    }
+
+    pub fn server_for_tool(&self, tool_name: &str) -> Option<&str> {
+        self.tool_to_server.get(tool_name).map(String::as_str)
     }
 }
 
@@ -229,6 +318,41 @@ impl Clone for McpManager {
             clients: Arc::clone(&self.clients),
             tools_by_server: Arc::clone(&self.tools_by_server),
             tool_to_server: Arc::clone(&self.tool_to_server),
+            safe_mode_by_server: Arc::clone(&self.safe_mode_by_server),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefixed_name_uses_triple_underscore_separator() {
+        assert_eq!(prefixed_tool_name("docs", "read"), "docs___read");
+        assert_eq!(
+            prefixed_tool_name("github", "create_issue"),
+            "github___create_issue"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_reserved_separator_in_names() {
+        assert!(validate_mcp_name("server", "good").is_ok());
+        assert!(validate_mcp_name("server", "with___sep").is_err());
+        assert!(validate_mcp_name("tool", "").is_err());
+    }
+
+    /// Two `(server, tool)` pairs that would collide under the old
+    /// single-underscore separator no longer collide under the triple
+    /// underscore. Names that contain the reserved separator are
+    /// rejected before they can hit the registration map at all.
+    #[test]
+    fn collisions_from_underscores_no_longer_overlap() {
+        let a = prefixed_tool_name("a", "b_c");
+        let b = prefixed_tool_name("a_b", "c");
+        assert_ne!(a, b);
+        assert_eq!(a, "a___b_c");
+        assert_eq!(b, "a_b___c");
     }
 }

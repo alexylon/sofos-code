@@ -8,6 +8,30 @@ pub struct McpConfig {
     pub mcp_servers: HashMap<String, McpServerConfig>,
 }
 
+/// How an MCP server's tools relate to safe mode. Default `Disabled`
+/// means tools from this server are filtered out when safe mode is on,
+/// because Sofos cannot tell which MCP tools mutate state. Users opt
+/// individual servers in once they have verified the server is safe.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SafeModeAccess {
+    /// Filter tools from this server out in safe mode. Default.
+    #[default]
+    Disabled,
+    /// Include the server's tools in safe mode — used when the server is
+    /// known to only expose read-only operations.
+    ReadOnly,
+    /// Include the server's tools in safe mode — explicit opt-in even
+    /// when the server may mutate state.
+    Allow,
+}
+
+impl SafeModeAccess {
+    pub fn is_available_in_safe_mode(self) -> bool {
+        matches!(self, SafeModeAccess::ReadOnly | SafeModeAccess::Allow)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +48,12 @@ pub struct McpServerConfig {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
+
+    /// Whether the server's tools are exposed in safe mode. Defaults to
+    /// `Disabled` so configuring a new server does not silently grant it
+    /// access to safe-mode sessions.
+    #[serde(default)]
+    pub safe_mode: SafeModeAccess,
 }
 
 impl McpServerConfig {
@@ -212,6 +242,7 @@ url = "https://example.com/mcp"
             env: None,
             url: None,
             headers: None,
+            safe_mode: SafeModeAccess::default(),
         };
         assert!(valid_stdio.validate().is_ok());
 
@@ -221,6 +252,7 @@ url = "https://example.com/mcp"
             env: None,
             url: Some("https://example.com".to_string()),
             headers: None,
+            safe_mode: SafeModeAccess::default(),
         };
         assert!(valid_http.validate().is_ok());
 
@@ -230,6 +262,7 @@ url = "https://example.com/mcp"
             env: None,
             url: None,
             headers: None,
+            safe_mode: SafeModeAccess::default(),
         };
         assert!(invalid_empty.validate().is_err());
 
@@ -239,7 +272,49 @@ url = "https://example.com/mcp"
             env: None,
             url: Some("https://example.com".to_string()),
             headers: None,
+            safe_mode: SafeModeAccess::default(),
         };
         assert!(invalid_both.validate().is_err());
+    }
+
+    #[test]
+    fn safe_mode_defaults_to_disabled() {
+        let toml_content = r#"
+[mcp-servers.test-server]
+command = "/path/to/server"
+"#;
+        let config: McpConfig = toml::from_str(toml_content).unwrap();
+        let server = config.mcp_servers.get("test-server").unwrap();
+        assert_eq!(server.safe_mode, SafeModeAccess::Disabled);
+        assert!(!server.safe_mode.is_available_in_safe_mode());
+    }
+
+    #[test]
+    fn safe_mode_parses_read_only_and_allow() {
+        let toml_content = r#"
+[mcp-servers.docs]
+command = "/srv"
+safe_mode = "read_only"
+
+[mcp-servers.write]
+command = "/srv"
+safe_mode = "allow"
+"#;
+        let config: McpConfig = toml::from_str(toml_content).unwrap();
+        assert_eq!(
+            config.mcp_servers["docs"].safe_mode,
+            SafeModeAccess::ReadOnly
+        );
+        assert_eq!(config.mcp_servers["write"].safe_mode, SafeModeAccess::Allow);
+        assert!(
+            config.mcp_servers["docs"]
+                .safe_mode
+                .is_available_in_safe_mode()
+        );
+        assert!(
+            config.mcp_servers["write"]
+                .safe_mode
+                .is_available_in_safe_mode()
+        );
     }
 }

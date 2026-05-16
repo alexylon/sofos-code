@@ -8,10 +8,12 @@ All notable changes to Sofos are documented in this file.
 
 - **Shell command and process substitution are now blocked in bash commands.** Constructs such as `echo $(rm bad)`, backtick substitution, and process substitution `<(cmd)` / `>(cmd)` previously slipped past the permission system because only the outer command name was checked. They are now refused before the command runs, with a clear message that names the marker. Single-quoted literals and arithmetic expansion `$((expr))` continue to work.
 - **Workspace symlinks can no longer route bash reads outside the workspace.** When a bash command names a workspace-relative path that resolves through a symlink to a file outside the workspace, the path is now sent through the same external-path prompt that absolute and tilde paths already use.
+- **MCP tools are filtered out in safe mode by default.** Previously safe mode only restricted Sofos's native tools, so any tool exposed by a configured MCP server still ran in safe-mode sessions. Each MCP server entry now has a `safe_mode` setting — `disabled` (default, filtered), `read_only`, or `allow` — and only servers whose setting opts them in have their tools listed to the model when safe mode is on. The startup banner and `/s` confirmation list which servers were filtered out and which were opted in so the user can see the actual scope of the session.
 
 ### Changed
 
 - **Bash commands run under a supervisor with a time limit, live output caps, and interrupt support.** Output is streamed instead of buffered, the per-stream 10 MB cap is enforced while reading rather than after exit, a 300-second wall-clock limit ends commands that never finish (for example a stuck `tail -f` or a runaway test), and pressing ESC or Ctrl+C now terminates the whole process group instead of waiting for the command to exit on its own. The error message names the reason — output cap, timeout, or interrupt — so the model can recover.
+- **MCP tool names are joined to their server name with a triple underscore separator.** The previous single underscore meant that a server called `a_b` exposing a tool `c` produced the same identifier as server `a` exposing tool `b_c`, so a tool call could be routed to the wrong server. The new separator cannot appear in a server or tool name (registrations that contain it are rejected with a warning), and collisions between distinct `(server, tool)` pairs are no longer possible. Existing configurations are not affected by the change because the prefixed name is derived at startup, not stored.
 
 ## [0.2.12] - 2026-05-16
 

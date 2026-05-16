@@ -290,6 +290,25 @@ impl ToolExecutor {
         self.safe_mode = safe_mode;
     }
 
+    /// Names of MCP servers whose tools would be filtered out if safe
+    /// mode were on. Returned regardless of the current safe-mode state
+    /// so the REPL can decide what to print at startup.
+    pub fn mcp_servers_excluded_from_safe_mode(&self) -> Vec<String> {
+        self.mcp_manager
+            .as_ref()
+            .map(|m| m.server_names_for_safe_mode(false))
+            .unwrap_or_default()
+    }
+
+    /// Names of MCP servers that opted into safe mode through their
+    /// configuration.
+    pub fn mcp_servers_included_in_safe_mode(&self) -> Vec<String> {
+        self.mcp_manager
+            .as_ref()
+            .map(|m| m.server_names_for_safe_mode(true))
+            .unwrap_or_default()
+    }
+
     /// Share the REPL's interrupt flag with the bash executor so that
     /// pressing ESC or Ctrl+C during a turn terminates a running
     /// shell command instead of waiting for it to exit on its own.
@@ -495,7 +514,12 @@ impl ToolExecutor {
         }
 
         if let Some(mcp_manager) = &self.mcp_manager {
-            if let Ok(mcp_tools) = mcp_manager.get_all_tools().await {
+            let mcp_tools = if self.safe_mode {
+                mcp_manager.get_safe_mode_tools().await
+            } else {
+                mcp_manager.get_all_tools().await
+            };
+            if let Ok(mcp_tools) = mcp_tools {
                 tools.extend(mcp_tools);
             }
         }
@@ -507,6 +531,16 @@ impl ToolExecutor {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name) {
+                if self.safe_mode {
+                    if let Some(server) = mcp_manager.server_for_tool(tool_name) {
+                        if !mcp_manager.is_server_available_in_safe_mode(server) {
+                            return Err(SofosError::ToolExecution(format!(
+                                "MCP tool '{}' is filtered out in safe mode because its server is not marked safe.",
+                                tool_name
+                            )));
+                        }
+                    }
+                }
                 let mut result = mcp_manager.execute_tool(tool_name, input).await?;
                 cap_mcp_response(&mut result);
                 return Ok(ToolExecutionResult::Structured(result));

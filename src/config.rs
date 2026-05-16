@@ -96,9 +96,11 @@ pub fn auto_compact_token_limit_for(model: &str) -> usize {
 /// `search_code` tool wired in when ripgrep is on PATH).
 pub const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
                                      No file modifications or bash commands are allowed. \
-                                     Available tools: list_directory, read_file, glob_files, \
+                                     Available native tools: list_directory, read_file, glob_files, \
                                      search_code (when ripgrep is installed), update_plan, \
-                                     web_fetch, web_search.]";
+                                     web_fetch, web_search. MCP tools are filtered out unless \
+                                     their server is marked safe_mode = \"read_only\" or \"allow\" \
+                                     in the configuration.]";
 
 /// Normal mode message shown when switching from safe mode
 pub const NORMAL_MODE_MESSAGE: &str = "[SYSTEM: Normal (unrestricted) mode has been enabled. \

@@ -328,18 +328,18 @@ Safe mode is enabled with `--safe-mode` or `/s`. It restricts the native tool se
 - `web_fetch`;
 - `web_search`.
 
-Safe mode does not filter tools exposed by configured MCP servers. If an MCP server exposes mutating tools, those tools remain available.
+MCP tools are filtered out in safe mode by default. To make a particular server's tools available in safe mode, add `safe_mode = "read_only"` (server is known to expose only read operations) or `safe_mode = "allow"` (explicit opt-in even when the server may mutate) to its entry in `~/.sofos/config.toml` or `.sofos/config.local.toml`. Sofos lists which servers are filtered out and which are opted in on the startup banner whenever safe mode is on.
 
 ### MCP tools
 
-Configured MCP servers can add tools dynamically. Sofos prefixes each MCP tool with the server name to avoid collisions, for example:
+Configured MCP servers can add tools dynamically. Sofos prefixes each MCP tool with the server name using a triple underscore separator so distinct `(server, tool)` pairs cannot collide on the prefixed name:
 
 ```text
-filesystem_read_file
-github_create_issue
+filesystem___read_file
+github___create_issue
 ```
 
-Tool listings are cached at startup for the session.
+Server names and tool names that contain the reserved separator are rejected at startup with a warning. If two servers expose the same tool name, the second registration is skipped so the first one keeps its identifier. Tool listings are cached at startup for the session.
 
 ---
 

@@ -1164,7 +1164,9 @@ It contains:
 
 Rules:
 
-- MCP tools are prefixed by server name to avoid collisions.
+- MCP tools are prefixed with their server name using a triple underscore separator. Server and tool names that contain the separator are rejected at registration, so the prefixed name unambiguously identifies the originating server.
+- Tool registrations whose prefixed name collides with an earlier registration are skipped with a warning instead of overwriting.
+- Each MCP server has a safe-mode policy (`disabled`, `read_only`, or `allow`). When safe mode is on, only tools from servers whose policy is `read_only` or `allow` are exposed; everything else is filtered out so a configured MCP server cannot quietly mutate state in a safe-mode session.
 - Tool listings are cached for the session.
 - Calls to different servers should not serialize unnecessarily.
 

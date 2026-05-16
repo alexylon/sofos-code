@@ -177,10 +177,24 @@ impl Repl {
             &config.model,
         ));
 
-        if config.safe_mode {
+        let safe_mode_mcp_note = if config.safe_mode {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
             set_safe_mode_cursor_style()?;
-        }
+            format_mcp_safe_mode_summary(
+                &tool_executor.mcp_servers_excluded_from_safe_mode(),
+                &tool_executor.mcp_servers_included_in_safe_mode(),
+            )
+        } else {
+            String::new()
+        };
+
+        let mcp_init_lines = if safe_mode_mcp_note.is_empty() {
+            mcp_init_lines
+        } else if mcp_init_lines.is_empty() {
+            safe_mode_mcp_note
+        } else {
+            format!("{}{}", mcp_init_lines, safe_mode_mcp_note)
+        };
 
         let session_id = HistoryManager::generate_session_id();
         let session_state = SessionState::new(session_id, conversation);
@@ -423,9 +437,21 @@ impl Repl {
             .conversation
             .add_user_message(SAFE_MODE_MESSAGE.to_string());
         println!(
-            "\n{} read-only tools only; no writes or bash\n",
+            "\n{} read-only native tools; no writes or bash\n",
             "Safe mode: enabled".bright_yellow()
         );
+        self.print_mcp_safe_mode_summary();
+    }
+
+    fn print_mcp_safe_mode_summary(&self) {
+        let summary = format_mcp_safe_mode_summary(
+            &self.tool_executor.mcp_servers_excluded_from_safe_mode(),
+            &self.tool_executor.mcp_servers_included_in_safe_mode(),
+        );
+        if !summary.is_empty() {
+            print!("{}", summary);
+            println!();
+        }
     }
 
     pub fn disable_safe_mode(&mut self) {
@@ -467,4 +493,33 @@ impl Repl {
             sleep(Duration::from_millis(50)).await;
         }
     }
+}
+
+/// Format the per-server safe-mode summary for the startup banner. The
+/// terminal renders this right after the `MCP servers:` block so the
+/// user can immediately see which servers were filtered out and which
+/// were opted in.
+fn format_mcp_safe_mode_summary(excluded: &[String], included: &[String]) -> String {
+    if excluded.is_empty() && included.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    if !excluded.is_empty() {
+        out.push_str(&format!(
+            "  {} Safe mode hides MCP servers: {}\n",
+            "•".bright_yellow(),
+            excluded.join(", ")
+        ));
+        out.push_str(
+            "    Set `safe_mode = \"read_only\"` on a server to make its tools available.\n",
+        );
+    }
+    if !included.is_empty() {
+        out.push_str(&format!(
+            "  {} Safe mode allows MCP servers: {}\n",
+            "•".bright_green(),
+            included.join(", ")
+        ));
+    }
+    out
 }
