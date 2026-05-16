@@ -18,6 +18,7 @@ pub enum ToolName {
     EditFile,
     GlobFiles,
     MorphEditFile,
+    UpdatePlan,
     WebFetch,
     WebSearch,
 }
@@ -38,6 +39,7 @@ impl ToolName {
             ToolName::EditFile => "edit_file",
             ToolName::GlobFiles => "glob_files",
             ToolName::MorphEditFile => "morph_edit_file",
+            ToolName::UpdatePlan => "update_plan",
             ToolName::WebFetch => "web_fetch",
             ToolName::WebSearch => "web_search",
         }
@@ -58,6 +60,7 @@ impl ToolName {
             "edit_file" => Ok(ToolName::EditFile),
             "glob_files" => Ok(ToolName::GlobFiles),
             "morph_edit_file" => Ok(ToolName::MorphEditFile),
+            "update_plan" => Ok(ToolName::UpdatePlan),
             "web_fetch" => Ok(ToolName::WebFetch),
             "web_search" => Ok(ToolName::WebSearch),
             _ => Err(SofosError::ToolExecution(format!("Unknown tool: {}", s))),
@@ -217,6 +220,7 @@ mod tests {
             ToolName::WriteFile,
             ToolName::ExecuteBash,
             ToolName::MorphEditFile,
+            ToolName::UpdatePlan,
         ];
 
         for tool in &tools {

@@ -47,9 +47,10 @@
    - [7.7 `tools/codesearch.rs`](#77-toolscodesearchrs)
    - [7.8 `tools/image.rs`](#78-toolsimagers)
    - [7.9 `tools/morph_validate.rs`](#79-toolsmorph_validaters)
-   - [7.10 `tools/types.rs`](#710-toolstypesrs)
-   - [7.11 `tools/tool_name.rs`](#711-toolstool_namers)
-   - [7.12 `tools/utils.rs`](#712-toolsutilsrs)
+   - [7.10 `tools/plan.rs`](#710-toolsplanrs)
+   - [7.11 `tools/types.rs`](#711-toolstypesrs)
+   - [7.12 `tools/tool_name.rs`](#712-toolstool_namers)
+   - [7.13 `tools/utils.rs`](#713-toolsutilsrs)
 8. [`mcp/`](#8-mcp)
    - [8.1 `mcp/config.rs`](#81-mcpconfigrs)
    - [8.2 `mcp/protocol.rs`](#82-mcpprotocolrs)
@@ -277,6 +278,8 @@ src/
 │   │   # Local and web image detection, validation, encoding, and message-content conversion.
 │   ├── morph_validate.rs
 │   │   # Safety checks that reject suspicious or truncated Morph Apply output before writing files.
+│   ├── plan.rs
+│   │   # `update_plan` argument validation, model-facing acknowledgements, and terminal checklist rendering.
 │   ├── tool_name.rs
 │   │   # Type-safe native tool-name enum and string conversion logic.
 │   ├── types.rs
@@ -1019,7 +1022,24 @@ Rules:
 - Morph output must be validated against the original file.
 - Rejected Morph output leaves the original file untouched and asks the model to use `edit_file`.
 
-### 7.10 `tools/types.rs`
+### 7.10 `tools/plan.rs`
+
+`tools/plan.rs` owns the `update_plan` payload parsing and the on-screen checklist rendering.
+
+It contains:
+
+- the `PlanStepStatus`, `PlanStep`, and `PlanUpdate` types;
+- payload validation, including the at-most-one `in_progress` step rule;
+- the compact model-facing acknowledgement string;
+- the styled terminal checklist with status markers and counts.
+
+Rules:
+
+- The model receives only a short acknowledgement, never the full plan body, so conversation history stays bounded.
+- The renderer must reuse `ui::ACCENT_RGB` so the plan checklist matches the rest of sofos' colour scheme.
+- The module performs no file or network access and is safe to expose in read-only mode.
+
+### 7.11 `tools/types.rs`
 
 `tools/types.rs` owns native tool definitions exposed to providers.
 
@@ -1038,7 +1058,7 @@ Rules:
 - Tool definitions should match dispatcher parameter names and accepted aliases where possible.
 - Provider-specific server-side tools should be represented in shared `api/types.rs` but selected here where appropriate.
 
-### 7.11 `tools/tool_name.rs`
+### 7.12 `tools/tool_name.rs`
 
 `tools/tool_name.rs` owns the type-safe native tool-name enum.
 
@@ -1053,7 +1073,7 @@ Rules:
 - Native dispatch should match on `ToolName`, not raw strings.
 - Adding a tool requires updating this enum, schemas, dispatch, tests, and user documentation where applicable.
 
-### 7.12 `tools/utils.rs`
+### 7.13 `tools/utils.rs`
 
 `tools/utils.rs` owns shared tool utilities.
 

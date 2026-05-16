@@ -8,6 +8,7 @@ use crate::tools::codesearch::CodeSearchTool;
 use crate::tools::filesystem::FileSystemTool;
 use crate::tools::morph_validate;
 use crate::tools::permissions::{self, PermissionManager};
+use crate::tools::plan;
 use crate::tools::resolve::ResolvedPath;
 use crate::tools::types::{
     add_code_search_tool, get_all_tools, get_all_tools_with_morph, get_read_only_tools,
@@ -1262,6 +1263,13 @@ impl ToolExecutor {
 
                 let result = self.bash_executor.execute(command)?;
                 Ok(result)
+            }
+            ToolName::UpdatePlan => {
+                let update = plan::parse_plan_update(input)?;
+                return Ok(ToolExecutionResult::TextWithDisplay {
+                    text: plan::model_summary(&update),
+                    display: plan::render_plan(&update),
+                });
             }
             ToolName::WebFetch => {
                 use futures::StreamExt;

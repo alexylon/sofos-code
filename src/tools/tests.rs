@@ -13,6 +13,47 @@ fn fake_image(mime: &str, base64_len: usize) -> ImageData {
     }
 }
 
+#[tokio::test]
+async fn update_plan_dispatcher_returns_compact_model_result_and_styled_display() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "update_plan",
+            &json!({
+                "explanation": "Starting implementation",
+                "plan": [
+                    {"step": "Inspect source", "status": "completed"},
+                    {"step": "Add tool", "status": "in_progress"},
+                    {"step": "Run checks", "status": "pending"}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.text(),
+        "Plan updated: 3 steps, 1 completed, 1 in progress, 1 pending. Current step: Add tool."
+    );
+    assert!(result.display_text().contains("Plan updated"));
+    assert!(result.display_text().contains("Add tool"));
+    assert!(
+        result
+            .display_text()
+            .contains("1 completed · 1 in progress · 1 pending")
+    );
+}
+
 #[test]
 fn cap_mcp_images_drops_by_count() {
     // Many tiny images → count cap hits first, byte cap stays under.

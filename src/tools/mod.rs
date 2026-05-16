@@ -5,6 +5,7 @@ pub mod filesystem;
 pub mod image;
 pub mod morph_validate;
 pub mod permissions;
+pub mod plan;
 pub mod resolve;
 pub mod tool_name;
 pub mod types;

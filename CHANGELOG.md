@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Visible task plans for multi-step work.** The assistant can now call `update_plan` to show the current plan with `pending`, `in_progress`, and `completed` statuses. Plan updates are available in safe mode too because they do not read or modify files, and the terminal renders them as a compact styled checklist while the model receives only a short acknowledgement.
+
 ### Changed
 
 - **File-edit tool results are now fixed-size summaries.** `edit_file`, `write_file` (when it overwrites an existing file), and `morph_edit_file` previously returned the full syntax-highlighted diff to the model as the tool result. The colored diff carried truecolor ANSI escape sequences that roughly multiplied the byte count per line, and the tool result stayed in conversation history for every subsequent turn — so a session with many edits paid that bloated cost again on each later turn, and a single large rewrite could push the response into the hundreds of thousands of tokens. The model now sees a fixed two-line summary (`Success. Updated the following files:` followed by `M <path>`) regardless of edit size, while the terminal still renders the full colored diff exactly as before. If the model needs to verify the post-edit state it can re-read a range of the file.

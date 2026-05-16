@@ -63,6 +63,7 @@ Sofos provides an AI assistant inside your terminal with controlled access to yo
 - run safe build and test commands;
 - fetch documentation and use provider-native web search;
 - review local, clipboard, or web images;
+- update a visible task plan during multi-step work;
 - save and resume conversations;
 - connect to external tools through Model Context Protocol servers.
 
@@ -309,6 +310,7 @@ Provider mapping:
 | `delete_file` | Delete a file after confirmation. External paths require Write permission. |
 | `delete_directory` | Delete a directory after confirmation. External paths require Write permission. |
 | `execute_bash` | Run approved shell commands through the bash permission system. |
+| `update_plan` | Show the current multi-step task plan with `pending`, `in_progress`, and `completed` statuses. |
 | `web_fetch` | Fetch a URL and return readable text. |
 | `web_search` | Provider-native web search. |
 
@@ -322,6 +324,7 @@ Safe mode is enabled with `--safe-mode` or `/s`. It restricts the native tool se
 - `read_file`;
 - `glob_files`;
 - `search_code` when ripgrep is installed;
+- `update_plan`;
 - `web_fetch`;
 - `web_search`.
 

@@ -17,7 +17,7 @@ use std::sync::{Mutex, OnceLock};
 /// highlights in the legacy (non-TUI) `colored` output path. Matches the
 /// ratatui `ACCENT` in `repl::tui::ui` so both code paths render sofos'
 /// orange identically.
-const ACCENT_RGB: (u8, u8, u8) = (0xFF, 0x99, 0x33);
+pub(crate) const ACCENT_RGB: (u8, u8, u8) = (0xFF, 0x99, 0x33);
 /// Purple used for thinking / reasoning labels — visually distinct from
 /// the orange accent so reasoning blocks stand out from regular output.
 const THINKING_RGB: (u8, u8, u8) = (0x77, 0x00, 0xFF);
@@ -187,6 +187,9 @@ impl UI {
     }
 
     pub fn print_tool_header(&self, tool_name: &str, command: Option<&str>) {
+        if tool_name == crate::tools::ToolName::UpdatePlan.as_str() {
+            return;
+        }
         if tool_name == crate::tools::ToolName::ExecuteBash.as_str() {
             if let Some(cmd) = command {
                 print!(

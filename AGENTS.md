@@ -83,6 +83,7 @@ src/
 │   ├── bashexec.rs      # Sandboxed bash execution
 │   ├── codesearch.rs    # Ripgrep integration
 │   ├── image.rs         # Image handling (local paths, URLs)
+│   ├── plan.rs          # Task-plan validation and terminal rendering
 │   ├── permissions.rs   # 3-tier command permission system
 │   ├── tool_name.rs     # Type-safe tool name enum
 │   ├── types.rs         # Tool definitions for API
@@ -129,6 +130,11 @@ src/
 - Manages in-memory message history
 - Trims to MAX_MESSAGES (500) to prevent token overflow
 - Builds system prompt with features list and custom instructions
+
+**src/tools/plan.rs**
+- Validates `update_plan` payloads and enforces one `in_progress` step
+- Builds compact model-facing acknowledgements and styled terminal checklists
+- Safe-mode compatible because it does not read, write, execute commands, or access the network
 
 **src/tools/filesystem.rs**
 - validate_path: Security-critical path validation
@@ -321,7 +327,7 @@ cargo test -- --nocapture     # Show println output
 
 1. Add variant to `src/tools/tool_name.rs` (ToolName enum, as_str, from_str)
 2. Define tool schema in `src/tools/types.rs` and add to tool lists
-3. Implement execution in `src/tools/mod.rs` (ToolExecutor::execute match arm)
+3. Implement execution in `src/tools/executor.rs` (ToolExecutor::execute match arm)
 4. Add tests in `src/tools/tests.rs`
 5. Update README.md with tool description
 
@@ -431,6 +437,7 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
 - After each important change, but only when you have finalized the current task, update if relevant:
     - `README.md`
     - `CHANGELOG.md` under `[Unreleased]`. Stick to the standard Keep-a-Changelog categories (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) — do NOT add an `Internal` section. Pure refactors, dead-code removals, and test-only additions are not user-notable; leave them out. The changelog is for users, not contributors. Within each entry, describe the user-visible behaviour in plain English: no file paths, no bare `Type::method` shorthand, no Rust attribute syntax, no crate names. CLI flags, env vars, slash commands, and API wire formats are fine because the user encounters them directly.
+    - `STRUCTURE.md`
 - Run:
     - `cargo fmt --all`
     - `cargo clippy --all-targets -- -D warnings`

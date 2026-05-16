@@ -279,6 +279,45 @@ fn glob_files_tool() -> Tool {
     }
 }
 
+fn update_plan_tool() -> Tool {
+    Tool::Regular {
+        name: "update_plan".to_string(),
+        description: "Update the visible task plan. Provide an optional explanation and the complete current plan. Each item has a step and a status. At most one item may be in_progress at a time.".to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "explanation": {
+                    "type": "string",
+                    "description": "Optional short note explaining why the plan changed or what was just completed."
+                },
+                "plan": {
+                    "type": "array",
+                    "description": "The complete current plan, in order.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step": {
+                                "type": "string",
+                                "description": "A concise task step."
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                                "description": "The step status. Use in_progress for at most one step."
+                            }
+                        },
+                        "required": ["step", "status"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["plan"],
+            "additionalProperties": false
+        }),
+        cache_control: None,
+    }
+}
+
 fn web_fetch_tool() -> Tool {
     Tool::Regular {
         name: "web_fetch".to_string(),
@@ -351,6 +390,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         move_file_tool(),
         copy_file_tool(),
         execute_bash_tool(),
+        update_plan_tool(),
         web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
@@ -371,6 +411,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         copy_file_tool(),
         execute_bash_tool(),
         morph_edit_file_tool(),
+        update_plan_tool(),
         web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
@@ -382,6 +423,7 @@ pub fn get_read_only_tools() -> Vec<Tool> {
         list_directory_tool(),
         read_file_tool(),
         glob_files_tool(),
+        update_plan_tool(),
         web_fetch_tool(),
         // Anthropic web search tool
         anthropic_web_search_tool(),
@@ -436,6 +478,33 @@ pub fn add_code_search_tool(tools: &mut Vec<Tool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_plan_available_in_read_only_tools() {
+        let tools = get_read_only_tools();
+        assert!(tools.iter().any(|tool| match tool {
+            Tool::Regular { name, .. } => name == "update_plan",
+            _ => false,
+        }));
+    }
+
+    #[test]
+    fn update_plan_schema_restricts_status_values() {
+        let tools = get_all_tools();
+        let plan_tool = tools
+            .iter()
+            .find(|tool| matches!(tool, Tool::Regular { name, .. } if name == "update_plan"))
+            .expect("update_plan tool should be registered");
+
+        let Tool::Regular { input_schema, .. } = plan_tool else {
+            panic!("update_plan must be a regular tool");
+        };
+
+        assert_eq!(
+            input_schema["properties"]["plan"]["items"]["properties"]["status"]["enum"],
+            json!(["pending", "in_progress", "completed"])
+        );
+    }
 
     #[test]
     fn test_regular_tool_serialization() {

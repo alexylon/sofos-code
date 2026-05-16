@@ -83,10 +83,10 @@ pub fn max_context_tokens_for(model: &str) -> usize {
     crate::api::model_info::lookup(model).effective_window() as usize
 }
 
-/// Auto-compaction trigger for `model`. Mirrors the codex pattern of
-/// keeping the cost-shaping cap and the API ceiling as separate
-/// concepts: this is where the LLM-summary phase fires, while
-/// [`max_context_tokens_for`] is where the hard drop-trim kicks in.
+/// Auto-compaction trigger for `model`. Keeps the cost-shaping cap and
+/// the API ceiling as separate concepts: this is where the LLM-summary
+/// phase fires, while [`max_context_tokens_for`] is where the hard
+/// drop-trim kicks in.
 pub fn auto_compact_token_limit_for(model: &str) -> usize {
     crate::api::model_info::lookup(model).auto_compact_at() as usize
 }
@@ -97,7 +97,8 @@ pub fn auto_compact_token_limit_for(model: &str) -> usize {
 pub const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
                                      No file modifications or bash commands are allowed. \
                                      Available tools: list_directory, read_file, glob_files, \
-                                     search_code (when ripgrep is installed), web_fetch, web_search.]";
+                                     search_code (when ripgrep is installed), update_plan, \
+                                     web_fetch, web_search.]";
 
 /// Normal mode message shown when switching from safe mode
 pub const NORMAL_MODE_MESSAGE: &str = "[SYSTEM: Normal (unrestricted) mode has been enabled. \

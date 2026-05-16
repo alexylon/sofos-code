@@ -53,10 +53,11 @@ impl ConversationHistory {
             "5. Search the web for information",
             "6. Execute read-only bash commands (for testing code)",
             "7. View images (user includes image path or URL in their message)",
+            "8. Update a visible task plan for multi-step work",
         ];
 
         if has_code_search {
-            features.push("8. Search code using ripgrep");
+            features.push("9. Search code using ripgrep");
         }
 
         let edit_instruction = if has_morph {
@@ -90,6 +91,7 @@ When helping users:
 - Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services).
 Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.
 - Explain your reasoning when using tools
+- Use update_plan for complex or multi-step tasks, and keep exactly one step in_progress when work is underway
 
 Outside Workspace Access (three separate scopes, each prompted independently):
 - Read scope: read_file and list_directory can access absolute or ~/ paths. If not pre-configured, the user is prompted to allow access and can optionally remember the decision.
