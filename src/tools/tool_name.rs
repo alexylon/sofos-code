@@ -81,14 +81,12 @@ impl ToolName {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let offset = tool_input
-                    .get("offset")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1);
+                let content_lines = output
+                    .split_once("\n\n")
+                    .map(|(_, body)| body.lines().count() as u64)
+                    .unwrap_or_else(|| output.lines().count() as u64);
 
-                let line_count = output.lines().count() as u64;
-
-                if line_count == 0 {
+                if content_lines == 0 {
                     if file_path.is_empty() {
                         "Read file (empty or not found)".to_string()
                     } else {
@@ -97,18 +95,14 @@ impl ToolName {
                             file_path.bright_cyan()
                         )
                     }
+                } else if file_path.is_empty() {
+                    format!("Read {} lines", content_lines)
                 } else {
-                    let end_line = offset + line_count - 1;
-                    if file_path.is_empty() {
-                        format!("Read lines {}-{}", offset, end_line)
-                    } else {
-                        format!(
-                            "Read lines {}-{} from {}",
-                            offset,
-                            end_line,
-                            file_path.bright_cyan()
-                        )
-                    }
+                    format!(
+                        "Read {} lines from {}",
+                        content_lines,
+                        file_path.bright_cyan()
+                    )
                 }
             }
             ToolName::ListDirectory => {

@@ -10,16 +10,11 @@ use crate::repl::Repl;
 use crate::session::{SessionMetadata, SessionTokenCounters};
 use colored::Colorize;
 
-/// Mirror of `build_llm_client`'s provider routing in `main.rs`: the
-/// model prefix determines which provider the client targets, so this
-/// is the single fact that lets `load_session_by_id` detect a
-/// cross-provider resume without instantiating a second client.
+/// Single-fact wrapper over the canonical provider lookup in
+/// `api::model_info`. `load_session_by_id` calls this to detect a
+/// cross-provider resume without spinning up the wrong API client.
 fn provider_of(model: &str) -> &'static str {
-    if model.starts_with("gpt-") {
-        "OpenAI"
-    } else {
-        "Anthropic"
-    }
+    crate::api::model_info::provider_for(model).label()
 }
 
 impl Repl {

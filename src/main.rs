@@ -201,12 +201,15 @@ fn main() -> Result<()> {
 /// sync across all four failure modes.
 fn build_llm_client(cli: &Cli) -> LlmClient {
     fn try_build(cli: &Cli) -> Result<LlmClient> {
-        if cli.model.starts_with("gpt-") {
-            let key = cli.get_openai_api_key()?;
-            Ok(LlmClient::OpenAI(OpenAIClient::new(key)?))
-        } else {
-            let key = cli.get_anthropic_api_key()?;
-            Ok(LlmClient::Anthropic(AnthropicClient::new(key)?))
+        match crate::api::model_info::provider_for(&cli.model) {
+            crate::api::model_info::Provider::OpenAI => {
+                let key = cli.get_openai_api_key()?;
+                Ok(LlmClient::OpenAI(OpenAIClient::new(key)?))
+            }
+            crate::api::model_info::Provider::Anthropic => {
+                let key = cli.get_anthropic_api_key()?;
+                Ok(LlmClient::Anthropic(AnthropicClient::new(key)?))
+            }
         }
     }
     try_build(cli).unwrap_or_else(|e| {

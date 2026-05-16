@@ -111,6 +111,38 @@ impl ModelInfo {
     }
 }
 
+/// LLM vendor a model belongs to. Used to pick the right API client
+/// at startup and to detect a cross-provider resume without
+/// instantiating both clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Anthropic,
+    OpenAI,
+}
+
+impl Provider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "Anthropic",
+            Provider::OpenAI => "OpenAI",
+        }
+    }
+}
+
+/// Provider that owns this model id. The lookup is case-insensitive
+/// and prefix-based so versioned ids (`gpt-5.5-2026-mm-dd`,
+/// `claude-opus-4-7-20260301`) route to the right client. Unknown
+/// ids fall back to Anthropic, matching the historical behaviour of
+/// the startup script. Adding a new vendor is one extra prefix here.
+pub fn provider_for(model: &str) -> Provider {
+    let m = model.to_ascii_lowercase();
+    const OPENAI_PREFIXES: &[&str] = &["gpt-", "o1", "o3", "o4"];
+    if OPENAI_PREFIXES.iter().any(|p| m.starts_with(p)) {
+        return Provider::OpenAI;
+    }
+    Provider::Anthropic
+}
+
 /// Look up metadata for a model by id. Matching is case-insensitive
 /// and prefix-based so versioned ids (`claude-opus-4-7-20260301`,
 /// `gpt-5.5-2026-mm-dd`) resolve to the canonical entry. Unknown

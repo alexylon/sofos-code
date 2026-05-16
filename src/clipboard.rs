@@ -6,12 +6,21 @@ pub struct PastedImage {
     pub base64_data: String,
 }
 
-/// Map paste index (0-based) to a circled number character: ①②③...⑳
-pub fn marker_for_index(n: usize) -> char {
-    if n < 20 {
-        char::from_u32(0x2460 + n as u32).unwrap_or('*')
+/// Maximum number of pasted images a single submission can carry.
+/// Anchored to the size of the Unicode circled-number range
+/// (`①` through `⑳`) used to mark each image inline.
+pub const MAX_PASTED_IMAGES_PER_MESSAGE: usize = 20;
+
+/// Map a paste index (0-based) to a circled number character that the
+/// submission parser can later recover. Returns `None` past
+/// `MAX_PASTED_IMAGES_PER_MESSAGE`; the caller is expected to reject
+/// the paste with a visible warning rather than emit a marker we
+/// could not strip back out.
+pub fn marker_for_index(n: usize) -> Option<char> {
+    if n < MAX_PASTED_IMAGES_PER_MESSAGE {
+        char::from_u32(0x2460 + n as u32)
     } else {
-        '*'
+        None
     }
 }
 

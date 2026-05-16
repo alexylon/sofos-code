@@ -184,9 +184,21 @@ fn longest_common_prefix(items: &[&'static str]) -> &'static str {
 fn handle_clipboard_paste(app: &mut App) {
     if let Some(image) = crate::clipboard::get_clipboard_image() {
         let idx = app.pasted_images.len();
-        app.pasted_images.push(image);
-        let marker = crate::clipboard::marker_for_index(idx);
-        app.textarea.insert_str(format!("{} ", marker));
+        match crate::clipboard::marker_for_index(idx) {
+            Some(marker) => {
+                app.pasted_images.push(image);
+                app.textarea.insert_str(format!("{} ", marker));
+            }
+            None => {
+                use colored::Colorize;
+                println!(
+                    "{} Too many images in one message (limit: {}). Send what you have and paste the rest separately.",
+                    "✗".bright_red().bold(),
+                    crate::clipboard::MAX_PASTED_IMAGES_PER_MESSAGE
+                );
+                println!();
+            }
+        }
         return;
     }
     // No image on the clipboard — try plain text so Ctrl+V still pastes
@@ -328,6 +340,20 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &St
         } else {
             let _ = job_tx.send(job);
         }
+        return;
+    }
+
+    // The submission starts with `/` but did not parse as a command —
+    // a typo like `/resuem` or an unsupported variant like
+    // `/think turbo`. Surface a local error instead of forwarding it
+    // to the model as a plain message, where the user pays tokens and
+    // gets an irrelevant explanation back.
+    let trimmed = cleaned.trim();
+    if images.is_empty() && trimmed.starts_with('/') {
+        let known = COMMANDS.join(" ");
+        println!("{} Unknown command `{}`.", "✗".bright_red().bold(), trimmed);
+        println!("  Try: {}", known.dimmed());
+        println!();
         return;
     }
 
