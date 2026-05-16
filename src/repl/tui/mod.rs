@@ -182,7 +182,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
     let worker_handle = worker::spawn(repl, job_rx, ui_tx.clone(), Arc::clone(&interrupt))?;
     spawn_input_reader(ui_tx.clone())?;
 
-    let mut app = App::new(model_label);
+    let mut app = App::new(model_label.clone());
     // Everything we emit here rides the `OutputCapture` pipe (installed
     // above) and is handed to `scrollback::scroll_strings_above_viewport`
     // in the event loop — the same path every later tool/stdout line
@@ -193,7 +193,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
     if !startup_banner.is_empty() {
         print!("{}", startup_banner);
     }
-    UI::print_welcome();
+    UI::print_welcome(&model_label);
 
     drop(ui_tx);
 

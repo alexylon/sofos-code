@@ -71,6 +71,8 @@ pub static COMMANDS: &[&str] = &[
     "/think low",
     "/think medium",
     "/think high",
+    "/think xhigh",
+    "/think max",
     "/think",
     "/s",
     "/n",

@@ -155,14 +155,24 @@ impl UI {
         out
     }
 
-    pub fn print_welcome() {
+    pub fn print_welcome(model: &str) {
+        let efforts = crate::api::model_info::lookup(model)
+            .supported_efforts
+            .iter()
+            .map(|e| e.as_label())
+            .collect::<Vec<_>>()
+            .join("|");
         println!(
             "  {}",
             "Enter to send  ·  Shift+Enter for newline  ·  ESC/Ctrl+C to interrupt".dimmed()
         );
         println!(
             "  {}",
-            "/exit  /clear  /resume  /compact  /think [off|low|medium|high|max]  /s  /n".dimmed()
+            format!(
+                "/exit  /clear  /resume  /compact  /think [{}]  /s  /n",
+                efforts
+            )
+            .dimmed()
         );
         println!();
     }

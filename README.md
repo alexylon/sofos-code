@@ -2,507 +2,600 @@
 
 ![CI](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg) &nbsp; [![Crates.io](https://img.shields.io/crates/v/sofos.svg?color=blue)](https://crates.io/crates/sofos)
 
-A blazingly fast, interactive AI coding assistant powered by Claude or GPT, implemented in pure Rust, that can generate code, edit files, and search the web - all from your terminal.
+Sofos Code is a terminal-based AI coding assistant for software projects. It connects Claude or OpenAI models to a secure local toolset for reading code, editing files, running approved commands, searching the web, and working with external tools through Model Context Protocol (MCP).
 
-Tested on macOS; supported on Linux and Windows.
+Sofos is written in Rust, runs in your terminal, and is designed around explicit permissions: workspace access is available by default, while external paths and higher-risk actions require user approval or configuration.
 
-<div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code"></div>
+Tested on macOS. Supported on Linux and Windows.
 
-## Table of Contents
+<div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code terminal screenshot"></div>
 
-- [Features](#features)
-- [Install](#install)
+---
+
+## Table of contents
+
+- [What Sofos does](#what-sofos-does)
+- [Key features](#key-features)
+- [Installation](#installation)
+  - [Requirements](#requirements)
+  - [Prebuilt binary](#prebuilt-binary)
+  - [Install with Cargo](#install-with-cargo)
+  - [Install from source](#install-from-source)
+- [Quick start](#quick-start)
 - [Usage](#usage)
-  - [Quick Start](#quick-start)
-  - [Commands](#commands)
-  - [Image Vision](#image-vision)
-  - [Cost Tracking](#cost-tracking)
-  - [CLI Options](#cli-options)
-  - [Extended Thinking](#extended-thinking)
-- [Custom Instructions](#custom-instructions)
-- [Session History](#session-history)
-- [Available Tools](#available-tools)
-- [MCP Servers](#mcp-servers)
-- [Security](#security)
+  - [Interactive commands](#interactive-commands)
+  - [Input behaviour](#input-behaviour)
+  - [One-shot prompts](#one-shot-prompts)
+  - [Image vision](#image-vision)
+- [CLI reference](#cli-reference)
+- [Models and reasoning effort](#models-and-reasoning-effort)
+- [Tools](#tools)
+  - [Native tools](#native-tools)
+  - [Safe mode tools](#safe-mode-tools)
+  - [MCP tools](#mcp-tools)
+- [Security model](#security-model)
+  - [Workspace and external paths](#workspace-and-external-paths)
+  - [Bash command permissions](#bash-command-permissions)
+  - [Destructive operations](#destructive-operations)
 - [Configuration](#configuration)
+  - [Custom instructions](#custom-instructions)
+  - [Permissions](#permissions)
+  - [MCP servers](#mcp-servers)
+- [Sessions and cost tracking](#sessions-and-cost-tracking)
 - [Development](#development)
-- [Release](#release)
+  - [Project structure](#project-structure)
+  - [Release process](#release-process)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
-- [Links & Resources](#links--resources)
+- [Links](#links)
 
-## Features
+---
 
-- **Interactive TUI** - Multi-turn conversations with Claude or GPT in an inline viewport at the bottom of your terminal; your emulator owns the scrollback, scrollbar, mouse wheel, and copy-paste
-- **Keep Typing During AI Turns** - Messages queue FIFO while the model works; mid tool-loop messages steer the current turn without interrupting
-- **Live Status Line** - Model, mode, reasoning config, and running token totals shown under the input
-- **Markdown Formatting** - AI responses with syntax highlighting for code blocks
-- **Image Vision** - Analyze local or web images, paste from clipboard with Ctrl+V
-- **Session History** - Auto-save with an in-TUI resume picker (`/resume` or `sofos -r`)
-- **Custom Instructions** - Project and personal context files
-- **File Operations** - Read, write, edit, list, glob, create, move, copy, delete (sandboxed; external paths via permission grants)
-- **Targeted Edits** - Diff-based `edit_file` for precise string replacements
-- **Ultra-Fast Editing** - Optional Morph Apply integration (10,500+ tokens/sec)
-- **File Search** - Find files by glob pattern (`**/*.rs`)
-- **Code Search** - Fast regex search with ripgrep
-- **Web Search** - Real-time info via Claude's/OpenAI's native search
-- **Web Fetch** - Read documentation and web pages
-- **Bash Execution** - Run tests and builds, sandboxed behind a 3-tier permission system
-- **MCP Integration** - Connect to external tools via Model Context Protocol
-- **Visual Diffs** - Syntax-highlighted diffs with line numbers
-- **Iterative Tools** - Up to 200 tool calls per request
-- **Context Compaction** - Summarizes older messages instead of dropping them
-- **Cost Tracking** - Session token usage and cost estimates
-- **Safe Mode** - Read-only operation mode
+## What Sofos does
 
-## Install
+Sofos provides an AI assistant inside your terminal with controlled access to your project. It can:
 
-**Requirements:** Anthropic API key ([get one](https://console.anthropic.com/)) or OpenAI API key ([get one](https://platform.openai.com/))
+- inspect files and directories;
+- search code with ripgrep;
+- edit files through exact replacements or Morph Apply;
+- create, move, copy, and delete files with permission checks;
+- run safe build and test commands;
+- fetch documentation and use provider-native web search;
+- review local, clipboard, or web images;
+- save and resume conversations;
+- connect to external tools through Model Context Protocol servers.
 
-**Optional** (but highly recommended): `ripgrep` for code search ([install](https://github.com/BurntSushi/ripgrep#installation)), Morph API key for ultra-fast editing ([get one](https://morphllm.com/))
+The assistant can act through tools, but it does not do so silently: tool calls are shown to the user, dangerous commands are blocked, and operations outside the workspace are gated by independent permission scopes.
+
+---
+
+## Key features
+
+- **Terminal UI** — inline viewport at the bottom of your terminal; normal terminal scrollback remains available.
+- **Claude and OpenAI support** — one provider abstraction with provider-specific streaming, reasoning, web search, and cache handling.
+- **Live streaming Markdown** — assistant responses render as they arrive, including code blocks, headings, lists, blockquotes, and links.
+- **Tool loop execution** — the model can use tools iteratively, with a hard maximum to prevent infinite loops.
+- **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
+- **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
+- **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
+- **Safe mode** — read-only native tools for review-only sessions.
+- **Image vision** — local images, web images, and clipboard paste.
+- **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
+- **Session persistence** — saved conversations, resume picker, restored safe mode, restored model where compatible, and persisted cost counters.
+- **Cost visibility** — token totals, cache hit reporting, and provider-specific price estimates.
+- **Context compaction** — local and provider-supported compaction to keep long sessions usable.
+
+---
+
+## Installation
+
+### Requirements
+
+You need at least one provider API key:
+
+- `ANTHROPIC_API_KEY` for Claude models; or
+- `OPENAI_API_KEY` for OpenAI models.
+
+Optional but recommended:
+
+- `ripgrep` for fast code search through the `search_code` tool;
+- `MORPH_API_KEY` for the optional `morph_edit_file` fast edit tool.
 
 ### Prebuilt binary
 
-Download from [GitHub Releases](https://github.com/alexylon/sofos-code/releases/latest) (macOS, Linux, Windows):
+Download the latest binary from GitHub Releases.
 
 ```bash
 # macOS / Linux
 tar xzf sofos-*.tar.gz
 sudo mv sofos /usr/local/bin/
 
-# Windows — extract the .zip, then add the folder to your PATH
+# Windows
+# Extract the .zip archive and add the extracted folder to PATH.
 ```
 
-> **macOS:** On first run, macOS may block the binary. Go to System Settings → Privacy & Security and click *Allow Anyway*.
+On macOS, the first run may be blocked by Gatekeeper. Open System Settings → Privacy & Security and choose **Allow Anyway** for the Sofos binary.
 
-### With Rust
+### Install with Cargo
 
 ```bash
 cargo install sofos
 ```
 
-### From source
+### Install from source
 
 ```bash
 git clone https://github.com/alexylon/sofos-code.git
-cd sofos-code && cargo install --path .
+cd sofos-code
+cargo install --path .
 ```
 
-**Important:** Add `.sofos/` to `.gitignore` (contains session history and personal settings). Keep `AGENTS.md` (team-wide instructions).
+Keep `.sofos/` out of version control. It stores sessions, local permissions, and personal settings. `AGENTS.md` is project-level context and is intended to be version controlled.
 
-## Usage
+---
 
-### Quick Start
+## Quick start
 
 ```bash
-# Set your API key (choose one)
+# Choose one provider.
 export ANTHROPIC_API_KEY='your-anthropic-key'
 # or
 export OPENAI_API_KEY='your-openai-key'
 
-# Optional: Enable ultra-fast editing
+# Optional: enable Morph Apply edits.
 export MORPH_API_KEY='your-morph-key'
 
-# Start Sofos
+# Start the interactive assistant.
 sofos
 ```
 
-### Commands
-
-- `/resume` - Resume previous session
-- `/clear` - Clear conversation history
-- `/think [off|low|medium|high|xhigh|max]` - Set reasoning effort (shows status if no arg). `xhigh` is only accepted on Opus 4.7 / gpt-5.x; `max` is only accepted on Opus 4.7, Opus 4.6, and Sonnet 4.6.
-- `/compact` - Summarize older messages via the LLM to reclaim context tokens. Triggers automatically at the per-model auto-compact threshold (~250K tokens on 1M-window models, ~170K on Haiku, ~250K on Codex). On Claude Opus 4.7 / 4.6 / Sonnet 4.6 the API itself runs the summarization server-side via the `compact-2026-01-12` beta — no extra round-trip.
-- `/s` - Safe mode (read-only, prompt: **`:`**)
-- `/n` - Normal mode (all tools, prompt: **`>`**)
-- `/exit`, `/quit`, `/q`, `Ctrl+D` - Exit with cost summary
-- `ESC` or `Ctrl+C` (while busy) - Interrupt AI response
-
-**Message queueing:** Keep typing while the AI is working. Pressing Enter queues the message; queued messages are sent automatically once the current turn finishes. The hint line shows the queue count.
-
-**Multi-line input:** `Shift+Enter` inserts a newline; `Enter` alone submits. On terminals that do not deliver `Shift+Enter` distinctly (Apple Terminal.app and many defaults), use `Alt+Enter` or `Ctrl+Enter` as a fallback newline binding.
-
-**Scrollback:** Sofos runs as an inline viewport at the bottom of your terminal — the rest of the terminal is normal scrollback, so use your terminal emulator's own scrollbar, mouse wheel, and text selection / copy-paste.
-
-**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`effort: off|low|medium|high|xhigh|max` for OpenAI and the Anthropic adaptive models; `thinking: <N> tok` for older Claude models with manual budgets), and running token totals.
-
-### Image Vision
-
-Include image paths or URLs directly in your message, or paste images from clipboard:
+Use a different model:
 
 ```bash
-# Paste from clipboard
-Ctrl+V                        # Shows ① marker, paste multiple for ①②③
-                               # Delete a marker to remove that image
-
-# Local images
-What's in this screenshot.png?
-Describe ./images/diagram.jpg
-
-# Paths with spaces - use quotes
-What do you see in "/Users/alex/Documents/my image.png"?
-
-# Web images
-Analyze https://example.com/chart.png
+sofos --model gpt-5.5
+sofos --model claude-opus-4-7 -e high
 ```
 
-**Formats:** JPEG, PNG, GIF, WebP (max 20MB local) | **Clipboard:** Ctrl+V pastes images on macOS, Linux, and Windows | **Spaces:** Wrap in quotes `"path/with space.png"` | **Permissions:** Outside workspace requires config
-
-### Cost Tracking
-
-Exit summary shows token usage and estimated cost based on official API pricing. When the provider prompt cache served any tokens during the session, a `cache read: N (M% hit)` row appears under the input total, and the estimated cost reflects the cache discount (10% of base input on both providers, plus 125% for Anthropic 5-min writes and 200% for 1-hour writes).
-
-**Tiered pricing detection.** GPT-5.4 and GPT-5.5 charge a session-wide premium (2× input, 1.5× output) once any single prompt crosses 272K input tokens. Sofos tracks the largest single-turn input observed and switches the cost calculator to premium rates if the cliff is ever crossed, so the displayed cost reflects what OpenAI actually bills.
-
-### CLI Options
-
-```
--p, --prompt <TEXT>          One-shot mode
--s, --safe-mode              Start in read-only mode (native writes and bash disabled)
--r, --resume                 Resume a previous session
-    --check-connection       Check API connectivity and exit
-    --api-key <KEY>          Anthropic API key (overrides env var)
-    --openai-api-key <KEY>   OpenAI API key (overrides env var)
-    --morph-api-key <KEY>    Morph API key (overrides env var)
-    --model <MODEL>          Model to use (default: claude-sonnet-4-6)
-    --morph-model <MODEL>    Morph model (default: morph-v3-fast)
-    --max-tokens <N>         Max response tokens (default: 32768; must be > 16384 when reasoning effort is enabled)
--e, --reasoning-effort <LV>  Reasoning effort: off, low, medium, high, xhigh, max (default: medium). Per-model support varies — see the Reasoning Effort section.
-    --thinking-budget <N>    Vestigial. Currently inert on every path: legacy Claude uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384), Claude Opus 4.7+ uses adaptive thinking, OpenAI uses `reasoning.effort`. Kept for backwards-compatibility; will be removed.
--v, --verbose                Verbose logging
-```
-
-### Reasoning Effort
-
-Sofos exposes six levels — `off`, `low`, `medium`, `high`, `xhigh`, `max`. The first four are universal; `xhigh` and `max` have model-specific support and sofos rejects mismatched pairs at startup or at the `/think` command.
+Run a single prompt and exit:
 
 ```bash
-sofos -e medium                             # Default — sensible cost/quality balance
-sofos -e high                               # Hard tasks, willing to pay more
-sofos -e off                                # Cheapest path; no reasoning summary
-sofos -e max --model claude-opus-4-7        # Absolute-capability rung on Anthropic adaptive
-sofos -e xhigh --model gpt-5.5              # Top rung on OpenAI gpt-5.x
-
-# Mid-session
-/think high                                 # Bump up
-/think off                                  # Drop to minimal
-/think                                      # Show current
+sofos -p "Review the error handling in src/error.rs"
 ```
 
-**Per-model support matrix:**
+Start in read-only native-tool mode:
 
-| Effort   | Opus 4.7 | Opus 4.6 | Sonnet 4.6 | Haiku 4.5 / older | gpt-5.4 / 5.5 / codex |
-| -------- | :------: | :------: | :--------: | :---------------: | :-------------------: |
-| `off`    | ✓        | ✓        | ✓          | ✓                 | ✓                     |
-| `low`    | ✓        | ✓        | ✓          | ✓                 | ✓                     |
-| `medium` | ✓ (def)  | ✓ (def)  | ✓ (def)    | ✓ (def)           | ✓ (def)               |
-| `high`   | ✓        | ✓        | ✓          | ✓                 | ✓                     |
-| `xhigh`  | ✓        | ✗        | ✗          | ✗                 | ✓                     |
-| `max`    | ✓        | ✓        | ✓          | ✗                 | ✗                     |
+```bash
+sofos --safe-mode
+```
 
-**Per-provider wire mapping:**
+Resume a saved session:
 
-- **OpenAI (gpt-5 family, incl. codex)** — sends `reasoning.effort` matching the level (`minimal` for `off`, `low` / `medium` / `high` / `xhigh` otherwise) and `summary: "auto"` when on, omitted when off. `max` isn't accepted by OpenAI.
-- **Claude Opus 4.7, Opus 4.6, Sonnet 4.6** — adaptive thinking; the server picks the budget based on the prompt, and sofos sends `output_config.effort` matching the level (`off` collapses to `low`, the lowest the API accepts). `xhigh` is Opus 4.7 only on Anthropic. `--thinking-budget` is ignored.
-- **Older Claude (Haiku 4.5, Sonnet 4.5, Opus 4.5)** — `off` disables extended thinking; `low`, `medium`, and `high` each map to a distinct legacy `budget_tokens` value (`1024 / 5120 / 16384`) so the slider has a visible effect. `xhigh` / `max` are rejected upstream because legacy models don't expose them. `--thinking-budget` is ignored — the per-tier values are the source of truth.
+```bash
+sofos --resume
+```
 
-## Custom Instructions
+---
 
-Two files are loaded at startup and appended to the system prompt:
+## Usage
 
-- **[`AGENTS.md`](https://agents.md)** (project root, version controlled) — project context for AI agents: team-wide conventions, architecture, domain vocabulary.
-- **`.sofos/instructions.md`** (gitignored) — personal preferences that shouldn't be shared with the team.
+### Interactive commands
 
-## Session History
+| Command | Description |
+|---|---|
+| `/resume` | Open the session picker and resume a saved conversation. |
+| `/clear` | Clear the current conversation history and start a fresh session id. |
+| `/compact` | Compact older context to reduce token usage. |
+| `/think` | Show the current reasoning-effort setting. |
+| `/think off\|low\|medium\|high\|xhigh\|max` | Change reasoning effort when the active model supports the selected level. |
+| `/s` | Enable safe mode: read-only native tools. Prompt changes to `:`. |
+| `/n` | Return to normal mode. Prompt changes to `>`. |
+| `/exit`, `/quit`, `/q`, `Ctrl+D` | Save the session and exit with a cost summary. |
+| `ESC` or `Ctrl+C` while busy | Interrupt the current AI turn. |
 
-Conversations auto-saved to `.sofos/sessions/`. Resume with `sofos -r` or `/resume`.
+### Input behaviour
 
-## Available Tools
+- **Enter** submits the current message.
+- **Shift+Enter** inserts a newline when the terminal supports it.
+- **Alt+Enter** or **Ctrl+Enter** can be used as newline fallbacks.
+- You can keep typing while the model is working. New messages are queued and processed in order.
+- If the model is inside a tool loop, a queued message is delivered at the next tool-result boundary so it can steer the current turn without interrupting it.
+- The status line shows the model, mode, reasoning setting, and running token totals.
 
-**File Operations** (accept absolute and `~/` paths with a `Read` or `Write` grant as appropriate — see Security and Configuration):
-- `read_file` - Read file contents
-- `list_directory` - List a single directory's contents
-- `glob_files` - Find files recursively by glob pattern (`**/*.rs`, `src/**/test_*.py`)
-- `write_file` - Create or overwrite files (append mode for chunked writes)
-- `edit_file` - Targeted string replacement edits (no API key needed)
-- `morph_edit_file` - Ultra-fast code editing (requires MORPH_API_KEY)
-- `create_directory` - Create a directory (and missing parents)
-- `move_file`, `copy_file` - Move or copy files
+### One-shot prompts
 
-**Workspace-only file ops** (absolute / `~/` paths are rejected, even with grants — destructive ops are deliberately scoped to the workspace):
-- `delete_file`, `delete_directory` - Delete files or directories (prompt for confirmation)
+One-shot mode sends a prompt, runs the assistant turn, saves the session, prints a summary, and exits.
 
-**Code & Search:**
-- `search_code` - Fast regex-based code search (requires `ripgrep`)
-- `web_search` - Real-time web information via Claude's/OpenAI's native search
-- `web_fetch` - Fetch URL content as readable text (documentation, APIs)
-- `execute_bash` - Run bash commands, sandboxed through the 3-tier permission system (safe commands auto-run, destructive ones blocked, unknown ones prompt)
+```bash
+sofos -p "Find the likely cause of the failing tests"
+sofos -p "Create a high-level summary of this crate" --safe-mode
+```
 
-**MCP Tools:**
-- Tools from configured MCP servers (prefixed with server name, e.g., `filesystem_read_file`)
+### Image vision
 
-**Image Vision:** not a tool — sofos detects image paths (JPEG, PNG, GIF, WebP, up to 20 MB local) in your user messages and loads them automatically as image content blocks. Clipboard paste (Ctrl+V) works the same way. See [Image Vision](#image-vision) under Usage.
+Include image paths or URLs directly in your message, or paste images from the clipboard.
 
-**Note:** Tools can access paths outside the workspace when allowed via interactive prompt or config. Three independent scopes (`Read` / `Write` / `Bash`) gate this access — see [Security](#security) for the full model.
+```text
+What is wrong in ./screenshots/error.png?
+Describe "./docs/architecture diagram.webp".
+Review https://example.com/chart.png
+```
 
-Safe mode (`--safe-mode` or `/s`) restricts the native tool set to read-only operations: `list_directory`, `read_file`, `glob_files`, `web_fetch`, `web_search` (Anthropic + OpenAI provider-native variants), and `search_code` when `ripgrep` is available. MCP tools are **not** filtered by safe mode — if you've configured MCP servers with mutating tools, those remain available.
+Clipboard paste:
 
-## MCP Servers
+```text
+Ctrl+V    # Inserts a numbered marker such as ①.
+```
 
-Connect to external tools via MCP (Model Context Protocol). Configure in `~/.sofos/config.toml` or `.sofos/config.local.toml` (see the example in the "Configuration" section).
+Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. Paths with spaces should be quoted. Images outside the workspace require Read permission.
 
-Tools auto-discovered, prefixed with server name (e.g., `filesystem_read_file`). See `examples/mcp_quickstart.md`.
+---
 
-**Popular servers:** https://github.com/modelcontextprotocol/servers
+## CLI reference
 
-## Security
+```text
+-p, --prompt <TEXT>          Run one prompt and exit.
+-s, --safe-mode              Start with read-only native tools.
+-r, --resume                 Resume a previous session.
+    --check-connection       Check provider connectivity and exit.
+    --api-key <KEY>          Anthropic API key; overrides ANTHROPIC_API_KEY.
+    --openai-api-key <KEY>   OpenAI API key; overrides OPENAI_API_KEY.
+    --morph-api-key <KEY>    Morph API key; overrides MORPH_API_KEY.
+    --model <MODEL>          Model to use. Default: claude-sonnet-4-6.
+    --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
+    --max-tokens <N>         Maximum output tokens per response. Default: 32768.
+-e, --reasoning-effort <LV>  off, low, medium, high, xhigh, or max. Default: medium.
+```
 
-**Sandboxing (by default):**
-- ✅ Full access to workspace files/directories
-- ✅ External access via interactive prompts — user is asked to allow/deny, with option to remember in config
-- Three separate scopes: `Read` (read/list), `Write` (write/create/move/delete), `Bash` (commands with external paths)
-- Each scope is independently granted — Read access does not imply Write or Bash access, and vice versa
-- Tools that both read and write a file on external paths (`edit_file`, `morph_edit_file`) require **both** `Read` and `Write` grants on the path
+`--max-tokens` must be greater than `16384` when reasoning effort is enabled. The deprecated hidden `--thinking-budget` flag still parses for backwards compatibility but has no effect and is intentionally omitted from the CLI help.
 
-**Bash Permissions (3-Tier System):**
+---
 
-1. **Allowed (auto-execute):** Build tools (cargo, npm, go), read-only commands (ls, cat, grep), system info (pwd, date), git read-only commands (`status`, `log`, `diff`, `show`, `branch`, …).
-2. **Forbidden (always blocked):** file destruction (`rm`, `rmdir`, `touch`, `ln`); permissions (`chmod`, `chown`, `chgrp`); disk / partition (`dd`, `mkfs`, `fdisk`, `parted`, `mkswap`, `mount`, `umount`); system control (`shutdown`, `reboot`, `halt`, `systemctl`, `service`); user management (`useradd`, `usermod`, `passwd`, …); process signals (`kill`, `killall`, `pkill`); privilege escalation (`sudo`, `su`); directory navigation (`cd`, `pushd`, `popd`); destructive git operations (`git push`, `git reset --hard`, `git clean`, `git checkout -f`, `git checkout -b`, `git switch`, `git rebase`, `git commit`, …).
-3. **Ask (prompt user):** `cp`, `mv`, `mkdir`, `git checkout <branch>` / `git checkout HEAD~N` / `git checkout -- <path>`, commands referencing paths outside the workspace, and any unknown command. Approvals can be session-scoped or remembered in config. Commands whose args wouldn't repeat — `sed -n 'N,Mp'`, `head -n N`, `tail -n N`, `grep -A/-B/-C N`, `awk 'NR==N'` — drop the "and remember" options and show a plain Yes / No, since the exact command string won't match the next call.
+## Models and reasoning effort
+
+Sofos exposes six reasoning levels:
+
+```text
+off, low, medium, high, xhigh, max
+```
+
+The active model determines which levels are accepted. Sofos validates the level at startup and when `/think` is used, so unsupported combinations fail before reaching the provider API.
+
+Examples:
+
+```bash
+sofos -e medium                       # Default balance.
+sofos -e off                          # Lowest-cost path.
+sofos -e high                         # More reasoning for hard tasks.
+sofos -e max --model claude-opus-4-7  # Highest Anthropic adaptive level.
+sofos -e xhigh --model gpt-5.5        # Highest OpenAI gpt-5 reasoning level.
+```
+
+Support matrix:
+
+| Effort | Opus 4.7 | Opus 4.6 | Sonnet 4.6 | Haiku 4.5 / older Claude | OpenAI gpt-5 reasoning models |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `off` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ | ✗ | ✗ | ✗ | ✓ |
+| `max` | ✓ | ✓ | ✓ | ✗ | ✗ |
+
+Provider mapping:
+
+- **OpenAI** sends `reasoning.effort`; `off` maps to minimal reasoning and suppresses reasoning summaries.
+- **Claude Opus 4.7, Opus 4.6, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
+- **Older Claude models** use fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
+
+---
+
+## Tools
+
+### Native tools
+
+| Tool | Purpose |
+|---|---|
+| `list_directory` | List one directory. Use `glob_files` for recursive discovery. |
+| `read_file` | Read a file. External paths require Read permission. |
+| `glob_files` | Find files recursively with glob patterns. Skips build and vendor directories by default. |
+| `search_code` | Search code with ripgrep when `rg` is installed. |
+| `write_file` | Create, overwrite, or append to a file. External paths require Write permission. |
+| `edit_file` | Replace exact text in an existing file. External paths require both Read and Write permission. |
+| `morph_edit_file` | Apply fast Morph edits when `MORPH_API_KEY` is configured. External paths require both Read and Write permission. |
+| `create_directory` | Create directories. External paths require Write permission. |
+| `move_file` | Move or rename files or directories. External paths require Write permission. |
+| `copy_file` | Copy files. External sources require Read permission; external destinations require Write permission. |
+| `delete_file` | Delete a file after confirmation. External paths require Write permission. |
+| `delete_directory` | Delete a directory after confirmation. External paths require Write permission. |
+| `execute_bash` | Run approved shell commands through the bash permission system. |
+| `web_fetch` | Fetch a URL and return readable text. |
+| `web_search` | Provider-native web search. |
+
+Image vision is not a tool. Sofos detects supported image paths and URLs in user messages and converts them into image content blocks before sending the request.
+
+### Safe mode tools
+
+Safe mode is enabled with `--safe-mode` or `/s`. It restricts the native tool set to:
+
+- `list_directory`;
+- `read_file`;
+- `glob_files`;
+- `search_code` when ripgrep is installed;
+- `web_fetch`;
+- `web_search`.
+
+Safe mode does not filter tools exposed by configured MCP servers. If an MCP server exposes mutating tools, those tools remain available.
+
+### MCP tools
+
+Configured MCP servers can add tools dynamically. Sofos prefixes each MCP tool with the server name to avoid collisions, for example:
+
+```text
+filesystem_read_file
+github_create_issue
+```
+
+Tool listings are cached at startup for the session.
+
+---
+
+## Security model
+
+Sofos is built around explicit access boundaries. The assistant can be useful without receiving unrestricted access to the host system.
+
+### Workspace and external paths
+
+- Files inside the current workspace are available by default unless blocked by a deny rule.
+- External paths use three independent scopes:
+  - `Read(path)` for reading files and listing directories;
+  - `Write(path)` for writing, editing, creating, moving, copying, and deleting;
+  - `Bash(path)` for bash commands that reference external paths.
+- Read access does not imply Write or Bash access.
+- Write access does not imply Read or Bash access.
+- Tools that both read and write external files, such as `edit_file` and `morph_edit_file`, require both Read and Write grants.
+- External access can be allowed for the current session or remembered in configuration.
+
+### Bash command permissions
+
+Bash commands pass through three layers:
+
+1. **Command tier** — known safe commands may run automatically; dangerous commands are blocked; unknown commands prompt.
+2. **Structural checks** — parent traversal, file output redirection, here-documents, and dangerous git operations are blocked regardless of command tier.
+3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission.
+
+Default behaviour:
+
+| Tier | Behaviour | Examples |
+|---|---|---|
+| Allowed | Runs automatically after structural checks. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
+| Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
+| Ask | Prompts the user. | Unknown commands, external paths, `cp`, `mv`, `mkdir`, selected git checkout forms |
+
+### Destructive operations
+
+`delete_file` and `delete_directory` always show a confirmation prompt before deletion. If the user cancels a deletion in a batch of tool calls, Sofos returns synthetic tool results for the skipped tools so the next provider request remains valid.
+
+---
 
 ## Configuration
 
-Permissions are stored in `.sofos/config.local.toml` (workspace-specific, gitignored) or `~/.sofos/config.toml` (global, optional). Local config overrides global.
+Sofos reads configuration from:
 
-**Example:**
+```text
+.sofos/config.local.toml     # Workspace-specific, ignored by git.
+~/.sofos/config.toml         # Global, optional.
+```
+
+Local configuration is loaded in addition to global configuration. Keep `.sofos/` out of version control.
+
+### Custom instructions
+
+Two instruction files are loaded at startup and appended to the system prompt:
+
+| File | Purpose |
+|---|---|
+| `AGENTS.md` | Project-level instructions. Version controlled. |
+| `.sofos/instructions.md` | Personal instructions. Ignored by git. |
+
+Use `AGENTS.md` for team-wide conventions, architecture notes, and project-specific rules. Use `.sofos/instructions.md` for private preferences or machine-local context.
+
+### Permissions
+
+Example permission configuration:
 
 ```toml
 [permissions]
 allow = [
-  # Read permissions - for reading/listing files outside workspace
-  "Read(~/.zshrc)",           # Specific file
-  "Read(~/.config/**)",       # Recursive
-  "Read(/etc/hosts)",         # Absolute path
-  
-  # Write permissions - for writing/editing files outside workspace
-  "Write(/tmp/output/**)",    # Allow writes to specific external dir
-  
-  # Bash path permissions - for commands referencing external paths
-  "Bash(/var/log/**)",        # Allow bash commands to access this dir
-  
-  # Bash command permissions - for command execution
-  "Bash(custom_command)",     # Specific command
-  "Bash(pattern:*)",          # Wildcard pattern
+  # Read permissions.
+  "Read(~/.zshrc)",
+  "Read(~/.config/**)",
+  "Read(/etc/hosts)",
+
+  # Write permissions.
+  "Write(/tmp/sofos-output/**)",
+
+  # Bash path permissions.
+  "Bash(/var/log/**)",
+
+  # Bash command permissions.
+  "Bash(custom_tool)",
+  "Bash(cargo:*)",
 ]
 
 deny = [
-  # Read denials
   "Read(./.env)",
   "Read(./.env.*)",
   "Read(./secrets/**)",
-  
-  # Bash denials
-  "Bash(dangerous_command)",
+  "Bash(dangerous_tool)",
 ]
 
 ask = [
-  # Only for Bash commands (prompts for approval)
+  # Ask only applies to Bash commands.
   "Bash(unknown_tool)",
 ]
+```
 
-[mcp-servers.company-internal]
-command = "/usr/local/bin/company-mcp-server"
-args = ["--config", "/etc/company/mcp-config.json"]
-env = { "COMPANY_API_URL" = "https://internal.company.com" }
+Rules:
 
+- Deny rules take priority over allow rules.
+- `Read`, `Write`, and `Bash` path scopes are independent.
+- `*` matches within one path segment.
+- `**` matches recursively.
+- `Read(/path/**)` also covers `/path` itself.
+- `Bash(/path/**)` grants bash path access, not command execution by itself.
+- `Bash(command)` grants one exact command.
+- `Bash(command:*)` grants commands by base name.
+- A bare `"Bash"` in `allow` allows every bash command except built-in forbidden commands; structural checks still apply.
+- A bare `"Bash"` in `deny` rejects every bash command.
+- `ask` is valid only for Bash command rules.
+
+### MCP servers
+
+Configure MCP servers in either local or global config.
+
+Stdio server:
+
+```toml
 [mcp-servers.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { "GITHUB_TOKEN" = "ghp_YOUR_TOKEN" }
+```
 
-[mcp-servers.api]
+HTTP server:
+
+```toml
+[mcp-servers.internal-api]
 url = "https://api.example.com/mcp"
-headers = { "Authorization" = "Bearer token123" }
+headers = { "Authorization" = "Bearer token" }
 ```
 
-**Rules\*:**
-- Workspace files: allowed by default unless in `deny` list
-- Outside workspace: prompts interactively on first access, or pre-configure in `allow` list
-- Three scopes: `Read(path)` for reading, `Write(path)` for writing, `Bash(path)` for bash access — each independent
-- `Bash(path)` entries with globs (e.g. `Bash(/tmp/**)`) grant path access; plain entries (e.g. `Bash(npm test)`) grant command access
-- Bare `"Bash"` in `allow` auto-allows every command except those in the built-in forbidden set (`rm`, `chmod`, `sudo`, …); bare `"Bash"` in `deny` auto-rejects every bash command. Deny wins when both lists carry the blanket entry. Structural safety (`>` redirection, `<<`, `git push`, parent traversal, external-path prompts) still applies under blanket-allow.
-- Glob patterns supported: `*` (single level), `**` (recursive)
-- Tilde expansion: `~` → `$HOME` on Unix, `%USERPROFILE%` on Windows
-- `ask` only works for Bash commands
-
-\* These rules do not restrict MCP server command paths
-
-## Development
-
-```bash
-cargo test                    # Run tests
-cargo build --release         # Build release
-RUST_LOG=debug sofos          # Debug logging
-```
-
-**Structure:**
-
-```
-src/
-├── main.rs              # Entry point
-├── cli.rs               # CLI argument parsing
-├── clipboard.rs         # Clipboard image paste (Ctrl+V)
-├── error.rs             # Error types
-├── config.rs            # Configuration
-│
-├── api/                 # API clients
-│   ├── anthropic/       # Claude API client
-│   │   ├── client.rs        # HTTP entry points
-│   │   ├── wire.rs          # Request and response shapes
-│   │   └── stream.rs        # SSE parser for streaming
-│   ├── openai/          # OpenAI API client
-│   │   ├── client.rs        # HTTP entry points
-│   │   ├── wire.rs          # Request and response shapes
-│   │   └── stream.rs        # SSE parser for streaming
-│   ├── morph.rs         # Morph Apply API client
-│   ├── model_info.rs    # Per-model capabilities and pricing
-│   ├── truncate.rs      # Tool-result trimming for context budgets
-│   ├── types.rs         # Message types and serialization
-│   └── utils.rs         # Retries, error handling
-│
-├── mcp/                 # MCP (Model Context Protocol)
-│   ├── config.rs        # Server configuration loading
-│   ├── protocol.rs      # Protocol types (JSON-RPC)
-│   ├── client.rs        # Client implementations (stdio, HTTP)
-│   ├── manager.rs       # Server connection management
-│   └── transport/       # Wire transports
-│       ├── stdio.rs         # Child-process stdio transport
-│       └── http.rs          # Streamable HTTP transport
-│
-├── repl/                # REPL components
-│   ├── mod.rs           # Repl struct, config, status, reasoning and safe-mode handlers
-│   ├── turn.rs          # process_message: per-turn driver and image-retry path
-│   ├── compaction.rs    # Conversation compaction (truncate plus summarise)
-│   ├── sessions.rs      # Save, load and resume saved sessions
-│   ├── conversation/    # Message history
-│   │   ├── messages.rs      # Add, restore and clear messages
-│   │   ├── compaction.rs    # Truncate tool results and replace prefix with summary
-│   │   ├── lifecycle.rs     # System prompt and feature wiring
-│   │   └── tokens.rs        # Token-budget tracking
-│   ├── request_builder.rs   # API request construction
-│   ├── response_handler.rs  # Response and tool iteration
-│   └── tui/             # Ratatui front end
-│       ├── mod.rs             # Entry point and wiring
-│       ├── app.rs             # UI state (log, input, queue, picker)
-│       ├── ui.rs              # Rendering
-│       ├── event.rs           # Job / UiEvent channel payloads
-│       ├── event_loop.rs      # Main event pump
-│       ├── input.rs           # Input box state and editing
-│       ├── keymap.rs          # Key bindings
-│       ├── worker.rs          # Background thread that owns the Repl
-│       ├── output.rs          # Stdout/stderr capture via dup2
-│       ├── inline_terminal.rs # Custom ratatui Terminal (resize-safe)
-│       ├── inline_tui.rs      # Frame driver and history log
-│       ├── scrollback.rs      # DECSTBM-based insert-above-viewport
-│       └── sgr.rs             # SGR escape helpers
-│
-├── session/             # Session management
-│   ├── history/         # On-disk session storage
-│   │   ├── manager.rs       # Save, load and list orchestration
-│   │   ├── model.rs         # Serialised session shape
-│   │   ├── index.rs         # Sessions index file
-│   │   ├── preview.rs       # First-line previews for the picker
-│   │   └── instructions.rs  # Custom instructions loader
-│   ├── state.rs         # Runtime session state
-│   └── selector.rs      # Session selection TUI
-│
-├── tools/               # Tool implementations
-│   ├── executor.rs      # Tool dispatch
-│   ├── resolve.rs       # Path resolution and workspace gating
-│   ├── filesystem.rs    # File operations (read, write, edit, chunked append)
-│   ├── bash/            # Bash execution
-│   │   ├── executor.rs      # Spawn and capture
-│   │   ├── validate.rs      # Forbidden-command and structural checks
-│   │   └── output.rs        # Output formatting and truncation
-│   ├── codesearch.rs    # Code search (ripgrep)
-│   ├── image.rs         # Image detection and loading for message content
-│   ├── permissions/     # 3-tier permission system
-│   │   ├── manager.rs       # PermissionManager core
-│   │   ├── settings.rs      # Config loading
-│   │   ├── pattern.rs       # Rule-string parsing
-│   │   ├── scope.rs         # Read / Write / Bash-path matching
-│   │   └── command_parse.rs # Shell tokenisation and compound splitting
-│   ├── morph_validate.rs # Pre-flight checks for morph_edit_file
-│   ├── tool_name.rs     # Type-safe tool name enum
-│   ├── types.rs         # Tool definitions for the API
-│   ├── utils.rs         # Confirmations, truncation, HTML-to-text
-│   ├── test_support.rs  # Shared test helpers
-│   └── tests.rs         # Tool integration tests
-│
-├── ui/                  # UI components
-│   ├── mod.rs           # UI utilities, prompts and banners
-│   ├── markdown.rs      # Markdown renderer (block and streaming)
-│   ├── syntax.rs        # Syntax highlighting
-│   ├── cost.rs          # Cost calculation and session summary
-│   ├── session_display.rs # Replay saved sessions in the TUI
-│   └── diff.rs          # Syntax-highlighted diffs with line numbers
-│
-└── commands/            # Built-in commands (/clear, /resume, /compact, /think, /s, /n)
-    └── builtin.rs       # Command implementations
-```
-
-See `AGENTS.md` for detailed conventions.
-
-## Release
-
-This project uses **cargo-release** for automated versioning and publishing.
-
-**Quick commands:**
-
-```bash
-# Preview the release
-cargo release patch
-
-# Execute the release
-cargo release patch --execute
-
-# Release specific version
-cargo release [patch|minor|major] --execute
-```
-
-The release workflow automatically:
-1. Bumps version in `Cargo.toml`
-2. Runs tests and formatting checks
-3. Updates `CHANGELOG.md`
-4. Publishes to crates.io
-5. Creates release commit and Git tag
-6. Pushes to remote repository
-
-**For detailed instructions**, see [RELEASE.md](RELEASE.md).
-
-## Troubleshooting
-
-- **API errors:** Check connection and API key
-- **Path errors:** Use relative paths for workspace; external paths prompt interactively or can be pre-allowed with `Read`/`Write`/`Bash` entries in config
-- **Build errors:** `rustup update && cargo clean && cargo build`
-- **Images with spaces:** Wrap path in quotes
-
-## License
-
-MIT License
-
-## Acknowledgments
-
-Built with Rust and powered by Anthropic's Claude or OpenAI's GPT. Morph Apply integration for fast edits.
-
-## Links & Resources
-
-- [GitHub](https://github.com/alexylon/sofos-code)
-- [Crates.io](https://crates.io/crates/sofos)
+Sofos connects at startup, lists available tools, prefixes tool names by server, and caches the list for the session.
 
 ---
 
-**Disclaimer:** Sofos Code may make mistakes. Always review generated code before use.
+## Sessions and cost tracking
 
-[![forthebadge](https://forthebadge.com/images/badges/made-with-rust.svg)](https://forthebadge.com)
+Sessions are saved automatically under:
+
+```text
+.sofos/sessions/
+```
+
+A saved session includes:
+
+- provider-facing conversation messages;
+- display history for replay;
+- system prompt;
+- model name where available;
+- safe-mode state;
+- token counters and cache counters.
+
+Resume with:
+
+```bash
+sofos --resume
+```
+
+or from inside Sofos:
+
+```text
+/resume
+```
+
+On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available and accounts for provider cache discounts and cache-write premiums. For OpenAI models with tiered pricing, Sofos tracks the largest single-turn input and switches the estimate when the premium threshold is crossed.
+
+---
+
+## Development
+
+### Project structure
+
+For the complete source structure and ownership map, see [`STRUCTURE.md`](STRUCTURE.md).
+
+High-level layout:
+
+```text
+src/
+├── api/       Provider clients, shared message types, model metadata.
+├── repl/      Turn orchestration, request building, response handling, TUI worker.
+├── tools/     Native tool execution, permissions, filesystem, bash, search, image handling.
+├── mcp/       Model Context Protocol configuration, clients, manager, transports.
+├── session/   Runtime session state and on-disk session persistence.
+├── ui/        Markdown, syntax highlighting, diffs, cost summaries, and display helpers.
+└── commands/  Slash-command parsing and dispatch.
+```
+
+Useful commands:
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test --all
+cargo build --release
+```
+
+Debug logging:
+
+```bash
+RUST_LOG=debug sofos
+```
+
+### Release process
+
+This project uses `cargo-release`.
+
+```bash
+# Preview a patch release.
+cargo release patch
+
+# Execute a patch release.
+cargo release patch --execute
+
+# Release a specific increment.
+cargo release minor --execute
+```
+
+See [`RELEASE.md`](RELEASE.md) for the full process.
+
+---
+
+## Troubleshooting
+
+| Problem | What to check |
+|---|---|
+| API key error | Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or pass `--api-key` / `--openai-api-key`. |
+| Cannot connect | Run `sofos --check-connection`. |
+| Model rejects reasoning effort | Use `/think` or `-e` with a level supported by the selected model. |
+| Path denied | Add a `Read`, `Write`, or `Bash` rule, or approve the interactive prompt. |
+| External edit denied | `edit_file` and `morph_edit_file` need both Read and Write for external files. |
+| Code search unavailable | Install `ripgrep` and ensure `rg` is on `PATH`. |
+| Image path with spaces fails | Quote the path: `"path/with spaces/image.png"`. |
+| Terminal does not insert newline with Shift+Enter | Use Alt+Enter or Ctrl+Enter. |
+| Build problems | Run `rustup update`, then `cargo clean` and `cargo build`. |
+
+---
+
+## License
+
+MIT License. See [`LICENSE`](LICENSE).
+
+---
+
+## Acknowledgments
+
+Sofos is built with Rust and powered by Anthropic Claude or OpenAI models. Optional fast edits are provided through Morph Apply.
+
+---
+
+## Links
+
+- [GitHub](https://github.com/alexylon/sofos-code)
+- [Crates.io](https://crates.io/crates/sofos)
+- [Release notes](CHANGELOG.md)
+- [Source structure](STRUCTURE.md)
+
+---
+
+**Disclaimer:** Sofos Code can make mistakes. Review generated code and tool actions before relying on them.
