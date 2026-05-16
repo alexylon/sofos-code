@@ -112,7 +112,7 @@ sofos
 
 - `/resume` - Resume previous session
 - `/clear` - Clear conversation history
-- `/think [off|low|medium|high]` - Set reasoning effort (shows status if no arg)
+- `/think [off|low|medium|high|xhigh|max]` - Set reasoning effort (shows status if no arg). `xhigh` is only accepted on Opus 4.7 / gpt-5.x; `max` is only accepted on Opus 4.7, Opus 4.6, and Sonnet 4.6.
 - `/compact` - Summarize older messages via the LLM to reclaim context tokens. Triggers automatically at the per-model auto-compact threshold (~250K tokens on 1M-window models, ~170K on Haiku, ~250K on Codex). On Claude Opus 4.7 / 4.6 / Sonnet 4.6 the API itself runs the summarization server-side via the `compact-2026-01-12` beta — no extra round-trip.
 - `/s` - Safe mode (read-only, prompt: **`:`**)
 - `/n` - Normal mode (all tools, prompt: **`>`**)
@@ -125,7 +125,7 @@ sofos
 
 **Scrollback:** Sofos runs as an inline viewport at the bottom of your terminal — the rest of the terminal is normal scrollback, so use your terminal emulator's own scrollbar, mouse wheel, and text selection / copy-paste.
 
-**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`effort: off|low|medium|high` for OpenAI and Claude Opus 4.7+; `thinking: <N> tok` for older Claude models with manual budgets), and running token totals.
+**Status line:** Shown below the input box. Updates live as you change state (`/s`, `/n`, `/think`) — model, mode (`normal`/`safe`), reasoning config (`effort: off|low|medium|high|xhigh|max` for OpenAI and the Anthropic adaptive models; `thinking: <N> tok` for older Claude models with manual budgets), and running token totals.
 
 ### Image Vision
 
@@ -168,19 +168,21 @@ Exit summary shows token usage and estimated cost based on official API pricing.
     --model <MODEL>          Model to use (default: claude-sonnet-4-6)
     --morph-model <MODEL>    Morph model (default: morph-v3-fast)
     --max-tokens <N>         Max response tokens (default: 32768; must be > 16384 when reasoning effort is enabled)
--e, --reasoning-effort <LV>  Reasoning effort: off, low, medium, high (default: medium)
+-e, --reasoning-effort <LV>  Reasoning effort: off, low, medium, high, xhigh, max (default: medium). Per-model support varies — see the Reasoning Effort section.
     --thinking-budget <N>    Vestigial. Currently inert on every path: legacy Claude uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384), Claude Opus 4.7+ uses adaptive thinking, OpenAI uses `reasoning.effort`. Kept for backwards-compatibility; will be removed.
 -v, --verbose                Verbose logging
 ```
 
 ### Reasoning Effort
 
-Sofos exposes four levels — `off`, `low`, `medium`, `high` — applied uniformly across providers. Default is `medium`; `high` is opt-in because it materially raises hidden-reasoning token cost on routine coding work.
+Sofos exposes six levels — `off`, `low`, `medium`, `high`, `xhigh`, `max`. The first four are universal; `xhigh` and `max` have model-specific support and sofos rejects mismatched pairs at startup or at the `/think` command.
 
 ```bash
 sofos -e medium                             # Default — sensible cost/quality balance
 sofos -e high                               # Hard tasks, willing to pay more
 sofos -e off                                # Cheapest path; no reasoning summary
+sofos -e max --model claude-opus-4-7        # Absolute-capability rung on Anthropic adaptive
+sofos -e xhigh --model gpt-5.5              # Top rung on OpenAI gpt-5.x
 
 # Mid-session
 /think high                                 # Bump up
@@ -188,11 +190,22 @@ sofos -e off                                # Cheapest path; no reasoning summar
 /think                                      # Show current
 ```
 
-**Per-provider mapping:**
+**Per-model support matrix:**
 
-- **OpenAI (gpt-5 family)** — sends `reasoning.effort` matching the level (`minimal` for `off`, `low`/`medium`/`high` otherwise) and `summary: "auto"` when on, omitted when off.
-- **Claude Opus 4.7** — adaptive thinking; the server picks the budget based on the prompt, and sofos sends `output_config.effort` matching the level (`off` collapses to `low`, the lowest the API accepts). `--thinking-budget` is ignored.
-- **Older Claude (Sonnet 4.6, Opus 4.6, Haiku 4.5)** — `off` disables extended thinking; `low`, `medium`, and `high` each map to a distinct legacy `budget_tokens` value (`1024 / 5120 / 16384`) so the slider has a visible effect. `--thinking-budget` is ignored — the per-tier values are the source of truth.
+| Effort   | Opus 4.7 | Opus 4.6 | Sonnet 4.6 | Haiku 4.5 / older | gpt-5.4 / 5.5 / codex |
+| -------- | :------: | :------: | :--------: | :---------------: | :-------------------: |
+| `off`    | ✓        | ✓        | ✓          | ✓                 | ✓                     |
+| `low`    | ✓        | ✓        | ✓          | ✓                 | ✓                     |
+| `medium` | ✓ (def)  | ✓ (def)  | ✓ (def)    | ✓ (def)           | ✓ (def)               |
+| `high`   | ✓        | ✓        | ✓          | ✓                 | ✓                     |
+| `xhigh`  | ✓        | ✗        | ✗          | ✗                 | ✓                     |
+| `max`    | ✓        | ✓        | ✓          | ✗                 | ✗                     |
+
+**Per-provider wire mapping:**
+
+- **OpenAI (gpt-5 family, incl. codex)** — sends `reasoning.effort` matching the level (`minimal` for `off`, `low` / `medium` / `high` / `xhigh` otherwise) and `summary: "auto"` when on, omitted when off. `max` isn't accepted by OpenAI.
+- **Claude Opus 4.7, Opus 4.6, Sonnet 4.6** — adaptive thinking; the server picks the budget based on the prompt, and sofos sends `output_config.effort` matching the level (`off` collapses to `low`, the lowest the API accepts). `xhigh` is Opus 4.7 only on Anthropic. `--thinking-budget` is ignored.
+- **Older Claude (Haiku 4.5, Sonnet 4.5, Opus 4.5)** — `off` disables extended thinking; `low`, `medium`, and `high` each map to a distinct legacy `budget_tokens` value (`1024 / 5120 / 16384`) so the slider has a visible effect. `xhigh` / `max` are rejected upstream because legacy models don't expose them. `--thinking-budget` is ignored — the per-tier values are the source of truth.
 
 ## Custom Instructions
 

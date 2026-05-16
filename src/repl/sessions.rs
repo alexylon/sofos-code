@@ -85,6 +85,13 @@ impl Repl {
         // would either crash the OpenAI wire layer or get silently
         // dropped, and vice versa. Better to surface a clear error so
         // the user re-launches with the right `--model`.
+        //
+        // Validate `(saved_model, current_effort)` here too — the
+        // saved model overrides the CLI model further down, and we
+        // can't let an `xhigh`/`max` choice that the saved model
+        // doesn't accept slip through. Both refusals happen before
+        // any session-state mutation so a rejected resume leaves the
+        // current Repl untouched.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
                 let saved_provider = provider_of(saved_model);
@@ -95,6 +102,17 @@ impl Repl {
                          Re-launch with `--model {}` to resume.",
                         saved_model, saved_provider, current_provider, saved_model
                     )));
+                }
+                if saved_model != self.model_config.model {
+                    if let Some(msg) = crate::api::model_info::effort_support_error(
+                        saved_model,
+                        self.model_config.reasoning_effort,
+                    ) {
+                        return Err(SofosError::Config(format!(
+                            "{} Re-launch with `--reasoning-effort` set to a level the saved model accepts.",
+                            msg
+                        )));
+                    }
                 }
             }
         }

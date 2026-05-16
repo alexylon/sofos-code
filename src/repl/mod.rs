@@ -160,6 +160,16 @@ impl Repl {
             )));
         }
 
+        // Reject `(model, effort)` pairs the active provider won't
+        // accept, e.g. `xhigh` on Opus 4.6 or `max` on any OpenAI
+        // model. Catching it here turns a runtime 400 into a clear
+        // startup error.
+        if let Some(msg) =
+            crate::api::model_info::effort_support_error(&config.model, config.reasoning_effort)
+        {
+            return Err(SofosError::Config(msg));
+        }
+
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
         conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
@@ -340,9 +350,9 @@ impl Repl {
         Ok(())
     }
 
-    /// True when the active model demands adaptive thinking (Opus 4.7+).
-    /// Shared by the three `/think` handlers and the status line so they
-    /// don't drift apart.
+    /// True when the active model uses adaptive thinking (Opus 4.7,
+    /// Opus 4.6, Sonnet 4.6). Shared by the three `/think` handlers
+    /// and the status line so they don't drift apart.
     fn uses_adaptive_thinking(&self) -> bool {
         matches!(self.client, Anthropic(_))
             && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
@@ -383,6 +393,14 @@ impl Repl {
     }
 
     pub fn handle_think_set(&mut self, effort: crate::api::ReasoningEffort) {
+        if let Some(msg) =
+            crate::api::model_info::effort_support_error(&self.model_config.model, effort)
+        {
+            println!();
+            UI::print_error(&msg);
+            println!();
+            return;
+        }
         self.model_config.set_reasoning_effort(effort);
         self.print_reasoning_state();
     }

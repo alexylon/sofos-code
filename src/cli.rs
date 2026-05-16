@@ -54,13 +54,24 @@ pub struct Cli {
     #[arg(long, default_value = "32768")]
     pub max_tokens: u32,
 
-    /// Reasoning effort: off, low, medium, high. Default `medium`.
-    /// `Off` skips reasoning entirely on OpenAI (effort=minimal,
-    /// summary suppressed) and disables Anthropic extended thinking on
-    /// non-adaptive models. Anthropic adaptive (Opus 4.7+) collapses
-    /// `Off` to the lowest accepted level (`low`).
+    /// Reasoning effort: off, low, medium, high, xhigh, max. Default
+    /// `medium`. `Off` skips reasoning entirely on OpenAI (effort=
+    /// minimal, summary suppressed) and disables Anthropic extended
+    /// thinking on non-adaptive models. Anthropic adaptive models
+    /// (Opus 4.7, Opus 4.6, Sonnet 4.6) collapse `Off` to the lowest
+    /// accepted level (`low`). `xhigh` is accepted by Claude Opus 4.7
+    /// and OpenAI gpt-5 reasoning models only; `max` is accepted by
+    /// Claude Opus 4.7, Opus 4.6, and Sonnet 4.6 only. Sofos refuses
+    /// to start with an unsupported `(model, effort)` pair.
+    //
+    // Parsed as a raw `String` here, then validated and converted in
+    // `main`, so the per-model rejection and the parse-failure
+    // rejection both render in the same hand-rolled clap-style
+    // format. `ValueEnum` would auto-emit a `[possible values: ...]`
+    // line that always listed all six levels, which is misleading on
+    // models that only accept a subset.
     #[arg(short = 'e', long, default_value = "medium")]
-    pub reasoning_effort: crate::api::ReasoningEffort,
+    pub reasoning_effort: String,
 
     /// Deprecated. The flag has no effect on any path: legacy Anthropic
     /// uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384),

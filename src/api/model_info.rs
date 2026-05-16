@@ -4,6 +4,8 @@
 //! [`ConversationHistory`](crate::repl::conversation::ConversationHistory).
 //! Adding a model is one struct literal in [`lookup`].
 
+use crate::api::ReasoningEffort;
+
 /// Tiered-pricing rule. Some OpenAI models (gpt-5.4, gpt-5.5) charge a
 /// premium for the *entire session* once a single prompt's input
 /// crosses a documented threshold. Once tripped, every subsequent
@@ -25,15 +27,22 @@ pub struct ModelInfo {
     /// When `None`, falls back to 90% of `context_window` (codex
     /// default — "don't crash the API" rather than "don't burn tokens").
     pub auto_compact_token_limit: Option<u32>,
-    /// True for Anthropic models that require `thinking: adaptive`
-    /// + `output_config.effort` instead of the legacy
-    ///   `{type: "enabled", budget_tokens}` extended-thinking shape.
+    /// True for Anthropic models that use the `thinking: adaptive`
+    /// shape with `output_config.effort`. Opus 4.7 rejects the legacy
+    /// `{type: "enabled", budget_tokens}` shape outright; Opus 4.6
+    /// and Sonnet 4.6 accept both shapes but Anthropic recommends
+    /// adaptive, so sofos opts them in too.
     pub requires_adaptive_thinking: bool,
     /// True for Anthropic models that support the server-side
     /// compaction beta (`compact-2026-01-12`). When set, the request
     /// builder enables Anthropic's automatic compaction instead of
     /// running a client-side LLM-summary turn.
     pub supports_server_compaction: bool,
+    /// Reasoning-effort levels this model accepts on the wire.
+    /// Startup validation and the `/think` handler use this list to
+    /// reject mismatched pairs (e.g. `xhigh` on Sonnet 4.6, `max` on
+    /// any OpenAI model) before they reach the server.
+    pub supported_efforts: &'static [ReasoningEffort],
     /// Per-million-token USD price for non-cached input.
     pub price_input_per_m: f64,
     /// Per-million-token USD price for output (including hidden
@@ -48,12 +57,20 @@ impl Default for ModelInfo {
     fn default() -> Self {
         // Sonnet-class fallback: matches the historical default in
         // `calculate_cost` and is the safest "I don't know this model"
-        // bet — pricing won't under-report.
+        // bet — pricing won't under-report. Unknown models inherit
+        // only the basic effort tiers, since we don't know whether
+        // they'll accept `xhigh` or `max`.
         Self {
             context_window: 200_000,
             auto_compact_token_limit: Some(170_000),
             requires_adaptive_thinking: false,
             supports_server_compaction: false,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ],
             price_input_per_m: 3.0,
             price_output_per_m: 15.0,
             premium_tier: None,
@@ -80,6 +97,18 @@ impl ModelInfo {
     pub fn effective_window(&self) -> u32 {
         ((self.context_window as u64).saturating_mul(95) / 100) as u32
     }
+
+    /// Comma-separated lowercase labels of every effort level this
+    /// model accepts (`"off, low, medium, high, xhigh"` and so on).
+    /// Surfaced verbatim in the CLI startup error and in
+    /// [`effort_support_error`] so both messages list the same set.
+    pub fn supported_efforts_label(&self) -> String {
+        self.supported_efforts
+            .iter()
+            .map(|e| e.as_label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 /// Look up metadata for a model by id. Matching is case-insensitive
@@ -98,6 +127,14 @@ pub fn lookup(model: &str) -> ModelInfo {
             auto_compact_token_limit: Some(250_000),
             requires_adaptive_thinking: true,
             supports_server_compaction: true,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+            ],
             price_input_per_m: 5.0,
             price_output_per_m: 25.0,
             premium_tier: None,
@@ -107,8 +144,15 @@ pub fn lookup(model: &str) -> ModelInfo {
         return ModelInfo {
             context_window: 1_000_000,
             auto_compact_token_limit: Some(250_000),
-            requires_adaptive_thinking: false,
+            requires_adaptive_thinking: true,
             supports_server_compaction: true,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
+            ],
             price_input_per_m: 5.0,
             price_output_per_m: 25.0,
             premium_tier: None,
@@ -118,8 +162,15 @@ pub fn lookup(model: &str) -> ModelInfo {
         return ModelInfo {
             context_window: 1_000_000,
             auto_compact_token_limit: Some(250_000),
-            requires_adaptive_thinking: false,
+            requires_adaptive_thinking: true,
             supports_server_compaction: true,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
+            ],
             price_input_per_m: 3.0,
             price_output_per_m: 15.0,
             premium_tier: None,
@@ -131,6 +182,12 @@ pub fn lookup(model: &str) -> ModelInfo {
             auto_compact_token_limit: Some(170_000),
             requires_adaptive_thinking: false,
             supports_server_compaction: false,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ],
             price_input_per_m: 1.0,
             price_output_per_m: 5.0,
             premium_tier: None,
@@ -145,6 +202,13 @@ pub fn lookup(model: &str) -> ModelInfo {
             auto_compact_token_limit: Some(250_000),
             requires_adaptive_thinking: false,
             supports_server_compaction: false,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
             price_input_per_m: 1.75,
             price_output_per_m: 14.0,
             premium_tier: None,
@@ -164,6 +228,13 @@ pub fn lookup(model: &str) -> ModelInfo {
             auto_compact_token_limit: Some(250_000),
             requires_adaptive_thinking: false,
             supports_server_compaction: false,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
             price_input_per_m: 2.5,
             price_output_per_m: 15.0,
             premium_tier: Some(PremiumPricingTier {
@@ -179,6 +250,13 @@ pub fn lookup(model: &str) -> ModelInfo {
             auto_compact_token_limit: Some(250_000),
             requires_adaptive_thinking: false,
             supports_server_compaction: false,
+            supported_efforts: &[
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+            ],
             price_input_per_m: 5.0,
             price_output_per_m: 30.0,
             premium_tier: Some(PremiumPricingTier {
@@ -190,6 +268,25 @@ pub fn lookup(model: &str) -> ModelInfo {
     }
 
     ModelInfo::default()
+}
+
+/// Human-readable rejection message for an unsupported `(model, effort)`
+/// pair, or `None` if the pair is supported. The message names the
+/// model and lists every effort level the model does accept, so the
+/// user can pick a valid alternative without consulting the docs.
+/// Surfaced to the user from the startup validator and the `/think`
+/// handler so the failure mode is the same in both places.
+pub fn effort_support_error(model: &str, effort: ReasoningEffort) -> Option<String> {
+    let info = lookup(model);
+    if info.supported_efforts.contains(&effort) {
+        return None;
+    }
+    Some(format!(
+        "Model `{}` does not accept reasoning effort `{}`. Supported levels: {}.",
+        model,
+        effort.as_label(),
+        info.supported_efforts_label(),
+    ))
 }
 
 #[cfg(test)]
@@ -212,9 +309,28 @@ mod tests {
     }
 
     #[test]
-    fn lookup_distinguishes_opus_4_6_from_4_7() {
-        assert!(!lookup("claude-opus-4-6").requires_adaptive_thinking);
-        assert!(lookup("claude-opus-4-7").requires_adaptive_thinking);
+    fn anthropic_1m_models_all_use_adaptive_thinking() {
+        // Opus 4.7 requires adaptive (legacy shape 400s); Opus 4.6 and
+        // Sonnet 4.6 accept both but Anthropic recommends adaptive, so
+        // sofos opts them in alongside 4.7.
+        for slug in ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"] {
+            assert!(
+                lookup(slug).requires_adaptive_thinking,
+                "{slug} should use adaptive thinking"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_anthropic_models_still_use_manual_thinking() {
+        // Sonnet 4.5 / Opus 4.5 / Haiku 4.5 don't expose adaptive
+        // thinking, so they keep the legacy `budget_tokens` shape.
+        for slug in ["claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"] {
+            assert!(
+                !lookup(slug).requires_adaptive_thinking,
+                "{slug} should keep the legacy budget_tokens shape"
+            );
+        }
     }
 
     #[test]
@@ -281,5 +397,80 @@ mod tests {
         // Haiku 4.5 isn't on Anthropic's compaction-supported list,
         // so the request builder must not send the beta header for it.
         assert!(!lookup("claude-haiku-4-5").supports_server_compaction);
+    }
+
+    #[test]
+    fn effort_support_matches_provider_matrix() {
+        use ReasoningEffort::*;
+
+        let supports = |slug: &str, e: ReasoningEffort| effort_support_error(slug, e).is_none();
+
+        // Basic tiers are universal.
+        for slug in [
+            "claude-opus-4-7",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-sonnet-4-5",
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.3-codex",
+        ] {
+            for e in [Off, Low, Medium, High] {
+                assert!(supports(slug, e), "{slug} should accept {e:?}");
+            }
+        }
+
+        // `xhigh`: Opus 4.7 + every gpt-5.x reasoning model only.
+        assert!(supports("claude-opus-4-7", XHigh));
+        assert!(supports("gpt-5.5", XHigh));
+        assert!(supports("gpt-5.4", XHigh));
+        assert!(supports("gpt-5.3-codex", XHigh));
+        assert!(!supports("claude-opus-4-6", XHigh));
+        assert!(!supports("claude-sonnet-4-6", XHigh));
+        assert!(!supports("claude-haiku-4-5", XHigh));
+
+        // `max`: Anthropic adaptive models only.
+        assert!(supports("claude-opus-4-7", Max));
+        assert!(supports("claude-opus-4-6", Max));
+        assert!(supports("claude-sonnet-4-6", Max));
+        assert!(!supports("claude-haiku-4-5", Max));
+        assert!(!supports("gpt-5.5", Max));
+        assert!(!supports("gpt-5.3-codex", Max));
+    }
+
+    #[test]
+    fn effort_support_error_lists_supported_levels_for_the_model() {
+        let err = effort_support_error("gpt-5.5", ReasoningEffort::Max)
+            .expect("max on gpt-5.5 should be rejected");
+        assert!(err.contains("gpt-5.5"));
+        assert!(err.contains("`max`"));
+        let listed = err
+            .split("Supported levels: ")
+            .nth(1)
+            .expect("error message lists supported levels");
+        for label in ["off", "low", "medium", "high", "xhigh"] {
+            assert!(listed.contains(label), "expected {label} in {listed}");
+        }
+        // gpt-5.5 doesn't accept `max`, so the supported-list tail
+        // must not mention it.
+        assert!(!listed.contains("max"));
+
+        let err = effort_support_error("claude-sonnet-4-6", ReasoningEffort::XHigh)
+            .expect("xhigh on sonnet-4-6 should be rejected");
+        assert!(err.contains("claude-sonnet-4-6"));
+        assert!(err.contains("`xhigh`"));
+        // Sonnet 4.6 supports `max` but not `xhigh`.
+        let listed = err
+            .split("Supported levels: ")
+            .nth(1)
+            .expect("error message lists supported levels");
+        assert!(listed.contains("max"));
+        assert!(!listed.contains("xhigh"));
+
+        // Supported combinations: no error.
+        assert!(effort_support_error("claude-opus-4-7", ReasoningEffort::Max).is_none());
+        assert!(effort_support_error("gpt-5.5", ReasoningEffort::XHigh).is_none());
+        assert!(effort_support_error("claude-haiku-4-5", ReasoningEffort::High).is_none());
     }
 }

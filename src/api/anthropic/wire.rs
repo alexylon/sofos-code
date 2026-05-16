@@ -73,7 +73,14 @@ pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
     match effort {
         ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
         ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
-        ReasoningEffort::High => LEGACY_THINKING_BUDGET_HIGH,
+        // Legacy-thinking models (Sonnet 4.5, Opus 4.5, Haiku 4.5) only
+        // expose budget tiers up to High. `XHigh` and `Max` are
+        // adaptive-only rungs that upstream validation refuses to pair
+        // with a legacy model, so this branch is unreachable in
+        // practice; clamp defensively to the highest legal budget.
+        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
+            LEGACY_THINKING_BUDGET_HIGH
+        }
     }
 }
 
@@ -95,6 +102,8 @@ pub fn effort_label(effort: ReasoningEffort) -> &'static str {
         ReasoningEffort::Off | ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::Max => "max",
     }
 }
 

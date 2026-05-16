@@ -283,7 +283,13 @@ impl Reasoning {
 
 /// User-facing reasoning level. Default is `Medium`; `High` is opt-in
 /// because it materially raises hidden-reasoning token cost on routine
-/// coding work, and `Off` skips reasoning entirely (cheapest).
+/// coding work, and `Off` skips reasoning entirely (cheapest). `XHigh`
+/// and `Max` are the extra-capability rungs and have model-specific
+/// support — see [`crate::api::model_info::effort_support_error`] for
+/// the per-model matrix. Picking an unsupported combination is
+/// rejected at startup (in `main.rs`) and at the `/think` command, so
+/// the wire layer can assume every effort it sees is acceptable for
+/// the active model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum ReasoningEffort {
@@ -292,6 +298,8 @@ pub enum ReasoningEffort {
     #[default]
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl ReasoningEffort {
@@ -301,6 +309,8 @@ impl ReasoningEffort {
             "low" => Some(Self::Low),
             "medium" | "med" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" | "x-high" => Some(Self::XHigh),
+            "max" | "maximum" => Some(Self::Max),
             _ => None,
         }
     }
@@ -311,6 +321,8 @@ impl ReasoningEffort {
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
@@ -324,7 +336,7 @@ impl std::str::FromStr for ReasoningEffort {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s).ok_or_else(|| {
             format!(
-                "invalid reasoning effort `{}`; expected one of: off, low, medium, high",
+                "invalid reasoning effort `{}`; expected one of: off, low, medium, high, xhigh, max",
                 s
             )
         })

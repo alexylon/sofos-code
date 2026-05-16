@@ -38,6 +38,31 @@ fn main() -> Result<()> {
         );
     }
 
+    // Parse `--reasoning-effort` ourselves so the parse failure and
+    // the per-model rejection both render in the same clap-style
+    // envelope. The supported-values list is per-model, which clap's
+    // `ValueEnum` derive can't produce.
+    let model_info = crate::api::model_info::lookup(&cli.model);
+    let bail = |reason: String| -> ! {
+        eprintln!("{} {}", "error:".bright_red().bold(), reason);
+        eprintln!(
+            "  [supported values: {}]",
+            model_info.supported_efforts_label()
+        );
+        std::process::exit(2);
+    };
+    let reasoning_effort = match crate::api::ReasoningEffort::parse(&cli.reasoning_effort) {
+        Some(e) if model_info.supported_efforts.contains(&e) => e,
+        Some(_) => bail(format!(
+            "reasoning effort '{}' is not supported on model '{}'",
+            cli.reasoning_effort, cli.model
+        )),
+        None => bail(format!(
+            "invalid reasoning effort '{}' for model '{}'",
+            cli.reasoning_effort, cli.model
+        )),
+    };
+
     // Historically the logo printed here, up front. It's now deferred:
     // in interactive mode the banner text is collected into
     // `startup_banner` below and replayed through the TUI's capture
@@ -91,20 +116,21 @@ fn main() -> Result<()> {
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Reasoning effort:".bright_green(),
-            cli.reasoning_effort.as_label()
+            reasoning_effort.as_label()
         ));
     } else if crate::api::anthropic::requires_adaptive_thinking(&cli.model) {
-        // Opus 4.7 picks its own budget; advertising a token count would be
-        // a lie. Surface the `output_config.effort` we actually send.
+        // Adaptive-thinking models (Opus 4.7, Opus 4.6, Sonnet 4.6) pick
+        // their own budget; advertising a token count would be a lie.
+        // Surface the `output_config.effort` we actually send.
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Adaptive thinking effort:".bright_green(),
-            crate::api::anthropic::effort_label(cli.reasoning_effort)
+            crate::api::anthropic::effort_label(reasoning_effort)
         ));
-    } else if cli.reasoning_effort.is_enabled() {
+    } else if reasoning_effort.is_enabled() {
         // Show the per-effort tier budget so the startup banner matches
         // what hits the API.
-        let budget = crate::api::anthropic::legacy_thinking_budget(cli.reasoning_effort);
+        let budget = crate::api::anthropic::legacy_thinking_budget(reasoning_effort);
         startup_banner.push_str(&format!(
             "{} (budget: {} tokens)\n",
             "Extended thinking: enabled".bright_green(),
@@ -130,14 +156,12 @@ fn main() -> Result<()> {
         print!("{}", startup_banner);
     }
 
-    let config = ReplConfig::new(
-        cli.model,
-        cli.max_tokens,
-        cli.reasoning_effort,
-        cli.safe_mode,
-    );
+    let config = ReplConfig::new(cli.model, cli.max_tokens, reasoning_effort, cli.safe_mode);
 
-    let mut repl = Repl::new(client, config, workspace.clone(), morph_client)?;
+    let mut repl = Repl::new(client, config, workspace.clone(), morph_client).unwrap_or_else(|e| {
+        UI::print_error_with_hint(&e);
+        std::process::exit(1)
+    });
     // MCP block sits flush below the workspace/model labels (no blank
     // line in between), then a single trailing newline separates the
     // banner from the welcome (interactive) or the next CLI output

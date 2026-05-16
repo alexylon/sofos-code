@@ -59,12 +59,18 @@ mod tests {
     }
 
     #[test]
-    fn requires_adaptive_thinking_matches_opus_4_7_only() {
+    fn requires_adaptive_thinking_covers_all_1m_anthropic_models() {
+        // Opus 4.7 requires adaptive (legacy shape 400s); Opus 4.6 and
+        // Sonnet 4.6 accept both but Anthropic recommends adaptive,
+        // so sofos opts them in too. Earlier 4.x models stay on the
+        // manual budget shape.
         assert!(requires_adaptive_thinking("claude-opus-4-7"));
         assert!(requires_adaptive_thinking("claude-opus-4-7-20260301"));
-        assert!(!requires_adaptive_thinking("claude-opus-4-6"));
-        assert!(!requires_adaptive_thinking("claude-sonnet-4-6"));
+        assert!(requires_adaptive_thinking("claude-opus-4-6"));
+        assert!(requires_adaptive_thinking("claude-sonnet-4-6"));
         assert!(!requires_adaptive_thinking("claude-opus-4-5"));
+        assert!(!requires_adaptive_thinking("claude-sonnet-4-5"));
+        assert!(!requires_adaptive_thinking("claude-haiku-4-5"));
         assert!(!requires_adaptive_thinking(""));
     }
 
@@ -137,6 +143,16 @@ mod tests {
             legacy_thinking_budget(ReasoningEffort::High),
             LEGACY_THINKING_BUDGET_HIGH
         );
+        // `XHigh` and `Max` are adaptive-only rungs; legacy models
+        // clamp them to the highest budget they expose.
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::XHigh),
+            LEGACY_THINKING_BUDGET_HIGH
+        );
+        assert_eq!(
+            legacy_thinking_budget(ReasoningEffort::Max),
+            LEGACY_THINKING_BUDGET_HIGH
+        );
         // Defensive default: `Off` collapses to `LOW` rather than
         // panicking, even though the legacy branch is upstream-guarded.
         assert_eq!(
@@ -158,6 +174,8 @@ mod tests {
         assert_eq!(effort_label(ReasoningEffort::Low), "low");
         assert_eq!(effort_label(ReasoningEffort::Medium), "medium");
         assert_eq!(effort_label(ReasoningEffort::High), "high");
+        assert_eq!(effort_label(ReasoningEffort::XHigh), "xhigh");
+        assert_eq!(effort_label(ReasoningEffort::Max), "max");
     }
 
     #[test]

@@ -162,7 +162,7 @@ impl UI {
         );
         println!(
             "  {}",
-            "/exit  /clear  /resume  /compact  /think [off|low|medium|high]  /s  /n".dimmed()
+            "/exit  /clear  /resume  /compact  /think [off|low|medium|high|max]  /s  /n".dimmed()
         );
         println!();
     }

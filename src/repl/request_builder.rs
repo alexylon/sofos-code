@@ -40,17 +40,19 @@ impl<'a> RequestBuilder<'a> {
         let adaptive =
             is_anthropic && crate::api::anthropic::requires_adaptive_thinking(self.model);
 
-        // Opus 4.7 rejects `thinking.type = "enabled"` and requires
-        // `adaptive` + `output_config.effort`. Older Anthropic models
-        // still take the manual `budget_tokens` shape. On adaptive
-        // models we *always* send `thinking: adaptive` even when the
-        // user picked `Off` — dropping it would 400 the next turn if
-        // the conversation history already contains echoed thinking
-        // blocks from an earlier on turn (Anthropic rejects requests
-        // carrying thinking blocks without a matching top-level
-        // thinking config). The level is expressed through
-        // `output_config.effort` instead, which collapses `Off` to
-        // `low` for the same reason.
+        // Adaptive-thinking models (Opus 4.7, Opus 4.6, Sonnet 4.6)
+        // take `thinking: adaptive` + `output_config.effort`; Opus 4.7
+        // outright rejects the legacy `enabled` shape, and the other
+        // two accept it but Anthropic recommends adaptive. Older
+        // Anthropic models still take the manual `budget_tokens`
+        // shape. On adaptive models we *always* send `thinking:
+        // adaptive` even when the user picked `Off` — dropping it
+        // would 400 the next turn if the conversation history already
+        // contains echoed thinking blocks from an earlier on turn
+        // (Anthropic rejects requests carrying thinking blocks
+        // without a matching top-level thinking config). The level
+        // is expressed through `output_config.effort` instead, which
+        // collapses `Off` to `low` for the same reason.
         let (thinking_config, output_config) = if is_anthropic && adaptive {
             let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
             (
@@ -58,8 +60,8 @@ impl<'a> RequestBuilder<'a> {
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
         } else if is_anthropic && self.reasoning_effort.is_enabled() {
-            // Non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5/4.6)
-            // take the legacy `{type: "enabled", budget_tokens}` shape.
+            // Non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5,
+            // Haiku 4.5) take the legacy `{type: "enabled", budget_tokens}` shape.
             // The per-tier mapping lives in `crate::api::anthropic` so
             // the startup validation in `repl/mod.rs` can reference the
             // same `LEGACY_THINKING_BUDGET_HIGH` ceiling without
@@ -71,11 +73,20 @@ impl<'a> RequestBuilder<'a> {
         };
 
         let reasoning_config = if matches!(self.client, OpenAI(_)) {
+            // `Max` is rejected upstream (startup validation + `/think`
+            // gate) because OpenAI's wire schema doesn't accept it.
+            // Clamping `Max` defensively to the highest accepted level
+            // here keeps the request well-formed if validation is ever
+            // bypassed; the user would see the request go through with
+            // `xhigh` rather than a 400.
             Some(match self.reasoning_effort {
                 ReasoningEffort::Off => crate::api::Reasoning::minimal(),
                 ReasoningEffort::Low => crate::api::Reasoning::with_effort("low"),
                 ReasoningEffort::Medium => crate::api::Reasoning::with_effort("medium"),
                 ReasoningEffort::High => crate::api::Reasoning::with_effort("high"),
+                ReasoningEffort::XHigh | ReasoningEffort::Max => {
+                    crate::api::Reasoning::with_effort("xhigh")
+                }
             })
         } else {
             None
@@ -516,15 +527,15 @@ mod tests {
 
     #[test]
     fn legacy_anthropic_thinking_budget_scales_with_effort() {
-        // On non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5/4.6),
-        // `/think low|medium|high` used to all collapse to the same
-        // `thinking_budget`. Verify each tier now produces a strictly
-        // larger budget so the slider has a visible effect.
+        // On non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5,
+        // Haiku 4.5), `/think low|medium|high` used to all collapse
+        // to the same `thinking_budget`. Verify each tier now produces
+        // a strictly larger budget so the slider has a visible effect.
         let conv = ConversationHistory::new();
         let budget_for = |effort| {
             let req = RequestBuilder::new(
                 &anthropic_client(),
-                "claude-opus-4-6",
+                "claude-sonnet-4-5",
                 65_536,
                 &conv,
                 one_regular_tool(),
