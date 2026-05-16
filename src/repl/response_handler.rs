@@ -98,6 +98,7 @@ impl ResponseHandler {
     pub async fn handle_response(
         &mut self,
         mut content_blocks: Vec<ContentBlock>,
+        mut stop_reason: Option<String>,
         display_messages: &mut Vec<DisplayMessage>,
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
@@ -131,6 +132,8 @@ impl ResponseHandler {
                 return Ok(());
             }
 
+            let truncated_by_max_tokens = matches!(stop_reason.as_deref(), Some("max_tokens"));
+
             let (text_output, tool_uses, had_reasoning) =
                 self.process_content_blocks(&content_blocks);
 
@@ -149,6 +152,18 @@ impl ResponseHandler {
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);
                 }
+            }
+
+            if truncated_by_max_tokens {
+                UI::print_warning("Response was cut off due to token limit.");
+                eprintln!(
+                    "Consider using --max-tokens with a higher value (current: {})",
+                    self.max_tokens
+                );
+                // Skip tool execution: a truncated tool_use carries
+                // half-formed JSON arguments, so running it would
+                // either parse-fail or fire on partial input.
+                return Ok(());
             }
 
             // OpenAI can return reasoning/summary-only blocks; auto-continue once to get real text
@@ -174,9 +189,10 @@ impl ResponseHandler {
                         "Assistant returned reasoning but no visible response.".dimmed()
                     );
                     println!();
-                    break;
+                    return Ok(());
                 }
 
+                stop_reason = response.stop_reason;
                 content_blocks = response.content;
                 continue;
             }
@@ -186,7 +202,7 @@ impl ResponseHandler {
                     println!("{}", "Assistant returned an empty response.".dimmed());
                     println!();
                 }
-                break;
+                return Ok(());
             }
 
             let (tool_results, user_cancelled) =
@@ -251,35 +267,21 @@ impl ResponseHandler {
                 );
             }
 
-            if let Some(ref stop_reason) = response.stop_reason {
-                if stop_reason == "max_tokens" {
-                    UI::print_warning("Response was cut off due to token limit.");
-                    eprintln!(
-                        "Consider using --max-tokens with a higher value (current: {})",
-                        self.max_tokens
-                    );
-                    // Bail out instead of looping. A `max_tokens` cut
-                    // can land mid-`tool_use`, leaving the JSON for
-                    // the call truncated — feeding it back through
-                    // `process_content_blocks` and `execute_tools`
-                    // would either fail to parse or trigger a tool
-                    // call against half-formed input.
-                    break;
-                }
-            }
-
-            if response.content.is_empty() {
+            if response.content.is_empty()
+                && !matches!(response.stop_reason.as_deref(), Some("max_tokens"))
+            {
                 println!("{}", "Assistant:".bright_blue().bold());
                 println!("{}", "I've completed the tool operations but didn't generate a response. Please let me know if you need any clarification.".dimmed());
                 println!();
                 return Ok(());
             }
 
-            // Continue loop with new content blocks
+            // Continue loop with new content blocks; the top-of-loop
+            // check picks up `max_tokens` truncation uniformly for both
+            // the initial response and any follow-up.
+            stop_reason = response.stop_reason;
             content_blocks = response.content;
         }
-
-        Ok(())
     }
 
     /// Process content blocks into text output and tool uses

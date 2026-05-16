@@ -362,6 +362,7 @@ impl Repl {
 
         let result = runtime.block_on(handler.handle_response(
             response.content,
+            response.stop_reason,
             &mut self.session_state.display_messages,
             &mut self.session_state.total_input_tokens,
             &mut self.session_state.total_output_tokens,
@@ -383,10 +384,9 @@ impl Repl {
             }
             Err(SofosError::Interrupted) => Ok(()),
             Err(e) => {
-                // Add error context so the AI knows what happened on next turn.
-                // Check last message role to maintain proper alternation —
-                // the conversation could end on either role depending on where
-                // the error occurred (e.g. after assistant reasoning vs after tool results).
+                // Record the system error against the conversation so the
+                // model sees what happened on the next turn, without
+                // attributing the note to the assistant.
                 let error_text = format!(
                     "[System error during processing: {}. Previous actions are preserved above.]",
                     e
@@ -397,17 +397,26 @@ impl Repl {
                     .messages()
                     .last()
                     .map(|m| m.role.as_str());
-                if last_role == Some("assistant") {
-                    // Last message is assistant — add user error context
-                    self.session_state.conversation.add_user_message(error_text);
-                } else {
-                    // Last message is user (tool results) or empty — add assistant error context
-                    self.session_state
-                        .conversation
-                        .add_assistant_with_blocks(vec![crate::api::MessageContentBlock::Text {
-                            text: error_text,
-                            cache_control: None,
-                        }]);
+                match last_role {
+                    Some("assistant") => {
+                        self.session_state.conversation.add_user_message(error_text);
+                    }
+                    Some("user") => {
+                        // Append to the existing user turn (typically the
+                        // tool-results message) so we keep the user/
+                        // assistant alternation the providers require and
+                        // never fabricate assistant content.
+                        if !self
+                            .session_state
+                            .conversation
+                            .append_text_to_last_user_blocks(error_text.clone())
+                        {
+                            self.session_state.conversation.add_user_message(error_text);
+                        }
+                    }
+                    _ => {
+                        self.session_state.conversation.add_user_message(error_text);
+                    }
                 }
                 Err(e)
             }

@@ -15,6 +15,11 @@ All notable changes to Sofos are documented in this file.
 - **Bash commands run under a supervisor with a time limit, live output caps, and interrupt support.** Output is streamed instead of buffered, the per-stream 10 MB cap is enforced while reading rather than after exit, a 300-second wall-clock limit ends commands that never finish (for example a stuck `tail -f` or a runaway test), and pressing ESC or Ctrl+C now terminates the whole process group instead of waiting for the command to exit on its own. The error message names the reason — output cap, timeout, or interrupt — so the model can recover.
 - **MCP tool names are joined to their server name with a triple underscore separator.** The previous single underscore meant that a server called `a_b` exposing a tool `c` produced the same identifier as server `a` exposing tool `b_c`, so a tool call could be routed to the wrong server. The new separator cannot appear in a server or tool name (registrations that contain it are rejected with a warning), and collisions between distinct `(server, tool)` pairs are no longer possible. Existing configurations are not affected by the change because the prefixed name is derived at startup, not stored.
 
+### Fixed
+
+- **A first response that is cut off by the token limit no longer runs partial tool calls.** Sofos already protected follow-up responses inside the tool loop, but the very first response from the model was processed without checking its stop reason. A cut-off mid-tool-call would leave the tool arguments half-formed and Sofos would then fail the call with a confusing parameter-missing error. The token-limit warning and the early exit now fire on the initial response too.
+- **Internal errors are no longer recorded as assistant output.** When a system error landed at a point where the conversation ended with tool results, Sofos used to insert the error message as a fake assistant turn so the providers' role alternation rules would accept the next request. The model saw the error as something it had written. The error is now appended to the trailing user turn instead, which keeps alternation valid without impersonating the assistant.
+
 ## [0.2.12] - 2026-05-16
 
 ### Added
