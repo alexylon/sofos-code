@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-05-16
+
 ### Added
 
 - **Visible task plans for multi-step work.** The assistant can now call `update_plan` to show the current plan with `pending`, `in_progress`, and `completed` statuses. Plan updates are available in safe mode too because they do not read or modify files, and the terminal renders them as a compact styled checklist while the model receives only a short acknowledgement.
