@@ -939,9 +939,11 @@ Rules:
 - Parent-directory traversal as a path component is blocked.
 - Output redirection to files is blocked; `2>&1` is allowed.
 - Here-documents are blocked.
+- Shell command substitution and process substitution (`$(...)`, backticks, `<(...)`, `>(...)`) are blocked because they hide subcommands from the permission system. Single-quoted literals and arithmetic expansion `$((expr))` remain allowed.
 - Dangerous git operations are blocked or prompted according to policy.
-- Commands referencing external paths require Bash-path grants.
+- Commands referencing external paths require Bash-path grants. Workspace-relative path arguments are also canonicalised, so a symlink inside the workspace cannot route a read through an external file without the same prompt.
 - Read deny rules apply to command path arguments.
+- Each command runs under a supervisor that streams output, enforces per-stream byte caps while reading, applies a wall-clock timeout, and terminates the whole process group on user interrupt (ESC / Ctrl+C).
 
 ### 7.6 `tools/permissions/`
 

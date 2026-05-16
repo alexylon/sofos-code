@@ -15,6 +15,7 @@ pub mod validate;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -30,13 +31,27 @@ pub struct BashExecutor {
     /// Session-scoped Bash path grants for external directories
     pub(super) bash_path_session_allowed: Arc<Mutex<HashSet<String>>>,
     pub(super) bash_path_session_denied: Arc<Mutex<HashSet<String>>>,
+    /// Shared with the TUI: set to `true` when the user presses ESC or
+    /// Ctrl+C during a turn. The supervisor loop checks it between
+    /// poll ticks and kills the running command tree on transition.
+    /// Defaults to a fresh atomic in `new`; the REPL installs its own
+    /// shared flag after construction via `install_interrupt_flag`.
+    pub(super) interrupt_flag: Arc<AtomicBool>,
+}
+
+impl BashExecutor {
+    pub fn install_interrupt_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.interrupt_flag = flag;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::SofosError;
-    use crate::tools::bash::validate::{command_contains_op, has_path_traversal};
+    use crate::tools::bash::validate::{
+        command_contains_op, detect_command_substitution, has_path_traversal,
+    };
     use crate::tools::test_support;
 
     /// `command_contains_op` gates our forbidden-git detection. A miss
@@ -470,6 +485,131 @@ ask = []
         {
             let allowed = executor2.session_allowed.lock().unwrap();
             assert!(allowed.contains("Bash(shared_cmd)"));
+        }
+    }
+
+    /// Shell substitution hides commands from the permission system.
+    /// The structural check must reject every form outside of single
+    /// quotes, including process substitution `<(cmd)` and `>(cmd)`,
+    /// while leaving arithmetic expansion `$((expr))` and literal
+    /// single-quoted markers alone.
+    #[test]
+    fn test_detect_command_substitution() {
+        assert_eq!(detect_command_substitution("echo $(rm bad)"), Some("$("));
+        assert_eq!(detect_command_substitution("echo `rm bad`"), Some("`"));
+        assert_eq!(
+            detect_command_substitution("diff <(echo a) <(echo b)"),
+            Some("<(")
+        );
+        assert_eq!(detect_command_substitution("tee >(grep foo)"), Some(">("));
+        assert_eq!(
+            detect_command_substitution("echo \"$(rm bad)\""),
+            Some("$(")
+        );
+
+        assert_eq!(detect_command_substitution("echo '$(rm bad)'"), None);
+        assert_eq!(detect_command_substitution("echo \\$(rm bad)"), None);
+        assert_eq!(detect_command_substitution("echo $((1+2))"), None);
+        assert_eq!(detect_command_substitution("echo plain text"), None);
+
+        assert_eq!(
+            detect_command_substitution("echo $(($(rm bad)))"),
+            Some("$(")
+        );
+    }
+
+    #[test]
+    fn test_substitution_blocks_structural_check() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        assert!(!executor.is_safe_command_structure("echo $(rm bad)"));
+        assert!(!executor.is_safe_command_structure("echo `rm bad`"));
+        assert!(!executor.is_safe_command_structure("diff <(cat a) <(cat b)"));
+
+        // Arithmetic expansion and single-quoted literals stay safe.
+        assert!(executor.is_safe_command_structure("echo $((1+1))"));
+        assert!(executor.is_safe_command_structure("echo '$(literal)'"));
+    }
+
+    #[test]
+    fn test_substitution_rejection_message_names_the_marker() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        let reason = executor.get_rejection_reason("echo $(rm bad)");
+        assert!(reason.contains("shell substitution"));
+        assert!(reason.contains("$("));
+    }
+
+    /// Workspace-relative tokens whose canonical resolution lands
+    /// outside the workspace must trip the same external-path gate as
+    /// an explicit absolute path. Without this, a symlink inside the
+    /// workspace can let an otherwise-allowed read command exfiltrate
+    /// data from anywhere on disk.
+    #[cfg(unix)]
+    #[test]
+    fn test_workspace_symlink_escape_is_blocked() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, workspace) = test_support::workspace();
+        let outside = _temp.path().parent().unwrap().join("sofos-symlink-target");
+        std::fs::write(&outside, "secret").unwrap();
+        let link = workspace.join("escape_link");
+        symlink(&outside, &link).unwrap();
+
+        let executor = BashExecutor::new(workspace, false, false).unwrap();
+        let result = executor.execute("cat escape_link");
+
+        let _ = std::fs::remove_file(&outside);
+
+        assert!(result.is_err(), "expected symlink escape to be denied");
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("outside workspace"),
+                "expected external-path message, got: {msg}"
+            );
+        } else {
+            panic!("Expected ToolExecution error, got: {result:?}");
+        }
+    }
+
+    #[test]
+    fn test_interrupt_flag_terminates_long_running_command() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        let flag = Arc::new(AtomicBool::new(false));
+        executor.install_interrupt_flag(Arc::clone(&flag));
+
+        // Pre-allow the command for this session so the test doesn't
+        // sit on the permission prompt with no stdin to answer.
+        {
+            let mut allowed = executor.session_allowed.lock().unwrap();
+            allowed.insert("Bash(sleep 30)".to_string());
+        }
+
+        let flag_for_thread = Arc::clone(&flag);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag_for_thread.store(true, Ordering::SeqCst);
+        });
+
+        let start = Instant::now();
+        let result = executor.execute("sleep 30");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "interrupt did not stop the command within five seconds (took {:?})",
+            elapsed
+        );
+        assert!(result.is_err(), "expected interrupted command to error");
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("interrupted"),
+                "expected 'interrupted' in message, got: {msg}"
+            );
+        } else {
+            panic!("Expected ToolExecution error, got: {result:?}");
         }
     }
 }

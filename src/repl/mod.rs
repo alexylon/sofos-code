@@ -239,7 +239,8 @@ impl Repl {
     /// Install the interrupt flag used by the TUI to signal ESC/Ctrl+C during
     /// an AI turn. Called once before the worker thread takes ownership.
     pub fn install_interrupt_flag(&mut self, flag: Arc<AtomicBool>) {
-        self.interrupt_flag = flag;
+        self.interrupt_flag = Arc::clone(&flag);
+        self.tool_executor.install_interrupt_flag(flag);
     }
 
     /// Install the shared steer buffer used by the TUI to inject mid-turn

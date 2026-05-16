@@ -4,6 +4,15 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **Shell command and process substitution are now blocked in bash commands.** Constructs such as `echo $(rm bad)`, backtick substitution, and process substitution `<(cmd)` / `>(cmd)` previously slipped past the permission system because only the outer command name was checked. They are now refused before the command runs, with a clear message that names the marker. Single-quoted literals and arithmetic expansion `$((expr))` continue to work.
+- **Workspace symlinks can no longer route bash reads outside the workspace.** When a bash command names a workspace-relative path that resolves through a symlink to a file outside the workspace, the path is now sent through the same external-path prompt that absolute and tilde paths already use.
+
+### Changed
+
+- **Bash commands run under a supervisor with a time limit, live output caps, and interrupt support.** Output is streamed instead of buffered, the per-stream 10 MB cap is enforced while reading rather than after exit, a 300-second wall-clock limit ends commands that never finish (for example a stuck `tail -f` or a runaway test), and pressing ESC or Ctrl+C now terminates the whole process group instead of waiting for the command to exit on its own. The error message names the reason — output cap, timeout, or interrupt — so the model can recover.
+
 ## [0.2.12] - 2026-05-16
 
 ### Added

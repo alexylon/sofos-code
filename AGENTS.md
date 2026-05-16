@@ -430,7 +430,9 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
 - Use idiomatic Rust and repository naming conventions.
 - Keep code DRY and focused.
 - Avoid magic strings and numbers.
-- Do not add self-explanatory comments.
+- Keep comments short. Long, multi-paragraph narratives belong in documentation files, not in source code.
+- Do not add self-explanatory comments. Doc comments (`///` and `//!`) on public APIs are the exception.
+- Do not use jargon, abbreviations, or insider shorthand in comments, error messages, or documentation. Prefer wording a non-specialist reader can follow.
 - Do not leave `unwrap()` or `expect()` in normal code paths.
 - Use strong types where possible.
 - Add or update important tests and keep them self-contained.

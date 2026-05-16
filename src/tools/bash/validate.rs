@@ -45,6 +45,56 @@ pub(super) fn has_path_traversal(command: &str) -> bool {
     false
 }
 
+/// Detect shell command and process substitution outside of single
+/// quotes. Returns the marker that triggered the match so the rejection
+/// message can name it. Single quotes suppress substitution in POSIX
+/// shells, so `echo '$(rm bad)'` is literal text; double quotes do not
+/// suppress it. A backslash outside single quotes escapes the next
+/// byte, so `\$(foo)` is literal. Arithmetic expansion `$((expr))` is
+/// not flagged because it evaluates a numeric expression rather than
+/// running a command, but a substitution nested inside arithmetic is
+/// still caught when the scanner reaches the inner `$(`.
+pub(super) fn detect_command_substitution(command: &str) -> Option<&'static str> {
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !in_single && b == b'\\' {
+            i = i.saturating_add(2);
+            continue;
+        }
+        if !in_double && b == b'\'' {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if !in_single && b == b'"' {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if !in_single {
+            if b == b'`' {
+                return Some("`");
+            }
+            if b == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                if i + 2 < bytes.len() && bytes[i + 2] == b'(' {
+                    i += 3;
+                    continue;
+                }
+                return Some("$(");
+            }
+            if (b == b'<' || b == b'>') && i + 1 < bytes.len() && bytes[i + 1] == b'(' {
+                return Some(if b == b'<' { "<(" } else { ">(" });
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Return true when `op` appears as a command-name prefix anywhere in
 /// `command` — at the start, or immediately after a shell
 /// command-boundary sequence. The set of boundaries must cover every
@@ -112,10 +162,33 @@ impl BashExecutor {
                 self.check_bash_external_path(&expanded, permission_manager)?;
             } else if is_absolute_path(path_candidate) {
                 self.check_bash_external_path(path_candidate, permission_manager)?;
+            } else {
+                // Workspace-relative token whose canonical resolution may
+                // leave the workspace through a symlink. Canonicalize
+                // against the workspace and, if the result lands outside,
+                // route it through the same external-path gate.
+                self.check_workspace_relative_escape(path_candidate, permission_manager)?;
             }
         }
 
         Ok(())
+    }
+
+    fn check_workspace_relative_escape(
+        &self,
+        path_candidate: &str,
+        permission_manager: &mut PermissionManager,
+    ) -> Result<()> {
+        let joined = self.workspace.join(path_candidate);
+        let canonical = match std::fs::canonicalize(&joined) {
+            Ok(path) => path,
+            Err(_) => return Ok(()),
+        };
+        if canonical.starts_with(&self.workspace) {
+            return Ok(());
+        }
+        let canonical_str = canonical.to_string_lossy().to_string();
+        self.check_bash_external_path(&canonical_str, permission_manager)
     }
 
     /// Check a single external path against Bash path grants; ask user if not covered.
@@ -270,6 +343,13 @@ impl BashExecutor {
             return false;
         }
 
+        // Command and process substitution hide subcommands from the
+        // permission system, so `echo $(rm bad)` would otherwise be
+        // classified by the base-command (`echo`).
+        if detect_command_substitution(command).is_some() {
+            return false;
+        }
+
         // Note: absolute paths (/...) and tilde paths (~/) are now handled by
         // check_bash_external_paths which asks the user interactively.
 
@@ -376,6 +456,14 @@ impl BashExecutor {
                  Hint: Use absolute paths for external directory access instead of '..'. \
                  Git revision ranges like `HEAD~5..HEAD` are allowed.",
                 command
+            );
+        }
+
+        if let Some(marker) = detect_command_substitution(command) {
+            return format!(
+                "Command '{}' uses shell substitution ('{}') which would run a hidden subcommand outside the permission system\n\
+                 Hint: Run each step as its own bash call so the permission system can see it. Use single quotes if you need the literal characters.",
+                command, marker
             );
         }
 

@@ -290,6 +290,13 @@ impl ToolExecutor {
         self.safe_mode = safe_mode;
     }
 
+    /// Share the REPL's interrupt flag with the bash executor so that
+    /// pressing ESC or Ctrl+C during a turn terminates a running
+    /// shell command instead of waiting for it to exit on its own.
+    pub fn install_interrupt_flag(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        self.bash_executor.install_interrupt_flag(flag);
+    }
+
     /// Check read permissions on a path (both original and canonical forms),
     /// and verify external access. Returns Ok if allowed, Err if denied.
     fn check_read_access(
