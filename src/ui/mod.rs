@@ -217,13 +217,15 @@ impl UI {
 /// Handles real-time output during response streaming. Visible
 /// assistant text is fed through a [`MarkdownStreamRenderer`] so
 /// headings, lists, emphasis, and code fences render with ANSI styling
-/// instead of leaking raw markdown to the terminal. Thinking deltas
-/// stay plain-dim because they're typically free-form prose and the
-/// extra rendering pass would only delay their display.
+/// instead of leaking raw markdown to the terminal. Thinking deltas go
+/// through a separate renderer of the same type, with the rendered
+/// output wrapped in a faint SGR pair so the body keeps the dim
+/// "thinking" look without losing markdown formatting.
 pub struct StreamPrinter {
     thinking_started: AtomicBool,
     text_started: AtomicBool,
     text_renderer: Mutex<MarkdownStreamRenderer>,
+    thinking_renderer: Mutex<MarkdownStreamRenderer>,
 }
 
 impl StreamPrinter {
@@ -232,6 +234,7 @@ impl StreamPrinter {
             thinking_started: AtomicBool::new(false),
             text_started: AtomicBool::new(false),
             text_renderer: Mutex::new(MarkdownStreamRenderer::new()),
+            thinking_renderer: Mutex::new(MarkdownStreamRenderer::new()),
         }
     }
 
@@ -247,13 +250,25 @@ impl StreamPrinter {
             let (tr, tg, tb) = THINKING_RGB;
             print!("\n{}\n", "Thinking:".truecolor(tr, tg, tb).bold().dimmed());
         }
-        print!("{}", delta.dimmed());
-        let _ = stdout().flush();
+        let to_print = {
+            let mut renderer = self.lock_thinking_renderer();
+            renderer.push_delta(delta);
+            renderer.commit().unwrap_or_default()
+        };
+        if !to_print.is_empty() {
+            print_dim(&to_print);
+            let _ = stdout().flush();
+        }
     }
 
     pub fn on_text_delta(&self, delta: &str) {
         if !self.text_started.swap(true, Ordering::SeqCst) {
             if self.thinking_started.load(Ordering::SeqCst) {
+                self.flush_thinking_tail();
+                // Blank line between the thinking block and the
+                // assistant text header. `finalize` guarantees a
+                // trailing newline, so one extra `println!()` puts a
+                // visible blank line between the two sections.
                 println!();
             }
             println!("{}", "Assistant:".bright_blue().bold());
@@ -277,21 +292,54 @@ impl StreamPrinter {
             }
             // The finalised buffer ends with a newline, so the cursor
             // is already at column 0 — no extra println! needed for
-            // text. Thinking-only finishes still want the trailing
-            // separator.
+            // text.
             let _ = stdout().flush();
         } else if self.thinking_started.load(Ordering::SeqCst) {
+            self.flush_thinking_tail();
+            // `finalize` ends with a newline. One extra blank line
+            // separates the thinking body from whatever the turn
+            // renders next (a tool call header, the input prompt).
             println!();
+            let _ = stdout().flush();
         }
     }
 
-    /// Acquire the renderer lock, recovering from poison so a panic in
-    /// one delta callback doesn't kill subsequent streaming output. A
-    /// partial markdown buffer is recoverable; the worst case is one
-    /// mid-stream paragraph rendering as plain text.
+    /// Drain the thinking renderer's residual buffer (a partial last
+    /// line, a still-open code fence, anything held back by `commit`)
+    /// and emit it under the same dim wrap the streaming path uses.
+    /// Shared between the thinking-to-text transition in `on_text_delta`
+    /// and the thinking-only path in `finish`.
+    fn flush_thinking_tail(&self) {
+        let tail = self.lock_thinking_renderer().finalize().unwrap_or_default();
+        if !tail.is_empty() {
+            print_dim(&tail);
+        }
+    }
+
+    /// Acquire the text renderer lock, recovering from poison so a
+    /// panic in one delta callback doesn't kill subsequent streaming
+    /// output. A partial markdown buffer is recoverable; the worst
+    /// case is one mid-stream paragraph rendering as plain text.
     fn lock_text_renderer(&self) -> std::sync::MutexGuard<'_, MarkdownStreamRenderer> {
         self.text_renderer.lock().unwrap_or_else(|e| e.into_inner())
     }
+
+    /// Same poison-recovery contract as [`Self::lock_text_renderer`],
+    /// for the parallel thinking-side renderer.
+    fn lock_thinking_renderer(&self) -> std::sync::MutexGuard<'_, MarkdownStreamRenderer> {
+        self.thinking_renderer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Emit `text` wrapped in the faint SGR pair so the thinking body
+/// keeps its dim look. The renderer may have embedded its own ANSI
+/// for markdown emphasis or fenced-code highlighting; the wrap lets
+/// the prose dim cleanly and leaves those inner sequences intact
+/// where they apply.
+fn print_dim(text: &str) {
+    print!("\x1b[2m{text}\x1b[22m");
 }
 
 fn set_cursor_style(style: SetCursorStyle) -> io::Result<()> {

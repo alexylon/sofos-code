@@ -436,8 +436,9 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
     - `cargo clippy --all-targets -- -D warnings`
     - `cargo test --all`
 - Before finishing, review the change for bugs and corner cases.
-- After each final modification, provide a clear, human-readable one-line commit message.
 - Use international English. Avoid regional idioms (whether American or British), clever shorthand, and compressed phrases; prefer wording that a non-native English reader can understand on the first read. This applies to chat replies, commit messages, code comments, documentation, and error messages.
+- After you finish cross-checking against the Non-Negotiable Rules and fixing the code, if needed, do another pass for bugs and regressions.
+- After each final modification, provide a clear, human-readable one-line commit message.
 
 ---
 
