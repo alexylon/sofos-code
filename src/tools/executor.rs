@@ -290,6 +290,18 @@ impl ToolExecutor {
         self.safe_mode = safe_mode;
     }
 
+    /// Session-scoped allow set for external read paths. Cloned and
+    /// shared with `ImageLoader` so the user is not prompted twice for
+    /// the same directory across file reads and image loads.
+    pub fn read_path_session_allowed(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.read_path_session_allowed)
+    }
+
+    /// Session-scoped deny set for external read paths.
+    pub fn read_path_session_denied(&self) -> Arc<Mutex<HashSet<String>>> {
+        Arc::clone(&self.read_path_session_denied)
+    }
+
     /// Names of MCP servers whose tools would be filtered out if safe
     /// mode were on. Returned regardless of the current safe-mode state
     /// so the REPL can decide what to print at startup.

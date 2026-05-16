@@ -134,13 +134,13 @@ fn execute_bash_tool() -> Tool {
 fn delete_file_tool() -> Tool {
     Tool::Regular {
         name: "delete_file".to_string(),
-        description: "Delete a file in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
+        description: "Delete a file. Works within the workspace by default and also supports external absolute or ~/ paths after the user grants Write access to the target directory. A confirmation prompt is shown before deletion in every case.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the file to delete (e.g., 'src/old_file.rs')"
+                    "description": "Path to the file to delete. Relative paths resolve inside the workspace; absolute and ~/ paths can target external files when Write access is granted."
                 }
             },
             "required": ["path"]
@@ -152,13 +152,13 @@ fn delete_file_tool() -> Tool {
 fn delete_directory_tool() -> Tool {
     Tool::Regular {
         name: "delete_directory".to_string(),
-        description: "Delete a directory and all its contents in the current workspace. A confirmation prompt will be shown to the user before deletion.".to_string(),
+        description: "Delete a directory and all its contents. Works within the workspace by default and also supports external absolute or ~/ paths after the user grants Write access to the target directory. A confirmation prompt is shown before deletion in every case.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The relative path to the directory to delete (e.g., 'src/old_module')"
+                    "description": "Path to the directory to delete. Relative paths resolve inside the workspace; absolute and ~/ paths can target external directories when Write access is granted."
                 }
             },
             "required": ["path"]
@@ -214,7 +214,7 @@ fn copy_file_tool() -> Tool {
 fn edit_file_tool() -> Tool {
     Tool::Regular {
         name: "edit_file".to_string(),
-        description: "Make targeted edits to a file by replacing exact string matches. Preferred over write_file for modifying existing files — safer and more efficient since only the changed portion is specified. Works within the workspace by default; can also edit external files at absolute or ~/ paths (user will be prompted for Write access).".to_string(),
+        description: "Make targeted edits to a file by replacing exact string matches. Preferred over write_file for modifying existing files — safer and more efficient since only the changed portion is specified. Works within the workspace by default; can also edit external files at absolute or ~/ paths (the user will be prompted for both Read and Write access on the target directory because the tool reads the file before writing it back).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -352,7 +352,8 @@ fn morph_edit_file_tool() -> Tool {
             Batch multiple edits to the same file in one call. \
             Backed by the Morph Fast Apply API (10,500+ tokens/sec). \
             Supports absolute or ~/ paths for files outside the workspace \
-            (user will be prompted for Write access)."
+            (the user will be prompted for both Read and Write access on the target directory \
+            because the tool reads the file before writing it back)."
             .to_string(),
         input_schema: json!({
             "type": "object",

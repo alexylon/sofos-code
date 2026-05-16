@@ -133,7 +133,12 @@ impl Repl {
         let has_code_search = tool_executor.has_code_search();
 
         let history_manager = HistoryManager::new(workspace.clone())?;
-        let image_loader = ImageLoader::new(workspace.clone())?;
+        let mut image_loader = ImageLoader::new(workspace.clone())?;
+        image_loader.install_read_path_session(
+            std::io::stdin().is_terminal(),
+            tool_executor.read_path_session_allowed(),
+            tool_executor.read_path_session_denied(),
+        );
 
         // Load custom instructions
         let custom_instructions = history_manager.load_custom_instructions()?;

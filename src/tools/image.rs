@@ -2,7 +2,9 @@ use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::is_absolute_or_tilde;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 const MAX_IMAGE_SIZE_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -106,6 +108,9 @@ fn has_image_extension(path: &str) -> bool {
 pub struct ImageLoader {
     workspace: PathBuf,
     permission_manager: PermissionManager,
+    interactive: bool,
+    read_path_session_allowed: Arc<Mutex<HashSet<String>>>,
+    read_path_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ImageLoader {
@@ -115,7 +120,27 @@ impl ImageLoader {
         Ok(Self {
             workspace,
             permission_manager,
+            interactive: false,
+            read_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            read_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    /// Wire the loader to the same session-scoped allow/deny caches the
+    /// tool executor uses for external read access, and tell it whether
+    /// it can prompt the user. The REPL calls this once after building
+    /// both, so an "Allow Read access to /...?" decision answered for
+    /// `read_file` also applies to a pasted image under the same
+    /// directory and the reverse, instead of asking twice.
+    pub fn install_read_path_session(
+        &mut self,
+        interactive: bool,
+        allowed: Arc<Mutex<HashSet<String>>>,
+        denied: Arc<Mutex<HashSet<String>>>,
+    ) {
+        self.interactive = interactive;
+        self.read_path_session_allowed = allowed;
+        self.read_path_session_denied = denied;
     }
 
     pub fn load_local_image(&self, path: &str) -> Result<ImageSource> {
@@ -175,11 +200,7 @@ impl ImageLoader {
             .is_read_explicit_allow(canonical_str);
 
         if !is_inside_workspace && !is_explicit_allow {
-            return Err(SofosError::ToolExecution(format!(
-                "Image '{}' is outside workspace and not explicitly allowed\n\
-                 Hint: Add Read({}) to 'allow' list in .sofos/config.local.toml",
-                path, path
-            )));
+            self.ask_external_read_access(path, &canonical, canonical_str)?;
         }
 
         let metadata = std::fs::metadata(&canonical)
@@ -239,6 +260,66 @@ impl ImageLoader {
         match reference {
             ImageReference::LocalPath(path) => self.load_local_image(path),
             ImageReference::WebUrl(url) => self.prepare_web_image(url),
+        }
+    }
+
+    fn ask_external_read_access(
+        &self,
+        original_path: &str,
+        canonical: &Path,
+        canonical_str: &str,
+    ) -> Result<()> {
+        if let Ok(allowed_dirs) = self.read_path_session_allowed.lock() {
+            for dir in allowed_dirs.iter() {
+                if canonical.starts_with(Path::new(dir)) {
+                    return Ok(());
+                }
+            }
+        }
+        if let Ok(denied_dirs) = self.read_path_session_denied.lock() {
+            for dir in denied_dirs.iter() {
+                if canonical.starts_with(Path::new(dir)) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Read access denied for image '{}' (denied earlier this session)",
+                        original_path
+                    )));
+                }
+            }
+        }
+
+        let parent_dir = canonical
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or(canonical_str)
+            .to_string();
+
+        if !self.interactive {
+            return Err(SofosError::ToolExecution(format!(
+                "Image '{}' is outside workspace\n\
+                 Hint: Add Read({}/**) to 'allow' list in .sofos/config.local.toml",
+                original_path, parent_dir
+            )));
+        }
+
+        let mut pm = PermissionManager::new(self.workspace.clone())?;
+        let (allowed, remember) = pm.ask_user_path_permission("Read", &parent_dir)?;
+        if allowed {
+            if !remember {
+                if let Ok(mut dirs) = self.read_path_session_allowed.lock() {
+                    dirs.insert(parent_dir);
+                }
+            }
+            Ok(())
+        } else {
+            if !remember {
+                if let Ok(mut dirs) = self.read_path_session_denied.lock() {
+                    dirs.insert(parent_dir);
+                }
+            }
+            Err(SofosError::ToolExecution(format!(
+                "Read access denied by user for image '{}'",
+                original_path
+            )))
         }
     }
 }
