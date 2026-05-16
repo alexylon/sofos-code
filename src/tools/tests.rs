@@ -13,6 +13,23 @@ fn fake_image(mime: &str, base64_len: usize) -> ImageData {
     }
 }
 
+fn strip_ansi(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(char) = chars.next() {
+        if char == '\x1b' {
+            for inner in chars.by_ref() {
+                if inner.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(char);
+        }
+    }
+    output
+}
+
 #[tokio::test]
 async fn update_plan_dispatcher_returns_compact_model_result_and_styled_display() {
     let workspace = tempdir().unwrap();
@@ -45,13 +62,14 @@ async fn update_plan_dispatcher_returns_compact_model_result_and_styled_display(
         result.text(),
         "Plan updated: 3 steps, 1 completed, 1 in progress, 1 pending. Current step: Add tool."
     );
-    assert!(result.display_text().contains("Plan updated"));
-    assert!(result.display_text().contains("Add tool"));
     assert!(
-        result
-            .display_text()
-            .contains("1 completed · 1 in progress · 1 pending")
+        !result.text().contains('\x1b'),
+        "the summary sent to the model must be free of ANSI escapes"
     );
+    let display = strip_ansi(result.display_text());
+    assert!(display.contains("Plan updated"));
+    assert!(display.contains("Add tool"));
+    assert!(display.contains("1 completed · 1 in progress · 1 pending"));
 }
 
 #[test]
