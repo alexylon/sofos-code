@@ -407,6 +407,91 @@ async fn test_edit_file_replace_all() {
 }
 
 #[tokio::test]
+async fn test_edit_file_returns_compact_summary_to_model_and_diff_to_display() {
+    // After a successful edit, the model-facing `text()` is a fixed
+    // two-line summary regardless of edit size, while `display_text()`
+    // still carries the rendered diff for the UI. This keeps repeated
+    // edits from re-billing the diff in conversation history every turn,
+    // and is the contract every file-modification tool routes through
+    // `file_modification_result` to provide.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("greet.txt"), "hello world").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "edit_file",
+            &json!({"path": "greet.txt", "old_string": "world", "new_string": "rust"}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.text(),
+        "Success. Updated the following files:\nM greet.txt",
+        "model should receive only the compact summary"
+    );
+    assert!(
+        result
+            .display_text()
+            .contains("Successfully edited 'greet.txt'"),
+        "display should keep the per-tool success heading"
+    );
+    assert!(
+        result.display_text().contains("Changes:"),
+        "display should keep the diff preamble"
+    );
+    assert!(
+        !result.text().contains('\x1b'),
+        "the summary sent to the model must be free of ANSI escapes"
+    );
+}
+
+#[tokio::test]
+async fn test_write_file_overwrite_returns_compact_summary_to_model() {
+    // Overwriting an existing file with `write_file` is the second tool
+    // that used to echo a colored diff back to the model. The summary
+    // path must mirror `edit_file`'s contract.
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("notes.txt"), "old body").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let result = executor
+        .execute(
+            "write_file",
+            &json!({"path": "notes.txt", "content": "new body"}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        result.text(),
+        "Success. Updated the following files:\nM notes.txt"
+    );
+    assert!(
+        result
+            .display_text()
+            .contains("Successfully wrote to file 'notes.txt'")
+    );
+}
+
+#[tokio::test]
 async fn test_glob_files_finds_matches() {
     let workspace = tempdir().unwrap();
     let config_dir = workspace.path().join(".sofos");

@@ -393,8 +393,11 @@ impl ResponseHandler {
                         );
                     }
 
-                    let display_output =
-                        UI::create_tool_display_message(tool_name, tool_input, output.text());
+                    let display_output = UI::create_tool_display_message(
+                        tool_name,
+                        tool_input,
+                        output.display_text(),
+                    );
 
                     if !display_output.is_empty() {
                         UI::shared().print_tool_output(&display_output);

@@ -39,15 +39,31 @@ const MAX_WEB_FETCH_BODY_BYTES: usize = 64 * 1024 * 1024;
 pub enum ToolExecutionResult {
     /// Simple text result (for most tools)
     Text(String),
+    /// Separate text for the model vs. the on-screen display. The model
+    /// gets a short summary; the user sees the full rendered output
+    /// (e.g. a colored diff). Keeps the tool-result payload small in
+    /// conversation history without losing the visual diff in the TUI.
+    TextWithDisplay { text: String, display: String },
     /// Structured result with optional images (for MCP tools)
     Structured(McpToolResult),
 }
 
 impl ToolExecutionResult {
-    /// Get the text content
+    /// Text shipped back to the model as the tool result.
     pub fn text(&self) -> &str {
         match self {
             ToolExecutionResult::Text(s) => s,
+            ToolExecutionResult::TextWithDisplay { text, .. } => text,
+            ToolExecutionResult::Structured(r) => &r.text,
+        }
+    }
+
+    /// Text rendered to the user in the TUI / session replay. Falls back
+    /// to the model-facing text for tools that don't draw a distinction.
+    pub fn display_text(&self) -> &str {
+        match self {
+            ToolExecutionResult::Text(s) => s,
+            ToolExecutionResult::TextWithDisplay { display, .. } => display,
             ToolExecutionResult::Structured(r) => &r.text,
         }
     }
@@ -56,8 +72,40 @@ impl ToolExecutionResult {
     pub fn images(&self) -> &[ImageData] {
         match self {
             ToolExecutionResult::Text(_) => &[],
+            ToolExecutionResult::TextWithDisplay { .. } => &[],
             ToolExecutionResult::Structured(r) => &r.images,
         }
+    }
+}
+
+/// Header line of the model-facing summary every file-modification tool
+/// emits. Mirrors a unified-diff "files changed" preamble: a fixed first
+/// line followed by per-file lines tagged `A` (added), `M` (modified),
+/// or `D` (deleted).
+const FILE_MUTATION_SUMMARY_HEADER: &str = "Success. Updated the following files:";
+
+/// Build a [`ToolExecutionResult`] for a file-modification tool that
+/// wants to keep the user's colored diff while shipping a constant-size
+/// summary to the model. The colored diff carries syntax-highlighting
+/// ANSI that roughly multiplies the byte count per line, and every tool
+/// result stays in conversation history for the rest of the session —
+/// echoing the diff back to the model dominates the cost of repeated
+/// edits. Returning only `M <path>` to the model keeps that cost flat
+/// regardless of edit size; the model can `read_file` a range if it
+/// needs to inspect the post-edit state.
+fn file_modification_result(
+    path: &str,
+    original: &str,
+    modified: &str,
+    success_prefix: &str,
+) -> ToolExecutionResult {
+    let diff_output = diff::generate_compact_diff(original, modified, path);
+    let display_body = format!("{} '{}'\n\nChanges:\n{}", success_prefix, path, diff_output);
+    let display = truncate_for_context(&display_body, MAX_DIFF_TOKENS, TruncationKind::DiffOutput);
+    let summary = format!("{FILE_MUTATION_SUMMARY_HEADER}\nM {path}");
+    ToolExecutionResult::TextWithDisplay {
+        text: summary,
+        display,
     }
 }
 
@@ -605,16 +653,12 @@ impl ToolExecutor {
                         path
                     ))
                 } else if let Some(original) = original_content {
-                    let diff_output = diff::generate_compact_diff(&original, content, path);
-                    let body = format!(
-                        "Successfully wrote to file '{}'\n\nChanges:\n{}",
-                        path, diff_output
-                    );
-                    Ok(truncate_for_context(
-                        &body,
-                        MAX_DIFF_TOKENS,
-                        TruncationKind::DiffOutput,
-                    ))
+                    return Ok(file_modification_result(
+                        path,
+                        &original,
+                        content,
+                        "Successfully wrote to file",
+                    ));
                 } else {
                     Ok(format!("Successfully created file '{}'", path))
                 }
@@ -900,16 +944,12 @@ impl ToolExecutor {
                         .write_file_with_outside_access(&resolved.canonical_str, &modified)?;
                 }
 
-                let diff_output = diff::generate_compact_diff(&original, &modified, path);
-                let body = format!(
-                    "Successfully edited '{}'\n\nChanges:\n{}",
-                    path, diff_output
-                );
-                Ok(truncate_for_context(
-                    &body,
-                    MAX_DIFF_TOKENS,
-                    TruncationKind::DiffOutput,
-                ))
+                return Ok(file_modification_result(
+                    path,
+                    &original,
+                    &modified,
+                    "Successfully edited",
+                ));
             }
             ToolName::MorphEditFile => {
                 let morph = self.morph_client.as_ref().ok_or_else(|| {
@@ -1061,18 +1101,12 @@ impl ToolExecutor {
                         .write_file_with_outside_access(&resolved.canonical_str, &merged_code)?;
                 }
 
-                // Generate diff for display
-                let diff_output = diff::generate_compact_diff(&original_code, &merged_code, path);
-
-                let body = format!(
-                    "Successfully applied Morph edit to '{}'\n\nChanges:\n{}",
-                    path, diff_output
-                );
-                Ok(truncate_for_context(
-                    &body,
-                    MAX_DIFF_TOKENS,
-                    TruncationKind::DiffOutput,
-                ))
+                return Ok(file_modification_result(
+                    path,
+                    &original_code,
+                    &merged_code,
+                    "Successfully applied Morph edit to",
+                ));
             }
             ToolName::DeleteFile => {
                 let path = input["path"].as_str().ok_or_else(|| {
