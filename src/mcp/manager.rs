@@ -234,9 +234,8 @@ impl McpManager {
             .ok_or_else(|| SofosError::McpError(format!("Unknown MCP tool: {}", tool_name)))?;
 
         // Clone the client `Arc` out under the lock, then drop the lock
-        // before awaiting. The earlier version held the outer lock
-        // across `.await`, which serialised every tool call across
-        // every server.
+        // before awaiting. See the struct-level doc on `clients` for
+        // why holding the outer lock across `.await` is unsafe.
         let client = {
             let clients = self.clients.lock().await;
             clients.get(server_name).cloned().ok_or_else(|| {

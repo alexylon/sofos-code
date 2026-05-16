@@ -28,6 +28,11 @@ All notable changes to Sofos are documented in this file.
 - **Pasting more than twenty images into one message no longer drops them silently.** The marker pool tops out at twenty circled-number characters, after which the previous code inserted a plain `*` that the submission parser could not recover. Sofos now rejects the extra paste with a clear "limit reached" warning and leaves the existing images untouched so the user can send them in batches.
 - **Provider selection moved out of duplicated `model.starts_with("gpt-")` checks into a single function in the model registry.** Startup and resume now ask the same helper which client a model belongs to, so adding a new OpenAI prefix (or a third vendor) is a one-line change instead of two sites that can drift.
 
+### Removed
+
+- **The README no longer claims first-class Windows support.** The terminal UI opens `/dev/tty` and the bash executor relies on POSIX process groups, neither of which work on Windows out of the box. The platform line on the README now says "Tested on macOS, supported on Linux, experimental on Windows"; running the TUI on a non-Unix system surfaces a clear configuration error instead of failing with an opaque file-not-found.
+- **A number of long historical narratives in source comments were trimmed.** Code comments now focus on the current invariant; the "what used to happen" stories were either redundant with another comment in the same module or no longer load-bearing for understanding the present code.
+
 ## [0.2.12] - 2026-05-16
 
 ### Added

@@ -6,7 +6,7 @@ Sofos Code is a terminal-based AI coding assistant for software projects. It con
 
 Sofos is written in Rust, runs in your terminal, and is designed around explicit permissions: workspace access is available by default, while external paths and higher-risk actions require user approval or configuration.
 
-Tested on macOS. Supported on Linux and Windows.
+Tested on macOS. Supported on Linux. Windows support is experimental: the bash executor and the terminal UI assume Unix-style facilities, so some features may not work or may need adjustments.
 
 <div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code terminal screenshot"></div>
 

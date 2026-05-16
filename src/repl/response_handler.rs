@@ -587,12 +587,9 @@ impl ResponseHandler {
             content: "[System: Maximum tool iterations reached]".to_string(),
         });
 
-        // Let AI respond to the interruption. Route through
-        // `run_interruptible` so ESC during the MAX-iteration summary
-        // aborts the in-flight HTTP call instead of blocking the user
-        // until the server responds — previously this bare `.await`
-        // was the one remaining non-interruptible API call in the
-        // tool-loop path.
+        // Let the assistant respond to the interruption. Use
+        // `run_interruptible` so ESC during this final summary cancels
+        // the HTTP call instead of blocking on the server.
         let request = self.build_request();
         let client = self.client.clone();
         let response_result = self

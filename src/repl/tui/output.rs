@@ -1,19 +1,10 @@
 //! Stdout/stderr capture for the TUI.
 //!
 //! Redirects fds 1 and 2 into OS pipes so every `println!`, `eprintln!`
-//! and direct-to-stdout colored output from the worker thread flows into
-//! the terminal's scrollback via `Terminal::insert_before`.
-//!
-//! Earlier versions of this module had `pause` / `resume` hooks that
-//! un-did the redirection for the duration of a render frame so
-//! `crossterm::cursor::position` could reach the tty. That had a
-//! nasty side-effect: during pause, `println!` from the streaming
-//! worker thread wrote *directly* onto the screen at whatever column
-//! the cursor happened to be parked at, racing the rendered viewport
-//! and landing as scattered text / orange fragments of "Assistant:".
-//! Current code never calls `cursor::position` during the draw loop
-//! (only once at startup, before this capture is installed), so the
-//! redirection stays active for the whole session.
+//! and direct-to-stdout colored output from the worker thread flows
+//! into the terminal's scrollback via `Terminal::insert_before`. The
+//! redirection stays active for the whole session — the draw loop must
+//! not call `cursor::position` after this is installed.
 
 use os_pipe::{PipeReader, PipeWriter};
 use std::fs::OpenOptions;

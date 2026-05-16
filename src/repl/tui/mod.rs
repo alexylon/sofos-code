@@ -118,9 +118,23 @@ impl Drop for TerminalGuard {
 /// Run the sofos-code REPL with the TUI front end. Takes ownership of the
 /// fully-initialized `Repl` and blocks until the user quits.
 pub fn run(mut repl: Repl) -> Result<()> {
-    // The backend writes to /dev/tty so ratatui rendering doesn't travel
-    // through the stdout pipe we're about to install for output capture.
+    // The backend writes to a real terminal handle so ratatui rendering
+    // does not travel through the stdout pipe we are about to install
+    // for output capture. `/dev/tty` is the canonical handle on Unix;
+    // Windows does not expose it, and the rest of the bash executor and
+    // process supervisor also need POSIX primitives, so we fail fast
+    // with a clear error rather than silently opening the wrong thing.
+    #[cfg(unix)]
     let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
+    #[cfg(not(unix))]
+    let tty = {
+        let _ = &OpenOptions::new();
+        return Err(crate::error::SofosError::Config(
+            "The interactive TUI is currently only supported on Unix-like systems (macOS, Linux). \
+             Windows support is experimental and the bash executor relies on POSIX process groups."
+                .to_string(),
+        ));
+    };
     let tty_for_backend = tty.try_clone()?;
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiEvent>();

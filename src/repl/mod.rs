@@ -88,13 +88,9 @@ pub struct Repl {
     pub(super) mcp_init_lines: String,
     /// Shared tokio runtime driving every `block_on` in the REPL
     /// (initial request, compaction summary, tool-list refresh). Built
-    /// once in [`Self::new`] and reused for the lifetime of the `Repl`.
-    /// Previously each call site constructed a fresh
-    /// `Runtime::new()` and dropped it on return — expensive per-turn
-    /// (thread-pool spin-up + epoll registration) and fd-exhaustion-
-    /// prone under sustained load. Works because the TUI worker runs
-    /// on a plain `std::thread` (see `tui/worker.rs`), so the REPL's
-    /// owned runtime is the only tokio context on that thread.
+    /// once and reused for the lifetime of the `Repl`; the TUI worker
+    /// runs on a plain `std::thread` so this is the only tokio context
+    /// on that thread.
     pub(super) runtime: tokio::runtime::Runtime,
 }
 
