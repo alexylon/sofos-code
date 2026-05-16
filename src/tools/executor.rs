@@ -27,13 +27,18 @@ use std::time::Duration;
 
 const SOFOS_USER_AGENT: &str = concat!("Sofos/", env!("CARGO_PKG_VERSION"));
 
-/// Hard cap on the raw HTTP body `web_fetch` will accept. The post-fetch
-/// pipeline runs HTML stripping and then truncates to ~64 KB of text
-/// before handing anything to the model, so far less than 64 MB is ever
-/// "visible". The cap exists to bound how much memory a single tool call
-/// can pull in before that pipeline runs, so a pathological URL serving
-/// gigabytes (or a misreported Content-Length) cannot OOM the process.
-const MAX_WEB_FETCH_BODY_BYTES: usize = 64 * 1024 * 1024;
+/// Hard cap on the raw HTTP body `web_fetch` will accept. The
+/// post-fetch pipeline runs HTML stripping and truncates to ~64 KB of
+/// text before anything reaches the model, so the cap only exists to
+/// bound how much memory a single tool call can pull in. Eight
+/// megabytes is enough for almost every real article and small enough
+/// that the streaming HTML pass stays cheap.
+const MAX_WEB_FETCH_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Byte cap on the text produced by `html_to_text` for `web_fetch`.
+/// Sized for a small headroom over the eventual model truncation
+/// budget so we never copy bytes that would be dropped anyway.
+const WEB_FETCH_TEXT_BUDGET_BYTES: usize = 128 * 1024;
 
 /// Result from tool execution that can contain text and/or images
 #[derive(Debug, Clone)]
@@ -1400,7 +1405,8 @@ impl ToolExecutor {
                 // pipeline expects.
                 let body = String::from_utf8_lossy(&raw).into_owned();
 
-                let text = crate::tools::utils::html_to_text(&body);
+                let text =
+                    crate::tools::utils::html_to_text_capped(&body, WEB_FETCH_TEXT_BUDGET_BYTES);
 
                 let max_bytes = 64_000;
                 let truncated = if text.len() > max_bytes {

@@ -100,7 +100,25 @@ impl HistoryManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis();
-        format!("session_{}", timestamp)
+        let suffix = random_session_suffix();
+        format!("session_{}_{}", timestamp, suffix)
+    }
+
+    /// Generate a session id that does not clash with any existing file
+    /// in this workspace's sessions directory. Two Sofos processes
+    /// started in the same millisecond previously produced identical
+    /// ids and clobbered each other's session file on save; the random
+    /// suffix makes the chance of overlap vanishingly small, and on
+    /// the off chance one slips through we regenerate.
+    pub fn generate_unique_session_id(&self) -> String {
+        for _ in 0..8 {
+            let id = Self::generate_session_id();
+            let path = self.sessions_dir().join(format!("{}.json", id));
+            if !path.exists() {
+                return id;
+            }
+        }
+        Self::generate_session_id()
     }
 
     /// Reject session ids that could escape the sessions directory
@@ -221,4 +239,13 @@ impl HistoryManager {
 
         Ok(())
     }
+}
+
+/// Eight-character hex suffix from the system random source. Used by
+/// `generate_session_id` so two processes started in the same
+/// millisecond do not collide on the resulting session id.
+fn random_session_suffix() -> String {
+    use rand::RngExt;
+    let n = rand::rng().random_range(0..=u32::MAX);
+    format!("{:08x}", n)
 }

@@ -201,7 +201,7 @@ impl Repl {
             format!("{}{}", mcp_init_lines, safe_mode_mcp_note)
         };
 
-        let session_id = HistoryManager::generate_session_id();
+        let session_id = history_manager.generate_unique_session_id();
         let session_state = SessionState::new(session_id, conversation);
         let model_config =
             ModelConfig::new(config.model, config.max_tokens, config.reasoning_effort);
@@ -360,7 +360,7 @@ impl Repl {
     }
 
     pub fn handle_clear_command(&mut self) -> Result<()> {
-        let new_session_id = HistoryManager::generate_session_id();
+        let new_session_id = self.history_manager.generate_unique_session_id();
         self.session_state.conversation.clear();
         self.session_state.clear(new_session_id);
         self.session_state

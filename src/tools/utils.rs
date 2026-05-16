@@ -302,57 +302,54 @@ pub fn confirm_destructive(prompt: &str) -> crate::error::Result<bool> {
     Ok(idx == 0)
 }
 
-/// Strip HTML tags and convert common entities to produce readable plain text
-pub fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() / 2);
+/// Strip HTML tags and convert common entities to produce readable
+/// plain text. Scans the input byte-by-byte (HTML markup we care about
+/// is pure ASCII), so the work is linear in input length and does not
+/// build duplicate buffers. Stops accumulating output once
+/// `max_output_bytes` is reached so a multi-megabyte page cannot blow
+/// the model-facing budget.
+pub fn html_to_text_capped(html: &str, max_output_bytes: usize) -> String {
+    let bytes = html.as_bytes();
+    let mut out = String::with_capacity(bytes.len().min(max_output_bytes) / 2 + 64);
+    let mut i = 0;
     let mut in_tag = false;
     let mut in_script = false;
     let mut in_style = false;
     let mut last_was_whitespace = false;
 
-    let lower = html.to_lowercase();
-    let chars: Vec<char> = html.chars().collect();
-    let lower_chars: Vec<char> = lower.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
+    let push = |out: &mut String, ch: char| -> bool {
+        if out.len() + ch.len_utf8() > max_output_bytes {
+            return false;
+        }
+        out.push(ch);
+        true
+    };
 
-    while i < len {
+    while i < bytes.len() {
+        if out.len() >= max_output_bytes {
+            break;
+        }
         if in_tag {
-            if chars[i] == '>' {
+            if bytes[i] == b'>' {
                 in_tag = false;
             }
             i += 1;
             continue;
         }
 
-        if chars[i] == '<' {
-            // Check for block-level tags that should insert newlines
-            let rest = &lower[lower.char_indices().nth(i).map_or(0, |(idx, _)| idx)..];
-            if rest.starts_with("<script") {
+        if bytes[i] == b'<' {
+            if ascii_ci_starts_with(&bytes[i..], b"<script") {
                 in_script = true;
-            } else if rest.starts_with("</script") {
+            } else if ascii_ci_starts_with(&bytes[i..], b"</script") {
                 in_script = false;
-            } else if rest.starts_with("<style") {
+            } else if ascii_ci_starts_with(&bytes[i..], b"<style") {
                 in_style = true;
-            } else if rest.starts_with("</style") {
+            } else if ascii_ci_starts_with(&bytes[i..], b"</style") {
                 in_style = false;
             }
 
-            let is_block = rest.starts_with("<br")
-                || rest.starts_with("<p")
-                || rest.starts_with("</p")
-                || rest.starts_with("<div")
-                || rest.starts_with("</div")
-                || rest.starts_with("<li")
-                || rest.starts_with("<h1")
-                || rest.starts_with("<h2")
-                || rest.starts_with("<h3")
-                || rest.starts_with("<h4")
-                || rest.starts_with("<tr")
-                || rest.starts_with("</tr");
-
-            if is_block && !out.ends_with('\n') {
-                out.push('\n');
+            let is_block = matches_any_block_tag(&bytes[i..]);
+            if is_block && !out.ends_with('\n') && push(&mut out, '\n') {
                 last_was_whitespace = true;
             }
 
@@ -366,69 +363,161 @@ pub fn html_to_text(html: &str) -> String {
             continue;
         }
 
-        // Handle HTML entities
-        if chars[i] == '&' {
-            let rest: String = lower_chars[i..].iter().take(10).collect();
-            if rest.starts_with("&amp;") {
-                out.push('&');
-                i += 5;
-            } else if rest.starts_with("&lt;") {
-                out.push('<');
-                i += 4;
-            } else if rest.starts_with("&gt;") {
-                out.push('>');
-                i += 4;
-            } else if rest.starts_with("&quot;") {
-                out.push('"');
-                i += 6;
-            } else if rest.starts_with("&#39;") || rest.starts_with("&apos;") {
-                out.push('\'');
-                i += if rest.starts_with("&#39;") { 5 } else { 6 };
-            } else if rest.starts_with("&nbsp;") {
-                out.push(' ');
-                i += 6;
-            } else {
-                out.push('&');
-                i += 1;
+        if bytes[i] == b'&' {
+            if let Some((decoded, advance)) = decode_html_entity(&bytes[i..]) {
+                if !push(&mut out, decoded) {
+                    break;
+                }
+                last_was_whitespace = false;
+                i += advance;
+                continue;
+            }
+            if !push(&mut out, '&') {
+                break;
             }
             last_was_whitespace = false;
+            i += 1;
             continue;
         }
 
-        let ch = chars[i];
-        if ch.is_whitespace() {
-            if !last_was_whitespace {
-                out.push(if ch == '\n' { '\n' } else { ' ' });
-                last_was_whitespace = true;
+        // ASCII whitespace fast path keeps the byte cursor aligned;
+        // non-ASCII bytes are decoded as a single char via the
+        // `char_indices` step below.
+        if bytes[i].is_ascii() {
+            let ch = bytes[i] as char;
+            if ch.is_whitespace() {
+                if !last_was_whitespace {
+                    let emit = if ch == '\n' { '\n' } else { ' ' };
+                    if !push(&mut out, emit) {
+                        break;
+                    }
+                    last_was_whitespace = true;
+                }
+            } else if push(&mut out, ch) {
+                last_was_whitespace = false;
+            } else {
+                break;
             }
-        } else {
-            out.push(ch);
-            last_was_whitespace = false;
+            i += 1;
+            continue;
         }
-        i += 1;
+
+        // Non-ASCII byte: decode one UTF-8 char from the original string.
+        let tail = &html[i..];
+        if let Some(ch) = tail.chars().next() {
+            if ch.is_whitespace() {
+                if !last_was_whitespace {
+                    if !push(&mut out, ' ') {
+                        break;
+                    }
+                    last_was_whitespace = true;
+                }
+            } else if push(&mut out, ch) {
+                last_was_whitespace = false;
+            } else {
+                break;
+            }
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
     }
 
-    // Collapse runs of 3+ newlines into 2
-    let mut result = String::new();
-    let mut consecutive_newlines = 0;
-    for ch in out.chars() {
+    collapse_runs_of_newlines(out).trim().to_string()
+}
+
+fn ascii_ci_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .iter()
+        .zip(needle.iter())
+        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+const BLOCK_TAGS: &[&[u8]] = &[
+    b"<br", b"<p", b"</p", b"<div", b"</div", b"<li", b"<h1", b"<h2", b"<h3", b"<h4", b"<tr",
+    b"</tr",
+];
+
+fn matches_any_block_tag(haystack: &[u8]) -> bool {
+    BLOCK_TAGS
+        .iter()
+        .any(|tag| ascii_ci_starts_with(haystack, tag))
+}
+
+fn decode_html_entity(haystack: &[u8]) -> Option<(char, usize)> {
+    if !haystack.starts_with(b"&") {
+        return None;
+    }
+    let table: &[(&[u8], char)] = &[
+        (b"&amp;", '&'),
+        (b"&lt;", '<'),
+        (b"&gt;", '>'),
+        (b"&quot;", '"'),
+        (b"&apos;", '\''),
+        (b"&#39;", '\''),
+        (b"&nbsp;", ' '),
+    ];
+    for (needle, ch) in table {
+        if ascii_ci_starts_with(haystack, needle) {
+            return Some((*ch, needle.len()));
+        }
+    }
+    None
+}
+
+fn collapse_runs_of_newlines(input: String) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut consecutive = 0usize;
+    for ch in input.chars() {
         if ch == '\n' {
-            consecutive_newlines += 1;
-            if consecutive_newlines <= 2 {
-                result.push(ch);
+            consecutive += 1;
+            if consecutive <= 2 {
+                out.push(ch);
             }
         } else {
-            consecutive_newlines = 0;
-            result.push(ch);
+            consecutive = 0;
+            out.push(ch);
         }
     }
-
-    result.trim().to_string()
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_to_text_strips_scripts_and_styles() {
+        let html = "<html><head><style>body{color:red}</style></head>\
+                    <body><script>alert(1)</script>Hello <b>world</b></body></html>";
+        let out = html_to_text_capped(html, usize::MAX);
+        assert!(out.contains("Hello"));
+        assert!(out.contains("world"));
+        assert!(!out.contains("alert"));
+        assert!(!out.contains("color:red"));
+    }
+
+    #[test]
+    fn html_to_text_decodes_common_entities() {
+        let out = html_to_text_capped("a &amp; b &lt;c&gt; &quot;d&quot;", usize::MAX);
+        assert_eq!(out, "a & b <c> \"d\"");
+    }
+
+    #[test]
+    fn html_to_text_honours_byte_cap() {
+        let big = format!("<p>{}</p>", "X".repeat(10_000));
+        let out = html_to_text_capped(&big, 256);
+        assert!(out.len() <= 256);
+    }
+
+    #[test]
+    fn html_to_text_handles_non_ascii_text() {
+        let out = html_to_text_capped("<p>caf\u{00e9}</p>", usize::MAX);
+        assert_eq!(out, "caf\u{00e9}");
+    }
 
     #[test]
     fn truncate_for_context_preserves_short_content() {

@@ -51,6 +51,29 @@ mod tests {
     }
 
     #[test]
+    fn generated_session_ids_are_unique_under_rapid_calls() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..256 {
+            let id = HistoryManager::generate_session_id();
+            assert!(id.starts_with("session_"));
+            assert!(seen.insert(id), "duplicate session id within rapid burst");
+        }
+    }
+
+    #[test]
+    fn unique_session_id_avoids_existing_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
+        let id = manager.generate_unique_session_id();
+        let path = temp_dir
+            .path()
+            .join(SOFOS_DIR)
+            .join(SESSIONS_DIR)
+            .join(format!("{}.json", id));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn test_session_save_and_load() {
         let temp_dir = TempDir::new().unwrap();
         let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
