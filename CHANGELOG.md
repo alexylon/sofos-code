@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-05-16
+
 ### Added
 
 - **Two extra reasoning-effort levels: `xhigh` and `max`.** They join the existing `off` / `low` / `medium` / `high` scale and are reachable from both `--reasoning-effort` and `/think`. Support is per-model: `xhigh` is accepted by Claude Opus 4.7 and every OpenAI gpt-5 reasoning model (including the codex variants); `max` is accepted by Claude Opus 4.7, Opus 4.6, and Sonnet 4.6. Sofos validates the level against the active model both at startup and at `/think`, so a mismatch (for example `/think max` on a gpt-5 model, or `/think xhigh` on Sonnet 4.6) prints a clear "not supported on this model" message instead of letting the request reach the server and come back as a 400. The status line, startup banner, and CLI help all list the six levels.
