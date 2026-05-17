@@ -1,5 +1,5 @@
-//! Single-turn driver: takes one user message (plus any pasted or
-//! referenced images), kicks off the initial API request, and hands the
+//! Single-turn driver: takes one user message (plus any clipboard-
+//! pasted images), kicks off the initial API request, and hands the
 //! response off to [`crate::repl::ResponseHandler`] for the tool loop.
 //! Also owns the image-error retry path that strips images from the
 //! conversation and retries once before surfacing the failure.
@@ -8,7 +8,6 @@ use crate::api::{ImageSource, MessageContentBlock};
 use crate::error::{Result, SofosError};
 use crate::repl::{Repl, ResponseHandler};
 use crate::session::DisplayMessage;
-use crate::tools::image::{ImageReference, extract_image_references};
 use crate::ui::UI;
 use colored::Colorize;
 use std::sync::Arc;
@@ -27,21 +26,14 @@ impl Repl {
         // the same `process_message` call keeps running until the
         // agent loop exits.
         let turn_start = Instant::now();
-        let (remaining_text, image_refs) = extract_image_references(user_input);
 
-        let has_images = !image_refs.is_empty() || !pasted_images.is_empty();
+        let has_pasted_images = !pasted_images.is_empty();
 
-        if !image_refs.is_empty() {
-            println!(
-                "{} Detected {} image reference(s)",
-                "🔍".bright_cyan(),
-                image_refs.len()
-            );
-        }
+        let content_blocks = if has_pasted_images {
+            let mut blocks: Vec<MessageContentBlock> = Vec::with_capacity(pasted_images.len() + 1);
 
-        let content_blocks = if has_images {
-            let mut blocks: Vec<MessageContentBlock> = Vec::new();
-
+            // Image-before-text ordering matches the recommendation in
+            // the Anthropic and OpenAI image-input docs.
             for pasted in &pasted_images {
                 blocks.push(MessageContentBlock::Image {
                     source: ImageSource::Base64 {
@@ -51,66 +43,12 @@ impl Repl {
                     cache_control: None,
                 });
             }
-            let mut failed_images: Vec<String> = Vec::new();
 
-            // Load images first (Claude recommends images before text)
-            for img_ref in &image_refs {
-                match self.image_loader.load_image(img_ref) {
-                    Ok(source) => {
-                        let api_source = match source {
-                            crate::tools::image::ImageSource::Base64 { media_type, data } => {
-                                ImageSource::Base64 { media_type, data }
-                            }
-                            crate::tools::image::ImageSource::Url { url } => {
-                                ImageSource::Url { url }
-                            }
-                        };
-                        blocks.push(MessageContentBlock::Image {
-                            source: api_source,
-                            cache_control: None,
-                        });
-
-                        let path_str = match img_ref {
-                            ImageReference::LocalPath(p) => format!("local: {}", p),
-                            ImageReference::WebUrl(u) => format!("url: {}", u),
-                        };
-                        println!("{} {}", "📷 Image loaded:".bright_cyan(), path_str.dimmed());
-                    }
-                    Err(e) => {
-                        let path_str = match img_ref {
-                            ImageReference::LocalPath(p) => p.clone(),
-                            ImageReference::WebUrl(u) => u.clone(),
-                        };
-                        let error_msg = format!("[Failed to load image '{}': {}]", path_str, e);
-                        failed_images.push(error_msg);
-                        println!(
-                            "\n{} {}\n",
-                            "⚠️  Failed to load image:".bright_yellow().bold(),
-                            e
-                        );
-                    }
-                }
-            }
-
-            let mut text_parts: Vec<String> = Vec::new();
-
-            if !remaining_text.trim().is_empty() {
-                text_parts.push(remaining_text.clone());
-            }
-
-            if !failed_images.is_empty() {
-                text_parts.extend(failed_images);
-            }
-
-            if !text_parts.is_empty() {
+            if !user_input.trim().is_empty() {
                 blocks.push(MessageContentBlock::Text {
-                    text: text_parts.join("\n\n"),
+                    text: user_input.to_string(),
                     cache_control: None,
                 });
-            } else if blocks.is_empty() {
-                return Err(SofosError::ToolExecution(
-                    "No valid images or text in message".to_string(),
-                ));
             }
 
             Some(blocks)
@@ -185,7 +123,6 @@ impl Repl {
                         || msg.contains("invalid_request_error")
                         || msg.contains("verify the URL");
 
-                    let current_has_images = !image_refs.is_empty();
                     let conversation_has_images =
                         self.session_state.conversation.messages().iter().any(|m| {
                             use crate::api::{MessageContent, MessageContentBlock};
@@ -197,7 +134,7 @@ impl Repl {
                                 false
                             }
                         });
-                    let has_images = current_has_images || conversation_has_images;
+                    let has_images = has_pasted_images || conversation_has_images;
 
                     if is_400_error && is_image_error && has_images {
                         println!(
@@ -237,10 +174,10 @@ impl Repl {
                             .conversation
                             .restore_messages(cleaned_messages);
 
-                        let system_note = if !image_refs.is_empty() {
-                            "[SYSTEM ERROR: Image URLs in your message could not be loaded and have been removed from the conversation.]"
+                        let system_note = if has_pasted_images {
+                            "[SYSTEM ERROR: An image attached to your message could not be loaded and has been removed from the conversation.]"
                         } else {
-                            "[SYSTEM ERROR: Image URLs from a previous message could not be loaded and have been removed from the conversation. You can continue normally.]"
+                            "[SYSTEM ERROR: An image from a previous message could not be loaded and has been removed from the conversation. You can continue normally.]"
                         };
                         if !self
                             .session_state

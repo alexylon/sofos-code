@@ -62,7 +62,7 @@ Sofos provides an AI assistant inside your terminal with controlled access to yo
 - create, move, copy, and delete files with permission checks;
 - run safe build and test commands;
 - fetch documentation and use provider-native web search;
-- review local, clipboard, or web images;
+- open local image files or remote image URLs through the `view_image` tool, and accept clipboard pastes directly;
 - update a visible task plan during multi-step work;
 - save and resume conversations;
 - connect to external tools through Model Context Protocol servers.
@@ -81,7 +81,7 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
 - **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
 - **Safe mode** — read-only native tools for review-only sessions.
-- **Image vision** — local images, web images, and clipboard paste.
+- **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
 - **Session persistence** — saved conversations, resume picker, restored safe mode, restored model where compatible, and persisted cost counters.
 - **Cost visibility** — token totals, cache hit reporting, and provider-specific price estimates.
@@ -214,13 +214,16 @@ sofos -p "Create a high-level summary of this crate" --safe-mode
 
 ### Image vision
 
-Include image paths or URLs directly in your message, or paste images from the clipboard.
+Ask about an image by referring to it in your message. The model calls the `view_image` tool to open the file or URL you mention.
 
 ```text
 What is wrong in ./screenshots/error.png?
-Describe "./docs/architecture diagram.webp".
+Describe ./docs/architecture-diagram.webp.
 Review https://example.com/chart.png
+What do you see in the images in ./assets/?
 ```
+
+For a folder, the model lists the directory first and then opens each image one by one.
 
 Clipboard paste:
 
@@ -228,7 +231,7 @@ Clipboard paste:
 Ctrl+V    # Inserts a numbered marker such as ①.
 ```
 
-Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. Paths with spaces should be quoted. Images outside the workspace require Read permission.
+Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. Images larger than 2048 pixels on the long side are scaled down proportionally before being sent to the model, so a 4K screenshot does not balloon your token budget. Images outside the workspace require Read permission the first time, just like reading a file.
 
 ---
 
@@ -311,10 +314,11 @@ Provider mapping:
 | `delete_directory` | Delete a directory after confirmation. External paths require Write permission. |
 | `execute_bash` | Run approved shell commands through the bash permission system. |
 | `update_plan` | Show the current multi-step task plan with `pending`, `in_progress`, and `completed` statuses. |
+| `view_image` | Attach a local image file or an `http(s)://` URL to the conversation so the model can see it. |
 | `web_fetch` | Fetch a URL and return readable text. |
 | `web_search` | Provider-native web search. |
 
-Image vision is not a tool. Sofos detects supported image paths and URLs in user messages and converts them into image content blocks before sending the request.
+Clipboard pastes are not routed through a tool: pressing Ctrl-V in the prompt attaches the image directly to the message.
 
 ### Safe mode tools
 
@@ -325,6 +329,7 @@ Safe mode is enabled with `--safe-mode` or `/s`. It restricts the native tool se
 - `glob_files`;
 - `search_code` when ripgrep is installed;
 - `update_plan`;
+- `view_image`;
 - `web_fetch`;
 - `web_search`.
 
@@ -574,7 +579,7 @@ See [`RELEASE.md`](RELEASE.md) for the full process.
 | Path denied | Add a `Read`, `Write`, or `Bash` rule, or approve the interactive prompt. |
 | External edit denied | `edit_file` and `morph_edit_file` need both Read and Write for external files. |
 | Code search unavailable | Install `ripgrep` and ensure `rg` is on `PATH`. |
-| Image path with spaces fails | Quote the path: `"path/with spaces/image.png"`. |
+| Image not opening | Mention the image by path or URL in your message; the model will call `view_image`. For a folder, ask it to look in the folder and it will list and open each image. |
 | Terminal does not insert newline with Shift+Enter | Use Alt+Enter or Ctrl+Enter. |
 | Build problems | Run `rustup update`, then `cargo clean` and `cargo build`. |
 

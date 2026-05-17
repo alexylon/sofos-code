@@ -19,7 +19,6 @@ use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
-use crate::tools::image::ImageLoader;
 use crate::ui::{UI, set_safe_mode_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
@@ -61,7 +60,6 @@ pub struct Repl {
     pub(super) client: LlmClient,
     pub(super) tool_executor: ToolExecutor,
     pub(super) history_manager: HistoryManager,
-    pub(super) image_loader: ImageLoader,
     pub(super) ui: UI,
     pub(super) model_config: ModelConfig,
     pub(super) session_state: SessionState,
@@ -129,12 +127,6 @@ impl Repl {
         let has_code_search = tool_executor.has_code_search();
 
         let history_manager = HistoryManager::new(workspace.clone())?;
-        let mut image_loader = ImageLoader::new(workspace.clone())?;
-        image_loader.install_read_path_session(
-            std::io::stdin().is_terminal(),
-            tool_executor.read_path_session_allowed(),
-            tool_executor.read_path_session_denied(),
-        );
 
         // Load custom instructions
         let custom_instructions = history_manager.load_custom_instructions()?;
@@ -214,7 +206,6 @@ impl Repl {
             client,
             tool_executor,
             history_manager,
-            image_loader,
             ui,
             model_config,
             session_state,

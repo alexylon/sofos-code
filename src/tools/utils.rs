@@ -86,6 +86,17 @@ pub fn is_absolute_or_tilde(path: &str) -> bool {
     path.starts_with('~') || is_absolute_path(path)
 }
 
+/// True when `value` starts with `http://` or `https://`.
+pub fn is_http_url(value: &str) -> bool {
+    value.starts_with("http://") || value.starts_with("https://")
+}
+
+/// Approximate decoded size in KB of a base64 payload of `base64_len`
+/// characters. Used for model-facing size hints.
+pub fn base64_approx_decoded_kb(base64_len: usize) -> usize {
+    (base64_len * 3 / 4) / 1024
+}
+
 /// Which "kind" of tool output we're truncating — drives the suffix copy
 /// so the model sees a hint tuned to the actual recovery path (re-run
 /// with redirection for bash; request a range for file reads).

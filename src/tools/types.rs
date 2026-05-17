@@ -318,6 +318,36 @@ fn update_plan_tool() -> Tool {
     }
 }
 
+fn view_image_tool() -> Tool {
+    let description = format!(
+        "Attach an image to the conversation so you can see it. Use this when the user references a screenshot, diagram, photo, or other image by path or URL. \
+         For a folder of images, call list_directory first to discover the files, then call view_image once per image. Passing a folder directly is rejected with a hint to do that. \
+         Supports {formats} up to {max_mb} MB per file; larger images are resized to fit within {max_dim} pixels on the long side before they reach the model. \
+         Local paths can be workspace-relative, absolute, or use ~/; external paths prompt for Read access the first time. \
+         HTTP/HTTPS URLs are passed through to the model provider, which fetches them on its side.",
+        formats = crate::tools::image::SUPPORTED_FORMATS_HUMAN_LIST,
+        max_mb = crate::tools::image::MAX_IMAGE_SIZE_MB,
+        max_dim = crate::tools::image::MAX_PROMPT_IMAGE_DIMENSION,
+    );
+
+    Tool::Regular {
+        name: "view_image".to_string(),
+        description,
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "A local image filepath (workspace-relative, absolute, or ~/), or an http(s):// URL to an image. Directories are not accepted — list the directory first and call view_image on the file."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        }),
+        cache_control: None,
+    }
+}
+
 fn web_fetch_tool() -> Tool {
     Tool::Regular {
         name: "web_fetch".to_string(),
@@ -392,6 +422,7 @@ pub fn get_all_tools() -> Vec<Tool> {
         copy_file_tool(),
         execute_bash_tool(),
         update_plan_tool(),
+        view_image_tool(),
         web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
@@ -413,6 +444,7 @@ pub fn get_all_tools_with_morph() -> Vec<Tool> {
         execute_bash_tool(),
         morph_edit_file_tool(),
         update_plan_tool(),
+        view_image_tool(),
         web_fetch_tool(),
         anthropic_web_search_tool(),
         openai_web_search_tool(),
@@ -425,6 +457,7 @@ pub fn get_read_only_tools() -> Vec<Tool> {
         read_file_tool(),
         glob_files_tool(),
         update_plan_tool(),
+        view_image_tool(),
         web_fetch_tool(),
         // Anthropic web search tool
         anthropic_web_search_tool(),

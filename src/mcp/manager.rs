@@ -21,10 +21,22 @@ pub struct ToolResult {
     pub images: Vec<ImageData>,
 }
 
+/// Image attachment in a tool result. `Url` is fetched by the model
+/// provider; `Base64` is shipped inline.
 #[derive(Debug, Clone)]
-pub struct ImageData {
-    pub mime_type: String,
-    pub base64_data: String,
+pub enum ImageData {
+    Base64 { mime_type: String, data: String },
+    Url { url: String },
+}
+
+impl ImageData {
+    /// Bytes we'd ship inline; 0 for URLs since the provider fetches them.
+    pub fn outbound_size(&self) -> usize {
+        match self {
+            ImageData::Base64 { data, .. } => data.len(),
+            ImageData::Url { .. } => 0,
+        }
+    }
 }
 
 /// Manages multiple MCP server connections and their tools.
@@ -286,12 +298,9 @@ fn format_tool_result(result: CallToolResult) -> ToolResult {
                 text_output.push('\n');
             }
             ToolContent::Image { data, mime_type } => {
-                let size_kb = (data.len() * 3 / 4) / 1024;
+                let size_kb = crate::tools::utils::base64_approx_decoded_kb(data.len());
                 text_output.push_str(&format!("[Image: {} ({} KB)]\n", mime_type, size_kb));
-                images.push(ImageData {
-                    mime_type,
-                    base64_data: data,
-                });
+                images.push(ImageData::Base64 { mime_type, data });
             }
             ToolContent::Resource {
                 uri,

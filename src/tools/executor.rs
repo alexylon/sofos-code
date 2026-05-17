@@ -6,6 +6,7 @@ use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
 use crate::tools::codesearch::CodeSearchTool;
 use crate::tools::filesystem::FileSystemTool;
+use crate::tools::image::ImageLoader;
 use crate::tools::morph_validate;
 use crate::tools::permissions::{self, PermissionManager};
 use crate::tools::plan;
@@ -15,8 +16,8 @@ use crate::tools::types::{
 };
 use crate::tools::utils::{
     MAX_DIFF_TOKENS, MAX_FILE_READ_TOKENS, MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT,
-    MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, TruncationKind, confirm_destructive,
-    truncate_for_context,
+    MAX_MCP_OUTPUT_TOKENS, MAX_PATH_LIST_TOKENS, TruncationKind, base64_approx_decoded_kb,
+    confirm_destructive, is_http_url, truncate_for_context,
 };
 use crate::ui::diff;
 use colored::Colorize;
@@ -84,6 +85,26 @@ impl ToolExecutionResult {
     }
 }
 
+fn resolve_view_image_candidate(workspace: &std::path::Path, path: &str) -> std::path::PathBuf {
+    if crate::tools::utils::is_absolute_or_tilde(path) {
+        std::path::PathBuf::from(PermissionManager::expand_tilde_pub(path))
+    } else {
+        workspace.join(path)
+    }
+}
+
+impl From<crate::tools::image::ImageSource> for ImageData {
+    fn from(source: crate::tools::image::ImageSource) -> Self {
+        match source {
+            crate::tools::image::ImageSource::Base64 { media_type, data } => ImageData::Base64 {
+                mime_type: media_type,
+                data,
+            },
+            crate::tools::image::ImageSource::Url { url } => ImageData::Url { url },
+        }
+    }
+}
+
 /// Header line of the model-facing summary every file-modification tool
 /// emits. Mirrors a unified-diff "files changed" preamble: a fixed first
 /// line followed by per-file lines tagged `A` (added), `M` (modified),
@@ -123,6 +144,7 @@ pub struct ToolExecutor {
     bash_executor: BashExecutor,
     morph_client: Option<MorphClient>,
     mcp_manager: Option<McpManager>,
+    image_loader: Arc<ImageLoader>,
     safe_mode: bool,
     /// Whether interactive prompts (stdin) are available (false in tests/pipes)
     interactive: bool,
@@ -170,7 +192,7 @@ pub(super) fn cap_mcp_images(result: &mut McpToolResult) -> usize {
     let mut kept = Vec::with_capacity(result.images.len().min(MAX_MCP_IMAGE_COUNT));
     let mut total_bytes: usize = 0;
     for img in std::mem::take(&mut result.images) {
-        let size = img.base64_data.len();
+        let size = img.outbound_size();
         if kept.len() >= MAX_MCP_IMAGE_COUNT
             || total_bytes.saturating_add(size) > MAX_MCP_IMAGE_BYTES
         {
@@ -268,16 +290,28 @@ impl ToolExecutor {
         };
 
         let has_morph = morph_client.is_some();
+        let read_path_session_allowed = Arc::new(Mutex::new(HashSet::new()));
+        let read_path_session_denied = Arc::new(Mutex::new(HashSet::new()));
+
+        // Share read-session caches so a Read grant covers view_image too.
+        let mut image_loader = ImageLoader::new(workspace.clone())?;
+        image_loader.install_read_path_session(
+            interactive,
+            Arc::clone(&read_path_session_allowed),
+            Arc::clone(&read_path_session_denied),
+        );
+
         Ok(Self {
             fs_tool: FileSystemTool::new(workspace.clone())?,
             code_search_tool,
             bash_executor: BashExecutor::new(workspace, interactive, has_morph)?,
             morph_client,
             mcp_manager,
+            image_loader: Arc::new(image_loader),
             safe_mode,
             interactive,
-            read_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
-            read_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
+            read_path_session_allowed,
+            read_path_session_denied,
             write_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
             write_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
@@ -293,18 +327,6 @@ impl ToolExecutor {
 
     pub fn set_safe_mode(&mut self, safe_mode: bool) {
         self.safe_mode = safe_mode;
-    }
-
-    /// Session-scoped allow set for external read paths. Cloned and
-    /// shared with `ImageLoader` so the user is not prompted twice for
-    /// the same directory across file reads and image loads.
-    pub fn read_path_session_allowed(&self) -> Arc<Mutex<HashSet<String>>> {
-        Arc::clone(&self.read_path_session_allowed)
-    }
-
-    /// Session-scoped deny set for external read paths.
-    pub fn read_path_session_denied(&self) -> Arc<Mutex<HashSet<String>>> {
-        Arc::clone(&self.read_path_session_denied)
     }
 
     /// Names of MCP servers whose tools would be filtered out if safe
@@ -1287,6 +1309,52 @@ impl ToolExecutor {
                     display: plan::render_plan(&update),
                 });
             }
+            ToolName::ViewImage => {
+                let path = input["path"].as_str().ok_or_else(|| {
+                    SofosError::ToolExecution("Missing 'path' parameter".to_string())
+                })?;
+
+                let trimmed = path.trim();
+                if trimmed.is_empty() {
+                    return Err(SofosError::ToolExecution(
+                        "'path' cannot be empty. Pass a local image file path or an http(s):// URL."
+                            .to_string(),
+                    ));
+                }
+
+                let source = if is_http_url(trimmed) {
+                    self.image_loader.prepare_web_image(trimmed)?
+                } else {
+                    let candidate = resolve_view_image_candidate(self.fs_tool.workspace(), trimmed);
+                    if std::fs::metadata(&candidate).is_ok_and(|m| m.is_dir()) {
+                        return Err(SofosError::ToolExecution(format!(
+                            "'{}' is a directory; view_image only opens files. \
+                             Call list_directory on this path to find image files, \
+                             then call view_image on each file you want to see.",
+                            path
+                        )));
+                    }
+                    self.image_loader.load_local_image(trimmed)?
+                };
+
+                let image = ImageData::from(source);
+                let display_text = match &image {
+                    ImageData::Url { url } => format!("Loaded image from {}", url),
+                    ImageData::Base64 { mime_type, data } => {
+                        format!(
+                            "Loaded image '{}' ({}, ~{} KB)",
+                            path,
+                            mime_type,
+                            base64_approx_decoded_kb(data.len())
+                        )
+                    }
+                };
+
+                return Ok(ToolExecutionResult::Structured(McpToolResult {
+                    text: display_text,
+                    images: vec![image],
+                }));
+            }
             ToolName::WebFetch => {
                 use futures::StreamExt;
 
@@ -1294,7 +1362,7 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'url' parameter".to_string())
                 })?;
 
-                if !url.starts_with("http://") && !url.starts_with("https://") {
+                if !is_http_url(url) {
                     return Err(SofosError::ToolExecution(
                         "URL must start with http:// or https://".to_string(),
                     ));

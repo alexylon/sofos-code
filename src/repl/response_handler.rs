@@ -444,11 +444,19 @@ impl ResponseHandler {
                     });
 
                     for image in output.images() {
+                        let source = match image {
+                            crate::mcp::manager::ImageData::Base64 { mime_type, data } => {
+                                crate::api::ImageSource::Base64 {
+                                    media_type: mime_type.clone(),
+                                    data: data.clone(),
+                                }
+                            }
+                            crate::mcp::manager::ImageData::Url { url } => {
+                                crate::api::ImageSource::Url { url: url.clone() }
+                            }
+                        };
                         tool_results.push(crate::api::MessageContentBlock::Image {
-                            source: crate::api::ImageSource::Base64 {
-                                media_type: image.mime_type.clone(),
-                                data: image.base64_data.clone(),
-                            },
+                            source,
                             cache_control: None,
                         });
                     }

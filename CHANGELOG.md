@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **New `view_image` tool lets the model open an image on demand.** Given a local image file path or an `http(s)://` URL, the tool attaches the image to the conversation so the model can describe it. For a folder of images, the model is told to call `list_directory` first and then `view_image` once per file. Supports JPEG, PNG, GIF, and WebP up to 20 MB per local file; URLs are passed through to the model provider, which fetches them on its side. External paths reuse the same Read-permission prompt as `read_file`, so granting access to a directory once covers both tools. Local images larger than 2048 pixels on the long side are downscaled proportionally before they reach the model so a 4K screenshot does not burn through the per-image token budget; smaller images are sent unchanged.
+
+### Changed
+
+- **Image references typed inline in a prompt are no longer auto-attached.** Previously, a path or URL with an image extension typed in a message would be detected, stripped from the text, and attached as an image content block. Two ergonomic problems followed: vague asks such as "look at the image in `assets/`" without a filename did nothing, and unrelated text that happened to end in `.png` could be misread as a path. Attaching an image now goes through the new `view_image` tool, which the model invokes after reading the prompt; clipboard paste (Ctrl-V) continues to attach images directly.
+
 ### Security
 
 - **Shell command and process substitution are now blocked in bash commands.** Constructs such as `echo $(rm bad)`, backtick substitution, and process substitution `<(cmd)` / `>(cmd)` previously slipped past the permission system because only the outer command name was checked. They are now refused before the command runs, with a clear message that names the marker. Single-quoted literals and arithmetic expansion `$((expr))` continue to work.

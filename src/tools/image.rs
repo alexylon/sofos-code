@@ -1,41 +1,24 @@
 use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
-use crate::tools::utils::is_absolute_or_tilde;
+use crate::tools::utils::{is_absolute_or_tilde, is_http_url};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use image::{DynamicImage, GenericImageView, ImageEncoder, ImageFormat as ImageCrateFormat};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-const MAX_IMAGE_SIZE_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_IMAGE_SIZE_MB: u64 = 20;
+pub const MAX_IMAGE_SIZE_BYTES: u64 = MAX_IMAGE_SIZE_MB * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ImageFormat {
-    Jpeg,
-    Png,
-    Gif,
-    Webp,
-}
+/// Long-side pixel bound used when resizing an image before sending it
+/// to the model. Larger images get scaled proportionally to fit.
+pub const MAX_PROMPT_IMAGE_DIMENSION: u32 = 2048;
 
-impl ImageFormat {
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_lowercase().as_str() {
-            "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
-            "png" => Some(ImageFormat::Png),
-            "gif" => Some(ImageFormat::Gif),
-            "webp" => Some(ImageFormat::Webp),
-            _ => None,
-        }
-    }
+/// JPEG quality used when re-encoding a resized image.
+const JPEG_QUALITY: u8 = 85;
 
-    pub fn mime_type(&self) -> &'static str {
-        match self {
-            ImageFormat::Jpeg => "image/jpeg",
-            ImageFormat::Png => "image/png",
-            ImageFormat::Gif => "image/gif",
-            ImageFormat::Webp => "image/webp",
-        }
-    }
-}
+/// Human-readable list of source formats called out in the tool schema.
+pub const SUPPORTED_FORMATS_HUMAN_LIST: &str = "JPEG, PNG, GIF, and WebP";
 
 #[derive(Debug, Clone)]
 pub enum ImageSource {
@@ -43,66 +26,120 @@ pub enum ImageSource {
     Url { url: String },
 }
 
-pub fn detect_image_reference(text: &str) -> Option<ImageReference> {
-    let trimmed = text.trim();
-
-    // Strip common trailing punctuation that might be attached to paths in sentences
-    let cleaned = trimmed.trim_end_matches(['.', ',', ';', ':', '!', '?']);
-
-    if (cleaned.starts_with("http://") || cleaned.starts_with("https://")) && is_image_url(cleaned)
-    {
-        return Some(ImageReference::WebUrl(cleaned.to_string()));
-    }
-
-    if has_image_extension(cleaned) {
-        return Some(ImageReference::LocalPath(cleaned.to_string()));
-    }
-
-    None
-}
-
+/// Bytes of an image ready to send to the model, with its MIME type.
 #[derive(Debug, Clone)]
-pub enum ImageReference {
-    WebUrl(String),
-    LocalPath(String),
+pub struct EncodedImage {
+    pub bytes: Vec<u8>,
+    pub mime: String,
 }
 
-fn is_image_url(url: &str) -> bool {
-    let lower = url.to_lowercase();
+/// Decode, optionally resize within `MAX_PROMPT_IMAGE_DIMENSION`, and
+/// return bytes ready for the model. Small images in a supported format
+/// pass through unchanged.
+pub fn encode_image_for_prompt(bytes: Vec<u8>) -> Result<EncodedImage> {
+    let detected = image::guess_format(&bytes).ok();
 
-    if let Some(path_part) = url.split('?').next() {
-        if has_image_extension(path_part) {
-            return true;
+    let decoded = image::load_from_memory(&bytes).map_err(|e| {
+        SofosError::ToolExecution(format!(
+            "Failed to decode image: {e}. Supported: {SUPPORTED_FORMATS_HUMAN_LIST}."
+        ))
+    })?;
+    let (width, height) = decoded.dimensions();
+
+    let within_bound = width <= MAX_PROMPT_IMAGE_DIMENSION && height <= MAX_PROMPT_IMAGE_DIMENSION;
+    let passthrough_format = detected.filter(|f| is_passthrough_format(*f));
+
+    if within_bound {
+        if let Some(format) = passthrough_format {
+            return Ok(EncodedImage {
+                bytes,
+                mime: mime_for_image_format(format).to_string(),
+            });
         }
+        let (encoded_bytes, format) = encode_image_to_bytes(&decoded, ImageCrateFormat::Png)?;
+        return Ok(EncodedImage {
+            bytes: encoded_bytes,
+            mime: mime_for_image_format(format).to_string(),
+        });
     }
 
-    // Known image hosting domains (URLs from these are likely images even without extension)
-    let image_hosts = [
-        "imgur.com",
-        "i.imgur.com",
-        "images.unsplash.com",
-        "upload.wikimedia.org",
-        "raw.githubusercontent.com",
-        "pbs.twimg.com",
-        "cdn.discordapp.com",
-    ];
-
-    for host in &image_hosts {
-        if lower.contains(host) {
-            return true;
-        }
-    }
-
-    false
+    let resized = decoded.resize(
+        MAX_PROMPT_IMAGE_DIMENSION,
+        MAX_PROMPT_IMAGE_DIMENSION,
+        image::imageops::FilterType::Triangle,
+    );
+    let target = passthrough_format.unwrap_or(ImageCrateFormat::Png);
+    let (encoded_bytes, format) = encode_image_to_bytes(&resized, target)?;
+    Ok(EncodedImage {
+        bytes: encoded_bytes,
+        mime: mime_for_image_format(format).to_string(),
+    })
 }
 
-fn has_image_extension(path: &str) -> bool {
-    let lower = path.to_lowercase();
-    lower.ends_with(".jpg")
-        || lower.ends_with(".jpeg")
-        || lower.ends_with(".png")
-        || lower.ends_with(".gif")
-        || lower.ends_with(".webp")
+fn is_passthrough_format(format: ImageCrateFormat) -> bool {
+    matches!(
+        format,
+        ImageCrateFormat::Png | ImageCrateFormat::Jpeg | ImageCrateFormat::WebP
+    )
+}
+
+fn mime_for_image_format(format: ImageCrateFormat) -> &'static str {
+    match format {
+        ImageCrateFormat::Jpeg => "image/jpeg",
+        ImageCrateFormat::Gif => "image/gif",
+        ImageCrateFormat::WebP => "image/webp",
+        _ => "image/png",
+    }
+}
+
+/// Re-encode `image`. Non-(PNG/JPEG/WebP) targets fall back to PNG.
+fn encode_image_to_bytes(
+    image: &DynamicImage,
+    preferred: ImageCrateFormat,
+) -> Result<(Vec<u8>, ImageCrateFormat)> {
+    let target = match preferred {
+        ImageCrateFormat::Jpeg => ImageCrateFormat::Jpeg,
+        ImageCrateFormat::WebP => ImageCrateFormat::WebP,
+        _ => ImageCrateFormat::Png,
+    };
+
+    let mut buffer = Vec::new();
+    match target {
+        ImageCrateFormat::Png => write_rgba_image(
+            image,
+            image::codecs::png::PngEncoder::new(&mut buffer),
+            "PNG",
+        )?,
+        ImageCrateFormat::Jpeg => {
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buffer, JPEG_QUALITY)
+                .encode_image(image)
+                .map_err(|e| SofosError::ToolExecution(format!("JPEG encode failed: {e}")))?
+        }
+        ImageCrateFormat::WebP => write_rgba_image(
+            image,
+            image::codecs::webp::WebPEncoder::new_lossless(&mut buffer),
+            "WebP",
+        )?,
+        _ => unreachable!("target is always one of PNG/JPEG/WebP"),
+    }
+    Ok((buffer, target))
+}
+
+/// Shared rgba-encode path for the PNG and WebP encoders.
+fn write_rgba_image<E: ImageEncoder>(
+    image: &DynamicImage,
+    encoder: E,
+    format_name: &str,
+) -> Result<()> {
+    let rgba = image.to_rgba8();
+    encoder
+        .write_image(
+            rgba.as_raw(),
+            image.width(),
+            image.height(),
+            image::ColorType::Rgba8.into(),
+        )
+        .map_err(|e| SofosError::ToolExecution(format!("{format_name} encode failed: {e}")))
 }
 
 pub struct ImageLoader {
@@ -115,10 +152,12 @@ pub struct ImageLoader {
 
 impl ImageLoader {
     pub fn new(workspace: PathBuf) -> Result<Self> {
-        let permission_manager = PermissionManager::new(workspace.clone())?;
+        // Canonicalise so workspace and file paths compare in the same shape.
+        let canonical_workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+        let permission_manager = PermissionManager::new(canonical_workspace.clone())?;
 
         Ok(Self {
-            workspace,
+            workspace: canonical_workspace,
             permission_manager,
             interactive: false,
             read_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
@@ -126,12 +165,8 @@ impl ImageLoader {
         })
     }
 
-    /// Wire the loader to the same session-scoped allow/deny caches the
-    /// tool executor uses for external read access, and tell it whether
-    /// it can prompt the user. The REPL calls this once after building
-    /// both, so an "Allow Read access to /...?" decision answered for
-    /// `read_file` also applies to a pasted image under the same
-    /// directory and the reverse, instead of asking twice.
+    /// Share the executor's read-permission session caches so a single
+    /// "Allow Read access?" answer covers both `read_file` and image loads.
     pub fn install_read_path_session(
         &mut self,
         interactive: bool,
@@ -209,42 +244,25 @@ impl ImageLoader {
         if metadata.len() > MAX_IMAGE_SIZE_BYTES {
             return Err(SofosError::ToolExecution(format!(
                 "Image too large: {} (max: {} MB)",
-                path,
-                MAX_IMAGE_SIZE_BYTES / (1024 * 1024)
+                path, MAX_IMAGE_SIZE_MB
             )));
         }
 
-        let extension = canonical
-            .extension()
-            .and_then(|e| e.to_str())
-            .ok_or_else(|| {
-                SofosError::ToolExecution(format!(
-                    "Image file '{}' has a missing or non-UTF-8 extension. Supported formats: JPEG, PNG, GIF, WebP",
-                    path
-                ))
-            })?;
-
-        let format = ImageFormat::from_extension(extension).ok_or_else(|| {
-            SofosError::ToolExecution(format!(
-                "Unsupported image format: {}. Supported formats: JPEG, PNG, GIF, WebP",
-                extension
-            ))
-        })?;
-
-        let image_data = std::fs::read(&canonical)
+        let raw_bytes = std::fs::read(&canonical)
             .with_context(|| format!("Failed to read image file: {}", path))?;
 
-        let base64_data = STANDARD.encode(&image_data);
+        let encoded = encode_image_for_prompt(raw_bytes)?;
+        let base64_data = STANDARD.encode(&encoded.bytes);
 
         Ok(ImageSource::Base64 {
-            media_type: format.mime_type().to_string(),
+            media_type: encoded.mime,
             data: base64_data,
         })
     }
 
     /// Claude API fetches URLs directly, so we just validate and pass through
     pub fn prepare_web_image(&self, url: &str) -> Result<ImageSource> {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        if !is_http_url(url) {
             return Err(SofosError::ToolExecution(format!(
                 "Invalid image URL: {}. Must start with http:// or https://",
                 url
@@ -254,13 +272,6 @@ impl ImageLoader {
         Ok(ImageSource::Url {
             url: url.to_string(),
         })
-    }
-
-    pub fn load_image(&self, reference: &ImageReference) -> Result<ImageSource> {
-        match reference {
-            ImageReference::LocalPath(path) => self.load_local_image(path),
-            ImageReference::WebUrl(url) => self.prepare_web_image(url),
-        }
     }
 
     fn ask_external_read_access(&self, canonical: &Path, canonical_str: &str) -> Result<()> {
@@ -280,324 +291,89 @@ impl ImageLoader {
     }
 }
 
-/// Returns (remaining_text, image_references) after extracting image paths/URLs from input
-pub fn extract_image_references(input: &str) -> (String, Vec<ImageReference>) {
-    let mut remaining_text = String::new();
-    let mut references = Vec::new();
-    let chars = input.chars();
-    let mut current_word = String::new();
-    let mut in_quotes = false;
-    let mut quote_char = ' ';
-
-    for ch in chars {
-        match ch {
-            // Only treat quotes as delimiters if we're at a word boundary (current_word is empty)
-            // This prevents apostrophes in contractions like "don't" from being treated as quotes
-            '"' | '\'' if !in_quotes && current_word.is_empty() => {
-                in_quotes = true;
-                quote_char = ch;
-            }
-            q if in_quotes && q == quote_char => {
-                in_quotes = false;
-                if let Some(reference) = detect_image_reference(&current_word) {
-                    references.push(reference);
-                    current_word.clear();
-                } else {
-                    if !remaining_text.is_empty() {
-                        remaining_text.push(' ');
-                    }
-                    remaining_text.push(quote_char);
-                    remaining_text.push_str(&current_word);
-                    remaining_text.push(quote_char);
-                    current_word.clear();
-                }
-            }
-            ' ' | '\t' | '\n' | '\r' if !in_quotes => {
-                if !current_word.is_empty() {
-                    if let Some(reference) = detect_image_reference(&current_word) {
-                        references.push(reference);
-                    } else {
-                        if !remaining_text.is_empty() {
-                            remaining_text.push(' ');
-                        }
-                        remaining_text.push_str(&current_word);
-                    }
-                    current_word.clear();
-                }
-            }
-            _ => {
-                current_word.push(ch);
-            }
-        }
-    }
-
-    if !current_word.is_empty() {
-        if in_quotes {
-            // Unclosed quote - treat as regular text to avoid losing user's input
-            if !remaining_text.is_empty() {
-                remaining_text.push(' ');
-            }
-            remaining_text.push(quote_char);
-            remaining_text.push_str(&current_word);
-        } else if let Some(reference) = detect_image_reference(&current_word) {
-            references.push(reference);
-        } else {
-            if !remaining_text.is_empty() {
-                remaining_text.push(' ');
-            }
-            remaining_text.push_str(&current_word);
-        }
-    }
-
-    (remaining_text, references)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::ImageBuffer;
+    use image::Rgba;
+    use std::io::Cursor;
 
-    #[test]
-    fn test_detect_web_url() {
-        assert!(matches!(
-            detect_image_reference("https://example.com/image.png"),
-            Some(ImageReference::WebUrl(_))
-        ));
-        assert!(matches!(
-            detect_image_reference("http://example.com/photo.jpg"),
-            Some(ImageReference::WebUrl(_))
-        ));
-        assert!(matches!(
-            detect_image_reference("https://i.imgur.com/abc123"),
-            Some(ImageReference::WebUrl(_))
-        ));
+    fn png_bytes(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        encode_fixture(width, height, rgba, ImageCrateFormat::Png)
+    }
+
+    fn encode_fixture(width: u32, height: u32, rgba: [u8; 4], format: ImageCrateFormat) -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(width, height, Rgba(rgba));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, format)
+            .expect("encode fixture");
+        cursor.into_inner()
     }
 
     #[test]
-    fn test_detect_local_path() {
-        assert!(matches!(
-            detect_image_reference("./screenshot.png"),
-            Some(ImageReference::LocalPath(_))
-        ));
-        assert!(matches!(
-            detect_image_reference("images/photo.jpeg"),
-            Some(ImageReference::LocalPath(_))
-        ));
-        assert!(matches!(
-            detect_image_reference("/home/user/image.webp"),
-            Some(ImageReference::LocalPath(_))
-        ));
-    }
-
-    #[test]
-    fn test_detect_non_image() {
-        assert!(detect_image_reference("hello world").is_none());
-        assert!(detect_image_reference("https://example.com/page").is_none());
-        assert!(detect_image_reference("document.pdf").is_none());
-    }
-
-    #[test]
-    fn test_extract_image_references() {
-        let (text, refs) = extract_image_references(
-            "describe this image.png and this https://example.com/photo.jpg please",
-        );
-        assert_eq!(text, "describe this and this please");
-        assert_eq!(refs.len(), 2);
-    }
-
-    #[test]
-    fn test_extract_absolute_path_with_colon() {
-        // Test case: "what do you see on this image: /Users/alex/test/images/test.jpg"
-        let (text, refs) = extract_image_references(
-            "what do you see on this image: /Users/alex/test/images/test.jpg",
-        );
-        assert_eq!(refs.len(), 1, "Should detect 1 image reference");
-        assert!(
-            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/images/test.jpg")
-        );
-        assert_eq!(text, "what do you see on this image:");
-    }
-
-    #[test]
-    fn test_extract_various_formats() {
-        // Test with absolute paths
-        let (_, refs) = extract_image_references("check /path/to/image.png please");
-        assert_eq!(refs.len(), 1);
-
-        // Test with tilde paths
-        let (_, refs) = extract_image_references("view ~/photos/test.jpg");
-        assert_eq!(refs.len(), 1);
-
-        // Test without any text, just path
-        let (text, refs) = extract_image_references("/Users/test/photo.jpg");
-        assert_eq!(refs.len(), 1);
-        assert_eq!(text, "");
-
-        // Test with trailing punctuation (common in sentences)
-        let (_, refs) = extract_image_references("look at this: /path/to/image.jpg.");
+    fn passthroughs_small_png() {
+        let bytes = png_bytes(64, 32, [10, 20, 30, 255]);
+        let encoded = encode_image_for_prompt(bytes.clone()).expect("encode");
+        assert_eq!(encoded.mime, "image/png");
         assert_eq!(
-            refs.len(),
-            1,
-            "Should detect image even with trailing period"
+            encoded.bytes, bytes,
+            "small image should pass through unchanged"
         );
+    }
 
-        // Test with comma
-        let (_, refs) = extract_image_references("files: image.png, other.txt");
-        assert_eq!(refs.len(), 1, "Should detect image before comma");
+    #[test]
+    fn resizes_wide_image_to_bound() {
+        let bytes = png_bytes(4096, 2048, [200, 10, 10, 255]);
+        let encoded = encode_image_for_prompt(bytes).expect("encode");
+        let decoded = image::load_from_memory(&encoded.bytes).expect("decode resized");
+        let (w, h) = decoded.dimensions();
+        assert!(w <= MAX_PROMPT_IMAGE_DIMENSION && h <= MAX_PROMPT_IMAGE_DIMENSION);
+        assert_eq!((w, h), (MAX_PROMPT_IMAGE_DIMENSION, 1024));
+    }
 
-        // Test exact user case: relative path after colon
-        let (text, refs) =
-            extract_image_references("what do you in in this image: images/test_image.png");
+    #[test]
+    fn resizes_tall_image_proportionally() {
+        let bytes = png_bytes(1024, 4096, [50, 60, 70, 255]);
+        let encoded = encode_image_for_prompt(bytes).expect("encode");
+        let decoded = image::load_from_memory(&encoded.bytes).expect("decode resized");
+        assert_eq!(decoded.dimensions(), (512, MAX_PROMPT_IMAGE_DIMENSION));
+    }
+
+    #[test]
+    fn reencodes_small_gif_as_png() {
+        let bytes = encode_fixture(32, 32, [100, 150, 200, 255], ImageCrateFormat::Gif);
+        let encoded = encode_image_for_prompt(bytes).expect("encode");
         assert_eq!(
-            refs.len(),
-            1,
-            "Should detect relative image path after colon"
+            encoded.mime, "image/png",
+            "GIF input should be re-encoded as PNG to avoid the animated-GIF case"
         );
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "images/test_image.png"));
-        assert_eq!(text, "what do you in in this image:");
+        let decoded = image::load_from_memory(&encoded.bytes).expect("decode output");
+        assert_eq!(decoded.dimensions(), (32, 32));
     }
 
     #[test]
-    fn test_image_format_from_extension() {
-        assert_eq!(ImageFormat::from_extension("jpg"), Some(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::from_extension("JPEG"), Some(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::from_extension("png"), Some(ImageFormat::Png));
-        assert_eq!(ImageFormat::from_extension("gif"), Some(ImageFormat::Gif));
-        assert_eq!(ImageFormat::from_extension("webp"), Some(ImageFormat::Webp));
-        assert_eq!(ImageFormat::from_extension("pdf"), None);
-    }
-
-    #[test]
-    fn test_image_format_mime_type() {
-        assert_eq!(ImageFormat::Jpeg.mime_type(), "image/jpeg");
-        assert_eq!(ImageFormat::Png.mime_type(), "image/png");
-        assert_eq!(ImageFormat::Gif.mime_type(), "image/gif");
-        assert_eq!(ImageFormat::Webp.mime_type(), "image/webp");
-    }
-
-    #[test]
-    fn test_extract_quoted_paths_with_spaces() {
-        // Test double-quoted path with spaces
-        let (text, refs) = extract_image_references(
-            "check out \"/Users/alex/test/sofos_allowed/test_r copy.png\" please",
-        );
-        assert_eq!(refs.len(), 1, "Should detect quoted path with spaces");
-        assert!(
-            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png"),
-            "Path should match exactly: {:?}",
-            refs
-        );
-        assert_eq!(text, "check out please");
-
-        // Test single-quoted path with spaces
-        let (text, refs) = extract_image_references("view '/home/user/my photos/vacation.jpg' now");
+    fn keeps_jpeg_format_after_resize() {
+        let bytes = encode_fixture(4096, 2048, [200, 50, 50, 255], ImageCrateFormat::Jpeg);
+        let encoded = encode_image_for_prompt(bytes).expect("encode");
         assert_eq!(
-            refs.len(),
-            1,
-            "Should detect single-quoted path with spaces"
+            encoded.mime, "image/jpeg",
+            "JPEG source should stay JPEG after resize"
         );
+        let decoded = image::load_from_memory(&encoded.bytes).expect("decode resized");
+        let (w, h) = decoded.dimensions();
+        assert!(w <= MAX_PROMPT_IMAGE_DIMENSION && h <= MAX_PROMPT_IMAGE_DIMENSION);
+        assert_eq!((w, h), (MAX_PROMPT_IMAGE_DIMENSION, 1024));
+    }
+
+    #[test]
+    fn rejects_non_image_bytes() {
+        let err = encode_image_for_prompt(b"not an image".to_vec())
+            .expect_err("non-image bytes must error");
+        let msg = format!("{err}");
         assert!(
-            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/home/user/my photos/vacation.jpg")
+            msg.to_lowercase().contains("decode") || msg.to_lowercase().contains("supported"),
+            "error should explain the failure; got: {msg}"
         );
-        assert_eq!(text, "view now");
-
-        // Test path with spaces at the end
-        let (text, refs) = extract_image_references("\"/Users/alex/test/image file.png\"");
-        assert_eq!(refs.len(), 1, "Should detect quoted path at end");
-        assert!(
-            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/image file.png")
-        );
-        assert_eq!(text, "");
-    }
-
-    #[test]
-    fn test_extract_mixed_quoted_and_unquoted() {
-        // Mix of quoted path and unquoted path
-        let (text, refs) =
-            extract_image_references("compare \"file with space.png\" and simple.jpg");
-        assert_eq!(
-            refs.len(),
-            2,
-            "Should detect both quoted and unquoted paths"
-        );
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "file with space.png"));
-        assert!(matches!(&refs[1], ImageReference::LocalPath(p) if p == "simple.jpg"));
-        assert_eq!(text, "compare and");
-    }
-
-    #[test]
-    fn test_extract_quoted_non_image() {
-        // Quoted text that's not an image should remain in text
-        let (text, refs) = extract_image_references("the title is \"Hello World\" and image.png");
-        assert_eq!(refs.len(), 1, "Should only detect the actual image");
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "image.png"));
-        assert_eq!(text, "the title is \"Hello World\" and");
-    }
-
-    #[test]
-    fn test_extract_unclosed_quote() {
-        // Unclosed quote should be treated as regular text
-        let (text, refs) = extract_image_references("this is \"unclosed quote and image.png");
-        // The unclosed quote should make everything after it part of the text
-        assert_eq!(
-            refs.len(),
-            0,
-            "Unclosed quote should prevent image detection"
-        );
-        assert!(text.contains("unclosed quote and image.png"));
-    }
-
-    #[test]
-    fn test_extract_web_url_with_spaces_quoted() {
-        // Web URLs with spaces (rare but possible)
-        let (text, refs) =
-            extract_image_references("see \"https://example.com/my image.png\" please");
-        assert_eq!(refs.len(), 1, "Should detect quoted URL with spaces");
-        assert!(
-            matches!(&refs[0], ImageReference::WebUrl(u) if u == "https://example.com/my image.png")
-        );
-        assert_eq!(text, "see please");
-    }
-
-    #[test]
-    fn test_user_reported_case() {
-        // Exact case from user report: path with space but no quotes
-        // This will NOT work without quotes - user needs to quote it
-        let (_text, refs) =
-            extract_image_references("/Users/alex/test/sofos_allowed/test_r copy.png");
-        // Without quotes, this gets split into two words
-        // Only "copy.png" would be detected as an image
-        assert_eq!(refs.len(), 1, "Only the second part is detected as image");
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "copy.png"));
-
-        // With quotes, it should work
-        let (text, refs) =
-            extract_image_references("\"/Users/alex/test/sofos_allowed/test_r copy.png\"");
-        assert_eq!(
-            refs.len(),
-            1,
-            "Quoted path should be detected as single image"
-        );
-        assert!(
-            matches!(&refs[0], ImageReference::LocalPath(p) if p == "/Users/alex/test/sofos_allowed/test_r copy.png")
-        );
-        assert_eq!(text, "");
-    }
-
-    #[test]
-    fn test_contractions_dont_break_parsing() {
-        // Contractions like "don't", "it's", "we're" should not be treated as quoted strings
-        let (text, refs) = extract_image_references("I don't see image.png it's missing");
-        assert_eq!(refs.len(), 1, "Should detect image despite contractions");
-        assert!(matches!(&refs[0], ImageReference::LocalPath(p) if p == "image.png"));
-        assert!(text.contains("don't"), "Should preserve don't");
-        assert!(text.contains("it's"), "Should preserve it's");
-
-        // Multiple contractions
-        let (text, refs) =
-            extract_image_references("We're viewing photo.jpg and it's nice but there's more");
-        assert_eq!(refs.len(), 1);
-        assert!(text.contains("We're"));
-        assert!(text.contains("it's"));
-        assert!(text.contains("there's"));
     }
 }

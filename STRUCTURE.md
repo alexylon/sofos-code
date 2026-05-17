@@ -275,7 +275,7 @@ src/
 │   ├── codesearch.rs
 │   │   # Ripgrep-backed code search with ignore policy, file-type filters, and output limits.
 │   ├── image.rs
-│   │   # Local and web image detection, validation, encoding, and message-content conversion.
+│   │   # Image loader used by the `view_image` tool: format detection, 20 MB size cap, automatic resize to 2048 pixels on the long side, base64 encoding, and Read-permission integration.
 │   ├── morph_validate.rs
 │   │   # Safety checks that reject suspicious or truncated Morph Apply output before writing files.
 │   ├── plan.rs
@@ -449,7 +449,7 @@ It contains:
 - image size enforcement;
 - numbered marker handling used by the TUI input flow.
 
-It does not own general image path loading. Local and web image detection for user messages lives in `tools/image.rs`.
+It does not own image loading from disk. Local and remote image loading for the `view_image` tool lives in `tools/image.rs`.
 
 ---
 
@@ -995,23 +995,23 @@ Rules:
 
 ### 7.8 `tools/image.rs`
 
-`tools/image.rs` owns image detection and loading for user messages.
+`tools/image.rs` owns the image loader behind the `view_image` tool.
 
 It contains:
 
-- local image path parsing;
-- web image URL detection;
-- supported-format checks;
-- base64 encoding;
-- media-type assignment;
-- size enforcement;
-- integration with workspace and external Read permissions.
+- decode plus optional resize (long side fits within 2048 pixels) before the bytes reach the model;
+- byte-level format detection: PNG, JPEG, GIF, and WebP pass through unchanged when small enough; other decodable formats (e.g. BMP) are re-encoded as PNG;
+- base64 encoding and media-type assignment;
+- the 20 MB per-file size cap on the raw bytes;
+- canonical workspace resolution so inside/outside classification compares the same path shape on both sides;
+- integration with the shared Read-permission grant set, so a single "Allow Read access to /foo?" decision answered for `read_file` also covers `view_image`;
+- a URL passthrough that hands `http(s)://` inputs to the model provider unchanged.
 
 Rules:
 
-- Image paths in user text become image content blocks before provider requests.
-- Unsupported or oversized images should produce clear errors.
-- Failed web-image loading can be retried without discarding the user's text.
+- Local files outside the workspace go through the same interactive Read prompt as `read_file`.
+- Files that fail to decode or exceed the size cap produce errors that name the cause.
+- The loader never fetches remote URLs itself; the model provider does that on its side.
 
 ### 7.9 `tools/morph_validate.rs`
 
@@ -1502,7 +1502,7 @@ Rules:
 | Permission settings and prompts | `tools/permissions/manager.rs` |
 | Permission rule parsing | `tools/permissions/pattern.rs` |
 | Code search | `tools/codesearch.rs` |
-| User-message image loading | `tools/image.rs` |
+| `view_image` tool image loading | `tools/image.rs` |
 | Morph output validation | `tools/morph_validate.rs` |
 | MCP configuration | `mcp/config.rs` |
 | MCP protocol shapes | `mcp/protocol.rs` |

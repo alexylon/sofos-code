@@ -7,9 +7,16 @@ use serde_json::json;
 use tempfile::tempdir;
 
 fn fake_image(mime: &str, base64_len: usize) -> ImageData {
-    ImageData {
+    ImageData::Base64 {
         mime_type: mime.to_string(),
-        base64_data: "x".repeat(base64_len),
+        data: "x".repeat(base64_len),
+    }
+}
+
+fn image_size(image: &ImageData) -> usize {
+    match image {
+        ImageData::Base64 { data, .. } => data.len(),
+        ImageData::Url { .. } => 0,
     }
 }
 
@@ -190,8 +197,8 @@ fn cap_mcp_images_skips_oversized_middle_image_greedily() {
     let dropped = cap_mcp_images(&mut result);
     assert_eq!(dropped, 1, "only the middle oversized image is dropped");
     assert_eq!(result.images.len(), 2);
-    assert_eq!(result.images[0].base64_data.len(), small);
-    assert_eq!(result.images[1].base64_data.len(), small);
+    assert_eq!(image_size(&result.images[0]), small);
+    assert_eq!(image_size(&result.images[1]), small);
 }
 
 #[tokio::test]
@@ -1747,5 +1754,264 @@ async fn test_glob_files_symlink_not_followed_by_default() {
     assert!(
         text.contains("alias/through_symlink.txt"),
         "follow_symlinks=true must surface the aliased path; got: {text}"
+    );
+}
+
+/// Single-pixel PNG used by `view_image` tests.
+fn tiny_png_bytes() -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==",
+        )
+        .expect("hardcoded fixture decodes")
+}
+
+fn write_png_file(path: &std::path::Path, width: u32, height: u32, rgba: [u8; 4]) {
+    use ::image::{DynamicImage, ImageBuffer, Rgba};
+    use std::io::Cursor;
+    let buffer = ImageBuffer::from_pixel(width, height, Rgba(rgba));
+    let mut cursor = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(buffer)
+        .write_to(&mut cursor, ::image::ImageFormat::Png)
+        .expect("encode png fixture");
+    std::fs::write(path, cursor.into_inner()).expect("write png fixture to disk");
+}
+
+#[tokio::test]
+async fn view_image_loads_local_file_as_base64() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("pixel.png"), tiny_png_bytes()).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("view_image", &json!({"path": "pixel.png"}))
+        .await
+        .expect("view_image on local file should succeed");
+
+    assert_eq!(result.images().len(), 1, "expected exactly one image");
+    match &result.images()[0] {
+        ImageData::Base64 { mime_type, data } => {
+            assert_eq!(mime_type, "image/png");
+            assert!(!data.is_empty(), "base64 payload should be non-empty");
+        }
+        ImageData::Url { .. } => panic!("local file should produce Base64, not Url"),
+    }
+    assert!(
+        result.text().contains("pixel.png"),
+        "model-facing text should reference the loaded path; got: {}",
+        result.text()
+    );
+}
+
+#[tokio::test]
+async fn view_image_passes_http_url_through() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute(
+            "view_image",
+            &json!({"path": "https://example.com/banner.png"}),
+        )
+        .await
+        .expect("view_image on URL should succeed");
+
+    assert_eq!(result.images().len(), 1);
+    match &result.images()[0] {
+        ImageData::Url { url } => {
+            assert_eq!(url, "https://example.com/banner.png");
+        }
+        ImageData::Base64 { .. } => panic!("URL input should produce Url variant"),
+    }
+}
+
+#[tokio::test]
+async fn view_image_rejects_directory_with_chaining_hint() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace.path().join("assets")).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("view_image", &json!({"path": "assets"}))
+        .await;
+
+    let err = result.expect_err("view_image on a directory must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("list_directory"),
+        "error should steer the model to list_directory first; got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn view_image_rejects_missing_file_clearly() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("view_image", &json!({"path": "does-not-exist.png"}))
+        .await;
+
+    let err = result.expect_err("missing image must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("does-not-exist.png"),
+        "error should name the missing path; got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn view_image_rejects_non_image_extension() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("notes.txt"), b"not an image").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("view_image", &json!({"path": "notes.txt"}))
+        .await;
+
+    let err = result.expect_err("non-image file must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains("format")
+            || msg.to_lowercase().contains("unsupported")
+            || msg.to_lowercase().contains("extension"),
+        "error should mention the unsupported format; got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn view_image_rejects_empty_path() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor.execute("view_image", &json!({"path": ""})).await;
+
+    assert!(result.is_err(), "empty path must be rejected");
+}
+
+#[tokio::test]
+async fn view_image_resizes_oversized_local_file_end_to_end() {
+    use ::image::GenericImageView;
+    use base64::Engine;
+
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    write_png_file(
+        &workspace.path().join("big.png"),
+        4096,
+        2048,
+        [10, 20, 30, 255],
+    );
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let result = executor
+        .execute("view_image", &json!({"path": "big.png"}))
+        .await
+        .expect("view_image on oversized file should succeed");
+
+    let base64_data = match &result.images()[0] {
+        ImageData::Base64 { data, .. } => data.clone(),
+        ImageData::Url { .. } => panic!("local file should produce Base64"),
+    };
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&base64_data)
+        .expect("tool output should be valid base64");
+    let decoded = ::image::load_from_memory(&raw).expect("base64 should decode to a valid image");
+    assert_eq!(
+        decoded.dimensions(),
+        (2048, 1024),
+        "oversized local image must be downscaled before reaching the model"
+    );
+}
+
+#[tokio::test]
+async fn view_image_rejects_file_exceeding_size_cap() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    // Bytes are arbitrary: the cap fires before any decode attempt.
+    let oversized = vec![0u8; (crate::tools::image::MAX_IMAGE_SIZE_BYTES as usize) + 1];
+    std::fs::write(workspace.path().join("huge.png"), oversized).unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+
+    let err = executor
+        .execute("view_image", &json!({"path": "huge.png"}))
+        .await
+        .expect_err("file above the size cap must be rejected");
+    let msg = format!("{err}");
+    assert!(
+        msg.to_lowercase().contains("too large"),
+        "error should mention the size cap; got: {msg}"
     );
 }
