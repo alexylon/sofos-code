@@ -6,7 +6,7 @@ pub mod truncate;
 pub mod types;
 pub mod utils;
 
-pub use model_info::ModelInfo;
+pub use model_info::Model;
 
 pub use anthropic::AnthropicClient;
 pub use morph::MorphClient;

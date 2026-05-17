@@ -182,17 +182,19 @@ sofos --resume
 
 ### Interactive commands
 
-| Command | Description |
-|---|---|
-| `/resume` | Open the session picker and resume a saved conversation. |
-| `/clear` | Clear the current conversation history and start a fresh session id. |
-| `/compact` | Compact older context to reduce token usage. |
-| `/think` | Show the current reasoning-effort setting. |
+| Command                                     | Description |
+|---------------------------------------------|---|
+| `/resume`                                   | Open the session picker and resume a saved conversation. |
+| `/clear`                                    | Clear the current conversation history and start a fresh session id. |
+| `/compact`                                  | Compact older context to reduce token usage. |
+| `/think`                                    | Show the current reasoning-effort setting. |
 | `/think off\|low\|medium\|high\|xhigh\|max` | Change reasoning effort when the active model supports the selected level. |
-| `/s` | Enable safe mode: read-only native tools. Prompt changes to `:`. |
-| `/n` | Return to normal mode. Prompt changes to `>`. |
-| `/exit`, `/quit`, `/q`, `Ctrl+D` | Save the session and exit with a cost summary. |
-| `ESC` or `Ctrl+C` while busy | Interrupt the current AI turn. |
+| `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
+| `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
+| `/safe`                                     | Enable safe mode: read-only native tools. Prompt changes to `:`. |
+| `/normal`                                   | Return to normal mode. Prompt changes to `>`. |
+| `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
+| `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 
 ### Input behaviour
 
@@ -258,6 +260,20 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 
 ## Models and reasoning effort
 
+Sofos supports seven models, in `/model` picker order:
+
+| Model | Provider |
+|---|---|
+| `claude-opus-4-7` | Anthropic |
+| `claude-sonnet-4-6` (default) | Anthropic |
+| `claude-haiku-4-5` | Anthropic |
+| `gpt-5.5` | OpenAI |
+| `gpt-5.4` | OpenAI |
+| `gpt-5.4-mini` | OpenAI |
+| `gpt-5.3-codex` | OpenAI |
+
+`--model <name>` accepts only the values above; any other slug is refused at startup with the supported list. The same whitelist drives the inline `/model` picker, so the two surfaces never disagree about which models exist.
+
 Sofos exposes six reasoning levels:
 
 ```text
@@ -278,20 +294,20 @@ sofos -e xhigh --model gpt-5.5        # Highest OpenAI gpt-5 reasoning level.
 
 Support matrix:
 
-| Effort | Opus 4.7 | Opus 4.6 | Sonnet 4.6 | Haiku 4.5 / older Claude | OpenAI gpt-5 reasoning models |
-|---|:---:|:---:|:---:|:---:|:---:|
-| `off` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ | ✗ | ✗ | ✗ | ✓ |
-| `max` | ✓ | ✓ | ✓ | ✗ | ✗ |
+| Effort | Opus 4.7 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
+|---|:---:|:---:|:---:|:---:|
+| `off` | ✓ | ✓ | ✓ | ✓ |
+| `low` | ✓ | ✓ | ✓ | ✓ |
+| `medium` | ✓ | ✓ | ✓ | ✓ |
+| `high` | ✓ | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ | ✗ | ✗ | ✓ |
+| `max` | ✓ | ✓ | ✗ | ✗ |
 
 Provider mapping:
 
 - **OpenAI** sends `reasoning.effort`; `off` maps to minimal reasoning and suppresses reasoning summaries.
-- **Claude Opus 4.7, Opus 4.6, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
-- **Older Claude models** use fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
+- **Claude Opus 4.7 and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
+- **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
 
 ---
 
@@ -323,7 +339,7 @@ Clipboard pastes are not routed through a tool: pressing Ctrl-V in the prompt at
 
 ### Safe mode tools
 
-Safe mode is enabled with `--safe-mode` or `/s`. It restricts the native tool set to:
+Safe mode is enabled with `--safe-mode` or `/safe`. It restricts the native tool set to:
 
 - `list_directory`;
 - `read_file`;

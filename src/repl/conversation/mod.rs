@@ -496,7 +496,7 @@ mod tests {
     fn test_needs_compaction() {
         let mut history = ConversationHistory::new();
         // Auto-compact triggers at this token count regardless of
-        // the API ceiling — picked by `ModelInfo::auto_compact_at`
+        // the API ceiling — picked by `Model::auto_compact_at`
         // at startup, set directly here for the test.
         history.config.auto_compact_token_limit = 80_000;
 

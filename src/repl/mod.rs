@@ -154,7 +154,7 @@ impl Repl {
         }
 
         // Reject `(model, effort)` pairs the active provider won't
-        // accept, e.g. `xhigh` on Opus 4.6 or `max` on any OpenAI
+        // accept, e.g. `xhigh` on Sonnet 4.6 or `max` on any OpenAI
         // model. Catching it here turns a runtime 400 into a clear
         // startup error.
         if let Some(msg) =
@@ -358,8 +358,8 @@ impl Repl {
     }
 
     /// True when the active model uses adaptive thinking (Opus 4.7,
-    /// Opus 4.6, Sonnet 4.6). Shared by the three `/think` handlers
-    /// and the status line so they don't drift apart.
+    /// Sonnet 4.6). Shared by the three `/think` handlers and the
+    /// status line so they don't drift apart.
     fn uses_adaptive_thinking(&self) -> bool {
         matches!(self.client, Anthropic(_))
             && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
@@ -410,6 +410,109 @@ impl Repl {
         }
         self.model_config.set_reasoning_effort(effort);
         self.print_reasoning_state();
+    }
+
+    /// Switch the active model to `name`. Refuses unsupported slugs,
+    /// cross-provider switches (we can't swap the constructed
+    /// [`LlmClient`] mid-session without re-reading API keys), and
+    /// switches that would leave the current reasoning effort
+    /// orphaned on a model that doesn't accept it. On success the
+    /// per-model context-window and auto-compact thresholds are
+    /// refreshed so the new ceilings take effect immediately.
+    pub fn handle_model_set(&mut self, name: &str) {
+        let Some(choice) = crate::api::model_info::canonical_model(name) else {
+            println!();
+            UI::print_error(
+                &crate::api::model_info::model_support_error(name)
+                    .unwrap_or_else(|| format!("Model `{}` is not supported.", name)),
+            );
+            println!();
+            return;
+        };
+
+        if choice.name == self.model_config.model {
+            println!(
+                "\n{} already active: {}\n",
+                "Model:".dimmed(),
+                choice.name.bright_green()
+            );
+            return;
+        }
+
+        let current_provider = crate::api::model_info::provider_for(&self.model_config.model);
+        if choice.provider != current_provider {
+            println!();
+            UI::print_error(&format!(
+                "Cannot switch to `{}` ({}) from the current {} session. \
+                 Re-launch with `--model {}` to use it.",
+                choice.name,
+                choice.provider.label(),
+                current_provider.label(),
+                choice.name
+            ));
+            println!();
+            return;
+        }
+
+        if let Some(msg) = crate::api::model_info::effort_support_error(
+            choice.name,
+            self.model_config.reasoning_effort,
+        ) {
+            println!();
+            UI::print_error(&format!(
+                "{} Run `/think <effort>` to pick a supported level before switching.",
+                msg
+            ));
+            println!();
+            return;
+        }
+
+        self.model_config.model = choice.name.to_string();
+        self.session_state
+            .conversation
+            .set_max_context_tokens(crate::config::max_context_tokens_for(choice.name));
+        self.session_state
+            .conversation
+            .set_auto_compact_token_limit(crate::config::auto_compact_token_limit_for(choice.name));
+        println!(
+            "\n{} {}\n",
+            "Model:".bright_green(),
+            choice.name.bright_white()
+        );
+    }
+
+    /// Non-interactive fallback for `/model` (no argument). The TUI
+    /// intercepts the command and opens the picker; this path only
+    /// runs in `--prompt` mode and other non-interactive contexts,
+    /// where listing the choices is the best we can do.
+    pub fn handle_model_picker_fallback(&self) {
+        println!();
+        println!(
+            "{} {}",
+            "Current model:".bright_green(),
+            self.model_config.model.bright_white()
+        );
+        println!("{}", "Available models:".bright_cyan());
+        for choice in crate::api::model_info::SUPPORTED_MODELS {
+            let marker = if choice.name == self.model_config.model {
+                "❯"
+            } else {
+                " "
+            };
+            println!(
+                "  {} {:<20} {}",
+                marker.bright_green(),
+                choice.name.bright_white(),
+                choice.description.dimmed()
+            );
+        }
+        println!();
+        println!(
+            "{}",
+            "Use `/model <name>` to switch, or open an interactive session for the picker."
+                .dimmed()
+        );
+        println!();
     }
 
     pub fn handle_think_status(&self) {

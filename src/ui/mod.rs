@@ -169,7 +169,7 @@ impl UI {
         println!(
             "  {}",
             format!(
-                "/exit  /clear  /resume  /compact  /think [{}]  /s  /n",
+                "/exit  /clear  /resume  /compact  /think [{}]  /model  /safe  /normal",
                 efforts
             )
             .dimmed()

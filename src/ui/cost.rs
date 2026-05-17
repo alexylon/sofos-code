@@ -1,20 +1,27 @@
 use crate::ui::UI;
 use colored::Colorize;
 
-/// Fraction of the base input price charged for tokens served from the
-/// provider prompt cache. Both Anthropic and OpenAI publish this at 10%
-/// for their current model families.
+/// Fraction of the base input price charged for tokens served from
+/// the provider prompt cache. Anthropic and OpenAI both publish this
+/// at 10% for the current supported families, so the rate lives here
+/// as a single constant instead of being repeated on every model
+/// record.
 const CACHE_READ_RATE: f64 = 0.10;
 /// Multiplier applied to the base input price for tokens written to a
-/// 5-minute Anthropic cache breakpoint. OpenAI has no separate creation
-/// charge.
+/// 5-minute Anthropic cache breakpoint. OpenAI has no separate
+/// creation charge (the wire format never reports cache-creation
+/// tokens for OpenAI requests), so the multiplier only fires on
+/// Anthropic responses.
 const CACHE_CREATION_RATE: f64 = 1.25;
 
-/// True for OpenAI model identifiers (`gpt-*`). Used by the cost
-/// and token-display paths to route into the OpenAI pricing /
-/// uncached-tokens branches.
+/// True for models hosted by OpenAI. Used by the cost and
+/// token-display paths to route into the OpenAI pricing /
+/// uncached-tokens branches. The decision flows from the same
+/// per-model record as the rest of the application, so a new
+/// OpenAI model only has to be added to `SUPPORTED_MODELS` for
+/// costing to pick it up.
 fn is_openai_model(model: &str) -> bool {
-    model.starts_with("gpt")
+    crate::api::model_info::provider_for(model) == crate::api::model_info::Provider::OpenAI
 }
 
 impl UI {
@@ -289,8 +296,9 @@ mod tests {
 
     #[test]
     fn unknown_model_falls_back_without_panic() {
-        // Default fallback uses Sonnet 4.5 pricing ($3 / $15) and the
-        // Anthropic semantics branch (input_tokens is uncached).
+        // Default fallback uses the application-default model
+        // (`claude-sonnet-4-6`) pricing ($3 / $15) and the Anthropic
+        // semantics branch (input_tokens is uncached).
         let cost = UI::calculate_cost("some-future-model", 1_000, 1_000, 0, 0, 1_000);
         approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
     }

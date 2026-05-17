@@ -16,13 +16,13 @@ impl ConversationHistory {
     /// Check if conversation needs compaction. The trigger is the
     /// per-model `auto_compact_token_limit` (clamped to 90% of the
     /// API ceiling at lookup time), populated at REPL startup from
-    /// [`crate::api::ModelInfo::auto_compact_at`].
+    /// [`crate::api::Model::auto_compact_at`].
     pub fn needs_compaction(&self) -> bool {
         self.estimate_total_tokens() > self.config.auto_compact_token_limit
     }
 
     /// Set the auto-compaction trigger, picked by model via
-    /// [`crate::api::ModelInfo::auto_compact_at`]. Called once at
+    /// [`crate::api::Model::auto_compact_at`]. Called once at
     /// REPL startup so compaction fires at the right point for the
     /// active model rather than the default fallback.
     pub fn set_auto_compact_token_limit(&mut self, n: usize) {

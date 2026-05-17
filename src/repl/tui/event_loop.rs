@@ -7,9 +7,9 @@ use tokio::time::{Interval, interval};
 
 use crate::error::Result;
 use crate::repl::SteerBuffer;
-use crate::repl::tui::app::{self, App, Picker};
+use crate::repl::tui::app::{self, App, ModelPicker, Picker};
 use crate::repl::tui::event::{Job, UiEvent};
-use crate::repl::tui::input::{handle_idle_key, handle_picker_key};
+use crate::repl::tui::input::{handle_idle_key, handle_model_picker_key, handle_picker_key};
 use crate::repl::tui::keymap::handle_confirmation_key;
 use crate::repl::tui::{MAX_OUTPUT_BATCH, TICK_INTERVAL, inline_tui, ui};
 
@@ -99,6 +99,8 @@ pub(super) async fn event_loop(
                         handle_confirmation_key(app, key);
                     } else if app.picker.is_some() {
                         handle_picker_key(app, key, &job_tx);
+                    } else if app.model_picker.is_some() {
+                        handle_model_picker_key(app, key, &job_tx);
                     } else {
                         handle_idle_key(app, key, &job_tx, &interrupt, &steer_buffer);
                     }
@@ -111,7 +113,10 @@ pub(super) async fn event_loop(
                     // idle, `insert_str` handles multi-line text
                     // natively so embedded `\n`s become real newlines
                     // in the textarea rather than Enter-submits.
-                    if app.confirmation.is_none() && app.picker.is_none() {
+                    if app.confirmation.is_none()
+                        && app.picker.is_none()
+                        && app.model_picker.is_none()
+                    {
                         app.textarea.insert_str(text);
                         app.sync_slash_popup();
                     }
@@ -130,10 +135,11 @@ pub(super) async fn event_loop(
                 }
                 UiEvent::WorkerIdle => {
                     app.finish_busy();
-                    // Don't drain the queue while a modal (resume picker) is
-                    // open — the user hasn't committed to a choice yet and a
-                    // queued message would race with the selection.
-                    if app.picker.is_none() {
+                    // Don't drain the queue while a modal (resume picker
+                    // or model picker) is open — the user hasn't committed
+                    // to a choice yet and a queued message would race
+                    // with the selection.
+                    if app.picker.is_none() && app.model_picker.is_none() {
                         // Steer messages the tool loop didn't consume —
                         // e.g. the turn ended without ever hitting a
                         // tool-call boundary, or the user submitted after
@@ -167,6 +173,10 @@ pub(super) async fn event_loop(
                         sessions,
                         cursor: 0,
                     });
+                    break;
+                }
+                UiEvent::ShowModelPicker { entries } => {
+                    app.model_picker = Some(ModelPicker::new(entries));
                     break;
                 }
                 UiEvent::ConfirmRequest {

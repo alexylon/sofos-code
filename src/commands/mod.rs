@@ -13,7 +13,7 @@ pub enum CommandResult {
 }
 
 /// Enum representing all available REPL commands
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Exit,
     Clear,
@@ -23,6 +23,13 @@ pub enum Command {
     SafeMode,
     NormalMode,
     Compact,
+    /// `/model` with no argument — open the model picker.
+    ModelPicker,
+    /// `/model <name>` — switch directly to a named model without
+    /// going through the picker. Validation happens in the command
+    /// handler so the rejection message matches the one the CLI
+    /// surfaces for `--model`.
+    ModelSet(String),
 }
 
 impl Command {
@@ -33,12 +40,20 @@ impl Command {
             "/clear" => Some(Command::Clear),
             "/resume" => Some(Command::Resume),
             "/think" => Some(Command::ThinkStatus),
-            "/s" => Some(Command::SafeMode),
-            "/n" => Some(Command::NormalMode),
+            "/safe" => Some(Command::SafeMode),
+            "/normal" => Some(Command::NormalMode),
             "/compact" => Some(Command::Compact),
+            "/model" => Some(Command::ModelPicker),
             _ => {
                 if let Some(arg) = lower.strip_prefix("/think ") {
                     crate::api::ReasoningEffort::parse(arg).map(Command::ThinkSet)
+                } else if let Some(arg) = lower.strip_prefix("/model ") {
+                    let trimmed = arg.trim();
+                    if trimmed.is_empty() {
+                        Some(Command::ModelPicker)
+                    } else {
+                        Some(Command::ModelSet(trimmed.to_string()))
+                    }
                 } else {
                     None
                 }
@@ -56,6 +71,8 @@ impl Command {
             Command::SafeMode => builtin::safe_mode_command(repl),
             Command::NormalMode => builtin::normal_mode_command(repl),
             Command::Compact => builtin::compact_command(repl),
+            Command::ModelPicker => builtin::model_picker_command(repl),
+            Command::ModelSet(name) => builtin::model_set_command(repl, name),
         }
     }
 }
@@ -115,11 +132,15 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
         description: "set reasoning effort to the maximum value",
     },
     CommandEntry {
-        name: "/s",
+        name: "/model",
+        description: "switch the active model (opens a picker)",
+    },
+    CommandEntry {
+        name: "/safe",
         description: "enter safe mode (only read-only tools are allowed)",
     },
     CommandEntry {
-        name: "/n",
+        name: "/normal",
         description: "leave safe mode and resume normal mode",
     },
     CommandEntry {
@@ -139,6 +160,46 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bare_slash_model_opens_picker() {
+        assert_eq!(Command::from_str("/model"), Some(Command::ModelPicker));
+    }
+
+    #[test]
+    fn slash_model_with_trailing_space_opens_picker() {
+        assert_eq!(Command::from_str("/model   "), Some(Command::ModelPicker));
+    }
+
+    #[test]
+    fn slash_model_with_name_parses_to_model_set() {
+        match Command::from_str("/model claude-opus-4-7") {
+            Some(Command::ModelSet(name)) => assert_eq!(name, "claude-opus-4-7"),
+            other => panic!("expected ModelSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slash_model_lowercases_input_before_parsing() {
+        // Matching the rest of `from_str`, the argument is lowercased
+        // before reaching the handler. Validation against the
+        // whitelist still happens in `handle_model_set` so the user
+        // sees the same error there as on `--model`.
+        match Command::from_str("/model Claude-Opus-4-7") {
+            Some(Command::ModelSet(name)) => assert_eq!(name, "claude-opus-4-7"),
+            other => panic!("expected ModelSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slash_model_accepts_unknown_arg_for_handler_to_reject() {
+        // Validation lives in the executor so the user sees the
+        // supported-list message there; `from_str` doesn't gate it.
+        match Command::from_str("/model totally-made-up") {
+            Some(Command::ModelSet(name)) => assert_eq!(name, "totally-made-up"),
+            other => panic!("expected ModelSet, got {other:?}"),
+        }
+    }
 
     /// Every catalog name must parse back into a known `Command`, either
     /// directly or via the `/think <effort>` argument form.

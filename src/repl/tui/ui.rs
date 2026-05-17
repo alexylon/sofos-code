@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 
-use super::app::{App, ConfirmationPrompt, Picker};
+use super::app::{App, ConfirmationPrompt, ModelPicker, Picker};
 use super::event::Mode;
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
@@ -75,6 +75,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(picker) = &app.picker {
         draw_picker(frame, area, picker);
     }
+    if let Some(picker) = &app.model_picker {
+        draw_model_picker(frame, area, picker);
+    }
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(frame, area, confirmation);
     }
@@ -89,6 +92,11 @@ const PICKER_CHROME_ROWS: u16 = 2;
 /// Ceiling on the picker's inline height so a long session list doesn't
 /// swallow the screen; the picker scrolls internally past this.
 const PICKER_MAX_VISIBLE_ENTRIES: u16 = 12;
+/// Percentage of the available width occupied by the resume- and
+/// model-picker overlays. Height tracks the available viewport
+/// directly so every entry that fits is shown — the cursor never
+/// drops below the visible window.
+const PICKER_POPUP_WIDTH_PCT: u16 = 80;
 
 /// Total viewport height: `HINT_ROW_HEIGHT` + `input_box_height` +
 /// `STATUS_ROW_HEIGHT`. Feeds `InlineTui::draw`'s `desired_height`
@@ -108,6 +116,11 @@ pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
         CONFIRMATION_CHROME_ROWS.saturating_add(rows)
     } else if let Some(picker) = &app.picker {
         let rows = u16::try_from(picker.sessions.len())
+            .unwrap_or(u16::MAX)
+            .min(PICKER_MAX_VISIBLE_ENTRIES);
+        PICKER_CHROME_ROWS.saturating_add(rows)
+    } else if let Some(picker) = &app.model_picker {
+        let rows = u16::try_from(picker.entries.len())
             .unwrap_or(u16::MAX)
             .min(PICKER_MAX_VISIBLE_ENTRIES);
         PICKER_CHROME_ROWS.saturating_add(rows)
@@ -202,12 +215,14 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 
     // Resume picker takes over input — hint bar should reflect that
     // instead of advertising the normal send / newline keys.
-    if app.picker.is_some() {
+    if app.picker.is_some() || app.model_picker.is_some() {
+        let label = if app.model_picker.is_some() {
+            "pick a model"
+        } else {
+            "pick a session"
+        };
         spans.push(Span::styled(" ❯ ", Style::default().fg(HINT_KEY)));
-        spans.push(Span::styled(
-            "pick a session",
-            Style::default().fg(Color::Gray),
-        ));
+        spans.push(Span::styled(label, Style::default().fg(Color::Gray)));
         spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             "↑↓ ⏎  select  ·  esc cancel",
@@ -614,23 +629,124 @@ fn draw_slash_popup(frame: &mut Frame, area: Rect, popup: &SlashPopup) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
-    let width = area.width.saturating_mul(8) / 10;
-    let height = area.height.saturating_mul(6) / 10;
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let popup = Rect {
+/// Centred popup rectangle. Width is a fraction of the area; height
+/// is the full viewport so every entry fits.
+fn picker_popup_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_mul(PICKER_POPUP_WIDTH_PCT) / 100;
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    Rect {
         x,
-        y,
+        y: area.y,
         width,
-        height,
-    };
+        height: area.height,
+    }
+}
+
+/// Scroll offset that keeps `cursor` inside a `visible`-row window
+/// over `total` items, with the cursor pinned near the middle.
+fn scroll_offset(cursor: usize, total: usize, visible: usize) -> usize {
+    if visible == 0 || visible >= total || cursor < visible / 2 {
+        0
+    } else if cursor + visible / 2 >= total {
+        total.saturating_sub(visible)
+    } else {
+        cursor.saturating_sub(visible / 2)
+    }
+}
+
+/// Inline overlay for `/model`. Disabled rows render dim; the
+/// highlight scrolls into view when the list exceeds the window.
+fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
+    let popup = picker_popup_rect(area);
     frame.render_widget(Clear, popup);
+
+    let visible_slots = popup.height.saturating_sub(PICKER_CHROME_ROWS) as usize;
+    let scroll = scroll_offset(picker.cursor, picker.entries.len(), visible_slots);
+    let visible = visible_slots.min(picker.entries.len().saturating_sub(scroll));
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, entry)| {
+            let selected = i == picker.cursor;
+            let marker = if selected {
+                ROW_MARKER_SELECTED
+            } else {
+                ROW_MARKER_PLAIN
+            };
+            // Three style tiers: selected/available, plain/available,
+            // and disabled (always rendered dim regardless of cursor —
+            // the cursor cannot land on a disabled row anyway).
+            let (name_style, desc_style) = if !entry.is_available {
+                (
+                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else if selected {
+                (
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(ACCENT),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::Gray),
+                    Style::default().fg(SLASH_POPUP_DESC_FG),
+                )
+            };
+            let mut spans: Vec<Span> =
+                vec![Span::raw(marker), Span::styled(entry.name, name_style)];
+            if entry.is_current {
+                spans.push(Span::styled(
+                    "  (current)",
+                    Style::default().fg(HINT_KEY).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            if !entry.is_available {
+                spans.push(Span::styled(
+                    "  (re-launch session to activate)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(entry.description, desc_style));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PICKER_BORDER))
+        .title(Line::from(vec![Span::styled(
+            " Select model ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )]));
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup);
+}
+
+fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
+    let popup = picker_popup_rect(area);
+    frame.render_widget(Clear, popup);
+
+    let visible_slots = popup.height.saturating_sub(PICKER_CHROME_ROWS) as usize;
+    let scroll = scroll_offset(picker.cursor, picker.sessions.len(), visible_slots);
+    let visible = visible_slots.min(picker.sessions.len().saturating_sub(scroll));
 
     let items: Vec<ListItem> = picker
         .sessions
         .iter()
         .enumerate()
+        .skip(scroll)
+        .take(visible)
         .map(|(i, s)| {
             let selected = i == picker.cursor;
             let marker = if selected {
@@ -812,6 +928,47 @@ mod tests {
         // 2 choices need interior >= 6 for full chrome.
         assert!(confirmation_layout(6, 2, 0).include_full_chrome);
         assert!(!confirmation_layout(5, 2, 0).include_full_chrome);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_cursor_inside_window() {
+        // Fits in window — no scroll.
+        assert_eq!(scroll_offset(0, 5, 10), 0);
+        assert_eq!(scroll_offset(4, 5, 10), 0);
+
+        // Cursor near top half — pinned to top.
+        assert_eq!(scroll_offset(0, 20, 6), 0);
+        assert_eq!(scroll_offset(2, 20, 6), 0);
+
+        // Cursor in the middle — slides so cursor sits roughly centred.
+        assert_eq!(scroll_offset(10, 20, 6), 10 - 3);
+        assert_eq!(scroll_offset(8, 20, 6), 8 - 3);
+
+        // Cursor near bottom — pinned so the last page stays flush.
+        assert_eq!(scroll_offset(19, 20, 6), 20 - 6);
+        assert_eq!(scroll_offset(18, 20, 6), 20 - 6);
+
+        // Edge cases — empty window or total never panics.
+        assert_eq!(scroll_offset(0, 0, 6), 0);
+        assert_eq!(scroll_offset(5, 10, 0), 0);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_cursor_visible_for_every_position() {
+        // For any (cursor, total, visible) the resulting window
+        // [scroll, scroll + visible) must contain the cursor.
+        for total in [1usize, 5, 7, 12, 30] {
+            for visible in [1usize, 2, 3, 6, total] {
+                for cursor in 0..total {
+                    let s = scroll_offset(cursor, total, visible);
+                    let window_end = s + visible.min(total.saturating_sub(s));
+                    assert!(
+                        cursor >= s && cursor < window_end,
+                        "cursor={cursor} not in [{s}, {window_end}) (total={total}, visible={visible})"
+                    );
+                }
+            }
+        }
     }
 
     /// When chrome is on, every choice must be visible — we only drop

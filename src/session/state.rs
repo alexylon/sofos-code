@@ -79,7 +79,7 @@ pub struct SessionState {
     /// session. Used to detect tiered-pricing cliffs (gpt-5.4/5.5
     /// flip the entire session to premium rates once any prompt
     /// crosses 272K input tokens). Compared against
-    /// `ModelInfo::premium_tier.input_threshold` in `calculate_cost`
+    /// `Model::premium_tier.input_threshold` in `calculate_cost`
     /// so the displayed cost reflects what the provider actually
     /// bills, not the standard-tier rate.
     ///

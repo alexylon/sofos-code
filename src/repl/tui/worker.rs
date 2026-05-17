@@ -16,7 +16,7 @@ use crate::commands::{Command, CommandResult};
 use crate::repl::Repl;
 use crate::ui::UI;
 
-use super::event::{ExitSummary, Job, UiEvent};
+use super::event::{ExitSummary, Job, ModelPickerEntry, UiEvent};
 
 /// Flush both stdout and stderr before signalling a turn is over.
 /// Stdout is fully buffered when fd 1 is redirected to a pipe (our
@@ -171,6 +171,20 @@ fn run(
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
+            Job::ModelSelected(Some(name)) => {
+                interrupt.store(false, Ordering::SeqCst);
+                let _ = ui_tx.send(UiEvent::WorkerBusy("switching model".into()));
+                repl.handle_model_set(name);
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
+            Job::ModelSelected(None) => {
+                // User cancelled the model picker — same idle handling
+                // as the resume picker cancel branch.
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
         }
     }
 
@@ -200,6 +214,28 @@ fn run_command(
             let _ = ui_tx.send(UiEvent::ShowResumePicker(sessions));
             Ok(CommandResult::Continue)
         }
+        Command::ModelPicker => {
+            let entries = build_model_picker_entries(repl);
+            let _ = ui_tx.send(UiEvent::ShowModelPicker { entries });
+            Ok(CommandResult::Continue)
+        }
         _ => cmd.execute(repl),
     }
+}
+
+fn build_model_picker_entries(repl: &Repl) -> Vec<ModelPickerEntry> {
+    use crate::api::model_info;
+    let current_model = repl.model_label();
+    // Other-provider rows are unreachable mid-session — the LlmClient
+    // is built once at startup.
+    let current_provider = model_info::provider_for(&current_model);
+    model_info::SUPPORTED_MODELS
+        .iter()
+        .map(|choice| ModelPickerEntry {
+            name: choice.name,
+            description: choice.description,
+            is_current: choice.name == current_model,
+            is_available: choice.provider == current_provider,
+        })
+        .collect()
 }

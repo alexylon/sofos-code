@@ -30,7 +30,7 @@ mod tests {
 
     fn req_with_cache_key(key: Option<&str>) -> CreateMessageRequest {
         CreateMessageRequest {
-            model: "gpt-5.3".to_string(),
+            model: "gpt-5.5".to_string(),
             max_tokens: 4096,
             messages: vec![Message::user("hi".to_string())],
             system: None,

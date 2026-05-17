@@ -15,12 +15,12 @@ pub struct SofosConfig {
     pub max_messages: usize,
     /// Hard drop-trim floor in tokens. Above this, older messages are
     /// dropped without summary as a last resort. Populated from
-    /// `ModelInfo::effective_window()` at startup.
+    /// `Model::effective_window()` at startup.
     pub max_context_tokens: usize,
     pub max_tool_iterations: u32,
     /// Auto-compaction trigger in tokens. Compaction runs an LLM
     /// summary step that preserves context, so this fires well below
-    /// `max_context_tokens`. Populated from `ModelInfo::auto_compact_at()`
+    /// `max_context_tokens`. Populated from `Model::auto_compact_at()`
     /// at startup.
     pub auto_compact_token_limit: usize,
     /// Number of recent messages to preserve during compaction
@@ -31,11 +31,13 @@ pub struct SofosConfig {
 
 impl Default for SofosConfig {
     fn default() -> Self {
-        // Defaults match `ModelInfo::default()`: a Sonnet-class
-        // fallback with 200K context window, 95% effective window,
-        // and 125K auto-compact override. These get overwritten by
-        // model-specific values at REPL startup.
-        let info = crate::api::ModelInfo::default();
+        // Defaults track the application-default model
+        // (`claude-sonnet-4-6` — see `crate::api::Model::default`)
+        // so the numbers visible before the user has picked a model
+        // match the ones `--model claude-sonnet-4-6` would produce.
+        // These get overwritten by model-specific values at REPL
+        // startup.
+        let info = crate::api::Model::default();
         Self {
             max_messages: 500,
             max_context_tokens: info.effective_window() as usize,
@@ -76,7 +78,7 @@ impl ModelConfig {
 /// Per-model trim-safety floor. Above this value the conversation
 /// trim drops older messages without summary as a last resort —
 /// auto-compaction (which preserves context) runs much earlier at
-/// [`crate::api::ModelInfo::auto_compact_at`]. Both numbers come
+/// [`crate::api::Model::auto_compact_at`]. Both numbers come
 /// from the same per-model lookup so a single
 /// [`crate::api::model_info::lookup`] call is the source of truth.
 pub fn max_context_tokens_for(model: &str) -> usize {
@@ -114,7 +116,7 @@ mod tests {
     #[test]
     fn test_default_config_matches_fallback_model_info() {
         let config = SofosConfig::default();
-        let info = crate::api::ModelInfo::default();
+        let info = crate::api::Model::default();
         assert_eq!(config.max_messages, 500);
         assert_eq!(config.max_context_tokens, info.effective_window() as usize);
         assert_eq!(config.max_tool_iterations, 200);

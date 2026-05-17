@@ -66,8 +66,35 @@ pub enum Job {
     Command(Command),
     /// User confirmed a choice inside the resume picker.
     ResumeSelected(Option<String>),
+    /// User confirmed a choice inside the `/model` picker; `None` on
+    /// cancel. Carries the canonical `&'static str` slug from
+    /// [`crate::api::model_info::SUPPORTED_MODELS`] — model names are
+    /// fixed at compile time so the channel doesn't need to own a
+    /// freshly allocated `String` per pick.
+    ModelSelected(Option<&'static str>),
     /// Graceful shutdown — save session, print summary, exit worker loop.
     Shutdown,
+}
+
+/// One row in the inline `/model` picker. Borrows the name and
+/// description straight out of [`crate::api::model_info::Model`] so
+/// opening the picker doesn't allocate a string per row — the
+/// records live in `SUPPORTED_MODELS` for the lifetime of the
+/// process.
+#[derive(Debug, Clone, Copy)]
+pub struct ModelPickerEntry {
+    /// Model id sent on the wire and back through `Job::ModelSelected`.
+    pub name: &'static str,
+    /// Short blurb rendered next to the name.
+    pub description: &'static str,
+    /// True when the row is the model currently in use — drawn with a
+    /// "(current)" tag so the user can see what they are about to
+    /// replace.
+    pub is_current: bool,
+    /// False when the row is on the other provider — the running
+    /// session can't switch there without a relaunch. Disabled rows
+    /// stay visible; the cursor skips over them.
+    pub is_available: bool,
 }
 
 /// Event pushed to the UI thread. Sources: output readers, keyboard reader,
@@ -95,6 +122,8 @@ pub enum UiEvent {
     WorkerIdle,
     /// Worker wants the UI to show the session picker.
     ShowResumePicker(Vec<SessionMetadata>),
+    /// Worker wants the UI to show the model picker.
+    ShowModelPicker { entries: Vec<ModelPickerEntry> },
     /// Worker pushes a fresh status snapshot (model / mode / reasoning).
     Status(StatusSnapshot),
     /// A tool call needs user confirmation. The UI renders a modal list of

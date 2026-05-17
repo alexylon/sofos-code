@@ -39,7 +39,7 @@ pub(super) const BETA_TOKEN_EFFICIENT_AND_COMPACT: &str =
     "token-efficient-tools-2025-02-19,compact-2026-01-12";
 
 /// Pick the `anthropic-beta` value for `model`. Compaction is gated
-/// off the same `ModelInfo::supports_server_compaction` flag the
+/// off the same `Model::supports_server_compaction` flag the
 /// request builder uses to attach the `context_management` field, so
 /// the beta header and the body field can never disagree about which
 /// models speak server-side compaction.
@@ -73,8 +73,8 @@ pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
     match effort {
         ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
         ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
-        // Legacy-thinking models (Sonnet 4.5, Opus 4.5, Haiku 4.5) only
-        // expose budget tiers up to High. `XHigh` and `Max` are
+        // Legacy-thinking models (Haiku 4.5) only expose budget tiers
+        // up to High. `XHigh` and `Max` are
         // adaptive-only rungs that upstream validation refuses to pair
         // with a legacy model, so this branch is unreachable in
         // practice; clamp defensively to the highest legal budget.

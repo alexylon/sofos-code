@@ -59,19 +59,14 @@ mod tests {
     }
 
     #[test]
-    fn requires_adaptive_thinking_covers_all_1m_anthropic_models() {
-        // Opus 4.7 requires adaptive (legacy shape 400s); Opus 4.6 and
-        // Sonnet 4.6 accept both but Anthropic recommends adaptive,
-        // so sofos opts them in too. Earlier 4.x models stay on the
-        // manual budget shape.
+    fn requires_adaptive_thinking_covers_supported_anthropic_models() {
+        // Opus 4.7 requires adaptive (legacy shape 400s); Sonnet 4.6
+        // accepts both shapes but Anthropic recommends adaptive, so
+        // sofos opts it in too. Haiku 4.5 stays on the legacy
+        // `budget_tokens` shape.
         assert!(requires_adaptive_thinking("claude-opus-4-7"));
-        assert!(requires_adaptive_thinking("claude-opus-4-7-20260301"));
-        assert!(requires_adaptive_thinking("claude-opus-4-6"));
         assert!(requires_adaptive_thinking("claude-sonnet-4-6"));
-        assert!(!requires_adaptive_thinking("claude-opus-4-5"));
-        assert!(!requires_adaptive_thinking("claude-sonnet-4-5"));
         assert!(!requires_adaptive_thinking("claude-haiku-4-5"));
-        assert!(!requires_adaptive_thinking(""));
     }
 
     #[test]
@@ -92,21 +87,16 @@ mod tests {
     #[test]
     fn anthropic_beta_for_matches_model_info_predicate() {
         // The beta header and the request body's `context_management`
-        // are gated off the same `ModelInfo::supports_server_compaction`
-        // flag. An earlier version used a separate prefix list here that
-        // could disagree with `ModelInfo` — e.g. `claude-opus-4-5` would
-        // pick up the compaction beta even though the body never carried
-        // the matching field. Cross-check the two sources of truth so any
-        // future drift surfaces here instead of as a wire-format 400.
-        for model in [
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-haiku-4-5",
-            "claude-opus-4-5",
-            "claude-sonnet-3-7",
-            "some-unknown-future-model",
-        ] {
+        // are gated off the same `Model::supports_server_compaction`
+        // flag. An earlier version used a separate prefix list here
+        // that could disagree with the per-model record; cross-check
+        // the two sources of truth so any future drift surfaces here
+        // instead of as a wire-format 400. Iterates the whitelist so
+        // every supported model is covered automatically.
+        let supported_models = crate::api::model_info::SUPPORTED_MODELS
+            .iter()
+            .map(|m| m.name);
+        for model in supported_models.chain(std::iter::once("some-unknown-future-model")) {
             let expected = crate::api::model_info::lookup(model).supports_server_compaction;
             let header = anthropic_beta_for(model);
             assert_eq!(

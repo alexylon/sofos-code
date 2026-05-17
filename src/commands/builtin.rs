@@ -50,3 +50,19 @@ pub fn compact_command(repl: &mut Repl) -> Result<CommandResult> {
     repl.handle_compact_command()?;
     Ok(CommandResult::Continue)
 }
+
+pub fn model_picker_command(repl: &mut Repl) -> Result<CommandResult> {
+    // The TUI worker intercepts `Command::ModelPicker` before this
+    // path is hit and opens the inline picker overlay instead, so
+    // executing the command directly only happens in non-interactive
+    // mode (for example a unit test, or `--prompt` followed by a
+    // typed slash command). Fall back to a printed list there so
+    // the user still gets useful information.
+    repl.handle_model_picker_fallback();
+    Ok(CommandResult::Continue)
+}
+
+pub fn model_set_command(repl: &mut Repl, name: &str) -> Result<CommandResult> {
+    repl.handle_model_set(name);
+    Ok(CommandResult::Continue)
+}

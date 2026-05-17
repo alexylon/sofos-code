@@ -98,6 +98,19 @@ impl Repl {
                         saved_model, saved_provider, current_provider, saved_model
                     )));
                 }
+                // The saved model is about to override `--model` further
+                // down, so refuse the resume if that override would land
+                // on a slug the application no longer supports. The
+                // resumed session would otherwise send an unrecognised
+                // model id on the wire and fail at request time.
+                if crate::api::model_info::canonical_model(saved_model).is_none() {
+                    return Err(SofosError::Config(format!(
+                        "Session was saved under model '{}', which is no longer supported. \
+                         Supported models: {}.",
+                        saved_model,
+                        crate::api::model_info::supported_models_label()
+                    )));
+                }
                 if saved_model != self.model_config.model {
                     if let Some(msg) = crate::api::model_info::effort_support_error(
                         saved_model,
@@ -146,16 +159,24 @@ impl Repl {
         // continuity holds across providers. `None` means the file was
         // written before this field existed — keep whatever the CLI
         // selected in that case so old sessions don't lose the user's
-        // current `--model` choice.
+        // current `--model` choice. Saved slugs land in canonical form
+        // so a mixed-case file (`Claude-Opus-4-7`) still compares equal
+        // to the picker rows and the wire payload uses the spelling the
+        // provider expects.
         if let Some(saved_model) = session.model.as_deref() {
-            if !saved_model.is_empty() && saved_model != self.model_config.model {
-                println!(
-                    "{} session was saved under model '{}'; continuing with that instead of '{}'",
-                    "Note:".dimmed(),
-                    saved_model,
-                    self.model_config.model
-                );
-                self.model_config.model = saved_model.to_string();
+            if !saved_model.is_empty() {
+                let canonical = crate::api::model_info::canonical_model(saved_model)
+                    .map(|c| c.name.to_string())
+                    .unwrap_or_else(|| saved_model.to_string());
+                if canonical != self.model_config.model {
+                    println!(
+                        "{} session was saved under model '{}'; continuing with that instead of '{}'",
+                        "Note:".dimmed(),
+                        canonical,
+                        self.model_config.model
+                    );
+                    self.model_config.model = canonical;
+                }
             }
         }
 
@@ -193,18 +214,23 @@ mod tests {
 
     #[test]
     fn provider_of_matches_build_llm_client_routing() {
-        // Stay in lock-step with `build_llm_client` in `main.rs`:
-        // anything starting with `gpt-` routes to OpenAI; everything
-        // else routes to Anthropic. The strings must also match
-        // `LlmClient::provider_name` exactly so the cross-provider
-        // resume check in `load_session_by_id` can compare them.
-        assert_eq!(provider_of("gpt-5.5"), "OpenAI");
-        assert_eq!(provider_of("gpt-5.3-codex"), "OpenAI");
-        assert_eq!(provider_of("claude-opus-4-7"), "Anthropic");
-        assert_eq!(provider_of("claude-sonnet-4-6"), "Anthropic");
-        assert_eq!(provider_of("claude-haiku-4-5"), "Anthropic");
-        // Unknown models fall back to Anthropic, mirroring the
-        // `build_llm_client` default branch.
+        // Every model in the supported whitelist must route to the
+        // provider its record names — `build_llm_client` in `main.rs`
+        // picks the API client off the same field, and the
+        // cross-provider resume check in `load_session_by_id` compares
+        // these strings against `LlmClient::provider_name` directly.
+        for m in crate::api::model_info::SUPPORTED_MODELS {
+            assert_eq!(
+                provider_of(m.name),
+                m.provider.label(),
+                "{} should route to {}",
+                m.name,
+                m.provider.label()
+            );
+        }
+        // Unsupported slugs fall through to the default model's
+        // provider (Anthropic, because `claude-sonnet-4-6` is the
+        // default); `build_llm_client` mirrors that fallback.
         assert_eq!(provider_of("unknown-model"), "Anthropic");
     }
 }

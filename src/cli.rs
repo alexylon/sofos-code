@@ -37,7 +37,7 @@ pub struct Cli {
     #[arg(long)]
     pub check_connection: bool,
 
-    #[arg(long, default_value = "claude-sonnet-4-6")]
+    #[arg(long, default_value = crate::api::model_info::DEFAULT_MODEL_NAME)]
     pub model: String,
 
     #[arg(long, default_value = "morph-v3-fast")]
@@ -58,11 +58,11 @@ pub struct Cli {
     /// `medium`. `Off` skips reasoning entirely on OpenAI (effort=
     /// minimal, summary suppressed) and disables Anthropic extended
     /// thinking on non-adaptive models. Anthropic adaptive models
-    /// (Opus 4.7, Opus 4.6, Sonnet 4.6) collapse `Off` to the lowest
-    /// accepted level (`low`). `xhigh` is accepted by Claude Opus 4.7
-    /// and OpenAI gpt-5 reasoning models only; `max` is accepted by
-    /// Claude Opus 4.7, Opus 4.6, and Sonnet 4.6 only. Sofos refuses
-    /// to start with an unsupported `(model, effort)` pair.
+    /// (Opus 4.7, Sonnet 4.6) collapse `Off` to the lowest accepted
+    /// level (`low`). `xhigh` is accepted by Claude Opus 4.7 and the
+    /// OpenAI gpt-5 reasoning models only; `max` is accepted by
+    /// Claude Opus 4.7 and Sonnet 4.6 only. Sofos refuses to start
+    /// with an unsupported `(model, effort)` pair.
     //
     // Parsed as a raw `String` here, then validated and converted in
     // `main`, so the per-model rejection and the parse-failure

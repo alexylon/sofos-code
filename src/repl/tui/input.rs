@@ -279,6 +279,44 @@ pub(super) fn handle_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc:
     }
 }
 
+/// Key handler used while the `/model` picker overlay is open.
+/// Up/Down skip disabled (other-provider) rows; Enter sends the
+/// highlighted model name back to the worker; Esc / Ctrl+C cancel.
+pub(super) fn handle_model_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    job_tx: &std_mpsc::Sender<Job>,
+) {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(picker) = app.model_picker.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_up(),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_down(),
+        KeyCode::Enter => {
+            // `selected()` returns the highlighted entry; the cursor
+            // can only land on an `is_available` row by construction,
+            // so a bare unwrap-or-skip is enough.
+            let name = picker.selected().filter(|e| e.is_available).map(|e| e.name);
+            app.model_picker = None;
+            let _ = job_tx.send(Job::ModelSelected(name));
+        }
+        KeyCode::Esc => {
+            app.model_picker = None;
+            let _ = job_tx.send(Job::ModelSelected(None));
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.model_picker = None;
+            let _ = job_tx.send(Job::ModelSelected(None));
+        }
+        _ => {}
+    }
+}
+
 fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &SteerBuffer) {
     let raw = app.input_text();
     // Strip the circled-number markers Ctrl+V inserted and recover the

@@ -40,12 +40,11 @@ impl<'a> RequestBuilder<'a> {
         let adaptive =
             is_anthropic && crate::api::anthropic::requires_adaptive_thinking(self.model);
 
-        // Adaptive-thinking models (Opus 4.7, Opus 4.6, Sonnet 4.6)
-        // take `thinking: adaptive` + `output_config.effort`; Opus 4.7
-        // outright rejects the legacy `enabled` shape, and the other
-        // two accept it but Anthropic recommends adaptive. Older
-        // Anthropic models still take the manual `budget_tokens`
-        // shape. On adaptive models we *always* send `thinking:
+        // Adaptive-thinking models (Opus 4.7, Sonnet 4.6) take
+        // `thinking: adaptive` + `output_config.effort`; Opus 4.7
+        // outright rejects the legacy `enabled` shape, and Sonnet 4.6
+        // accepts it but Anthropic recommends adaptive. Haiku 4.5
+        // still takes the manual `budget_tokens` shape. On adaptive models we *always* send `thinking:
         // adaptive` even when the user picked `Off` — dropping it
         // would 400 the next turn if the conversation history already
         // contains echoed thinking blocks from an earlier on turn
@@ -60,8 +59,8 @@ impl<'a> RequestBuilder<'a> {
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
         } else if is_anthropic && self.reasoning_effort.is_enabled() {
-            // Non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5,
-            // Haiku 4.5) take the legacy `{type: "enabled", budget_tokens}` shape.
+            // Non-adaptive Anthropic models (Haiku 4.5) take the legacy
+            // `{type: "enabled", budget_tokens}` shape.
             // The per-tier mapping lives in `crate::api::anthropic` so
             // the startup validation in `repl/mod.rs` can reference the
             // same `LEGACY_THINKING_BUDGET_HIGH` ceiling without
@@ -96,11 +95,11 @@ impl<'a> RequestBuilder<'a> {
         let system_prompt = Some(self.conversation.system_prompt().clone());
 
         // Anthropic server-side compaction. Enabled only on models
-        // that advertise it via `ModelInfo::supports_server_compaction`
-        // (currently Opus 4.7, Opus 4.6, Sonnet 4.6). The trigger
-        // value is the same `auto_compact_at` number the rest of the
-        // crate reads, so the per-model cost cap stays the single
-        // source of truth. OpenAI has no server-side equivalent.
+        // that advertise it via `Model::supports_server_compaction`
+        // (currently Opus 4.7 and Sonnet 4.6). The trigger value is
+        // the same `auto_compact_at` number the rest of the crate
+        // reads, so the per-model cost cap stays the single source
+        // of truth. OpenAI has no server-side equivalent.
         let context_management = if matches!(self.client, Anthropic(_)) {
             let info = crate::api::model_info::lookup(self.model);
             if info.supports_server_compaction {
@@ -268,7 +267,7 @@ mod tests {
         let conv = ConversationHistory::new();
         let request = RequestBuilder::new(
             &openai_client(),
-            "gpt-5.3",
+            "gpt-5.5",
             8192,
             &conv,
             one_regular_tool(),
@@ -311,7 +310,7 @@ mod tests {
 
         let oai = RequestBuilder::new(
             &openai_client(),
-            "gpt-5.3",
+            "gpt-5.5",
             8192,
             &conv,
             one_regular_tool(),
@@ -527,15 +526,15 @@ mod tests {
 
     #[test]
     fn legacy_anthropic_thinking_budget_scales_with_effort() {
-        // On non-adaptive Anthropic models (Sonnet 4.5, Opus 4.5,
-        // Haiku 4.5), `/think low|medium|high` used to all collapse
-        // to the same `thinking_budget`. Verify each tier now produces
-        // a strictly larger budget so the slider has a visible effect.
+        // On non-adaptive Anthropic models (Haiku 4.5),
+        // `/think low|medium|high` used to all collapse to the same
+        // `thinking_budget`. Verify each tier now produces a strictly
+        // larger budget so the slider has a visible effect.
         let conv = ConversationHistory::new();
         let budget_for = |effort| {
             let req = RequestBuilder::new(
                 &anthropic_client(),
-                "claude-sonnet-4-5",
+                "claude-haiku-4-5",
                 65_536,
                 &conv,
                 one_regular_tool(),

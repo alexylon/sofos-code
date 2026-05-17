@@ -18,7 +18,7 @@ use crate::clipboard::PastedImage;
 use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
-use super::event::{ExitSummary, Job, StatusSnapshot};
+use super::event::{ExitSummary, Job, ModelPickerEntry, StatusSnapshot};
 use super::slash_popup::SlashPopup;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -40,6 +40,8 @@ pub struct App {
     pub busy_since: Option<Instant>,
     /// If Some, render the resume picker overlay.
     pub picker: Option<Picker>,
+    /// If Some, render the `/model` picker overlay.
+    pub model_picker: Option<ModelPicker>,
     /// If Some, render a confirmation modal blocking the worker thread
     /// until the user answers. Used by destructive tool prompts like
     /// `delete_file`.
@@ -81,6 +83,60 @@ pub struct Picker {
     pub cursor: usize,
 }
 
+/// Inline overlay shown by `/model`. Holds the rows, the cursor,
+/// and a navigation helper that skips disabled rows (the
+/// other-provider models a running session cannot reach).
+pub struct ModelPicker {
+    pub entries: Vec<ModelPickerEntry>,
+    pub cursor: usize,
+}
+
+impl ModelPicker {
+    pub fn new(entries: Vec<ModelPickerEntry>) -> Self {
+        // Park the cursor on the current model so the user sees what
+        // they're about to replace; if the current model is somehow
+        // disabled (shouldn't happen because the active session
+        // already uses it) fall back to the first available row.
+        let cursor = entries
+            .iter()
+            .position(|e| e.is_current && e.is_available)
+            .or_else(|| entries.iter().position(|e| e.is_available))
+            .unwrap_or(0);
+        Self { entries, cursor }
+    }
+
+    pub fn move_up(&mut self) {
+        self.cursor = step_to_available(self.cursor, &self.entries, -1);
+    }
+
+    pub fn move_down(&mut self) {
+        self.cursor = step_to_available(self.cursor, &self.entries, 1);
+    }
+
+    /// Currently highlighted entry, if any.
+    pub fn selected(&self) -> Option<&ModelPickerEntry> {
+        self.entries.get(self.cursor)
+    }
+}
+
+/// Advance the cursor in `direction` (+1 or -1), skipping disabled
+/// rows and stopping at the list edges. Stays put if no enabled row
+/// can be reached.
+fn step_to_available(cursor: usize, entries: &[ModelPickerEntry], direction: i32) -> usize {
+    if entries.is_empty() {
+        return 0;
+    }
+    let mut idx = cursor as i32 + direction;
+    while idx >= 0 && (idx as usize) < entries.len() {
+        let candidate = idx as usize;
+        if entries[candidate].is_available {
+            return candidate;
+        }
+        idx += direction;
+    }
+    cursor
+}
+
 /// In-flight confirmation dialog driven by a synchronous tool (`delete_file`,
 /// `delete_directory`, permission grants). The worker thread is blocked on
 /// the receiving end of `responder`; when the user picks a choice (or
@@ -109,6 +165,7 @@ impl App {
             spinner_tick: 0,
             busy_since: None,
             picker: None,
+            model_picker: None,
             model_label,
             should_quit: false,
             exit_summary: None,
@@ -130,7 +187,7 @@ impl App {
     }
 
     /// Whether the UI should render as safe mode — reads the live mode
-    /// from the latest status snapshot so `/s` and `/n` take effect
+    /// from the latest status snapshot so `/safe` and `/normal` take effect
     /// immediately without a stale per-session flag.
     pub fn is_safe_mode(&self) -> bool {
         matches!(
@@ -471,12 +528,132 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_lands_cursor_on_current_model() {
+        let entries = vec![
+            ModelPickerEntry {
+                name: "claude-opus-4-7",
+                description: "flagship",
+                is_current: false,
+                is_available: true,
+            },
+            ModelPickerEntry {
+                name: "claude-sonnet-4-6",
+                description: "default",
+                is_current: true,
+                is_available: true,
+            },
+            ModelPickerEntry {
+                name: "gpt-5.5",
+                description: "openai",
+                is_current: false,
+                is_available: true,
+            },
+        ];
+        let p = ModelPicker::new(entries);
+        assert_eq!(p.cursor, 1);
+        assert_eq!(p.selected().unwrap().name, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn model_picker_move_down_skips_disabled_rows() {
+        let entries = vec![
+            ModelPickerEntry {
+                name: "a",
+                description: "",
+                is_current: true,
+                is_available: true,
+            },
+            ModelPickerEntry {
+                name: "b",
+                description: "",
+                is_current: false,
+                is_available: false,
+            },
+            ModelPickerEntry {
+                name: "c",
+                description: "",
+                is_current: false,
+                is_available: true,
+            },
+        ];
+        let mut p = ModelPicker::new(entries);
+        assert_eq!(p.cursor, 0);
+        p.move_down();
+        assert_eq!(p.cursor, 2, "down should skip the disabled row at 1");
+    }
+
+    #[test]
+    fn model_picker_move_up_skips_disabled_rows() {
+        let entries = vec![
+            ModelPickerEntry {
+                name: "a",
+                description: "",
+                is_current: false,
+                is_available: true,
+            },
+            ModelPickerEntry {
+                name: "b",
+                description: "",
+                is_current: false,
+                is_available: false,
+            },
+            ModelPickerEntry {
+                name: "c",
+                description: "",
+                is_current: true,
+                is_available: true,
+            },
+        ];
+        let mut p = ModelPicker::new(entries);
+        assert_eq!(p.cursor, 2);
+        p.move_up();
+        assert_eq!(p.cursor, 0, "up should skip the disabled row at 1");
+    }
+
+    #[test]
+    fn model_picker_navigation_stops_at_list_edges() {
+        let entries = vec![ModelPickerEntry {
+            name: "only",
+            description: "",
+            is_current: true,
+            is_available: true,
+        }];
+        let mut p = ModelPicker::new(entries);
+        p.move_down();
+        assert_eq!(p.cursor, 0);
+        p.move_up();
+        assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn model_picker_with_all_rows_disabled_keeps_cursor_at_zero() {
+        let entries = vec![
+            ModelPickerEntry {
+                name: "x",
+                description: "",
+                is_current: false,
+                is_available: false,
+            },
+            ModelPickerEntry {
+                name: "y",
+                description: "",
+                is_current: false,
+                is_available: false,
+            },
+        ];
+        let mut p = ModelPicker::new(entries);
+        assert_eq!(p.cursor, 0);
+        p.move_down();
+        assert_eq!(p.cursor, 0, "no enabled row to step to");
+    }
+
+    #[test]
     fn status_snapshot_roundtrip() {
         use crate::repl::tui::event::{Mode, StatusSnapshot};
         let mut a = app();
         assert!(a.status.is_none());
         a.status = Some(StatusSnapshot {
-            model: "claude-opus-4-6".into(),
+            model: "claude-opus-4-7".into(),
             mode: Mode::Safe,
             reasoning: "thinking: 10000 tok".into(),
             input_tokens: 123,
@@ -484,7 +661,7 @@ mod tests {
         });
         let s = a.status.as_ref().unwrap();
         assert_eq!(s.mode.label(), "safe");
-        assert_eq!(s.model, "claude-opus-4-6");
+        assert_eq!(s.model, "claude-opus-4-7");
         assert_eq!(s.input_tokens, 123);
     }
 }

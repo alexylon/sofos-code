@@ -551,6 +551,8 @@ Rules:
 
 It contains:
 
+- the `SUPPORTED_MODELS` whitelist — every model id accepted by `--model` and shown in the `/model` picker, with its description and provider;
+- helpers `canonical_model`, `model_support_error`, and `supported_models_label` that share one source of truth with the CLI rejection message and the picker rows;
 - model registry entries;
 - context-window sizes;
 - auto-compaction thresholds;
@@ -562,7 +564,8 @@ It contains:
 Rules:
 
 - Model capability checks should use this registry instead of hard-coded scattered checks.
-- Adding a supported model should be primarily a registry change plus any provider-specific wire support if needed.
+- Adding a supported model is one struct literal in `SUPPORTED_MODELS` — the `Model` struct carries the user-facing description and provider alongside the context window, effort matrix, and pricing, so there is no separate `lookup` table to keep in sync.
+- Removing a model is one deletion in `SUPPORTED_MODELS`. The CLI and the picker share that array as their source of truth, so nothing else has to be touched.
 
 ### 4.7 `api/truncate.rs`
 
@@ -608,7 +611,7 @@ It contains:
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/think`, `/s`, `/n`, and `/clear` state handlers;
+- `/think`, `/safe`, `/normal`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
@@ -758,6 +761,11 @@ It contains:
 - `scrollback.rs` — terminal scrollback integration;
 - `slash_popup.rs` — state for the inline slash-command suggestion list;
 - `sgr.rs` — SGR escape helpers.
+
+The TUI also carries two modal pickers as fields on `app::App` and corresponding job/event variants:
+
+- the resume picker (`Picker` + `UiEvent::ShowResumePicker` + `Job::ResumeSelected`) drives `/resume`;
+- the model picker (`ModelPicker` + `UiEvent::ShowModelPicker` + `Job::ModelSelected`) drives `/model`. Rows on the other provider are flagged unavailable on the `ModelPickerEntry`, the renderer greys them out, and the navigation helper in `app.rs` skips past them so the cursor only lands on a model the running session can switch to.
 
 Rules:
 
@@ -1298,8 +1306,8 @@ Built-in commands include:
 - `/clear`;
 - `/compact`;
 - `/think`;
-- `/s`;
-- `/n`;
+- `/safe`;
+- `/normal`;
 - `/exit`, `/quit`, `/q`.
 
 Rules:
