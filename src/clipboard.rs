@@ -95,3 +95,39 @@ pub fn get_clipboard_image() -> Option<PastedImage> {
         base64_data,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marker_for_first_index_returns_circled_one() {
+        assert_eq!(marker_for_index(0), Some('\u{2460}'));
+    }
+
+    #[test]
+    fn marker_for_last_supported_index_returns_circled_twenty() {
+        assert_eq!(
+            marker_for_index(MAX_PASTED_IMAGES_PER_MESSAGE - 1),
+            Some('\u{2473}')
+        );
+    }
+
+    #[test]
+    fn marker_past_supported_range_returns_none() {
+        assert_eq!(marker_for_index(MAX_PASTED_IMAGES_PER_MESSAGE), None);
+        assert_eq!(marker_for_index(100), None);
+    }
+
+    #[test]
+    fn strip_paste_markers_round_trips_indices_and_text() {
+        let input = format!(
+            "look at {} and {}",
+            marker_for_index(0).unwrap(),
+            marker_for_index(2).unwrap()
+        );
+        let (text, indices) = strip_paste_markers(&input);
+        assert_eq!(text, "look at  and");
+        assert_eq!(indices, vec![0, 2]);
+    }
+}

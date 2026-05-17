@@ -43,3 +43,26 @@ pub fn read_file_body(output: &str) -> &str {
         .map(|(_, body)| body)
         .unwrap_or(output)
 }
+
+#[cfg(test)]
+mod public_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn format_and_recover_round_trip() {
+        let payload = format_read_file_output("src/main.rs", "fn main() {}\n");
+        assert!(payload.starts_with(READ_FILE_HEADER));
+        assert_eq!(read_file_body(&payload), "fn main() {}\n");
+    }
+
+    #[test]
+    fn read_file_body_falls_back_when_separator_missing() {
+        assert_eq!(read_file_body("no separator here"), "no separator here");
+    }
+
+    #[test]
+    fn read_file_body_handles_empty_body() {
+        let payload = format_read_file_output("empty.txt", "");
+        assert_eq!(read_file_body(&payload), "");
+    }
+}

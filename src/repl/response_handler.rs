@@ -145,10 +145,24 @@ impl ResponseHandler {
             }
 
             if !content_blocks.is_empty() {
-                let message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
+                let mut message_blocks: Vec<crate::api::MessageContentBlock> = content_blocks
                     .iter()
                     .map(crate::api::MessageContentBlock::from_content_block_for_api)
                     .collect();
+                if truncated_by_max_tokens {
+                    // Drop tool-use blocks from a truncated response.
+                    // Their arguments may be half-formed JSON, and storing
+                    // a `tool_use` without the matching `tool_result`
+                    // leaves the next request in a shape the provider
+                    // will reject.
+                    message_blocks.retain(|block| {
+                        !matches!(
+                            block,
+                            crate::api::MessageContentBlock::ToolUse { .. }
+                                | crate::api::MessageContentBlock::ServerToolUse { .. }
+                        )
+                    });
+                }
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);
                 }
@@ -160,9 +174,6 @@ impl ResponseHandler {
                     "Consider using --max-tokens with a higher value (current: {})",
                     self.max_tokens
                 );
-                // Skip tool execution: a truncated tool_use carries
-                // half-formed JSON arguments, so running it would
-                // either parse-fail or fire on partial input.
                 return Ok(());
             }
 

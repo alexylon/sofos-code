@@ -326,6 +326,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_routes_gpt_and_claude_correctly() {
+        assert_eq!(provider_for("gpt-5.5"), Provider::OpenAI);
+        assert_eq!(provider_for("gpt-5.4-codex"), Provider::OpenAI);
+        assert_eq!(provider_for("GPT-5.5"), Provider::OpenAI);
+        assert_eq!(provider_for("claude-opus-4-7"), Provider::Anthropic);
+        assert_eq!(
+            provider_for("claude-sonnet-4-6-20260301"),
+            Provider::Anthropic
+        );
+        assert_eq!(provider_for("o1-mini"), Provider::OpenAI);
+        assert_eq!(provider_for("unknown-model"), Provider::Anthropic);
+    }
+
+    #[test]
+    fn provider_label_is_human_readable() {
+        assert_eq!(Provider::OpenAI.label(), "OpenAI");
+        assert_eq!(Provider::Anthropic.label(), "Anthropic");
+    }
+
+    #[test]
     fn opus_4_7_has_1m_context_and_server_compaction() {
         let info = lookup("claude-opus-4-7");
         assert_eq!(info.context_window, 1_000_000);

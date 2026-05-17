@@ -131,8 +131,8 @@ impl HistoryManager {
 
     /// Reject session ids that could escape the sessions directory
     /// when interpolated into a path. The generator only produces
-    /// `session_<timestamp>` strings, so anything containing a path
-    /// separator or `..` came from an external caller (e.g.
+    /// `session_<timestamp>_<random>` strings, so anything containing a
+    /// path separator or `..` came from an external caller (e.g.
     /// `--resume <id>`) and must not be trusted.
     fn validate_session_id(session_id: &str) -> Result<()> {
         if session_id.is_empty()
