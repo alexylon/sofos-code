@@ -167,13 +167,18 @@ impl McpManager {
 
     /// Names of servers that have at least one tool registered. The
     /// caller can use these to compose a startup warning when safe
-    /// mode is on but no server has opted in.
+    /// mode is on but no server has opted in. The output is sorted so
+    /// the banner stays stable across runs — HashMap iteration order
+    /// is not deterministic.
     pub fn server_names_for_safe_mode(&self, included: bool) -> Vec<String> {
-        self.safe_mode_by_server
+        let mut names: Vec<String> = self
+            .safe_mode_by_server
             .iter()
             .filter(|(_, access)| access.is_available_in_safe_mode() == included)
             .map(|(name, _)| name.clone())
-            .collect()
+            .collect();
+        names.sort();
+        names
     }
 
     pub fn is_server_available_in_safe_mode(&self, server: &str) -> bool {

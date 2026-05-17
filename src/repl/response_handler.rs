@@ -150,18 +150,33 @@ impl ResponseHandler {
                     .map(crate::api::MessageContentBlock::from_content_block_for_api)
                     .collect();
                 if truncated_by_max_tokens {
-                    // Drop tool-use blocks from a truncated response.
-                    // Their arguments may be half-formed JSON, and storing
-                    // a `tool_use` without the matching `tool_result`
-                    // leaves the next request in a shape the provider
-                    // will reject.
+                    // Drop every tool-related block from a truncated
+                    // response. Their arguments may be half-formed
+                    // JSON, and leaving a `tool_use` without the
+                    // matching `tool_result` (or a server tool result
+                    // without its `server_tool_use`) puts the next
+                    // request in a shape the provider will reject.
                     message_blocks.retain(|block| {
                         !matches!(
                             block,
                             crate::api::MessageContentBlock::ToolUse { .. }
                                 | crate::api::MessageContentBlock::ServerToolUse { .. }
+                                | crate::api::MessageContentBlock::WebSearchToolResult { .. }
                         )
                     });
+                    if message_blocks.is_empty() {
+                        // The truncated response was tool-use only. Record
+                        // a short placeholder so the conversation keeps
+                        // alternating user / assistant — without it the
+                        // next user turn would land directly after the
+                        // previous one and the provider would reject the
+                        // request.
+                        message_blocks.push(crate::api::MessageContentBlock::Text {
+                            text: "[Response cut off by token limit before any visible content.]"
+                                .to_string(),
+                            cache_control: None,
+                        });
+                    }
                 }
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);
@@ -668,5 +683,234 @@ impl ResponseHandler {
 
     pub fn conversation(&self) -> &ConversationHistory {
         &self.conversation
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+    use crate::api::{
+        AnthropicClient, ContentBlock, MessageContent, MessageContentBlock, ReasoningEffort,
+    };
+    use crate::tools::ToolExecutor;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    fn build_handler() -> (TempDir, ResponseHandler) {
+        let workspace = TempDir::new().expect("temp workspace");
+        let client = LlmClient::Anthropic(
+            AnthropicClient::new("test-key".to_string()).expect("anthropic client"),
+        );
+        let tool_executor =
+            ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false)
+                .expect("tool executor");
+        let conversation = ConversationHistory::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let steer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let handler = ResponseHandler::new(
+            client,
+            tool_executor,
+            conversation,
+            "claude-sonnet-4-6".to_string(),
+            8_192,
+            ReasoningEffort::Off,
+            Vec::new(),
+            interrupt,
+            steer,
+            "test-session".to_string(),
+        );
+        (workspace, handler)
+    }
+
+    fn assistant_blocks(handler: &ResponseHandler) -> Vec<MessageContentBlock> {
+        let last = handler
+            .conversation()
+            .messages()
+            .last()
+            .cloned()
+            .expect("conversation has at least one message");
+        assert_eq!(
+            last.role, "assistant",
+            "expected the last turn to be assistant"
+        );
+        match last.content {
+            MessageContent::Blocks { content } => content,
+            MessageContent::Text { content } => vec![MessageContentBlock::Text {
+                text: content,
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn block_kinds(blocks: &[MessageContentBlock]) -> Vec<&'static str> {
+        blocks
+            .iter()
+            .map(|b| match b {
+                MessageContentBlock::Text { .. } => "text",
+                MessageContentBlock::Image { .. } => "image",
+                MessageContentBlock::Thinking { .. } => "thinking",
+                MessageContentBlock::Summary { .. } => "summary",
+                MessageContentBlock::Compaction { .. } => "compaction",
+                MessageContentBlock::Reasoning { .. } => "reasoning",
+                MessageContentBlock::ToolUse { .. } => "tool_use",
+                MessageContentBlock::ServerToolUse { .. } => "server_tool_use",
+                MessageContentBlock::ToolResult { .. } => "tool_result",
+                MessageContentBlock::WebSearchToolResult { .. } => "web_search_tool_result",
+            })
+            .collect()
+    }
+
+    fn call_handler(handler: &mut ResponseHandler, blocks: Vec<ContentBlock>, stop: Option<&str>) {
+        let mut display = Vec::new();
+        let (mut a, mut b, mut c, mut d, mut e) = (0, 0, 0, 0, 0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(handler.handle_response(
+            blocks,
+            stop.map(str::to_string),
+            &mut display,
+            &mut a,
+            &mut b,
+            &mut c,
+            &mut d,
+            &mut e,
+        ))
+        .expect("handle_response should not error on the truncation early-return paths");
+    }
+
+    /// A truncated response that contains text plus a partial `tool_use`
+    /// must keep the text in the conversation and drop the `tool_use`,
+    /// because storing a tool call without the matching tool result
+    /// puts the next request into a shape the provider will reject.
+    #[test]
+    fn truncated_with_text_and_tool_use_drops_only_the_tool_use() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "Looking at the file...".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool_001".to_string(),
+                name: "read_file".to_string(),
+                input: json!({ "path": "src/main.rs" }),
+            },
+        ];
+
+        call_handler(&mut handler, blocks, Some("max_tokens"));
+
+        let kinds = block_kinds(&assistant_blocks(&handler));
+        assert_eq!(kinds, vec!["text"], "tool_use must not survive truncation");
+    }
+
+    /// When the only block in a truncated response is a `tool_use`,
+    /// stripping it would leave the assistant turn empty and the next
+    /// user message would land directly after the prior user message,
+    /// which the provider rejects. A placeholder text block keeps the
+    /// conversation alternating.
+    #[test]
+    fn truncated_with_only_tool_use_inserts_placeholder_text() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![ContentBlock::ToolUse {
+            id: "tool_002".to_string(),
+            name: "read_file".to_string(),
+            input: json!({ "path": "src/lib.rs" }),
+        }];
+
+        call_handler(&mut handler, blocks, Some("max_tokens"));
+
+        let assistant = assistant_blocks(&handler);
+        assert_eq!(block_kinds(&assistant), vec!["text"]);
+        match &assistant[0] {
+            MessageContentBlock::Text { text, .. } => {
+                assert!(
+                    text.contains("cut off"),
+                    "placeholder should mention truncation, got: {text}"
+                );
+            }
+            other => panic!("expected text placeholder, got {other:?}"),
+        }
+    }
+
+    /// A truncated response that also carries a `WebSearchToolResult`
+    /// must drop the result alongside the matching `server_tool_use`.
+    /// Keeping the result without its use orphans the pair and the
+    /// next request fails.
+    #[test]
+    fn truncated_drops_server_tool_use_and_web_search_result_together() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "Here is what I found:".to_string(),
+            },
+            ContentBlock::ServerToolUse {
+                id: "srv_001".to_string(),
+                name: "web_search".to_string(),
+                input: json!({ "query": "rust async" }),
+            },
+            ContentBlock::WebSearchToolResult {
+                tool_use_id: "srv_001".to_string(),
+                content: Vec::new(),
+            },
+        ];
+
+        call_handler(&mut handler, blocks, Some("max_tokens"));
+
+        let kinds = block_kinds(&assistant_blocks(&handler));
+        assert_eq!(
+            kinds,
+            vec!["text"],
+            "server_tool_use and its web_search_tool_result must be dropped together"
+        );
+    }
+
+    /// A non-truncated response that contains only text and ends the
+    /// turn (no tool calls) should land unchanged in the conversation,
+    /// without the truncation filter or placeholder being applied.
+    #[test]
+    fn non_truncated_text_only_response_is_passed_through() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![ContentBlock::Text {
+            text: "All done.".to_string(),
+        }];
+
+        call_handler(&mut handler, blocks, Some("end_turn"));
+
+        let assistant = assistant_blocks(&handler);
+        assert_eq!(block_kinds(&assistant), vec!["text"]);
+        match &assistant[0] {
+            MessageContentBlock::Text { text, .. } => {
+                assert_eq!(text, "All done.");
+            }
+            other => panic!("expected the original text block, got {other:?}"),
+        }
+    }
+
+    /// Reasoning and thinking blocks must survive truncation — they
+    /// have no pairing requirement with a later message, so dropping
+    /// them would lose useful context for the next turn.
+    #[test]
+    fn truncated_keeps_thinking_and_reasoning_blocks() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "Need to read the file first.".to_string(),
+                signature: "sig".to_string(),
+            },
+            ContentBlock::Text {
+                text: "Let me look.".to_string(),
+            },
+            ContentBlock::ToolUse {
+                id: "tool_003".to_string(),
+                name: "read_file".to_string(),
+                input: json!({ "path": "x" }),
+            },
+        ];
+
+        call_handler(&mut handler, blocks, Some("max_tokens"));
+
+        let kinds = block_kinds(&assistant_blocks(&handler));
+        assert_eq!(kinds, vec!["thinking", "text"]);
     }
 }

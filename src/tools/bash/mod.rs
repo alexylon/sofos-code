@@ -549,15 +549,17 @@ ask = []
         use std::os::unix::fs::symlink;
 
         let (_temp, workspace) = test_support::workspace();
-        let outside = _temp.path().parent().unwrap().join("sofos-symlink-target");
+        // Put the escape target inside a sibling TempDir so concurrent
+        // test runs do not race on a shared filename in the system
+        // temp directory.
+        let outside_dir = tempfile::TempDir::new().unwrap();
+        let outside = outside_dir.path().join("sofos-symlink-target");
         std::fs::write(&outside, "secret").unwrap();
         let link = workspace.join("escape_link");
         symlink(&outside, &link).unwrap();
 
         let executor = BashExecutor::new(workspace, false, false).unwrap();
         let result = executor.execute("cat escape_link");
-
-        let _ = std::fs::remove_file(&outside);
 
         assert!(result.is_err(), "expected symlink escape to be denied");
         if let Err(SofosError::ToolExecution(msg)) = result {

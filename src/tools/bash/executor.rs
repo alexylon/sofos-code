@@ -268,15 +268,15 @@ impl BashExecutor {
         let start = Instant::now();
         let mut termination: Option<TerminationReason> = None;
 
+        let mut try_wait_error: Option<std::io::Error> = None;
+
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {}
                 Err(e) => {
-                    return Err(SofosError::ToolExecution(format!(
-                        "Failed to wait on command: {}",
-                        e
-                    )));
+                    try_wait_error = Some(e);
+                    break;
                 }
             }
 
@@ -300,15 +300,27 @@ impl BashExecutor {
             thread::sleep(SUPERVISOR_POLL_INTERVAL);
         }
 
-        if termination.is_some() {
+        // Always tear the child tree down on every error or termination
+        // path before returning. Without this, a `try_wait` failure
+        // would leave the child orphaned and the reader threads alive,
+        // and a `wait` failure would prevent the reader threads from
+        // unblocking even though we have already moved on.
+        if termination.is_some() || try_wait_error.is_some() {
             terminate_child_tree(&mut child);
         }
 
-        let status = child
-            .wait()
-            .map_err(|e| SofosError::ToolExecution(format!("Failed to reap command: {}", e)))?;
+        let wait_result = child.wait();
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
+
+        if let Some(e) = try_wait_error {
+            return Err(SofosError::ToolExecution(format!(
+                "Failed to wait on command: {}",
+                e
+            )));
+        }
+        let status = wait_result
+            .map_err(|e| SofosError::ToolExecution(format!("Failed to reap command: {}", e)))?;
 
         let stdout = drain_into_vec(stdout_buf);
         let stderr = drain_into_vec(stderr_buf);

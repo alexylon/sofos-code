@@ -200,7 +200,7 @@ impl ImageLoader {
             .is_read_explicit_allow(canonical_str);
 
         if !is_inside_workspace && !is_explicit_allow {
-            self.ask_external_read_access(path, &canonical, canonical_str)?;
+            self.ask_external_read_access(&canonical, canonical_str)?;
         }
 
         let metadata = std::fs::metadata(&canonical)
@@ -263,12 +263,7 @@ impl ImageLoader {
         }
     }
 
-    fn ask_external_read_access(
-        &self,
-        _original_path: &str,
-        canonical: &Path,
-        canonical_str: &str,
-    ) -> Result<()> {
+    fn ask_external_read_access(&self, canonical: &Path, canonical_str: &str) -> Result<()> {
         let parent_dir = canonical
             .parent()
             .and_then(|p| p.to_str())

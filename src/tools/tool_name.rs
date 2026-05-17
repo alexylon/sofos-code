@@ -227,6 +227,30 @@ mod tests {
     }
 
     #[test]
+    fn read_file_summary_counts_body_lines_not_wrapper() {
+        let body = "line 1\nline 2\nline 3\n";
+        let output = crate::tools::format_read_file_output("src/foo.rs", body);
+        let input = serde_json::json!({ "path": "src/foo.rs" });
+        let summary = ToolName::ReadFile.display_summary(&input, &output);
+        assert!(
+            summary.contains("Read 3 lines"),
+            "expected three-line summary, got: {summary}"
+        );
+        assert!(summary.contains("src/foo.rs"));
+    }
+
+    #[test]
+    fn read_file_summary_handles_empty_body() {
+        let output = crate::tools::format_read_file_output("empty.txt", "");
+        let input = serde_json::json!({ "path": "empty.txt" });
+        let summary = ToolName::ReadFile.display_summary(&input, &output);
+        assert!(
+            summary.contains("empty or not found"),
+            "expected empty hint, got: {summary}"
+        );
+    }
+
+    #[test]
     fn execute_bash_display_caps_long_output() {
         let input = serde_json::json!({"command": "seq 1 100"});
         let output: String = (1..=100)
