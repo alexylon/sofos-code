@@ -81,10 +81,7 @@ impl ToolName {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let content_lines = output
-                    .split_once("\n\n")
-                    .map(|(_, body)| body.lines().count() as u64)
-                    .unwrap_or_else(|| output.lines().count() as u64);
+                let content_lines = crate::tools::read_file_body(output).lines().count() as u64;
 
                 if content_lines == 0 {
                     if file_path.is_empty() {

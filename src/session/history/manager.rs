@@ -14,6 +14,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(super) const SOFOS_DIR: &str = ".sofos";
 pub(super) const SESSIONS_DIR: &str = "sessions";
+
+/// Number of regenerations attempted by `generate_unique_session_id`
+/// before falling back to a non-uniqueness-checked id. The random
+/// suffix already makes the chance of a collision astronomically
+/// small; the retry loop only matters if two processes happen to
+/// generate the same byte stream in the same millisecond, which is
+/// itself effectively impossible.
+const SESSION_ID_UNIQUE_RETRIES: usize = 8;
 /// Per-workspace lock file the session subsystem grabs exclusively for
 /// the duration of every `save_session` / `delete_session` call.
 /// Serialises the read-modify-write of `index.json` across concurrent
@@ -111,7 +119,7 @@ impl HistoryManager {
     /// suffix makes the chance of overlap vanishingly small, and on
     /// the off chance one slips through we regenerate.
     pub fn generate_unique_session_id(&self) -> String {
-        for _ in 0..8 {
+        for _ in 0..SESSION_ID_UNIQUE_RETRIES {
             let id = Self::generate_session_id();
             let path = self.sessions_dir().join(format!("{}.json", id));
             if !path.exists() {

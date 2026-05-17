@@ -8,7 +8,8 @@
 use crate::error::{Result, SofosError};
 use crate::tools::bash::BashExecutor;
 use crate::tools::bash::output::{
-    BASH_COMMAND_TIMEOUT, MAX_BASH_OUTPUT_BYTES, SUPERVISOR_POLL_INTERVAL, TerminationReason,
+    BASH_COMMAND_TIMEOUT, BASH_READ_CHUNK_BYTES, MAX_BASH_OUTPUT_BYTES, SUPERVISOR_POLL_INTERVAL,
+    TERMINATION_GRACE_PERIOD, TerminationReason,
 };
 use crate::tools::bash::validate::command_contains_op;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
@@ -381,7 +382,7 @@ where
 }
 
 fn read_capped<R: Read>(mut reader: R, buf: &Mutex<Vec<u8>>, overflow: &AtomicBool) {
-    let mut chunk = [0u8; 8192];
+    let mut chunk = [0u8; BASH_READ_CHUNK_BYTES];
     loop {
         match reader.read(&mut chunk) {
             Ok(0) => break,
@@ -420,7 +421,7 @@ fn terminate_child_tree(child: &mut Child) {
     unsafe {
         libc::kill(-pid, libc::SIGTERM);
     }
-    thread::sleep(std::time::Duration::from_millis(200));
+    thread::sleep(TERMINATION_GRACE_PERIOD);
     if let Ok(None) = child.try_wait() {
         unsafe {
             libc::kill(-pid, libc::SIGKILL);

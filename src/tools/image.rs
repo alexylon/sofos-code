@@ -265,62 +265,23 @@ impl ImageLoader {
 
     fn ask_external_read_access(
         &self,
-        original_path: &str,
+        _original_path: &str,
         canonical: &Path,
         canonical_str: &str,
     ) -> Result<()> {
-        if let Ok(allowed_dirs) = self.read_path_session_allowed.lock() {
-            for dir in allowed_dirs.iter() {
-                if canonical.starts_with(Path::new(dir)) {
-                    return Ok(());
-                }
-            }
-        }
-        if let Ok(denied_dirs) = self.read_path_session_denied.lock() {
-            for dir in denied_dirs.iter() {
-                if canonical.starts_with(Path::new(dir)) {
-                    return Err(SofosError::ToolExecution(format!(
-                        "Read access denied for image '{}' (denied earlier this session)",
-                        original_path
-                    )));
-                }
-            }
-        }
-
         let parent_dir = canonical
             .parent()
             .and_then(|p| p.to_str())
-            .unwrap_or(canonical_str)
-            .to_string();
-
-        if !self.interactive {
-            return Err(SofosError::ToolExecution(format!(
-                "Image '{}' is outside workspace\n\
-                 Hint: Add Read({}/**) to 'allow' list in .sofos/config.local.toml",
-                original_path, parent_dir
-            )));
-        }
-
-        let mut pm = PermissionManager::new(self.workspace.clone())?;
-        let (allowed, remember) = pm.ask_user_path_permission("Read", &parent_dir)?;
-        if allowed {
-            if !remember {
-                if let Ok(mut dirs) = self.read_path_session_allowed.lock() {
-                    dirs.insert(parent_dir);
-                }
-            }
-            Ok(())
-        } else {
-            if !remember {
-                if let Ok(mut dirs) = self.read_path_session_denied.lock() {
-                    dirs.insert(parent_dir);
-                }
-            }
-            Err(SofosError::ToolExecution(format!(
-                "Read access denied by user for image '{}'",
-                original_path
-            )))
-        }
+            .unwrap_or(canonical_str);
+        crate::tools::permissions::check_external_path_session_access(
+            &self.workspace,
+            "Read",
+            canonical_str,
+            parent_dir,
+            self.interactive,
+            &self.read_path_session_allowed,
+            &self.read_path_session_denied,
+        )
     }
 }
 

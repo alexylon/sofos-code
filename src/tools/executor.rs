@@ -451,8 +451,11 @@ impl ToolExecutor {
         Ok(())
     }
 
-    /// Check if an external path is allowed for the given scope, asking the user if needed.
-    /// Returns Ok(()) if access is granted, Err if denied.
+    /// Check if an external path is allowed for the given scope, asking
+    /// the user if needed. Thin wrapper that forwards to the shared
+    /// `permissions::check_external_path_session_access` so the same
+    /// allow / deny sets cover file reads, file writes, bash arguments,
+    /// and image loading.
     fn check_external_path_access(
         &self,
         scope: &str,
@@ -461,60 +464,15 @@ impl ToolExecutor {
         session_allowed: &Arc<Mutex<HashSet<String>>>,
         session_denied: &Arc<Mutex<HashSet<String>>>,
     ) -> Result<()> {
-        let path_obj = std::path::Path::new(canonical_path);
-
-        // Check session allowed
-        if let Ok(allowed_dirs) = session_allowed.lock() {
-            for dir in allowed_dirs.iter() {
-                if path_obj.starts_with(std::path::Path::new(dir)) {
-                    return Ok(());
-                }
-            }
-        }
-
-        // Check session denied
-        if let Ok(denied_dirs) = session_denied.lock() {
-            for dir in denied_dirs.iter() {
-                if path_obj.starts_with(std::path::Path::new(dir)) {
-                    return Err(SofosError::ToolExecution(format!(
-                        "{} access denied for '{}' (denied earlier this session)",
-                        scope, canonical_path
-                    )));
-                }
-            }
-        }
-
-        // Non-interactive mode (tests, piped input): deny with a config hint
-        if !self.interactive {
-            return Err(SofosError::ToolExecution(format!(
-                "Path '{}' is outside workspace and not explicitly allowed\n\
-                 Hint: Add {}({}/**) to 'allow' list in .sofos/config.local.toml",
-                canonical_path, scope, dir_to_grant
-            )));
-        }
-
-        // Ask user interactively
-        let mut pm = PermissionManager::new(self.fs_tool.workspace().to_path_buf())?;
-        let (allowed, remember) = pm.ask_user_path_permission(scope, dir_to_grant)?;
-
-        if allowed {
-            if !remember {
-                if let Ok(mut dirs) = session_allowed.lock() {
-                    dirs.insert(dir_to_grant.to_string());
-                }
-            }
-            Ok(())
-        } else {
-            if !remember {
-                if let Ok(mut dirs) = session_denied.lock() {
-                    dirs.insert(dir_to_grant.to_string());
-                }
-            }
-            Err(SofosError::ToolExecution(format!(
-                "{} access denied by user for '{}'",
-                scope, canonical_path
-            )))
-        }
+        permissions::check_external_path_session_access(
+            self.fs_tool.workspace(),
+            scope,
+            canonical_path,
+            dir_to_grant,
+            self.interactive,
+            session_allowed,
+            session_denied,
+        )
     }
 
     pub async fn get_available_tools(&self) -> Vec<crate::api::Tool> {
@@ -604,7 +562,7 @@ impl ToolExecutor {
                 };
                 let content =
                     truncate_for_context(&raw, MAX_FILE_READ_TOKENS, TruncationKind::File);
-                Ok(format!("File content of '{}':\n\n{}", path, content))
+                Ok(crate::tools::format_read_file_output(path, &content))
             }
             ToolName::WriteFile => {
                 // Accept common parameter-name variations. OpenAI

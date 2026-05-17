@@ -6,11 +6,84 @@ pub mod settings;
 
 pub use manager::PermissionManager;
 
+use crate::error::{Result, SofosError};
+use std::collections::HashSet;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandPermission {
     Allowed,
     Denied,
     Ask,
+}
+
+/// Gate access to a path that is outside the workspace, sharing one
+/// allow / deny set across every caller (filesystem read, filesystem
+/// write, bash path arguments, image loading) so a permission granted
+/// once in a session covers every other tool that names the same
+/// directory. The flow is: session-allowed wins, session-denied
+/// rejects, otherwise prompt the user when interactive or surface a
+/// config hint when not.
+pub fn check_external_path_session_access(
+    workspace: &Path,
+    scope: &str,
+    canonical_path: &str,
+    dir_to_grant: &str,
+    interactive: bool,
+    session_allowed: &Arc<Mutex<HashSet<String>>>,
+    session_denied: &Arc<Mutex<HashSet<String>>>,
+) -> Result<()> {
+    let canonical = Path::new(canonical_path);
+
+    if let Ok(allowed_dirs) = session_allowed.lock() {
+        for dir in allowed_dirs.iter() {
+            if canonical.starts_with(Path::new(dir)) {
+                return Ok(());
+            }
+        }
+    }
+
+    if let Ok(denied_dirs) = session_denied.lock() {
+        for dir in denied_dirs.iter() {
+            if canonical.starts_with(Path::new(dir)) {
+                return Err(SofosError::ToolExecution(format!(
+                    "{} access denied for '{}' (denied earlier this session)",
+                    scope, canonical_path
+                )));
+            }
+        }
+    }
+
+    if !interactive {
+        return Err(SofosError::ToolExecution(format!(
+            "Path '{}' is outside workspace and not explicitly allowed\n\
+             Hint: Add {}({}/**) to 'allow' list in .sofos/config.local.toml",
+            canonical_path, scope, dir_to_grant
+        )));
+    }
+
+    let mut pm = PermissionManager::new(workspace.to_path_buf())?;
+    let (allowed, remember) = pm.ask_user_path_permission(scope, dir_to_grant)?;
+
+    if allowed {
+        if !remember {
+            if let Ok(mut dirs) = session_allowed.lock() {
+                dirs.insert(dir_to_grant.to_string());
+            }
+        }
+        Ok(())
+    } else {
+        if !remember {
+            if let Ok(mut dirs) = session_denied.lock() {
+                dirs.insert(dir_to_grant.to_string());
+            }
+        }
+        Err(SofosError::ToolExecution(format!(
+            "{} access denied by user for '{}'",
+            scope, canonical_path
+        )))
+    }
 }
 
 #[cfg(test)]

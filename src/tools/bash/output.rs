@@ -22,6 +22,17 @@ pub(super) const BASH_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 /// latency on ESC; long enough that the loop is not a busy wait.
 pub(super) const SUPERVISOR_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Buffer size used by the per-stream reader threads. 8 KiB matches
+/// the kernel pipe buffer chunk most operating systems hand out, which
+/// keeps the read loop in step with how the OS delivers writes.
+pub(super) const BASH_READ_CHUNK_BYTES: usize = 8 * 1024;
+
+/// Grace period between sending `SIGTERM` to the child process group
+/// and escalating to `SIGKILL`. Enough time for a well-behaved shell
+/// or test runner to print a final line and exit, short enough that a
+/// stuck process is killed promptly when the user hits ESC.
+pub(super) const TERMINATION_GRACE_PERIOD: Duration = Duration::from_millis(200);
+
 /// Why the supervisor terminated a running bash command before its
 /// natural exit. The executor maps each variant to a distinct error
 /// message so the model can recognise the failure mode.
