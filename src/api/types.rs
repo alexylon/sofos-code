@@ -287,7 +287,7 @@ impl Reasoning {
 /// and `Max` are the extra-capability rungs and have model-specific
 /// support — see [`crate::api::model_info::effort_support_error`] for
 /// the per-model matrix. Picking an unsupported combination is
-/// rejected at startup (in `main.rs`) and at the `/think` command, so
+/// rejected at startup (in `main.rs`) and at the `/effort` command, so
 /// the wire layer can assume every effort it sees is acceptable for
 /// the active model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]

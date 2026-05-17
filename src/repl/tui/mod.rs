@@ -208,7 +208,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
     if !startup_banner.is_empty() {
         print!("{}", startup_banner);
     }
-    UI::print_welcome(&model_label);
+    UI::print_welcome();
 
     drop(ui_tx);
 

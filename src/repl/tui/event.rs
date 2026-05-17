@@ -1,5 +1,6 @@
 //! Shared event types for the TUI event loop and worker thread.
 
+use crate::api::ReasoningEffort;
 use crate::clipboard::PastedImage;
 use crate::commands::Command;
 use crate::session::SessionMetadata;
@@ -72,6 +73,8 @@ pub enum Job {
     /// fixed at compile time so the channel doesn't need to own a
     /// freshly allocated `String` per pick.
     ModelSelected(Option<&'static str>),
+    /// User confirmed a level inside the `/effort` picker; `None` on cancel.
+    EffortSelected(Option<ReasoningEffort>),
     /// Graceful shutdown — save session, print summary, exit worker loop.
     Shutdown,
 }
@@ -95,6 +98,14 @@ pub struct ModelPickerEntry {
     /// session can't switch there without a relaunch. Disabled rows
     /// stay visible; the cursor skips over them.
     pub is_available: bool,
+}
+
+/// One row in the inline `/effort` picker. The worker only puts
+/// model-supported levels in the list, so every row is selectable.
+#[derive(Debug, Clone, Copy)]
+pub struct EffortPickerEntry {
+    pub effort: ReasoningEffort,
+    pub is_current: bool,
 }
 
 /// Event pushed to the UI thread. Sources: output readers, keyboard reader,
@@ -124,6 +135,8 @@ pub enum UiEvent {
     ShowResumePicker(Vec<SessionMetadata>),
     /// Worker wants the UI to show the model picker.
     ShowModelPicker { entries: Vec<ModelPickerEntry> },
+    /// Worker wants the UI to show the reasoning-effort picker.
+    ShowEffortPicker { entries: Vec<EffortPickerEntry> },
     /// Worker pushes a fresh status snapshot (model / mode / reasoning).
     Status(StatusSnapshot),
     /// A tool call needs user confirmation. The UI renders a modal list of

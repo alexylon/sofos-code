@@ -611,7 +611,7 @@ It contains:
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/think`, `/safe`, `/normal`, and `/clear` state handlers;
+- `/effort`, `/safe`, `/normal`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
@@ -1305,7 +1305,8 @@ Built-in commands include:
 - `/resume`;
 - `/clear`;
 - `/compact`;
-- `/think`;
+- `/effort`;
+- `/model`;
 - `/safe`;
 - `/normal`;
 - `/exit`, `/quit`, `/q`.

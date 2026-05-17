@@ -321,7 +321,7 @@ mod tests {
 
     /// Regression: the validation message in `Repl::new` was rewritten
     /// (`thinking_budget >= max_tokens` → `max_tokens <= legacy thinking-
-    /// budget ceiling`) when `/think` started picking budgets per-effort
+    /// budget ceiling`) when `/effort` started picking budgets per-effort
     /// instead of from the inert flag. The classifier here must still
     /// recognise the new wording and surface a useful hint.
     #[test]

@@ -279,6 +279,41 @@ pub(super) fn handle_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc:
     }
 }
 
+/// Key handler used while the `/effort` picker overlay is open.
+/// Up/Down step through the supported levels; Enter sends the
+/// highlighted level back to the worker; Esc / Ctrl+C cancel.
+pub(super) fn handle_effort_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    job_tx: &std_mpsc::Sender<Job>,
+) {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(picker) = app.effort_picker.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_up(),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_down(),
+        KeyCode::Enter => {
+            let effort = picker.selected().map(|e| e.effort);
+            app.effort_picker = None;
+            let _ = job_tx.send(Job::EffortSelected(effort));
+        }
+        KeyCode::Esc => {
+            app.effort_picker = None;
+            let _ = job_tx.send(Job::EffortSelected(None));
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.effort_picker = None;
+            let _ = job_tx.send(Job::EffortSelected(None));
+        }
+        _ => {}
+    }
+}
+
 /// Key handler used while the `/model` picker overlay is open.
 /// Up/Down skip disabled (other-provider) rows; Enter sends the
 /// highlighted model name back to the worker; Esc / Ctrl+C cancel.
@@ -412,7 +447,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &St
 
     // The submission starts with `/` but did not parse as a command —
     // a typo like `/resuem` or an unsupported variant like
-    // `/think turbo`. Surface a local error instead of forwarding it
+    // `/effort turbo`. Surface a local error instead of forwarding it
     // to the model as a plain message, where the user pays tokens and
     // gets an irrelevant explanation back.
     let trimmed = cleaned.trim();

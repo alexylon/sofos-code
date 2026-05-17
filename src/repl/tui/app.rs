@@ -18,7 +18,7 @@ use crate::clipboard::PastedImage;
 use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
-use super::event::{ExitSummary, Job, ModelPickerEntry, StatusSnapshot};
+use super::event::{EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, StatusSnapshot};
 use super::slash_popup::SlashPopup;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -42,6 +42,8 @@ pub struct App {
     pub picker: Option<Picker>,
     /// If Some, render the `/model` picker overlay.
     pub model_picker: Option<ModelPicker>,
+    /// If Some, render the `/effort` picker overlay.
+    pub effort_picker: Option<EffortPicker>,
     /// If Some, render a confirmation modal blocking the worker thread
     /// until the user answers. Used by destructive tool prompts like
     /// `delete_file`.
@@ -137,6 +139,36 @@ fn step_to_available(cursor: usize, entries: &[ModelPickerEntry], direction: i32
     cursor
 }
 
+/// Inline overlay shown by `/effort`. Holds the supported levels
+/// plus the cursor; every row is selectable.
+pub struct EffortPicker {
+    pub entries: Vec<EffortPickerEntry>,
+    pub cursor: usize,
+}
+
+impl EffortPicker {
+    pub fn new(entries: Vec<EffortPickerEntry>) -> Self {
+        let cursor = entries.iter().position(|e| e.is_current).unwrap_or(0);
+        Self { entries, cursor }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor + 1 < self.entries.len() {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn selected(&self) -> Option<&EffortPickerEntry> {
+        self.entries.get(self.cursor)
+    }
+}
+
 /// In-flight confirmation dialog driven by a synchronous tool (`delete_file`,
 /// `delete_directory`, permission grants). The worker thread is blocked on
 /// the receiving end of `responder`; when the user picks a choice (or
@@ -166,6 +198,7 @@ impl App {
             busy_since: None,
             picker: None,
             model_picker: None,
+            effort_picker: None,
             model_label,
             should_quit: false,
             exit_summary: None,
@@ -623,6 +656,55 @@ mod tests {
         assert_eq!(p.cursor, 0);
         p.move_up();
         assert_eq!(p.cursor, 0);
+    }
+
+    #[test]
+    fn effort_picker_lands_cursor_on_current_level() {
+        use crate::api::ReasoningEffort::{High, Low, Medium, Off};
+        let entries = vec![
+            EffortPickerEntry {
+                effort: Off,
+                is_current: false,
+            },
+            EffortPickerEntry {
+                effort: Low,
+                is_current: false,
+            },
+            EffortPickerEntry {
+                effort: Medium,
+                is_current: true,
+            },
+            EffortPickerEntry {
+                effort: High,
+                is_current: false,
+            },
+        ];
+        let p = EffortPicker::new(entries);
+        assert_eq!(p.cursor, 2);
+        assert_eq!(p.selected().unwrap().effort, Medium);
+    }
+
+    #[test]
+    fn effort_picker_navigation_clamps_at_edges() {
+        use crate::api::ReasoningEffort::{Low, Off};
+        let entries = vec![
+            EffortPickerEntry {
+                effort: Off,
+                is_current: true,
+            },
+            EffortPickerEntry {
+                effort: Low,
+                is_current: false,
+            },
+        ];
+        let mut p = EffortPicker::new(entries);
+        assert_eq!(p.cursor, 0);
+        p.move_up();
+        assert_eq!(p.cursor, 0);
+        p.move_down();
+        assert_eq!(p.cursor, 1);
+        p.move_down();
+        assert_eq!(p.cursor, 1);
     }
 
     #[test]

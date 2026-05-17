@@ -260,6 +260,10 @@ impl Repl {
         self.model_config.model.clone()
     }
 
+    pub fn current_reasoning_effort(&self) -> crate::api::ReasoningEffort {
+        self.model_config.reasoning_effort
+    }
+
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
         let effort = self.model_config.reasoning_effort;
@@ -358,17 +362,15 @@ impl Repl {
     }
 
     /// True when the active model uses adaptive thinking (Opus 4.7,
-    /// Sonnet 4.6). Shared by the three `/think` handlers and the
-    /// status line so they don't drift apart.
+    /// Sonnet 4.6).
     fn uses_adaptive_thinking(&self) -> bool {
         matches!(self.client, Anthropic(_))
             && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
     }
 
-    /// Print the reasoning-state line shared by the `/think` handlers.
+    /// Print the reasoning-state line shared by the `/effort` paths.
     /// Three flavours: adaptive effort, Anthropic manual budget, OpenAI
-    /// reasoning effort. Writing this once keeps the wording identical
-    /// across the commands.
+    /// reasoning effort.
     fn print_reasoning_state(&self) {
         let effort = self.model_config.reasoning_effort;
         if self.uses_adaptive_thinking() {
@@ -379,8 +381,6 @@ impl Repl {
             );
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
-                // Show the per-effort tier budget so the `/think`
-                // output matches what hits the API.
                 let budget = crate::api::anthropic::legacy_thinking_budget(effort);
                 println!(
                     "\n{} (budget: {} tokens)\n",
@@ -399,7 +399,7 @@ impl Repl {
         }
     }
 
-    pub fn handle_think_set(&mut self, effort: crate::api::ReasoningEffort) {
+    pub fn handle_effort_set(&mut self, effort: crate::api::ReasoningEffort) {
         if let Some(msg) =
             crate::api::model_info::effort_support_error(&self.model_config.model, effort)
         {
@@ -410,6 +410,35 @@ impl Repl {
         }
         self.model_config.set_reasoning_effort(effort);
         self.print_reasoning_state();
+    }
+
+    /// Non-interactive fallback for `/effort`. The TUI opens the
+    /// picker; this path lists supported levels in `--prompt` mode.
+    pub fn handle_effort_picker_fallback(&self) {
+        let info = crate::api::model_info::lookup(&self.model_config.model);
+        let current = self.model_config.reasoning_effort;
+        println!();
+        println!(
+            "{} {}",
+            "Current effort:".bright_green(),
+            current.as_label().bright_white()
+        );
+        println!("{}", "Supported levels:".bright_cyan());
+        for effort in info.supported_efforts {
+            let marker = if *effort == current { "❯" } else { " " };
+            println!(
+                "  {} {}",
+                marker.bright_green(),
+                effort.as_label().bright_white()
+            );
+        }
+        println!();
+        println!(
+            "{}",
+            "Use `/effort <level>` to switch, or open an interactive session for the picker."
+                .dimmed()
+        );
+        println!();
     }
 
     /// Switch the active model to `name`. Refuses unsupported slugs,
@@ -460,7 +489,7 @@ impl Repl {
         ) {
             println!();
             UI::print_error(&format!(
-                "{} Run `/think <effort>` to pick a supported level before switching.",
+                "{} Run `/effort <level>` to pick a supported level before switching.",
                 msg
             ));
             println!();
@@ -513,10 +542,6 @@ impl Repl {
                 .dimmed()
         );
         println!();
-    }
-
-    pub fn handle_think_status(&self) {
-        self.print_reasoning_state();
     }
 
     pub fn enable_safe_mode(&mut self) {

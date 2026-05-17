@@ -18,8 +18,11 @@ pub enum Command {
     Exit,
     Clear,
     Resume,
-    ThinkSet(crate::api::ReasoningEffort),
-    ThinkStatus,
+    /// `/effort` — open the reasoning-effort picker.
+    EffortPicker,
+    /// `/effort <level>` — set the level directly. Per-model
+    /// validation matches `--reasoning-effort`.
+    EffortSet(crate::api::ReasoningEffort),
     SafeMode,
     NormalMode,
     Compact,
@@ -39,14 +42,19 @@ impl Command {
             "/exit" | "/quit" | "/q" => Some(Command::Exit),
             "/clear" => Some(Command::Clear),
             "/resume" => Some(Command::Resume),
-            "/think" => Some(Command::ThinkStatus),
+            "/effort" => Some(Command::EffortPicker),
             "/safe" => Some(Command::SafeMode),
             "/normal" => Some(Command::NormalMode),
             "/compact" => Some(Command::Compact),
             "/model" => Some(Command::ModelPicker),
             _ => {
-                if let Some(arg) = lower.strip_prefix("/think ") {
-                    crate::api::ReasoningEffort::parse(arg).map(Command::ThinkSet)
+                if let Some(arg) = lower.strip_prefix("/effort ") {
+                    let trimmed = arg.trim();
+                    if trimmed.is_empty() {
+                        Some(Command::EffortPicker)
+                    } else {
+                        crate::api::ReasoningEffort::parse(trimmed).map(Command::EffortSet)
+                    }
                 } else if let Some(arg) = lower.strip_prefix("/model ") {
                     let trimmed = arg.trim();
                     if trimmed.is_empty() {
@@ -66,8 +74,8 @@ impl Command {
             Command::Exit => builtin::exit_command(repl),
             Command::Clear => builtin::clear_command(repl),
             Command::Resume => builtin::resume_command(repl),
-            Command::ThinkSet(effort) => builtin::think_set_command(repl, *effort),
-            Command::ThinkStatus => builtin::think_status_command(repl),
+            Command::EffortPicker => builtin::effort_picker_command(repl),
+            Command::EffortSet(effort) => builtin::effort_set_command(repl, *effort),
             Command::SafeMode => builtin::safe_mode_command(repl),
             Command::NormalMode => builtin::normal_mode_command(repl),
             Command::Compact => builtin::compact_command(repl),
@@ -104,32 +112,8 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
         description: "resume a previously saved session",
     },
     CommandEntry {
-        name: "/think",
-        description: "show the current reasoning effort",
-    },
-    CommandEntry {
-        name: "/think off",
-        description: "disable reasoning effort",
-    },
-    CommandEntry {
-        name: "/think low",
-        description: "set reasoning effort to low",
-    },
-    CommandEntry {
-        name: "/think medium",
-        description: "set reasoning effort to medium",
-    },
-    CommandEntry {
-        name: "/think high",
-        description: "set reasoning effort to high",
-    },
-    CommandEntry {
-        name: "/think xhigh",
-        description: "set reasoning effort to extra high",
-    },
-    CommandEntry {
-        name: "/think max",
-        description: "set reasoning effort to the maximum value",
+        name: "/effort",
+        description: "switch the reasoning effort (opens a picker)",
     },
     CommandEntry {
         name: "/model",
@@ -201,8 +185,34 @@ mod tests {
         }
     }
 
-    /// Every catalog name must parse back into a known `Command`, either
-    /// directly or via the `/think <effort>` argument form.
+    #[test]
+    fn bare_slash_effort_opens_picker() {
+        assert_eq!(Command::from_str("/effort"), Some(Command::EffortPicker));
+    }
+
+    #[test]
+    fn slash_effort_with_trailing_space_opens_picker() {
+        assert_eq!(Command::from_str("/effort  "), Some(Command::EffortPicker));
+    }
+
+    #[test]
+    fn slash_effort_with_level_parses_to_effort_set() {
+        match Command::from_str("/effort high") {
+            Some(Command::EffortSet(e)) => assert_eq!(e, crate::api::ReasoningEffort::High),
+            other => panic!("expected EffortSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slash_effort_with_unknown_level_returns_none() {
+        // Unlike `/model <name>`, the effort argument has a fixed
+        // alphabet (off/low/medium/high/xhigh/max); anything else
+        // can't be turned into a `ReasoningEffort` so we surface the
+        // generic "unknown command" message instead of guessing.
+        assert!(Command::from_str("/effort turbo").is_none());
+    }
+
+    /// Every catalog name must parse back into a known `Command`.
     #[test]
     fn every_catalog_entry_parses() {
         for entry in COMMAND_CATALOG {

@@ -23,16 +23,18 @@ pub fn resume_command(repl: &mut Repl) -> Result<CommandResult> {
     Ok(CommandResult::Continue)
 }
 
-pub fn think_set_command(
-    repl: &mut Repl,
-    effort: crate::api::ReasoningEffort,
-) -> Result<CommandResult> {
-    repl.handle_think_set(effort);
+pub fn effort_picker_command(repl: &mut Repl) -> Result<CommandResult> {
+    // The TUI worker intercepts this and opens the inline picker;
+    // this fallback only runs in non-interactive mode.
+    repl.handle_effort_picker_fallback();
     Ok(CommandResult::Continue)
 }
 
-pub fn think_status_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.handle_think_status();
+pub fn effort_set_command(
+    repl: &mut Repl,
+    effort: crate::api::ReasoningEffort,
+) -> Result<CommandResult> {
+    repl.handle_effort_set(effort);
     Ok(CommandResult::Continue)
 }
 

@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 
-use super::app::{App, ConfirmationPrompt, ModelPicker, Picker};
+use super::app::{App, ConfirmationPrompt, EffortPicker, ModelPicker, Picker};
 use super::event::Mode;
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
@@ -78,6 +78,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(picker) = &app.model_picker {
         draw_model_picker(frame, area, picker);
     }
+    if let Some(picker) = &app.effort_picker {
+        draw_effort_picker(frame, area, picker);
+    }
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(frame, area, confirmation);
     }
@@ -120,6 +123,11 @@ pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
             .min(PICKER_MAX_VISIBLE_ENTRIES);
         PICKER_CHROME_ROWS.saturating_add(rows)
     } else if let Some(picker) = &app.model_picker {
+        let rows = u16::try_from(picker.entries.len())
+            .unwrap_or(u16::MAX)
+            .min(PICKER_MAX_VISIBLE_ENTRIES);
+        PICKER_CHROME_ROWS.saturating_add(rows)
+    } else if let Some(picker) = &app.effort_picker {
         let rows = u16::try_from(picker.entries.len())
             .unwrap_or(u16::MAX)
             .min(PICKER_MAX_VISIBLE_ENTRIES);
@@ -215,9 +223,11 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 
     // Resume picker takes over input — hint bar should reflect that
     // instead of advertising the normal send / newline keys.
-    if app.picker.is_some() || app.model_picker.is_some() {
+    if app.picker.is_some() || app.model_picker.is_some() || app.effort_picker.is_some() {
         let label = if app.model_picker.is_some() {
             "pick a model"
+        } else if app.effort_picker.is_some() {
+            "pick an effort"
         } else {
             "pick a session"
         };
@@ -642,6 +652,29 @@ fn picker_popup_rect(area: Rect) -> Rect {
     }
 }
 
+/// Block used by every picker overlay. `title` should already
+/// include its leading and trailing spaces.
+fn picker_block(title: &'static str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(PICKER_BORDER))
+        .title(Line::from(vec![Span::styled(
+            title,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )]))
+}
+
+/// Returns `(scroll, visible)` so a picker can render its entries
+/// with `.skip(scroll).take(visible)` while keeping the cursor inside
+/// the popup's interior.
+fn picker_visible_window(popup_height: u16, cursor: usize, total: usize) -> (usize, usize) {
+    let visible_slots = popup_height.saturating_sub(PICKER_CHROME_ROWS) as usize;
+    let scroll = scroll_offset(cursor, total, visible_slots);
+    let visible = visible_slots.min(total.saturating_sub(scroll));
+    (scroll, visible)
+}
+
 /// Scroll offset that keeps `cursor` inside a `visible`-row window
 /// over `total` items, with the cursor pinned near the middle.
 fn scroll_offset(cursor: usize, total: usize, visible: usize) -> usize {
@@ -660,9 +693,8 @@ fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
     let popup = picker_popup_rect(area);
     frame.render_widget(Clear, popup);
 
-    let visible_slots = popup.height.saturating_sub(PICKER_CHROME_ROWS) as usize;
-    let scroll = scroll_offset(picker.cursor, picker.entries.len(), visible_slots);
-    let visible = visible_slots.min(picker.entries.len().saturating_sub(scroll));
+    let (scroll, visible) =
+        picker_visible_window(popup.height, picker.cursor, picker.entries.len());
 
     let items: Vec<ListItem> = picker
         .entries
@@ -720,16 +752,54 @@ fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
         })
         .collect();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(PICKER_BORDER))
-        .title(Line::from(vec![Span::styled(
-            " Select model ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )]));
+    let list = List::new(items).block(picker_block(" Select model "));
+    frame.render_widget(list, popup);
+}
 
-    let list = List::new(items).block(block);
+/// Inline overlay for `/effort`. Every row is selectable — only
+/// supported levels reach the entry list.
+fn draw_effort_picker(frame: &mut Frame, area: Rect, picker: &EffortPicker) {
+    let popup = picker_popup_rect(area);
+    frame.render_widget(Clear, popup);
+
+    let (scroll, visible) =
+        picker_visible_window(popup.height, picker.cursor, picker.entries.len());
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, entry)| {
+            let selected = i == picker.cursor;
+            let marker = if selected {
+                ROW_MARKER_SELECTED
+            } else {
+                ROW_MARKER_PLAIN
+            };
+            let name_style = if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let mut spans: Vec<Span> = vec![
+                Span::raw(marker),
+                Span::styled(entry.effort.as_label(), name_style),
+            ];
+            if entry.is_current {
+                spans.push(Span::styled(
+                    "  (current)",
+                    Style::default().fg(HINT_KEY).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items).block(picker_block(" Select effort "));
     frame.render_widget(list, popup);
 }
 
@@ -737,9 +807,8 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
     let popup = picker_popup_rect(area);
     frame.render_widget(Clear, popup);
 
-    let visible_slots = popup.height.saturating_sub(PICKER_CHROME_ROWS) as usize;
-    let scroll = scroll_offset(picker.cursor, picker.sessions.len(), visible_slots);
-    let visible = visible_slots.min(picker.sessions.len().saturating_sub(scroll));
+    let (scroll, visible) =
+        picker_visible_window(popup.height, picker.cursor, picker.sessions.len());
 
     let items: Vec<ListItem> = picker
         .sessions
@@ -770,16 +839,7 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
         })
         .collect();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(PICKER_BORDER))
-        .title(Line::from(vec![Span::styled(
-            " Resume session ",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )]));
-
-    let list = List::new(items).block(block);
+    let list = List::new(items).block(picker_block(" Resume session "));
     frame.render_widget(list, popup);
 }
 

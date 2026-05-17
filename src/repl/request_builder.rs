@@ -72,7 +72,7 @@ impl<'a> RequestBuilder<'a> {
         };
 
         let reasoning_config = if matches!(self.client, OpenAI(_)) {
-            // `Max` is rejected upstream (startup validation + `/think`
+            // `Max` is rejected upstream (startup validation + `/effort`
             // gate) because OpenAI's wire schema doesn't accept it.
             // Clamping `Max` defensively to the highest accepted level
             // here keeps the request well-formed if validation is ever
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn legacy_anthropic_thinking_budget_scales_with_effort() {
         // On non-adaptive Anthropic models (Haiku 4.5),
-        // `/think low|medium|high` used to all collapse to the same
+        // `/effort low|medium|high` used to all collapse to the same
         // `thinking_budget`. Verify each tier now produces a strictly
         // larger budget so the slider has a visible effect.
         let conv = ConversationHistory::new();

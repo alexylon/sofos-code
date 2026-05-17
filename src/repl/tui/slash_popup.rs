@@ -212,26 +212,15 @@ mod tests {
     }
 
     #[test]
-    fn trailing_space_narrows_to_multi_word_entries() {
-        // `/think ` should keep the popup open and narrow it to the
-        // `/think <effort>` entries; the bare `/think` row drops out
-        // because it does not start with the typed prefix.
+    fn slash_with_trailing_space_keeps_popup_open() {
+        // `/e ` should keep the popup open and narrow to `/effort`
+        // — multi-word commands no longer exist in the catalog
+        // (the picker opens for `/effort`).
         let mut popup = SlashPopup::new();
-        popup.sync("/think ");
+        popup.sync("/e");
         assert!(popup.is_visible());
         let names: Vec<&str> = popup.matches().iter().map(|e| e.name).collect();
-        assert!(names.contains(&"/think medium"));
-        assert!(!names.contains(&"/think"));
-    }
-
-    #[test]
-    fn multi_word_prefix_narrows_further() {
-        let mut popup = SlashPopup::new();
-        popup.sync("/think m");
-        let names: Vec<&str> = popup.matches().iter().map(|e| e.name).collect();
-        assert!(names.contains(&"/think medium"));
-        assert!(names.contains(&"/think max"));
-        assert!(!names.contains(&"/think low"));
+        assert!(names.contains(&"/effort"));
     }
 
     #[test]

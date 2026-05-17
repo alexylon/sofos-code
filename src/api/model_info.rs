@@ -72,7 +72,7 @@ pub struct Model {
     /// running a client-side LLM-summary turn.
     pub supports_server_compaction: bool,
     /// Reasoning-effort levels this model accepts on the wire.
-    /// Startup validation and the `/think` handler use this list to
+    /// Startup validation and the `/effort` handler use this list to
     /// reject mismatched pairs (`xhigh` on Sonnet 4.6, `max` on any
     /// OpenAI model) before they reach the server.
     pub supported_efforts: &'static [ReasoningEffort],
@@ -369,7 +369,7 @@ pub fn lookup(name: &str) -> &'static Model {
 /// pair, or `None` if the pair is supported. The message names the
 /// model and lists every effort level the model does accept, so the
 /// user can pick a valid alternative without consulting the docs.
-/// Surfaced to the user from the startup validator and the `/think`
+/// Surfaced to the user from the startup validator and the `/effort`
 /// handler so the failure mode is the same in both places.
 pub fn effort_support_error(name: &str, effort: ReasoningEffort) -> Option<String> {
     let info = lookup(name);

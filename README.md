@@ -187,8 +187,8 @@ sofos --resume
 | `/resume`                                   | Open the session picker and resume a saved conversation. |
 | `/clear`                                    | Clear the current conversation history and start a fresh session id. |
 | `/compact`                                  | Compact older context to reduce token usage. |
-| `/think`                                    | Show the current reasoning-effort setting. |
-| `/think off\|low\|medium\|high\|xhigh\|max` | Change reasoning effort when the active model supports the selected level. |
+| `/effort`                                   | Open the reasoning-effort picker. The picker lists only the levels the active model supports. **Up / Down**, **Enter** to switch, **Esc** to cancel. |
+| `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a named level. Validation matches the picker — unsupported levels print a clear error. |
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
 | `/safe`                                     | Enable safe mode: read-only native tools. Prompt changes to `:`. |
@@ -280,7 +280,7 @@ Sofos exposes six reasoning levels:
 off, low, medium, high, xhigh, max
 ```
 
-The active model determines which levels are accepted. Sofos validates the level at startup and when `/think` is used, so unsupported combinations fail before reaching the provider API.
+The active model determines which levels are accepted. Sofos validates the level at startup and when `/effort` is used, so unsupported combinations fail before reaching the provider API.
 
 Examples:
 
@@ -592,7 +592,7 @@ See [`RELEASE.md`](RELEASE.md) for the full process.
 |---|---|
 | API key error | Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or pass `--api-key` / `--openai-api-key`. |
 | Cannot connect | Run `sofos --check-connection`. |
-| Model rejects reasoning effort | Use `/think` or `-e` with a level supported by the selected model. |
+| Model rejects reasoning effort | Use `/effort` or `-e` with a level supported by the selected model. |
 | Path denied | Add a `Read`, `Write`, or `Bash` rule, or approve the interactive prompt. |
 | External edit denied | `edit_file` and `morph_edit_file` need both Read and Write for external files. |
 | Code search unavailable | Install `ripgrep` and ensure `rg` is on `PATH`. |
