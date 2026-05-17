@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 use super::app::{App, ConfirmationPrompt, Picker};
 use super::event::Mode;
 use super::inline_terminal::Frame;
+use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
 use crate::tools::utils::ConfirmationType;
 
 const ACCENT: Color = Color::Rgb(0xFF, 0x99, 0x33);
@@ -22,7 +23,21 @@ const STATUS_KEY: Color = Color::Rgb(150, 150, 150);
 const STATUS_VAL: Color = Color::Rgb(200, 200, 200);
 const SAFE_MODE_FG: Color = Color::Rgb(0xFF, 0xA5, 0x00);
 const PICKER_BORDER: Color = Color::Rgb(140, 140, 140);
+const SLASH_POPUP_BORDER: Color = Color::Rgb(120, 120, 120);
+const SLASH_POPUP_NAME_FG: Color = Color::Rgb(200, 200, 200);
+const SLASH_POPUP_DESC_FG: Color = Color::Rgb(130, 130, 130);
 const SEP: &str = "  ·  ";
+/// Rows reserved by [`draw_slash_popup`] beyond the visible row count
+/// (top and bottom borders of the surrounding block).
+const SLASH_POPUP_CHROME_ROWS: u16 = 2;
+/// Minimum number of spaces between the command name column and the
+/// description column inside the slash popup.
+const SLASH_POPUP_COLUMN_GAP: usize = 2;
+/// Glyph prefix for the highlighted row of any selection list.
+const ROW_MARKER_SELECTED: &str = "❯ ";
+/// Two-space prefix used on rows that are neither highlighted nor
+/// carrying a scroll cue.
+const ROW_MARKER_PLAIN: &str = "  ";
 /// Maximum number of *content* rows the input box is allowed to grow to
 /// before the textarea starts scrolling internally.
 pub const MAX_INPUT_CONTENT_ROWS: u16 = 6;
@@ -33,24 +48,29 @@ const STATUS_ROW_HEIGHT: u16 = 1;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let input_height = input_box_height(app, area.width);
+    let popup_height = slash_popup_height(&app.slash_popup);
 
-    // [hint, input, status] — all rows painted, none left unpainted.
-    // An earlier revision reserved a blank spacer row at the top,
-    // but that row stayed invisible to the diff engine (default vs
-    // default = no-op) and could end up holding ghost residue from a
-    // previous viewport position.
+    // Layout (top to bottom): hint · optional slash popup · input · status.
+    // Every row is painted; an earlier revision reserved a blank spacer
+    // row at the top, but that row stayed invisible to the diff engine
+    // (default vs default = no-op) and could end up holding ghost
+    // residue from a previous viewport position.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(HINT_ROW_HEIGHT),
+            Constraint::Length(popup_height),
             Constraint::Length(input_height),
             Constraint::Length(STATUS_ROW_HEIGHT),
         ])
         .split(area);
 
     draw_hint(frame, rows[0], app);
-    draw_input(frame, rows[1], app);
-    draw_status(frame, rows[2], app);
+    if popup_height > 0 {
+        draw_slash_popup(frame, rows[1], &app.slash_popup);
+    }
+    draw_input(frame, rows[2], app);
+    draw_status(frame, rows[3], app);
 
     if let Some(picker) = &app.picker {
         draw_picker(frame, area, picker);
@@ -80,7 +100,8 @@ const PICKER_MAX_VISIBLE_ENTRIES: u16 = 12;
 /// two, hiding options like "Yes and remember" / "No" / "No and
 /// remember".
 pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
-    let base = HINT_ROW_HEIGHT + input_box_height(app, area_width) + STATUS_ROW_HEIGHT;
+    let popup_rows = slash_popup_height(&app.slash_popup);
+    let base = HINT_ROW_HEIGHT + popup_rows + input_box_height(app, area_width) + STATUS_ROW_HEIGHT;
 
     let modal_height = if let Some(confirmation) = &app.confirmation {
         let rows = u16::try_from(confirmation.choices.len()).unwrap_or(u16::MAX);
@@ -95,6 +116,16 @@ pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
     };
 
     base.max(modal_height)
+}
+
+/// Rows the slash-command popup wants in the viewport. Zero when hidden.
+fn slash_popup_height(popup: &SlashPopup) -> u16 {
+    if !popup.is_visible() {
+        return 0;
+    }
+    let visible = popup.matches().len().clamp(1, SLASH_POPUP_MAX_ROWS);
+    let visible = u16::try_from(visible).unwrap_or(u16::MAX);
+    visible.saturating_add(SLASH_POPUP_CHROME_ROWS)
 }
 
 /// Compute the input box's rendered height (content rows clamped into the
@@ -480,7 +511,7 @@ fn draw_confirmation(frame: &mut Frame, area: Rect, prompt: &ConfirmationPrompt)
         let at_top_cue = Some(i) == top_cue_row && !selected;
         let at_bottom_cue = Some(i) == bottom_cue_row && !selected;
         let marker = if selected {
-            "❯ "
+            ROW_MARKER_SELECTED
         } else if at_top_cue && at_bottom_cue {
             "⇅ "
         } else if at_top_cue {
@@ -488,7 +519,7 @@ fn draw_confirmation(frame: &mut Frame, area: Rect, prompt: &ConfirmationPrompt)
         } else if at_bottom_cue {
             "▾ "
         } else {
-            "  "
+            ROW_MARKER_PLAIN
         };
         let style = if selected {
             Style::default().fg(accent).add_modifier(Modifier::BOLD)
@@ -520,6 +551,69 @@ fn draw_confirmation(frame: &mut Frame, area: Rect, prompt: &ConfirmationPrompt)
     frame.render_widget(paragraph, popup);
 }
 
+fn draw_slash_popup(frame: &mut Frame, area: Rect, popup: &SlashPopup) {
+    if area.height <= SLASH_POPUP_CHROME_ROWS || area.width == 0 {
+        return;
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(SLASH_POPUP_BORDER))
+        .title(Line::from(Span::styled(
+            " commands ",
+            Style::default().fg(TITLE_FG).add_modifier(Modifier::BOLD),
+        )));
+
+    let interior_rows = area.height.saturating_sub(SLASH_POPUP_CHROME_ROWS);
+    let matches = popup.matches();
+    let visible = (interior_rows as usize).min(matches.len());
+    let start = popup
+        .scroll_top()
+        .min(matches.len().saturating_sub(visible.max(1)));
+    let end = (start + visible).min(matches.len());
+
+    let name_col_width = matches
+        .iter()
+        .skip(start)
+        .take(visible)
+        .map(|entry| entry.name.chars().count())
+        .max()
+        .unwrap_or(0);
+
+    let accent_bold = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+    let unselected_name = Style::default().fg(SLASH_POPUP_NAME_FG);
+    let unselected_desc = Style::default().fg(SLASH_POPUP_DESC_FG);
+    let unselected_marker = Style::default().fg(Color::DarkGray);
+    let selected_desc = Style::default().fg(ACCENT);
+
+    let mut lines: Vec<Line> = Vec::with_capacity(visible);
+    for (offset, entry) in matches[start..end].iter().enumerate() {
+        let idx = start + offset;
+        let selected = idx == popup.cursor();
+        let (marker, marker_style, name_style, desc_style) = if selected {
+            (ROW_MARKER_SELECTED, accent_bold, accent_bold, selected_desc)
+        } else {
+            (
+                ROW_MARKER_PLAIN,
+                unselected_marker,
+                unselected_name,
+                unselected_desc,
+            )
+        };
+        let name_padding = name_col_width.saturating_sub(entry.name.chars().count());
+        lines.push(Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::styled(entry.name, name_style),
+            Span::raw(" ".repeat(name_padding + SLASH_POPUP_COLUMN_GAP)),
+            Span::styled(entry.description, desc_style),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
 fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
     let width = area.width.saturating_mul(8) / 10;
     let height = area.height.saturating_mul(6) / 10;
@@ -539,7 +633,11 @@ fn draw_picker(frame: &mut Frame, area: Rect, picker: &Picker) {
         .enumerate()
         .map(|(i, s)| {
             let selected = i == picker.cursor;
-            let marker = if selected { "❯ " } else { "  " };
+            let marker = if selected {
+                ROW_MARKER_SELECTED
+            } else {
+                ROW_MARKER_PLAIN
+            };
             let style = if selected {
                 Style::default()
                     .fg(Color::White)

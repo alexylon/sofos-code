@@ -199,6 +199,7 @@ sofos --resume
 - **Enter** submits the current message.
 - **Shift+Enter** inserts a newline when the terminal supports it.
 - **Alt+Enter** or **Ctrl+Enter** can be used as newline fallbacks.
+- Typing a leading `/` opens an inline command suggestion list. Use **Up / Down** to highlight an entry, **Enter** to run the highlighted command, **Tab** to insert it into the input, and **Esc** to dismiss the list.
 - You can keep typing while the model is working. New messages are queued and processed in order.
 - If the model is inside a tool loop, a queued message is delivered at the next tool-result boundary so it can steer the current turn without interrupting it.
 - The status line shows the model, mode, reasoning setting, and running token totals.

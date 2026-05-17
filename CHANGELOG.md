@@ -6,6 +6,7 @@ All notable changes to Sofos are documented in this file.
 
 ### Added
 
+- **An inline suggestion list appears the moment you type `/`.** As soon as the input begins with a slash, a small panel below the input box lists every available slash command together with a short description, filtered by what you have typed so far. Up and Down highlight an entry, Enter runs it, Tab inserts it into the input so you can finish typing arguments, and Esc closes the panel. The Tab autocomplete that previously worked silently for a single match still does, but it now goes through the same suggestion list.
 - **New `view_image` tool lets the model open an image on demand.** Given a local image file path or an `http(s)://` URL, the tool attaches the image to the conversation so the model can describe it. For a folder of images, the model is told to call `list_directory` first and then `view_image` once per file. Supports JPEG, PNG, GIF, and WebP up to 20 MB per local file; URLs are passed through to the model provider, which fetches them on its side. External paths reuse the same Read-permission prompt as `read_file`, so granting access to a directory once covers both tools. Local images larger than 2048 pixels on the long side are downscaled proportionally before they reach the model so a 4K screenshot does not burn through the per-image token budget; smaller images are sent unchanged.
 
 ### Changed

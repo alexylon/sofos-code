@@ -19,6 +19,7 @@ use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
 use super::event::{ExitSummary, Job, StatusSnapshot};
+use super::slash_popup::SlashPopup;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -67,6 +68,10 @@ pub struct App {
     /// `None` means the textarea holds the user's live draft (not a
     /// historical entry).
     pub history_cursor: Option<usize>,
+    /// Inline overlay shown under the input box while the user is typing
+    /// a `/…` command. Stays in sync with the textarea on every keystroke
+    /// via [`App::sync_slash_popup`].
+    pub slash_popup: SlashPopup,
 }
 
 pub const INPUT_HISTORY_CAP: usize = 100;
@@ -112,7 +117,16 @@ impl App {
             pasted_images: Vec::new(),
             input_history: VecDeque::new(),
             history_cursor: None,
+            slash_popup: SlashPopup::new(),
         }
+    }
+
+    /// Recompute the slash-command overlay so it tracks the textarea.
+    /// Callers should invoke this after every keystroke that can change
+    /// the input contents.
+    pub fn sync_slash_popup(&mut self) {
+        let text = self.input_text();
+        self.slash_popup.sync(&text);
     }
 
     /// Whether the UI should render as safe mode — reads the live mode
@@ -221,6 +235,7 @@ impl App {
     pub fn clear_input(&mut self) {
         self.textarea = TextArea::default();
         style_textarea(&mut self.textarea);
+        self.slash_popup.hide();
     }
 
     /// Route a key event into the textarea (idle) or picker (overlay).

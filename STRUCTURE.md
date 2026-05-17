@@ -239,6 +239,8 @@ src/
 │       │   # Frame driver that keeps Sofos anchored at the bottom of the terminal.
 │       ├── scrollback.rs
 │       │   # Scrollback integration using terminal scrolling-region behaviour.
+│       ├── slash_popup.rs
+│       │   # State for the inline slash-command suggestion list (filter, navigation, selection).
 │       └── sgr.rs
 │           # Small helpers for ANSI SGR style sequences.
 │
@@ -754,6 +756,7 @@ It contains:
 - `inline_terminal.rs` — resize-safe custom terminal integration;
 - `inline_tui.rs` — inline viewport frame driver;
 - `scrollback.rs` — terminal scrollback integration;
+- `slash_popup.rs` — state for the inline slash-command suggestion list;
 - `sgr.rs` — SGR escape helpers.
 
 Rules:

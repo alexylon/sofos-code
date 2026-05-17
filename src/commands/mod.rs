@@ -60,21 +60,96 @@ impl Command {
     }
 }
 
-/// All available commands as strings (for Tab autocomplete in the TUI)
-pub static COMMANDS: &[&str] = &[
-    "/exit",
-    "/quit",
-    "/q",
-    "/clear",
-    "/resume",
-    "/think off",
-    "/think low",
-    "/think medium",
-    "/think high",
-    "/think xhigh",
-    "/think max",
-    "/think",
-    "/s",
-    "/n",
-    "/compact",
+/// Static catalog entry for one slash command. Used by both the popup
+/// (for rendering names and descriptions) and by the unknown-command
+/// error message (which lists every available name).
+#[derive(Debug, Clone, Copy)]
+pub struct CommandEntry {
+    /// What the user types, including the leading `/`.
+    pub name: &'static str,
+    /// Short one-line description shown in the popup next to the name.
+    pub description: &'static str,
+}
+
+/// Ordered list of every typeable command. Order here is the order shown
+/// in the popup, so put the most useful entries first.
+pub static COMMAND_CATALOG: &[CommandEntry] = &[
+    CommandEntry {
+        name: "/clear",
+        description: "clear the conversation and start fresh",
+    },
+    CommandEntry {
+        name: "/compact",
+        description: "summarize the conversation to free up context",
+    },
+    CommandEntry {
+        name: "/resume",
+        description: "resume a previously saved session",
+    },
+    CommandEntry {
+        name: "/think",
+        description: "show the current reasoning effort",
+    },
+    CommandEntry {
+        name: "/think off",
+        description: "disable reasoning effort",
+    },
+    CommandEntry {
+        name: "/think low",
+        description: "set reasoning effort to low",
+    },
+    CommandEntry {
+        name: "/think medium",
+        description: "set reasoning effort to medium",
+    },
+    CommandEntry {
+        name: "/think high",
+        description: "set reasoning effort to high",
+    },
+    CommandEntry {
+        name: "/think xhigh",
+        description: "set reasoning effort to extra high",
+    },
+    CommandEntry {
+        name: "/think max",
+        description: "set reasoning effort to the maximum value",
+    },
+    CommandEntry {
+        name: "/s",
+        description: "enter safe mode (only read-only tools are allowed)",
+    },
+    CommandEntry {
+        name: "/n",
+        description: "leave safe mode and resume normal mode",
+    },
+    CommandEntry {
+        name: "/exit",
+        description: "save the session and quit",
+    },
+    CommandEntry {
+        name: "/quit",
+        description: "alias of /exit",
+    },
+    CommandEntry {
+        name: "/q",
+        description: "alias of /exit",
+    },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every catalog name must parse back into a known `Command`, either
+    /// directly or via the `/think <effort>` argument form.
+    #[test]
+    fn every_catalog_entry_parses() {
+        for entry in COMMAND_CATALOG {
+            assert!(
+                Command::from_str(entry.name).is_some(),
+                "command `{}` is in the catalog but does not parse",
+                entry.name
+            );
+        }
+    }
+}

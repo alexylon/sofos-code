@@ -19,6 +19,7 @@ pub mod keymap;
 pub mod output;
 pub mod scrollback;
 pub mod sgr;
+pub mod slash_popup;
 pub mod ui;
 pub mod worker;
 

@@ -113,6 +113,7 @@ pub(super) async fn event_loop(
                     // in the textarea rather than Enter-submits.
                     if app.confirmation.is_none() && app.picker.is_none() {
                         app.textarea.insert_str(text);
+                        app.sync_slash_popup();
                     }
                     break;
                 }

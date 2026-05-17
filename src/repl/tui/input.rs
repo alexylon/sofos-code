@@ -7,11 +7,23 @@ use std::time::Duration;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::commands::{COMMANDS, Command};
+use crate::commands::{COMMAND_CATALOG, Command};
 use crate::repl::SteerBuffer;
 use crate::repl::tui::app::App;
 use crate::repl::tui::event::{Job, UiEvent};
 use crate::repl::tui::request_shutdown;
+use tui_textarea::CursorMove;
+
+/// Extract the three modifier flags the input handlers care about, in
+/// `(shift, alt, ctrl)` order. SUPER/HYPER/META keys, which crossterm
+/// also tracks, do not affect any of the key bindings below.
+fn key_modifiers(key: &KeyEvent) -> (bool, bool, bool) {
+    (
+        key.modifiers.contains(KeyModifiers::SHIFT),
+        key.modifiers.contains(KeyModifiers::ALT),
+        key.modifiers.contains(KeyModifiers::CONTROL),
+    )
+}
 
 pub(super) fn handle_idle_key(
     app: &mut App,
@@ -24,157 +36,174 @@ pub(super) fn handle_idle_key(
         return;
     }
 
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let alt = key.modifiers.contains(KeyModifiers::ALT);
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let (shift, alt, ctrl) = key_modifiers(&key);
+    let bare = !shift && !alt && !ctrl;
 
-    match key.code {
-        KeyCode::Char('c') if ctrl => {
-            if app.busy() {
-                // First Ctrl+C while busy: politely interrupt the
-                // running job. Second Ctrl+C while *still* busy means
-                // the worker isn't responding (panicked / deadlocked /
-                // wedged in a syscall) — escalate to a hard shutdown so
-                // the user always has an escape hatch. The worker
-                // resets the flag at the start of each new job so a
-                // fresh interrupt always starts from "polite".
-                if interrupt.load(Ordering::SeqCst) {
-                    request_shutdown(app, job_tx);
+    // While the slash-command popup is open we intercept the navigation
+    // keys (Up/Down/Tab/Enter/Esc) so they steer the popup instead of
+    // editing the textarea. The trailing sync still runs afterwards so
+    // the popup re-aligns with whatever the textarea now holds.
+    let popup_consumed =
+        app.slash_popup.is_visible() && handle_slash_popup_key(app, key, job_tx, steer_buffer);
+
+    if !popup_consumed {
+        match key.code {
+            KeyCode::Char('c') if ctrl => {
+                if app.busy() {
+                    // First Ctrl+C while busy: politely interrupt the
+                    // running job. Second Ctrl+C while *still* busy means
+                    // the worker isn't responding (panicked / deadlocked /
+                    // wedged in a syscall) — escalate to a hard shutdown so
+                    // the user always has an escape hatch. The worker
+                    // resets the flag at the start of each new job so a
+                    // fresh interrupt always starts from "polite".
+                    if interrupt.load(Ordering::SeqCst) {
+                        request_shutdown(app, job_tx);
+                    } else {
+                        interrupt.store(true, Ordering::SeqCst);
+                    }
                 } else {
-                    interrupt.store(true, Ordering::SeqCst);
+                    request_shutdown(app, job_tx);
                 }
-            } else {
+            }
+            KeyCode::Char('d') if ctrl && !app.busy() && app.textarea.is_empty() => {
                 request_shutdown(app, job_tx);
             }
-        }
-        KeyCode::Char('d') if ctrl && !app.busy() && app.textarea.is_empty() => {
-            request_shutdown(app, job_tx);
-        }
-        KeyCode::Char('v') if ctrl => {
-            handle_clipboard_paste(app);
-        }
-        // Ctrl+U deletes from the cursor to the start of the line, matching
-        // readline / Claude Code. tui-textarea's default would undo the last
-        // edit instead, which looks like a single-char backspace.
-        KeyCode::Char('u') if ctrl => {
-            app.textarea.delete_line_by_head();
-        }
-        // Alt+Up / Alt+Down cycle previously-submitted messages
-        // without shadowing the textarea's own Up/Down cursor keys.
-        KeyCode::Up if alt && !ctrl => {
-            app.history_prev();
-        }
-        KeyCode::Down if alt && !ctrl => {
-            app.history_next();
-        }
-        KeyCode::Esc if app.busy() => {
-            interrupt.store(true, Ordering::SeqCst);
-        }
-        // Plain Enter (no shift/alt/ctrl) submits. Any *modified* Enter
-        // inserts a newline by falling through to the textarea handler.
-        // We accept multiple modifier combinations because terminal
-        // support for Shift+Enter varies wildly:
-        //   - Apple Terminal.app and many defaults do NOT distinguish
-        //     Shift+Enter from Enter — the shift modifier is dropped
-        //     and the keypress arrives here as a bare `Enter`, which
-        //     matches this arm and submits.
-        //   - Alt+Enter and Ctrl+Enter are reliably distinguishable on
-        //     essentially every terminal, so users on terminals
-        //     without Shift+Enter support can use those as a fallback
-        //     newline binding.
-        //   - Shift+Enter works on terminals that implement the kitty
-        //     keyboard protocol (Ghostty, kitty, Alacritty, WezTerm,
-        //     iTerm with the flag turned on). `TerminalGuard` pushes
-        //     the `DISAMBIGUATE_ESCAPE_CODES` flag so those terminals
-        //     start delivering Shift+Enter with the SHIFT modifier set.
-        KeyCode::Enter if !shift && !alt && !ctrl => {
-            submit_input(app, job_tx, steer_buffer);
-        }
-        // Plain Tab on a `/…` line tries to complete the slash command;
-        // otherwise it falls through to the textarea (indent).
-        KeyCode::Tab if !shift && !alt && !ctrl => {
-            if !try_complete_command(app) {
+            KeyCode::Char('v') if ctrl => {
+                handle_clipboard_paste(app);
+            }
+            // Ctrl+U deletes from the cursor to the start of the line, matching
+            // readline / Claude Code. tui-textarea's default would undo the last
+            // edit instead, which looks like a single-char backspace.
+            KeyCode::Char('u') if ctrl => {
+                app.textarea.delete_line_by_head();
+            }
+            // Alt+Up / Alt+Down cycle previously-submitted messages
+            // without shadowing the textarea's own Up/Down cursor keys.
+            KeyCode::Up if alt && !ctrl => {
+                app.history_prev();
+            }
+            KeyCode::Down if alt && !ctrl => {
+                app.history_next();
+            }
+            KeyCode::Esc if app.busy() => {
+                interrupt.store(true, Ordering::SeqCst);
+            }
+            // Plain Enter (no shift/alt/ctrl) submits. Any *modified* Enter
+            // inserts a newline by falling through to the textarea handler.
+            // We accept multiple modifier combinations because terminal
+            // support for Shift+Enter varies wildly:
+            //   - Apple Terminal.app and many defaults do NOT distinguish
+            //     Shift+Enter from Enter — the shift modifier is dropped
+            //     and the keypress arrives here as a bare `Enter`, which
+            //     matches this arm and submits.
+            //   - Alt+Enter and Ctrl+Enter are reliably distinguishable on
+            //     essentially every terminal, so users on terminals
+            //     without Shift+Enter support can use those as a fallback
+            //     newline binding.
+            //   - Shift+Enter works on terminals that implement the kitty
+            //     keyboard protocol (Ghostty, kitty, Alacritty, WezTerm,
+            //     iTerm with the flag turned on). `TerminalGuard` pushes
+            //     the `DISAMBIGUATE_ESCAPE_CODES` flag so those terminals
+            //     start delivering Shift+Enter with the SHIFT modifier set.
+            KeyCode::Enter if bare => {
+                submit_input(app, job_tx, steer_buffer);
+            }
+            // Plain Tab on a `/…` line opens the slash-command popup
+            // (auto-completing immediately when only one match remains).
+            // Outside that case it falls through to the textarea so the
+            // key inserts a real tab.
+            KeyCode::Tab if bare => {
+                if !try_open_slash_popup(app) {
+                    app.handle_textarea_input(key);
+                }
+            }
+            _ => {
                 app.handle_textarea_input(key);
             }
         }
-        _ => app.handle_textarea_input(key),
+    }
+    app.sync_slash_popup();
+}
+
+/// React to a key event while the slash-command popup is open. Returns
+/// `true` when the key was consumed by the popup and the caller should
+/// stop dispatching it further.
+fn handle_slash_popup_key(
+    app: &mut App,
+    key: KeyEvent,
+    job_tx: &std_mpsc::Sender<Job>,
+    steer_buffer: &SteerBuffer,
+) -> bool {
+    let (shift, alt, ctrl) = key_modifiers(&key);
+    let bare = !shift && !alt && !ctrl;
+    match key.code {
+        KeyCode::Up if bare => {
+            app.slash_popup.move_up();
+            true
+        }
+        KeyCode::Down if bare => {
+            app.slash_popup.move_down();
+            true
+        }
+        KeyCode::Esc if !app.busy() => {
+            // Interrupt takes priority while the worker is busy, so the
+            // popup-aware Esc only fires when the user is idle.
+            let snapshot = app.input_text();
+            app.slash_popup.dismiss(&snapshot);
+            true
+        }
+        KeyCode::Tab if bare => {
+            apply_selected_command(app);
+            true
+        }
+        KeyCode::Enter if bare => {
+            // Enter inserts the highlighted command into the textarea
+            // and submits it in one gesture.
+            apply_selected_command(app);
+            submit_input(app, job_tx, steer_buffer);
+            true
+        }
+        _ => false,
     }
 }
 
-/// Autocomplete a `/command` prefix in the textarea against the static
-/// `COMMANDS` list. Returns `true` when the key was consumed (the input
-/// started with `/`) and `false` when the caller should fall through to
-/// the textarea's default Tab behaviour.
-///
-/// - Zero matches: consume the key and do nothing (prevents a `\t` from
-///   sneaking into an otherwise-command-looking line).
-/// - One match: complete fully.
-/// - Multiple matches: complete to their longest common prefix, leaving
-///   the cursor where the next character must be typed.
-fn try_complete_command(app: &mut App) -> bool {
+/// React to a Tab press while the slash-command popup is hidden.
+/// Returns `true` when the keystroke has been consumed (so the caller
+/// must not also insert a literal tab) and `false` when Tab should fall
+/// through to the textarea — for example to indent a multi-line draft
+/// or to type a tab into a non-command line.
+fn try_open_slash_popup(app: &mut App) -> bool {
     let text = app.input_text();
-    // Commands are single-token; if the user has multi-line input the
-    // textarea cursor is past a newline and inserting the completion
-    // delta would land on the wrong line. Bail and let Tab fall
-    // through to the textarea's normal indent behaviour.
-    if text.contains('\n') {
+    if !text.starts_with('/') || text.contains('\n') {
         return false;
     }
-    let trimmed = text.trim_end();
-    if !trimmed.starts_with('/') {
-        return false;
+    // Pressing Tab is an explicit completion request, so a previous
+    // Esc-dismissal should not keep the popup suppressed.
+    app.slash_popup.hide();
+    app.sync_slash_popup();
+    // A single remaining match is completed inline so typing
+    // `/clea<Tab>` lands on `/clear` ready for arguments.
+    if app.slash_popup.is_visible() && app.slash_popup.matches().len() == 1 {
+        apply_selected_command(app);
     }
-
-    let matches: Vec<&'static str> = COMMANDS
-        .iter()
-        .copied()
-        .filter(|cmd| cmd.starts_with(trimmed))
-        .collect();
-    match matches.as_slice() {
-        [] => {}
-        [single] => {
-            let delta = &single[trimmed.len()..];
-            if !delta.is_empty() {
-                // Move to end-of-line so the inserted delta always
-                // lands at the tail, even if the user's cursor was
-                // mid-edit when they pressed Tab.
-                app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                app.textarea.insert_str(delta);
-            }
-        }
-        many => {
-            let lcp = longest_common_prefix(many);
-            if lcp.len() > trimmed.len() {
-                let delta = &lcp[trimmed.len()..];
-                app.textarea.move_cursor(tui_textarea::CursorMove::End);
-                app.textarea.insert_str(delta);
-            }
-        }
-    }
+    // Always consume Tab on a slash-command line — even when nothing
+    // matches — so a stray Tab doesn't drop a literal `\t` into the
+    // input the user is composing.
     true
 }
 
-fn longest_common_prefix(items: &[&'static str]) -> &'static str {
-    let Some(&first) = items.first() else {
-        return "";
+/// Replace the textarea contents with the currently selected command
+/// from the popup and park the cursor at the end of the inserted text.
+/// `clear_input` already hides the popup, so this is no-op when nothing
+/// is highlighted.
+fn apply_selected_command(app: &mut App) {
+    let Some(entry) = app.slash_popup.selected() else {
+        return;
     };
-    let mut end = first.len();
-    for item in &items[1..] {
-        let mut i = 0;
-        let a = first.as_bytes();
-        let b = item.as_bytes();
-        while i < end && i < b.len() && a[i] == b[i] {
-            i += 1;
-        }
-        end = i;
-        if end == 0 {
-            break;
-        }
-    }
-    // Safe: we only shrink `end` to positions we verified matched the
-    // first string's bytes, so the slice is valid UTF-8 (it's a prefix of
-    // an `&'static str`).
-    &first[..end]
+    app.clear_input();
+    app.textarea.insert_str(entry.name);
+    app.textarea.move_cursor(CursorMove::End);
 }
 
 /// Handle `Ctrl+V`. Tries the clipboard for an image first; if one is
@@ -350,7 +379,11 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &St
     // gets an irrelevant explanation back.
     let trimmed = cleaned.trim();
     if images.is_empty() && trimmed.starts_with('/') {
-        let known = COMMANDS.join(" ");
+        let known = COMMAND_CATALOG
+            .iter()
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>()
+            .join(" ");
         println!("{} Unknown command `{}`.", "✗".bright_red().bold(), trimmed);
         println!("  Try: {}", known.dimmed());
         println!();
