@@ -313,6 +313,18 @@ impl BashExecutor {
         let _ = stdout_handle.join();
         let _ = stderr_handle.join();
 
+        // Readers drain the pipe to EOF, so the overflow flag now
+        // reflects the full output. Recheck because a child that
+        // exits faster than one supervisor tick breaks the loop via
+        // try_wait before the in-loop overflow check has run.
+        if termination.is_none() {
+            if stdout_overflow.load(Ordering::SeqCst) {
+                termination = Some(TerminationReason::StdoutCapExceeded);
+            } else if stderr_overflow.load(Ordering::SeqCst) {
+                termination = Some(TerminationReason::StderrCapExceeded);
+            }
+        }
+
         if let Some(e) = try_wait_error {
             return Err(SofosError::ToolExecution(format!(
                 "Failed to wait on command: {}",
