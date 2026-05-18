@@ -373,7 +373,14 @@ impl PermissionManager {
         if let Some(rest) = path.strip_prefix("~/") {
             if let Some(mut home) = Self::home_dir() {
                 let rest = rest.trim_start_matches(['/', '\\']);
-                home.push(rest);
+                // Push each segment so the join uses the platform's
+                // native separator on both sides. A single `push(rest)`
+                // would keep forward slashes inside `rest` verbatim,
+                // giving `C:\Users\me\docs/file.txt` on Windows.
+                // Filtering empty segments collapses `//` runs.
+                for segment in rest.split('/').filter(|s| !s.is_empty()) {
+                    home.push(segment);
+                }
                 return home.to_string_lossy().to_string();
             }
         }

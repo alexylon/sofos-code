@@ -6,6 +6,20 @@ use crate::tools::utils::{MAX_MCP_IMAGE_BYTES, MAX_MCP_IMAGE_COUNT};
 use serde_json::json;
 use tempfile::tempdir;
 
+/// Render `p` for interpolation into a TOML basic-string literal.
+/// Doubles every `\` so the `\?` in the `\\?\` prefix that
+/// `fs::canonicalize` adds on Windows is not read as a TOML escape.
+fn toml_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "\\\\")
+}
+
+/// Render `p` for use as an unquoted `sh -c` argument: swap Windows
+/// backslash separators for forward slash so the path survives sh's
+/// backslash-as-escape processing.
+fn sh_path(p: &std::path::Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
 fn fake_image(mime: &str, base64_len: usize) -> ImageData {
     ImageData::Base64 {
         mime_type: mime.to_string(),
@@ -203,8 +217,19 @@ fn cap_mcp_images_skips_oversized_middle_image_greedily() {
 
 #[tokio::test]
 async fn test_read_file_blocks_relative_escape() {
-    let workspace = tempdir().unwrap();
-    let config_dir = workspace.path().join(".sofos");
+    // Create a sibling directory next to the workspace under the same
+    // temp root. A `..`-traversal path from workspace to sibling escapes
+    // by construction and points at a file we control, so the test
+    // works on every platform (no reliance on `/etc/passwd`).
+    let temp_root = tempdir().unwrap();
+    let workspace = temp_root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let sibling = temp_root.path().join("sibling");
+    std::fs::create_dir(&sibling).unwrap();
+    let escape_target = sibling.join("secret.txt");
+    std::fs::write(&escape_target, "secret").unwrap();
+
+    let config_dir = workspace.join(".sofos");
     std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::write(
         config_dir.join("config.local.toml"),
@@ -212,21 +237,17 @@ async fn test_read_file_blocks_relative_escape() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(workspace, None, None, false, false).unwrap();
 
     let result = executor
-        .execute(
-            "read_file",
-            &json!({"path": "../../../../../../etc/passwd"}),
-        )
+        .execute("read_file", &json!({"path": "../sibling/secret.txt"}))
         .await;
 
     assert!(result.is_err());
     if let Err(SofosError::ToolExecution(msg)) = result {
-        assert!(msg.contains("outside workspace"));
+        assert!(msg.contains("outside workspace"), "got: {msg}");
     } else {
-        panic!("Expected ToolExecution error about workspace escape");
+        panic!("Expected ToolExecution error about workspace escape, got: {result:?}");
     }
 }
 
@@ -307,7 +328,7 @@ async fn test_read_file_allows_explicit_outside_path_with_glob() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/data/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -761,7 +782,7 @@ async fn test_glob_files_gates_external_path_through_permissions() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -825,7 +846,7 @@ async fn test_write_file_to_external_path_blocked_without_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -862,7 +883,7 @@ async fn test_write_file_to_external_path_allowed_with_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -905,7 +926,7 @@ async fn test_edit_file_external_path_allowed_with_read_and_write_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({dir}/**)\", \"Write({dir}/**)\"]\ndeny = []\nask = []\n",
-            dir = canonical_outside.display()
+            dir = toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -953,7 +974,7 @@ async fn test_edit_file_external_write_only_grant_denied() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -999,7 +1020,7 @@ async fn test_read_grant_does_not_allow_write() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1053,7 +1074,7 @@ async fn test_list_directory_external_with_read_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1103,7 +1124,7 @@ async fn test_symlink_does_not_bypass_write_permission() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_allowed.display()
+            toml_path(&canonical_allowed)
         ),
     )
     .unwrap();
@@ -1175,7 +1196,7 @@ async fn test_bash_external_path_allowed_with_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Bash({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1186,7 +1207,7 @@ async fn test_bash_external_path_allowed_with_grant() {
     let result = executor
         .execute(
             "execute_bash",
-            &json!({"command": format!("cat {}", outside_file.to_string_lossy())}),
+            &json!({"command": format!("cat {}", sh_path(&outside_file))}),
         )
         .await;
 
@@ -1196,7 +1217,7 @@ async fn test_bash_external_path_allowed_with_grant() {
         result
     );
     let text = result.unwrap().text().to_string();
-    assert!(text.contains("bash content"));
+    assert!(text.contains("bash content"), "got text: {text:?}");
 }
 
 #[tokio::test]
@@ -1248,7 +1269,7 @@ async fn test_bash_grant_does_not_allow_read_or_write() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Bash({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1301,8 +1322,8 @@ async fn test_write_deny_overrides_allow() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = [\"Write({})\"]\nask = []\n",
-            canonical_outside.display(),
-            canonical_file.display()
+            toml_path(&canonical_outside),
+            toml_path(&canonical_file)
         ),
     )
     .unwrap();
@@ -1388,7 +1409,7 @@ async fn test_write_new_file_to_external_path() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1432,7 +1453,7 @@ async fn test_bash_partial_path_grant_blocks_ungranated_path() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Bash({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_allowed.display()
+            toml_path(&canonical_allowed)
         ),
     )
     .unwrap();
@@ -1477,8 +1498,8 @@ async fn test_bash_deny_overrides_allow() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Bash({}/**)\"]\ndeny = [\"Bash({}/**)\"]\nask = []\n",
-            canonical_outside.display(),
-            canonical_sub.display()
+            toml_path(&canonical_outside),
+            toml_path(&canonical_sub)
         ),
     )
     .unwrap();
@@ -1548,7 +1569,7 @@ async fn test_create_directory_external_requires_write_grant() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1587,8 +1608,8 @@ async fn test_copy_file_external_source_and_destination() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({src}/**)\", \"Write({dst}/**)\"]\ndeny = []\nask = []\n",
-            src = canonical_src.display(),
-            dst = canonical_dst.display(),
+            src = toml_path(&canonical_src),
+            dst = toml_path(&canonical_dst),
         ),
     )
     .unwrap();
@@ -1634,7 +1655,7 @@ async fn test_move_file_external_requires_write_on_source() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Read({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();
@@ -1670,7 +1691,7 @@ async fn test_move_file_external_requires_write_on_source() {
         config_dir.join("config.local.toml"),
         format!(
             "[permissions]\nallow = [\"Write({}/**)\"]\ndeny = []\nask = []\n",
-            canonical_outside.display()
+            toml_path(&canonical_outside)
         ),
     )
     .unwrap();

@@ -25,3 +25,4 @@ target
 docs/
 .DS_Store
 notes/
+.claude/

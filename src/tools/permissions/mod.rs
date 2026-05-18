@@ -577,6 +577,7 @@ ask = []
         assert_eq!(inline_settings.permissions.deny.len(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_tilde_expansion_in_permissions() {
         let _lock = HOME_MUTEX.lock().unwrap();
@@ -599,6 +600,7 @@ ask = []
         assert_eq!(not_tilde, "./file.txt");
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_tilde_expansion_trims_leading_separator_in_remainder() {
         // `PathBuf::push` replaces self when the pushed argument is
@@ -660,6 +662,7 @@ ask = []
         assert_eq!(expanded_dir, r"C:\Users\testuser");
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_tilde_in_allow_rules() {
         let _lock = HOME_MUTEX.lock().unwrap();

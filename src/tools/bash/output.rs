@@ -31,6 +31,7 @@ pub(super) const BASH_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// and escalating to `SIGKILL`. Enough time for a well-behaved shell
 /// or test runner to print a final line and exit, short enough that a
 /// stuck process is killed promptly when the user hits ESC.
+#[cfg(unix)]
 pub(super) const TERMINATION_GRACE_PERIOD: Duration = Duration::from_millis(200);
 
 /// Why the supervisor terminated a running bash command before its

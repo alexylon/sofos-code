@@ -53,6 +53,51 @@ pub(super) const TICK_INTERVAL: Duration = Duration::from_millis(90);
 /// lets `Key` / interrupt events fire while a large log is being drained.
 pub(super) const MAX_OUTPUT_BATCH: usize = 256;
 
+/// Windows console code page identifier for UTF-8. The setting is
+/// process-global, so byte-oriented writes that follow (including the
+/// `CONOUT$` handle ratatui draws through) are interpreted as UTF-8.
+#[cfg(windows)]
+const CP_UTF8: u32 = 65001;
+
+/// Snapshot of the Windows console's input and output code pages,
+/// returned by [`switch_console_to_utf8`] so [`restore_console_code_pages`]
+/// can put them back exactly as they were.
+#[cfg(windows)]
+#[derive(Copy, Clone)]
+struct ConsoleCodePages {
+    output: u32,
+    input: u32,
+}
+
+/// Switch the Windows console's input and output code pages to UTF-8,
+/// returning the previous values so the caller can restore them.
+#[cfg(windows)]
+fn switch_console_to_utf8() -> ConsoleCodePages {
+    use windows_sys::Win32::System::Console::{
+        GetConsoleCP, GetConsoleOutputCP, SetConsoleCP, SetConsoleOutputCP,
+    };
+    unsafe {
+        let saved = ConsoleCodePages {
+            output: GetConsoleOutputCP(),
+            input: GetConsoleCP(),
+        };
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+        saved
+    }
+}
+
+/// Restore the Windows console's input and output code pages to the
+/// values captured by [`switch_console_to_utf8`].
+#[cfg(windows)]
+fn restore_console_code_pages(saved: ConsoleCodePages) {
+    use windows_sys::Win32::System::Console::{SetConsoleCP, SetConsoleOutputCP};
+    unsafe {
+        SetConsoleOutputCP(saved.output);
+        SetConsoleCP(saved.input);
+    }
+}
+
 /// RAII guard that restores the terminal on drop no matter how we exit
 /// (error, panic, early return).
 ///
@@ -62,6 +107,9 @@ pub(super) const MAX_OUTPUT_BATCH: usize = 256;
 /// need raw mode for key-by-key input; everything else is the terminal's
 /// job.
 struct TerminalGuard {
+    #[cfg(windows)]
+    saved_code_pages: ConsoleCodePages,
+    #[cfg(not(windows))]
     _private: (),
 }
 
@@ -96,15 +144,34 @@ impl TerminalGuard {
             ),
         );
         let _ = std::io::stdout().flush();
-        Ok(Self { _private: () })
+
+        // Switch the console to UTF-8 last so a failure in any earlier
+        // setup step cannot leave the user's shell on a different code
+        // page without a matching Drop to restore it. The default page
+        // on `cmd.exe` is a legacy single-byte encoding that would
+        // render our box-drawing glyphs as garbled multi-byte sequences.
+        #[cfg(windows)]
+        let saved_code_pages = switch_console_to_utf8();
+
+        Ok(Self {
+            #[cfg(windows)]
+            saved_code_pages,
+            #[cfg(not(windows))]
+            _private: (),
+        })
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        // By the time we run, `OutputCapture` has already been dropped
-        // (the teardown order in `run` restores fds before this guard
-        // drops), so writing to stdout reaches the real terminal again.
+        // Tear down in reverse order of `install`: code page first, then
+        // bracketed paste / keyboard flags, then raw mode. By the time
+        // we run, `OutputCapture` has already been dropped (the teardown
+        // order in `run` restores fds before this guard drops), so
+        // writing to stdout reaches the real terminal again.
+        #[cfg(windows)]
+        restore_console_code_pages(self.saved_code_pages);
+
         use std::io::Write;
         let _ = crossterm::execute!(
             std::io::stdout(),
@@ -122,20 +189,13 @@ pub fn run(mut repl: Repl) -> Result<()> {
     // The backend writes to a real terminal handle so ratatui rendering
     // does not travel through the stdout pipe we are about to install
     // for output capture. `/dev/tty` is the canonical handle on Unix;
-    // Windows does not expose it, and the rest of the bash executor and
-    // process supervisor also need POSIX primitives, so we fail fast
-    // with a clear error rather than silently opening the wrong thing.
+    // `CONOUT$` is the equivalent device name on Windows for the active
+    // console's output buffer. Opening it directly gives us a write path
+    // that survives the upcoming fd 1/2 redirection.
     #[cfg(unix)]
     let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-    #[cfg(not(unix))]
-    let tty = {
-        let _ = &OpenOptions::new();
-        return Err(crate::error::SofosError::Config(
-            "The interactive TUI is currently only supported on Unix-like systems (macOS, Linux). \
-             Windows support is experimental and the bash executor relies on POSIX process groups."
-                .to_string(),
-        ));
-    };
+    #[cfg(windows)]
+    let tty = OpenOptions::new().write(true).open("CONOUT$")?;
     let tty_for_backend = tty.try_clone()?;
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiEvent>();

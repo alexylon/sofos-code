@@ -7,14 +7,17 @@
 
 use crate::error::{Result, SofosError};
 use crate::tools::bash::BashExecutor;
+#[cfg(unix)]
+use crate::tools::bash::output::TERMINATION_GRACE_PERIOD;
 use crate::tools::bash::output::{
     BASH_COMMAND_TIMEOUT, BASH_READ_CHUNK_BYTES, MAX_BASH_OUTPUT_BYTES, SUPERVISOR_POLL_INTERVAL,
-    TERMINATION_GRACE_PERIOD, TerminationReason,
+    TerminationReason,
 };
 use crate::tools::bash::validate::command_contains_op;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -22,6 +25,70 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
+
+/// Resolved shell interpreter sofos shells out to. `program` is what
+/// gets passed to [`Command::new`]; `extra_path_dir` is a directory
+/// that must be prepended to the child's `PATH` so the interpreter
+/// can find sibling utilities (the GNU `cat`, `sleep`, `seq` shipped
+/// alongside Git for Windows's `sh.exe`).
+struct ResolvedShell {
+    program: OsString,
+    extra_path_dir: Option<PathBuf>,
+}
+
+/// Locate the `sh` interpreter sofos shells out to. On Unix the plain
+/// name is enough (always at `/bin/sh`). On Windows we honour `PATH`
+/// first, then fall back to standard Git for Windows install locations —
+/// IDE-integrated terminals (JetBrains, VS Code) and the default
+/// `PATH` of a stock `cmd` or PowerShell session often expose only
+/// `<git>\cmd` (which contains `git.exe`) and not `<git>\usr\bin`
+/// (which contains `sh.exe` and the GNU userland). When we fall back
+/// to the well-known path we also surface the parent directory so the
+/// caller can prepend it to the child's `PATH`, otherwise the running
+/// `sh.exe` would have no way to find `cat`, `sleep`, `seq`, etc.
+fn resolve_shell() -> ResolvedShell {
+    #[cfg(windows)]
+    {
+        if let Some(path_env) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path_env) {
+                if dir.join("sh.exe").is_file() {
+                    return ResolvedShell {
+                        program: OsString::from("sh"),
+                        extra_path_dir: None,
+                    };
+                }
+            }
+        }
+        for candidate in WINDOWS_SHELL_FALLBACKS {
+            let path = std::path::Path::new(candidate);
+            if path.is_file() {
+                return ResolvedShell {
+                    program: OsString::from(candidate),
+                    extra_path_dir: path.parent().map(PathBuf::from),
+                };
+            }
+        }
+        ResolvedShell {
+            program: OsString::from("sh"),
+            extra_path_dir: None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        ResolvedShell {
+            program: OsString::from("sh"),
+            extra_path_dir: None,
+        }
+    }
+}
+
+/// Standard install locations for the Git for Windows `sh.exe`. Checked
+/// in order when `PATH` does not already expose `sh`.
+#[cfg(windows)]
+const WINDOWS_SHELL_FALLBACKS: &[&str] = &[
+    r"C:\Program Files\Git\usr\bin\sh.exe",
+    r"C:\Program Files (x86)\Git\usr\bin\sh.exe",
+];
 
 impl BashExecutor {
     pub fn new(workspace: PathBuf, interactive: bool, has_morph: bool) -> Result<Self> {
@@ -217,13 +284,23 @@ impl BashExecutor {
     }
 
     fn spawn_supervised(&self, command: &str) -> Result<SupervisedOutput> {
-        let mut cmd = Command::new("sh");
+        let shell = resolve_shell();
+        let mut cmd = Command::new(&shell.program);
         cmd.arg("-c")
             .arg(command)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        if let Some(extra) = shell.extra_path_dir.as_ref() {
+            let original = std::env::var_os("PATH").unwrap_or_default();
+            let mut dirs: Vec<PathBuf> = vec![extra.clone()];
+            dirs.extend(std::env::split_paths(&original));
+            if let Ok(joined) = std::env::join_paths(dirs) {
+                cmd.env("PATH", joined);
+            }
+        }
 
         #[cfg(unix)]
         {
@@ -456,5 +533,19 @@ fn terminate_child_tree(child: &mut Child) {
 
 #[cfg(not(unix))]
 fn terminate_child_tree(child: &mut Child) {
+    // Windows has no process group, so `child.kill()` alone would
+    // terminate only the `sh.exe` wrapper and orphan its grandchildren
+    // (e.g. a `sleep` launched by the script). `taskkill /F /T /PID`
+    // walks the process tree rooted at the wrapper and kills every
+    // descendant, matching the Unix branch above. `child.kill()` runs
+    // afterwards as a fallback for environments where `taskkill` is
+    // unavailable (locked-down systems, unconventional `PATH`).
+    let pid = child.id().to_string();
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
     let _ = child.kill();
 }

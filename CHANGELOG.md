@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Sofos now runs on Windows.** The interactive terminal UI launches on a regular `cmd` or PowerShell session, UTF-8 box drawing renders correctly, and the bash executor shells out through Git for Windows's `sh.exe`. The interpreter is located automatically at the standard Git install path, so an IDE-integrated terminal (JetBrains, VS Code) that does not expose Git on `PATH` still works. Interrupting a long-running bash command terminates the whole process tree, matching the Unix behaviour.
+
+### Changed
+
+- **Installing on Windows no longer requires CMake or NASM.** The HTTP and syntax-highlighting backends now use pure-Rust crypto and regex, so `cargo install sofos` succeeds on a clean `rustup` install with no extra build tools.
+
 ## [0.3.0] - 2026-05-18
 
 ### Added
