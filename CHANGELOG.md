@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-18
+
 ### Added
 
 - **`/think` was renamed to `/effort` and now opens an inline picker.** The picker lists only the reasoning levels the active model supports. Up and Down highlight a level, Enter confirms, Esc cancels. `/effort <level>` still works directly. **Breaking change**: `/think` is no longer recognised.
