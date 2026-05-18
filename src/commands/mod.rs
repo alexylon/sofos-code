@@ -100,24 +100,24 @@ pub struct CommandEntry {
 /// in the popup, so put the most useful entries first.
 pub static COMMAND_CATALOG: &[CommandEntry] = &[
     CommandEntry {
-        name: "/clear",
-        description: "clear the conversation and start fresh",
-    },
-    CommandEntry {
         name: "/compact",
         description: "summarize the conversation to free up context",
     },
     CommandEntry {
-        name: "/resume",
-        description: "resume a previously saved session",
+        name: "/clear",
+        description: "clear the conversation and start fresh",
+    },
+    CommandEntry {
+        name: "/model",
+        description: "switch the active model (opens a picker)",
     },
     CommandEntry {
         name: "/effort",
         description: "switch the reasoning effort (opens a picker)",
     },
     CommandEntry {
-        name: "/model",
-        description: "switch the active model (opens a picker)",
+        name: "/resume",
+        description: "resume a previously saved session",
     },
     CommandEntry {
         name: "/safe",
@@ -133,10 +133,6 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
     },
     CommandEntry {
         name: "/quit",
-        description: "alias of /exit",
-    },
-    CommandEntry {
-        name: "/q",
         description: "alias of /exit",
     },
 ];

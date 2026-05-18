@@ -279,8 +279,11 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
             "newline  ·  ",
             Style::default().fg(Color::DarkGray),
         ));
-        spans.push(Span::styled("/exit ", Style::default().fg(HINT_KEY)));
-        spans.push(Span::styled("quit", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("/ ", Style::default().fg(HINT_KEY)));
+        spans.push(Span::styled(
+            "commands",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     if !app.queue.is_empty() {

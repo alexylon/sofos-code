@@ -158,11 +158,7 @@ impl UI {
     pub fn print_welcome() {
         println!(
             "  {}",
-            "Enter to send  ·  Shift+Enter for newline  ·  ESC/Ctrl+C to interrupt".dimmed()
-        );
-        println!(
-            "  {}",
-            "/exit  /clear  /resume  /compact  /effort  /model  /safe  /normal".dimmed()
+            "Enter to send · Shift+Enter for newline · / to open command menu · Esc/Ctrl+C to interrupt".dimmed()
         );
         println!();
     }
