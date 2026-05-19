@@ -12,6 +12,14 @@ All notable changes to Sofos are documented in this file.
 
 - **Installing on Windows no longer requires CMake or NASM.** The HTTP and syntax-highlighting backends now use pure-Rust crypto and regex, so `cargo install sofos` succeeds on a clean `rustup` install with no extra build tools.
 
+### Security
+
+- **Forbidden bash commands stay forbidden under blanket `Bash` allow even when the model wraps them.** Adding `Bash` to the allow list used to leave `(rm -rf /)`, `'rm' -rf /`, `\rm -rf /`, and `/bin/rm -rf /` running because the lookup compared the literal token; sofos now strips subshell, quote, backslash, and directory wrappers before checking, and lower-cases the name on Windows. The same fix applies to compound shells, so `ls && (rm bar)` is denied just like `ls && rm bar`.
+- **A bare `&` is now a statement separator.** A command like `ls foo & rm bar` used to ship as one segment (auto-allowed because the head was `ls`); sofos now splits at the background-control `&` and rejects the command on the `rm` segment. The `2>&1`, `>&2`, and similar redirection operands stay glued to their preceding `>` / `<`.
+- **Bash arguments that the shell would expand at run-time are refused upfront.** Path arguments containing `$VAR`, backticks, `~user`, or unescaped glob characters (`?`, `*`, `[`, `{`) used to slip past the Read/Bash deny rules because the literal text never matched the configured globs; sofos now rejects the command with a clear message asking for the resolved literal path. Plain `~/...`, bare `~`, and absolute paths without metacharacters still work.
+- **Whitespace tricks no longer hide dangerous `git` operations.** `git\tpush`, `git$IFS\tpush`, `git${IFS}push`, and `git\\\npush` are now treated the same as `git push` by the structural matcher and the askable-command prompt, so each is blocked or confirmed exactly like its plain form.
+- **Deny rules survive path-noise variants.** A `Read(./secrets/**)` deny now matches `.//secrets/keys`, `./secrets/./keys`, and `/etc/./passwd` against `Bash(/etc/**)` — the candidate path is lexically normalised before the globset check. When the path contains `..`, only the resolved form is matched so `./secrets/../allowed.txt` is allowed (the shell would touch `./allowed.txt`).
+
 ## [0.3.0] - 2026-05-18
 
 ### Added

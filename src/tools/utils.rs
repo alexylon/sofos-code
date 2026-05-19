@@ -91,6 +91,92 @@ pub fn is_http_url(value: &str) -> bool {
     value.starts_with("http://") || value.starts_with("https://")
 }
 
+/// Collapse `.` and `..` components in `p` lexically, without touching
+/// the filesystem. `..` pops the previous Normal component but never
+/// the prefix or root, so over-popping paths keep their leading `..`
+/// and stay outside any anchored workspace under `starts_with`.
+pub fn lexically_normalize(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                out.push(c.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let last_is_normal = out
+                    .components()
+                    .next_back()
+                    .map(|c| matches!(c, Component::Normal(_)))
+                    .unwrap_or(false);
+                if last_is_normal {
+                    out.pop();
+                } else {
+                    out.push(Component::ParentDir.as_os_str());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Map every non-space whitespace byte and the explicit `$IFS` /
+/// `${IFS}` shell expansion to single spaces, join backslash-newline
+/// continuations, and collapse runs. Used by the dangerous-git matcher
+/// so `git\tpush`, `git$IFS\tpush`, and `git\\\npush` all read as
+/// `git push` and hit the boundary set in `command_contains_op`.
+pub fn normalize_command_whitespace(command: &str) -> String {
+    let joined = command.replace("\\\n", " ");
+    let mut spaced = String::with_capacity(joined.len());
+    let mut iter = joined.chars().peekable();
+    while let Some(c) = iter.next() {
+        if c == '$' {
+            if iter.peek() == Some(&'I') {
+                let snapshot: String = iter.clone().take(3).collect();
+                if snapshot == "IFS" {
+                    for _ in 0..3 {
+                        iter.next();
+                    }
+                    spaced.push(' ');
+                    continue;
+                }
+            }
+            if iter.peek() == Some(&'{') {
+                let snapshot: String = iter.clone().take(5).collect();
+                if snapshot == "{IFS}" {
+                    for _ in 0..5 {
+                        iter.next();
+                    }
+                    spaced.push(' ');
+                    continue;
+                }
+            }
+            spaced.push(c);
+            continue;
+        }
+        if c.is_whitespace() {
+            spaced.push(' ');
+            continue;
+        }
+        spaced.push(c);
+    }
+    let mut out = String::with_capacity(spaced.len());
+    let mut prev_space = false;
+    for c in spaced.chars() {
+        if c == ' ' {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
+}
+
 /// Approximate decoded size in KB of a base64 payload of `base64_len`
 /// characters. Used for model-facing size hints.
 pub fn base64_approx_decoded_kb(base64_len: usize) -> usize {

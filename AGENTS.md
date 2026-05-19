@@ -444,6 +444,17 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
     - `cargo fmt --all`
     - `cargo clippy --all-targets -- -D warnings`
     - `cargo test --all`
+    - Windows cross-check (only when the change touches a `cfg(windows)` /
+      `cfg(target_os = "windows")` / `cfg(not(unix))` arm — Git-Bash shell
+      resolution in `src/tools/bash/executor.rs`, the console / code-page /
+      `CONOUT$` handling in `src/repl/tui/mod.rs`, Windows clipboard in
+      `src/clipboard.rs`, `USERPROFILE` lookup in
+      `src/tools/permissions/manager.rs`, the case-insensitive command
+      lookup in `src/tools/permissions/command_parse.rs`, and similar).
+      Requires `rustup target add x86_64-pc-windows-gnu`, which is already
+      installed on this machine.
+        - `cargo check --package sofos --target x86_64-pc-windows-gnu`
+        - `cargo clippy --package sofos --target x86_64-pc-windows-gnu --all-targets`
 - Before finishing, review the change for bugs and corner cases.
 - Use international English. Avoid regional idioms (whether American or British), clever shorthand, and compressed phrases; prefer wording that a non-native English reader can understand on the first read. This applies to chat replies, commit messages, code comments, documentation, and error messages.
 - After you finish cross-checking against the Non-Negotiable Rules and fixing the code, if needed, do another pass for bugs and regressions.

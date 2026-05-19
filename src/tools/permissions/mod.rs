@@ -1535,4 +1535,116 @@ ask = []
             CommandPermission::Denied
         );
     }
+
+    /// Blanket `Bash` allow must NOT be defeated by quote/paren/path
+    /// wrappers on the base name. The shell unwraps these before
+    /// execution, so the forbidden-command lookup has to do the same.
+    #[test]
+    fn blanket_bash_allow_does_not_let_wrappers_smuggle_forbidden() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+
+        for cmd in [
+            "(rm -rf /tmp/x)",
+            "\\rm -rf /tmp/x",
+            "'rm' -rf /tmp/x",
+            "\"rm\" -rf /tmp/x",
+            "/bin/rm /tmp/x",
+            "/usr/bin/sudo whoami",
+            "{ rm -rf /tmp/x; }",
+        ] {
+            assert_eq!(
+                manager.check_command_permission(cmd).unwrap(),
+                CommandPermission::Denied,
+                "wrapper-prefixed forbidden command should be denied: {}",
+                cmd
+            );
+        }
+    }
+
+    /// Lone `&` is a statement separator in bash. A forbidden base on
+    /// either side of one must catch the command, just like `&&` or `;`.
+    #[test]
+    fn lone_ampersand_splits_segments() {
+        let segs = PermissionManager::split_compound_command("ls foo & rm bar");
+        assert_eq!(segs, vec!["ls foo", "rm bar"]);
+
+        // No spaces around `&` either.
+        let segs = PermissionManager::split_compound_command("ls&rm bar");
+        assert_eq!(segs, vec!["ls", "rm bar"]);
+
+        // `>&` stays glued (redirect operand).
+        let segs = PermissionManager::split_compound_command("cmd 2>&1");
+        assert_eq!(segs, vec!["cmd 2>&1"]);
+
+        // Full check: `ls & rm bar` is denied because the second base is `rm`.
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        assert_eq!(
+            manager.check_command_permission("ls foo & rm bar").unwrap(),
+            CommandPermission::Denied
+        );
+    }
+
+    /// `extract_base_command` returns the cleaned base, not the raw token.
+    /// `(rm`, `'rm'`, `/bin/rm`, and similar shapes all reduce to `rm`.
+    #[test]
+    fn extract_base_command_strips_wrappers_and_path_prefix() {
+        assert_eq!(PermissionManager::extract_base_command("(rm -rf /"), "rm");
+        assert_eq!(PermissionManager::extract_base_command("'rm' x"), "rm");
+        assert_eq!(PermissionManager::extract_base_command("\\rm x"), "rm");
+        assert_eq!(PermissionManager::extract_base_command("/bin/rm x"), "rm");
+        assert_eq!(PermissionManager::extract_base_command("./rm x"), "rm");
+    }
+
+    /// Compound shells where each segment leads with a wrapper still
+    /// surface the real bases through `enumerate_compound_bases`.
+    #[test]
+    fn enumerate_compound_bases_strips_wrappers_in_each_segment() {
+        let bases = PermissionManager::enumerate_compound_bases("ls && (rm bar)");
+        assert_eq!(bases, vec!["ls".to_string(), "rm".to_string()]);
+
+        let bases = PermissionManager::enumerate_compound_bases("'echo' hi; \\sudo whoami");
+        assert_eq!(bases, vec!["echo".to_string(), "sudo".to_string()]);
+    }
+
+    /// `./secrets/../allowed.txt` lexically resolves to `./allowed.txt`,
+    /// so the deny rule `Read(./secrets/**)` must NOT match it. The
+    /// glob deny on `./secrets/**` must still catch the un-normalised
+    /// input `./secrets/keys`.
+    #[test]
+    fn lexical_normalisation_keeps_deny_globs_honest() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .deny
+            .push("Read(./secrets/**)".to_string());
+
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert_eq!(
+            manager.check_read_permission("./secrets/keys"),
+            CommandPermission::Denied,
+            "direct child must still match"
+        );
+        // The shell would resolve this to `./allowed.txt` — outside `./secrets`.
+        assert_eq!(
+            manager.check_read_permission("./secrets/../allowed.txt"),
+            CommandPermission::Allowed,
+            "lexically-normalised path that escapes the deny prefix is allowed"
+        );
+        // Noise variants of the deny path still match.
+        assert_eq!(
+            manager.check_read_permission(".//secrets/keys"),
+            CommandPermission::Denied,
+            "double-slash variant is still inside the deny scope"
+        );
+        assert_eq!(
+            manager.check_read_permission("./secrets/./keys"),
+            CommandPermission::Denied,
+            "interior `.` segment is still inside the deny scope"
+        );
+    }
 }

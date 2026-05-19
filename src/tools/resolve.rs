@@ -6,40 +6,7 @@
 use crate::error::{Result, SofosError};
 use crate::tools::ToolExecutor;
 use crate::tools::permissions;
-use crate::tools::utils::is_absolute_or_tilde;
-use std::path::{Component, Path, PathBuf};
-
-/// Collapse `.` and `..` components in `p` lexically, without touching
-/// the filesystem. `..` pops the previous Normal component but never
-/// pops the prefix or root, so an over-popping path like `../../etc`
-/// keeps its leading `..` (and is therefore *not* classified as inside
-/// any workspace by `starts_with`). Used in the resolve fallback when
-/// we couldn't find any existing ancestor to canonicalise against and
-/// have to classify a purely lexical path.
-fn lexically_normalize(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                out.push(c.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let last_is_normal = out
-                    .components()
-                    .next_back()
-                    .map(|c| matches!(c, Component::Normal(_)))
-                    .unwrap_or(false);
-                if last_is_normal {
-                    out.pop();
-                } else {
-                    out.push(Component::ParentDir.as_os_str());
-                }
-            }
-        }
-    }
-    out
-}
+use crate::tools::utils::{is_absolute_or_tilde, lexically_normalize};
 
 /// Path resolved by [`ToolExecutor::resolve_existing`] or
 /// [`ToolExecutor::resolve_for_write`]. Carries the three pieces of data
@@ -149,7 +116,7 @@ impl ToolExecutor {
 
 #[cfg(test)]
 mod tests {
-    use super::lexically_normalize;
+    use crate::tools::utils::lexically_normalize;
     use std::path::PathBuf;
 
     #[test]

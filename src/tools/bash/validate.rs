@@ -10,7 +10,8 @@ use crate::error::{Result, SofosError};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
-use crate::tools::utils::is_absolute_path;
+use crate::tools::utils::{is_absolute_path, lexically_normalize, normalize_command_whitespace};
+use std::path::PathBuf;
 
 /// Return true when a command argument looks like a parent-directory
 /// reference (`..`, `../foo`, `foo/..`, `foo/../bar`). Substring matches
@@ -107,6 +108,13 @@ pub(super) fn detect_command_substitution(command: &str) -> Option<&'static str>
 /// `{...; }` group. False positives (e.g. `ls {git,svn}` brace
 /// expansion triggering `git` detection) are acceptable — the worst
 /// outcome is the user being prompted to confirm a benign command.
+///
+/// The caller is expected to pass `command` already routed through
+/// [`normalize_command_whitespace`] so non-space whitespace (`\t`,
+/// `\r`, `\v`, `\f`, backslash-newline) and the explicit `$IFS` /
+/// `${IFS}` shell expansion appear as plain single spaces — otherwise
+/// `git\tpush`, `git$IFS\tpush`, and `git\\\npush` would evade the
+/// boundary check while still running as `git push`.
 pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
     const BOUNDARIES: &[&str] = &[" ", ";", "&&", "||", "|", "`", "$(", "(", "{"];
     if command.starts_with(op) {
@@ -115,6 +123,34 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
     BOUNDARIES
         .iter()
         .any(|sep| command.contains(&format!("{sep}{op}")))
+}
+
+/// Returns the kind of expansion that would change the path between
+/// our deny check and the shell touching it: `$` / `${...}`, backticks,
+/// `~user`, or glob metacharacters (`?`, `*`, `[`, `{`). Plain `~/`
+/// and bare `~` are allowed because they expand to a known prefix and
+/// are handled by the tilde-expansion helper.
+pub(super) fn path_token_shell_meta(tok: &str) -> Option<&'static str> {
+    if tok.contains('$') {
+        return Some("$ variable expansion");
+    }
+    if tok.contains('`') {
+        return Some("backtick command substitution");
+    }
+    if tok.starts_with('~') && tok != "~" && !tok.starts_with("~/") {
+        return Some("~user home expansion");
+    }
+    if tok.contains('?') || tok.contains('*') || tok.contains('[') || tok.contains('{') {
+        return Some("glob expansion");
+    }
+    None
+}
+
+/// True for tokens that look like a path the shell will resolve at
+/// run-time. Flag tokens (`--name=value`) and regex patterns fall
+/// through so the stricter shell-meta check only fires on real paths.
+fn token_looks_like_path(tok: &str) -> bool {
+    tok.contains('/') || tok.starts_with('.') || tok.starts_with('~') || is_absolute_path(tok)
 }
 
 impl BashExecutor {
@@ -149,6 +185,17 @@ impl BashExecutor {
             } else {
                 cleaned
             };
+
+            // Reject path tokens whose post-expansion shape we cannot check.
+            if token_looks_like_path(path_candidate) {
+                if let Some(kind) = path_token_shell_meta(path_candidate) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Path argument '{}' uses {} which can't be checked against the permission rules before the shell expands it\n\
+                         Hint: pass the resolved literal path instead, or split this into a separate step that doesn't reference the same path.",
+                        path_candidate, kind
+                    )));
+                }
+            }
 
             // Check tilde before absolute so `~` / `~/foo` get expanded
             // first. `is_absolute_path` catches Unix (`/foo`) and
@@ -197,27 +244,42 @@ impl BashExecutor {
         path: &str,
         permission_manager: &mut PermissionManager,
     ) -> Result<()> {
-        // Canonicalize to resolve symlinks (e.g. /var/folders -> /private/var/folders on macOS)
-        let resolved = std::fs::canonicalize(path)
+        // Canonicalize when possible; also keep a lexically normalized form
+        // and the raw input so deny rules match every shape of the same path.
+        let canonical = std::fs::canonicalize(path)
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| path.to_string());
-        let check_path = resolved.as_str();
+            .ok();
+        let normalized = lexically_normalize(&PathBuf::from(path))
+            .to_string_lossy()
+            .to_string();
+        let candidates: Vec<String> = match canonical {
+            Some(c) if c == normalized || c == path => vec![c],
+            Some(c) => vec![c, normalized.clone(), path.to_string()],
+            None if normalized == path => vec![path.to_string()],
+            None => vec![normalized.clone(), path.to_string()],
+        };
+        let check_path = candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| path.to_string());
 
-        // Enforce deny rules first (takes priority over allow)
-        if permission_manager.is_bash_path_denied(check_path) {
-            return Err(SofosError::ToolExecution(format!(
-                "Bash access denied for path '{}'\n\
-                 Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
-                check_path
-            )));
+        // Deny wins over allow; check every shape.
+        for cand in &candidates {
+            if permission_manager.is_bash_path_denied(cand) {
+                return Err(SofosError::ToolExecution(format!(
+                    "Bash access denied for path '{}'\n\
+                     Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
+                    cand
+                )));
+            }
         }
 
         // Already allowed by config?
-        if permission_manager.is_bash_path_allowed(check_path) {
+        if permission_manager.is_bash_path_allowed(&check_path) {
             return Ok(());
         }
 
-        let path_obj = std::path::Path::new(check_path);
+        let path_obj = std::path::Path::new(&check_path);
 
         // Session allowed?
         if let Ok(allowed_dirs) = self.bash_path_session_allowed.lock() {
@@ -240,10 +302,10 @@ impl BashExecutor {
             }
         }
 
-        let parent = std::path::Path::new(check_path)
+        let parent = std::path::Path::new(&check_path)
             .parent()
             .and_then(|p| p.to_str())
-            .unwrap_or(check_path);
+            .unwrap_or(&check_path);
 
         // Non-interactive mode (tests, piped input): deny with a config hint
         if !self.interactive {
@@ -296,9 +358,22 @@ impl BashExecutor {
                 continue;
             }
 
-            let is_path = cleaned.contains('/')
-                || cleaned.starts_with('.')
-                || cleaned.starts_with('~')
+            let path_shaped =
+                cleaned.contains('/') || cleaned.starts_with('.') || cleaned.starts_with('~');
+
+            if path_shaped {
+                if let Some(kind) = path_token_shell_meta(cleaned) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "Read argument '{}' uses {} which can't be checked against the Read rules before the shell expands it\n\
+                         Hint: pass the resolved literal path instead, or split this into a separate step that doesn't reference the same path.",
+                        cleaned, kind
+                    )));
+                }
+            }
+
+            // Path candidates: looks-like-path, or a bare token with no
+            // expansion meta (regex / ad-hoc strings fall through).
+            let is_path = path_shaped
                 || (!cleaned.contains('$')
                     && !cleaned.contains('`')
                     && !cleaned.contains('*')
@@ -366,7 +441,10 @@ impl BashExecutor {
             return false;
         }
 
-        if !self.is_safe_git_command(&command.to_lowercase()) {
+        // Normalise whitespace before matching so `git\tpush`,
+        // `git$IFS\tpush`, `git\\\npush` are seen as `git push`.
+        let matcher_input = normalize_command_whitespace(command).to_lowercase();
+        if !self.is_safe_git_command(&matcher_input) {
             return false;
         }
 
@@ -448,7 +526,7 @@ impl BashExecutor {
     }
 
     pub(super) fn get_rejection_reason(&self, command: &str) -> String {
-        let command_lower = command.to_lowercase();
+        let matcher_input = normalize_command_whitespace(command).to_lowercase();
 
         if has_path_traversal(command) {
             return format!(
@@ -467,7 +545,7 @@ impl BashExecutor {
             );
         }
 
-        if !self.is_safe_git_command(&command_lower) {
+        if !self.is_safe_git_command(&matcher_input) {
             return self.get_git_rejection_reason(command);
         }
 
@@ -507,7 +585,9 @@ impl BashExecutor {
     }
 
     pub(super) fn get_git_rejection_reason(&self, command: &str) -> String {
-        let command_lower = command.to_lowercase();
+        // Match against the same normalized input as `is_safe_git_command`
+        // so the reason picked here lines up with the rejection.
+        let command_lower = normalize_command_whitespace(command).to_lowercase();
 
         if command_lower.contains("git push") {
             return format!(

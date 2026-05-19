@@ -1,5 +1,6 @@
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::CommandPermission;
+use crate::tools::permissions::command_parse::command_lookup_key;
 use crate::tools::permissions::pattern::BLANKET_BASH;
 use crate::tools::permissions::settings::PermissionSettings;
 use crate::tools::utils::{ConfirmationType, confirm_multi_choice};
@@ -421,8 +422,11 @@ impl PermissionManager {
             .iter()
             .any(|e| e == BLANKET_BASH);
         if blanket_allow {
-            let bases = Self::collect_command_bases(base_command, command);
-            if bases.iter().any(|b| self.forbidden_commands.contains(b)) {
+            let bases = Self::collect_command_bases(&base_command, command);
+            if bases
+                .iter()
+                .any(|b| self.forbidden_commands.contains(&command_lookup_key(b)))
+            {
                 return Ok(CommandPermission::Denied);
             }
             return Ok(CommandPermission::Allowed);
@@ -461,13 +465,19 @@ impl PermissionManager {
         // The splitter does NOT descend into `$(...)` / backticks, so a
         // command smuggled there is still seen as part of the parent
         // command's args (same blind spot as before this change).
-        let bases = Self::collect_command_bases(base_command, command);
+        let bases = Self::collect_command_bases(&base_command, command);
 
-        if bases.iter().any(|b| self.forbidden_commands.contains(b)) {
+        if bases
+            .iter()
+            .any(|b| self.forbidden_commands.contains(&command_lookup_key(b)))
+        {
             return Ok(CommandPermission::Denied);
         }
 
-        if bases.iter().all(|b| self.allowed_commands.contains(b)) {
+        if bases
+            .iter()
+            .all(|b| self.allowed_commands.contains(&command_lookup_key(b)))
+        {
             return Ok(CommandPermission::Allowed);
         }
 

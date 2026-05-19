@@ -44,8 +44,42 @@ pub(super) fn is_env_assignment(tok: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Strip a base-command token so the forbidden-command lookup sees the
+/// same name the shell will execute. Removes leading subshell / group /
+/// quote / backslash wrappers (`(`, `{`, `\`, `'`, `"`) and their
+/// matching trailing wrappers, then drops any leading directory prefix
+/// (`/usr/bin/rm` -> `rm`, `.\bin\rm` -> `rm`). Case is preserved so the
+/// returned name can flow into user-configured wildcard rules like
+/// `Bash(MyTool:*)`; case-insensitive matching against the built-in
+/// command sets happens at the comparison site.
+pub(super) fn clean_base_token(tok: &str) -> String {
+    let stripped = tok.trim_start_matches(['(', '{', '\\', '\'', '"']);
+    let stripped = stripped.trim_end_matches([')', '}', '\'', '"']);
+    let after_unix = stripped.rsplit('/').next().unwrap_or(stripped);
+    let after_win = after_unix.rsplit('\\').next().unwrap_or(after_unix);
+    after_win.to_string()
+}
+
+/// Compare a cleaned base name against the built-in command sets.
+/// Filesystem case-sensitivity differs by OS — Linux treats `RM` and
+/// `rm` as distinct executables, Windows resolves both to the same
+/// binary — so this collapses to lowercase on platforms where the
+/// shell would not. Built-in `allowed_commands` and `forbidden_commands`
+/// are stored lowercase, so the comparison is a single equality check
+/// per base.
+pub(super) fn command_lookup_key(base: &str) -> String {
+    #[cfg(windows)]
+    {
+        base.to_ascii_lowercase()
+    }
+    #[cfg(not(windows))]
+    {
+        base.to_string()
+    }
+}
+
 impl PermissionManager {
-    pub(super) fn extract_base_command(command: &str) -> &str {
+    pub(super) fn extract_base_command(command: &str) -> String {
         let command = command.trim();
 
         let without_prefix = if let Some(stripped) = command.strip_prefix("Bash(") {
@@ -61,25 +95,31 @@ impl PermissionManager {
         // Skip any leading env-var assignments: `FOO=bar rm -rf /`
         // runs `rm`, not `FOO=bar`. Without this, a shell prefix would
         // bypass both the forbidden-command set and any remembered
-        // allow/deny decisions keyed to the real command name.
-        without_prefix
+        // allow/deny decisions keyed to the real command name. Pass
+        // the eventual base through `clean_base_token` so quote and
+        // path-prefix obfuscation (`(rm`, `'rm'`, `/bin/rm`) cannot
+        // disguise a forbidden binary from the membership check.
+        let raw = without_prefix
             .split_whitespace()
             .find(|tok| !is_env_assignment(tok))
             .or_else(|| without_prefix.split_whitespace().next())
-            .unwrap_or(without_prefix)
+            .unwrap_or(without_prefix);
+        clean_base_token(raw)
     }
 
     /// Quote-aware split of a compound command on shell separators
-    /// (`;`, `\n`, `|`, `||`, `&&`). Lone `&` is preserved so that
-    /// `2>&1` stays glued to its preceding token. Quoted regions are
-    /// kept whole so `echo 'a; b'` doesn't split mid-string.
+    /// (`;`, `\n`, `|`, `||`, `&&`, and bare `&` background-control).
+    /// The `&` after `>` or `<` (e.g. `2>&1`, `>&2`, `&>`) is preserved
+    /// because there it is part of a redirection operand, not a
+    /// control operator. Quoted regions are kept whole so
+    /// `echo 'a; b'` doesn't split mid-string.
     ///
     /// Does NOT descend into `$(...)` command substitution or backtick
     /// substitution — a `rm` smuggled inside `echo $(rm bad)` is
     /// invisible to this splitter (and to the rest of the permission
-    /// system, both before and after this change). Closing that hole
-    /// would require yielding the inner sub-commands as separate
-    /// segments and is intentionally out of scope here.
+    /// system, both before and after this change). The structural
+    /// check in `tools/bash/validate.rs::detect_command_substitution`
+    /// rejects those constructs outright instead.
     pub(super) fn split_compound_command(command: &str) -> Vec<String> {
         let mut segments: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -106,9 +146,17 @@ impl PermissionManager {
                     }
                     Self::push_segment(&mut segments, &mut current);
                 }
-                '&' if chars.peek() == Some(&'&') => {
-                    chars.next();
-                    Self::push_segment(&mut segments, &mut current);
+                '&' => {
+                    if chars.peek() == Some(&'&') {
+                        chars.next();
+                        Self::push_segment(&mut segments, &mut current);
+                    } else if matches!(prev_non_space(&current), Some('>') | Some('<')) {
+                        // Redirect operand: `2>&1`, `>&2`.
+                        current.push(c);
+                    } else {
+                        // Lone `&` backgrounds and starts a new statement.
+                        Self::push_segment(&mut segments, &mut current);
+                    }
                 }
                 _ => current.push(c),
             }
@@ -124,7 +172,16 @@ impl PermissionManager {
         }
         current.clear();
     }
+}
 
+/// Last non-whitespace character emitted into the current segment.
+/// Used by `split_compound_command` to tell a redirect operand (`>&`,
+/// `<&`, `2>&1`) apart from a control `&`.
+fn prev_non_space(current: &str) -> Option<char> {
+    current.chars().rev().find(|c| !c.is_whitespace())
+}
+
+impl PermissionManager {
     /// Strip leading shell-control prefixes from a segment and return
     /// the next "real" command (base + args). Returns `None` for
     /// segments that carry no command of their own — `for VAR in WORDS`
@@ -159,13 +216,13 @@ impl PermissionManager {
     }
 
     /// Base-command names of every sub-command in a compound shell.
-    /// Empty for a single command with no separators (callers fall back
-    /// to `extract_base_command` in that case).
+    /// Empty for a single command with no separators. Each base passes
+    /// through `clean_base_token` so wrappers can't disguise it.
     pub(super) fn enumerate_compound_bases(command: &str) -> Vec<String> {
         Self::split_compound_command(command)
             .iter()
             .filter_map(|seg| {
-                Self::extract_segment_base_with_args(seg).map(|(base, _)| base.to_string())
+                Self::extract_segment_base_with_args(seg).map(|(base, _)| clean_base_token(base))
             })
             .collect()
     }

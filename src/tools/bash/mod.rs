@@ -614,4 +614,53 @@ ask = []
             panic!("Expected ToolExecution error, got: {result:?}");
         }
     }
+
+    /// `git push` smuggled through tab / `$IFS` / backslash-newline must
+    /// still be caught by the dangerous-git matcher.
+    #[test]
+    fn dangerous_git_with_whitespace_obfuscation_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git\tpush origin main"));
+        assert!(!executor.is_safe_command_structure("git$IFS\tpush"));
+        assert!(!executor.is_safe_command_structure("git${IFS}push"));
+        assert!(!executor.is_safe_command_structure("git\\\npush"));
+        assert!(!executor.is_safe_command_structure("ls && git\tcommit -m x"));
+
+        // The plain form still works.
+        assert!(executor.is_safe_command_structure("git status"));
+        assert!(executor.is_safe_command_structure("git log"));
+    }
+
+    /// Path tokens with shell-meta that the shell would expand at
+    /// run-time must be refused before they reach the deny-glob check.
+    #[test]
+    fn path_token_with_shell_meta_is_rejected() {
+        let (_temp, path) = test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
+
+        for cmd in [
+            "cat $HOME/.ssh/id_rsa",
+            "cat /e?c/passwd",
+            "cat /etc/p[a]sswd",
+            "ls /{etc,tmp}/x",
+            "cat ~root/.ssh/id_rsa",
+            "grep pattern ${HOME}/.bashrc",
+        ] {
+            let err = executor.execute(cmd);
+            assert!(
+                matches!(&err, Err(SofosError::ToolExecution(msg)) if msg.contains("can't be checked")),
+                "expected shell-meta rejection for `{cmd}`, got {err:?}"
+            );
+        }
+    }
+
+    /// `~/foo` and bare `~` are still legitimate path forms and pass
+    /// the shell-meta check (they're handled by `expand_tilde` below).
+    #[test]
+    fn tilde_home_paths_are_not_blocked_by_shell_meta_check() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        assert!(executor.is_safe_command_structure("ls ~/Documents"));
+        assert!(executor.is_safe_command_structure("ls ~"));
+    }
 }

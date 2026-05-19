@@ -15,7 +15,9 @@ use crate::tools::bash::output::{
 };
 use crate::tools::bash::validate::command_contains_op;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
-use crate::tools::utils::{MAX_TOOL_OUTPUT_TOKENS, TruncationKind, truncate_for_context};
+use crate::tools::utils::{
+    MAX_TOOL_OUTPUT_TOKENS, TruncationKind, normalize_command_whitespace, truncate_for_context,
+};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Read;
@@ -436,9 +438,12 @@ impl BashExecutor {
     fn confirm_askable_command(&self, command: &str) -> Result<()> {
         const ASKABLE_PREFIXES: &[&str] = &["git checkout"];
 
+        // Match against normalized input so tab / `$IFS` / backslash-newline
+        // between `git` and the subcommand don't dodge the prompt.
+        let matcher_input = normalize_command_whitespace(command).to_lowercase();
         let matches = ASKABLE_PREFIXES
             .iter()
-            .any(|prefix| command_contains_op(command, prefix));
+            .any(|prefix| command_contains_op(&matcher_input, prefix));
         if !matches {
             return Ok(());
         }
