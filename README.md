@@ -98,10 +98,10 @@ You need at least one provider API key:
 - `ANTHROPIC_API_KEY` for Claude models; or
 - `OPENAI_API_KEY` for OpenAI models.
 
-Optional but recommended:
+Optional:
 
-- `ripgrep` for fast code search through the `search_code` tool;
-- `MORPH_API_KEY` for the optional `morph_edit_file` fast edit tool.
+- `ripgrep` (recommended) for fast code search through the `search_code` tool;
+- `MORPH_API_KEY` for the `morph_edit_file` fast edit tool.
 
 ### Prebuilt binary
 
