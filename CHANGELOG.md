@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-19
+
 ### Added
 
 - **Sofos now runs on Windows.** The interactive terminal UI launches on a regular `cmd` or PowerShell session, UTF-8 box drawing renders correctly, and the bash executor shells out through Git for Windows's `sh.exe`. The interpreter is located automatically at the standard Git install path, so an IDE-integrated terminal (JetBrains, VS Code) that does not expose Git on `PATH` still works. Interrupting a long-running bash command terminates the whole process tree, matching the Unix behaviour.
