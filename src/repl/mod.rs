@@ -19,7 +19,7 @@ use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
-use crate::ui::{UI, set_safe_mode_cursor_style};
+use crate::ui::{UI, set_normal_mode_cursor_style, set_safe_mode_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -582,6 +582,10 @@ impl Repl {
         self.safe_mode = true;
         self.tool_executor.set_safe_mode(true);
         self.refresh_available_tools();
+        // Switch the cursor to the safe-mode shape so the visual
+        // affordance matches the new mode. Best-effort: a failed
+        // SGR write here is purely cosmetic.
+        let _ = set_safe_mode_cursor_style();
 
         self.session_state
             .conversation
@@ -612,6 +616,9 @@ impl Repl {
         self.safe_mode = false;
         self.tool_executor.set_safe_mode(false);
         self.refresh_available_tools();
+        // Restore the default cursor shape so the visual affordance
+        // matches the new mode.
+        let _ = set_normal_mode_cursor_style();
 
         self.session_state
             .conversation

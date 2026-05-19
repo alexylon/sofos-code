@@ -37,8 +37,7 @@ use crossterm::Command;
 use crossterm::cursor::MoveDown;
 use crossterm::cursor::MoveTo;
 use crossterm::cursor::MoveToColumn;
-use crossterm::cursor::RestorePosition;
-use crossterm::cursor::SavePosition;
+use crossterm::cursor::MoveUp;
 use crossterm::queue;
 use crossterm::style::Color as CColor;
 use crossterm::style::Colors;
@@ -258,13 +257,19 @@ fn emit_history_line<W: Write>(writer: &mut W, line: &Line, wrap_width: usize) -
     queue!(writer, MoveToColumn(0))?;
 
     let physical_rows = (line.width().max(1).div_ceil(wrap_width)) as u16;
-    if physical_rows > 1 {
-        queue!(writer, SavePosition)?;
-        for _ in 1..physical_rows {
+    let extra_rows = physical_rows.saturating_sub(1);
+    if extra_rows > 0 {
+        // Walk DOWN to pre-clear each continuation row, then walk back
+        // UP the same amount. Pure relative motion — `MoveUp` plus
+        // `MoveToColumn(0)` — instead of `Save/RestorePosition` (`ESC [
+        // s` / `ESC [ u`), which Windows ConPTY in legacy mode silently
+        // drops and modern ConPTY can land outside the active DECSTBM
+        // scroll region.
+        for _ in 0..extra_rows {
             queue!(writer, MoveDown(1), MoveToColumn(0))?;
             queue!(writer, Clear(ClearType::UntilNewLine))?;
         }
-        queue!(writer, RestorePosition)?;
+        queue!(writer, MoveUp(extra_rows), MoveToColumn(0))?;
     }
     queue!(
         writer,

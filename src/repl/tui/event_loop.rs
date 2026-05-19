@@ -221,6 +221,18 @@ pub(super) async fn event_loop(
                 UiEvent::WorkerShutdown(summary) => {
                     app.exit_summary = Some(summary);
                     app.should_quit = true;
+                    // Unblock a worker that is parked on `reply_rx.recv()`
+                    // for a confirmation modal. Without this, the
+                    // `worker_handle.thread.join()` in `mod.rs` would
+                    // hang forever: the worker is waiting for the
+                    // modal's responder, but the event loop is about
+                    // to drop `app` (and the responder with it) only
+                    // after the join returns. Sending the default
+                    // index back unblocks the worker exactly as if
+                    // the user had pressed Esc.
+                    if let Some(prompt) = app.confirmation.take() {
+                        let _ = prompt.responder.send(prompt.default_index);
+                    }
                     // Drain any pending output events before tearing down —
                     // the stderr/stdout reader threads are a different mpsc
                     // sender than the worker, so a pre-shutdown

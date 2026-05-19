@@ -4,7 +4,18 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`Ctrl+W` and `Ctrl+K` are now bound in the input box.** `Ctrl+W` deletes the word behind the cursor (the readline / bash / zsh / fish binding) and `Ctrl+K` deletes from the cursor to the end of the line. `Ctrl+U` (delete to start of line) is unchanged.
+
 ### Fixed
+
+- **`Ctrl+C` while the slash-command popup is open dismisses the popup.** It used to fall through to the outer handler and quit the session, which surprised users who only wanted to bail out of the suggestion list. Ctrl+C with the popup closed still requests shutdown.
+- **The cursor shape now follows the active mode after `/safe` and `/normal`.** Toggling safe mode mid-session previously updated the status line but left the cursor in its old shape; the cursor now switches to the safe-mode underscore on `/safe` and back to the default block on `/normal`, matching the startup behaviour.
+- **A panic anywhere inside the TUI now restores the terminal before the backtrace prints.** A process-wide panic hook disables raw mode, disables bracketed paste, pops the keyboard enhancement flags, and shows the cursor through a real-tty handle that bypasses the output-capture pipe — so even a panic that strikes before the local Drop chain runs leaves the user with a usable shell.
+- **Quitting while a confirmation modal is on screen no longer hangs the worker.** The event loop now sends the modal's default answer back before tearing down, unblocking the worker thread that was parked waiting for a reply so the `join` on shutdown completes promptly.
+- **Tool output without newlines no longer freezes the UI.** A captured pipe that delivered a multi-kilobyte blob with no `\n` used to keep the reader thread waiting silently; sofos now flushes the partial line to the UI every 4 KB and continues reading.
+- **History rows render correctly on Windows ConPTY.** The cursor save/restore escapes (`ESC [ s` / `ESC [ u`) that legacy ConPTY silently drops have been replaced by relative `MoveUp` / `MoveDown` motion, so wrapped history lines now repaint reliably across Windows terminals.
 
 - **Anthropic decode failures now name the provider and show what came back.** A non-streaming response that doesn't match the expected JSON shape used to surface as the generic "HTTP request failed: error decoding response body" with no provider context; sofos now reads the body as text first and includes a redacted preview in the error so a misconfigured proxy is obvious at a glance.
 - **Cache-cost numbers settle correctly on turns where server-side compaction lands late.** Anthropic emits the final `cache_read_input_tokens` and `cache_creation_input_tokens` only on the trailing `message_delta` event in those cases; sofos now refreshes both totals when they appear there, so the cost summary picks up the cache-creation premium instead of under-reporting.

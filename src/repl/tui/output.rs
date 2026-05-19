@@ -245,6 +245,51 @@ fn pipe_writer_into_fd(writer: PipeWriter) -> std::io::Result<libc::c_int> {
     }
 }
 
+/// Soft cap on a single captured "line" emitted to the UI when the
+/// writer never delivers a `\n`. Without it a tool that streams a
+/// large blob (a base64 attachment, a one-line JSON dump) would
+/// freeze the UI for the lifetime of the read — the reader thread
+/// sits in `read_until` waiting for a newline that never arrives.
+/// Beyond this, we send the partial buffer and continue reading.
+const READER_CHUNK_BYTES: usize = 4 * 1024;
+
+/// Read until `\n` OR until `cap` bytes have been accumulated into
+/// `line`, whichever comes first. Returns the number of new bytes
+/// pushed onto `line`. `0` means EOF.
+fn read_until_or_cap(
+    buf: &mut BufReader<PipeReader>,
+    delim: u8,
+    line: &mut Vec<u8>,
+    cap: usize,
+) -> std::io::Result<usize> {
+    let start = line.len();
+    loop {
+        let available = match buf.fill_buf() {
+            Ok(slice) => slice,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(line.len() - start);
+        }
+        if let Some(pos) = available.iter().position(|b| *b == delim) {
+            line.extend_from_slice(&available[..=pos]);
+            buf.consume(pos + 1);
+            return Ok(line.len() - start);
+        }
+        let remaining_cap = cap.saturating_sub(line.len() - start);
+        if remaining_cap == 0 {
+            return Ok(line.len() - start);
+        }
+        let take = available.len().min(remaining_cap);
+        line.extend_from_slice(&available[..take]);
+        buf.consume(take);
+        if line.len() - start >= cap {
+            return Ok(line.len() - start);
+        }
+    }
+}
+
 fn spawn_reader(
     reader: PipeReader,
     kind: OutputKind,
@@ -268,7 +313,7 @@ fn spawn_reader(
             let mut state = SgrState::default();
             loop {
                 line.clear();
-                match buf.read_until(b'\n', &mut line) {
+                match read_until_or_cap(&mut buf, b'\n', &mut line, READER_CHUNK_BYTES) {
                     Ok(0) => break,
                     Ok(_) => {
                         // Log the *raw* bytes — including the `\n` /

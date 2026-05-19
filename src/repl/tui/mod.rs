@@ -26,7 +26,7 @@ pub mod worker;
 use std::fs::OpenOptions;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc as std_mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ratatui::backend::CrosstermBackend;
@@ -42,6 +42,42 @@ use event_loop::event_loop;
 use input::spawn_input_reader;
 use keymap::install_confirm_handler;
 use output::OutputCapture;
+
+/// Real-tty handle saved by [`install_panic_hook`] so the hook can
+/// route restoration sequences past any `OutputCapture` redirection
+/// still in place at panic time. `OnceLock` because the hook is
+/// installed once per process and the handle never needs to change
+/// afterwards.
+static PANIC_TTY: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+
+/// Install a process-global panic hook that restores the terminal
+/// before chaining to the previous hook. Best-effort on every step:
+/// raw mode comes off, bracketed paste is disabled, kitty keyboard
+/// enhancement flags are popped, and the cursor is shown — written
+/// through [`PANIC_TTY`] (when set) so output reaches the real
+/// terminal even if `OutputCapture` has redirected stdout into a
+/// pipe. Chaining to the previous hook keeps the backtrace flowing
+/// to stderr so the user can still file a useful bug report.
+fn install_panic_hook() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if let Some(tty_mutex) = PANIC_TTY.get() {
+                if let Ok(mut tty) = tty_mutex.lock() {
+                    let _ = crossterm::execute!(
+                        &mut *tty,
+                        crossterm::event::PopKeyboardEnhancementFlags,
+                        crossterm::event::DisableBracketedPaste,
+                        crossterm::cursor::Show,
+                    );
+                }
+            }
+            let _ = crossterm::terminal::disable_raw_mode();
+            prev(info);
+        }));
+    });
+}
 
 /// Background tick cadence — frame rate vs. event-loop responsiveness
 /// tradeoff. ~11 Hz is fast enough that streamed output looks fluid
@@ -197,6 +233,14 @@ pub fn run(mut repl: Repl) -> Result<()> {
     #[cfg(windows)]
     let tty = OpenOptions::new().write(true).open("CONOUT$")?;
     let tty_for_backend = tty.try_clone()?;
+    // Stash a real-tty handle for the panic hook so a panic between
+    // here and the normal teardown can still write disable-raw-mode +
+    // disable-bracketed-paste + show-cursor through a writer that
+    // bypasses the upcoming output-capture redirection.
+    if let Ok(tty_for_panic) = tty.try_clone() {
+        let _ = PANIC_TTY.set(Mutex::new(tty_for_panic));
+    }
+    install_panic_hook();
 
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiEvent>();
     let (job_tx, job_rx) = std_mpsc::channel::<Job>();

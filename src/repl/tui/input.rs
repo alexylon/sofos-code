@@ -78,6 +78,15 @@ pub(super) fn handle_idle_key(
             KeyCode::Char('u') if ctrl => {
                 app.textarea.delete_line_by_head();
             }
+            // Ctrl+W deletes the previous word, matching bash/zsh/readline.
+            KeyCode::Char('w') if ctrl => {
+                app.textarea.delete_word();
+            }
+            // Ctrl+K deletes from the cursor to the end of the line, also
+            // standard readline. Mirrors Ctrl+U on the trailing side.
+            KeyCode::Char('k') if ctrl => {
+                app.textarea.delete_line_by_end();
+            }
             // Alt+Up / Alt+Down cycle previously-submitted messages
             // without shadowing the textarea's own Up/Down cursor keys.
             KeyCode::Up if alt && !ctrl => {
@@ -149,6 +158,16 @@ fn handle_slash_popup_key(
         KeyCode::Esc if !app.busy() => {
             // Interrupt takes priority while the worker is busy, so the
             // popup-aware Esc only fires when the user is idle.
+            let snapshot = app.input_text();
+            app.slash_popup.dismiss(&snapshot);
+            true
+        }
+        // Ctrl+C while the popup is open dismisses the popup rather
+        // than quitting the session — the user is mid-input and almost
+        // certainly meant to bail out of the suggestion list, not to
+        // exit. Outside the popup, Ctrl+C keeps its shutdown behaviour
+        // through the outer handler.
+        KeyCode::Char('c') if ctrl => {
             let snapshot = app.input_text();
             app.slash_popup.dismiss(&snapshot);
             true
