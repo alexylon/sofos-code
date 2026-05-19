@@ -6,89 +6,70 @@ All notable changes to Sofos are documented in this file.
 
 ### Added
 
-- **`glob_files` aborts at fifty thousand matches and breaks symlink cycles.** A `**` pattern over a million-file monorepo used to buffer about 80 MB of strings before output truncation; the walk now stops at 50 000 hits with a "narrow the pattern" sentinel. With `follow_symlinks: true`, the walker tracks canonical directories so a `ln -s . loop` no longer spins forever.
-- **`edit_file` refuses to overwrite a file that changed during the read.** When VSCode auto-save or `cargo watch` rewrites a file between the tool's read and write, sofos now detects the mtime / length change and surfaces a clear "concurrent edit" error so the model re-reads the file instead of clobbering the fresher version.
+- **Ctrl+W and Ctrl+K bindings in the input box.** Ctrl+W deletes the previous word; Ctrl+K deletes to the end of the line. Ctrl+U (delete to start) is unchanged.
+- **Alt+Up and Alt+Down preserve your draft when scrolling through prompt history.** Your in-progress text is restored when you step past the newest entry.
+- **Status line shows cache-read and cache-creation token totals** alongside input and output, so you can see your prompt-cache hit rate without quitting.
+- **Long drafts show "… +N more" in the input title** when the content exceeds the visible window.
+- **Session summary calls out the premium-tier crossover** for GPT-5.5 and GPT-5.4 when a turn crosses the input-token cliff.
 
-- **The cache numbers now appear in the status line.** When either cache-read or cache-creation tokens are non-zero, the status row shows `cache: 1234r 56w` alongside the input/output totals so users can see their prompt-cache hit rate without quitting to view the session summary.
-- **The input box title line shows a `… +N more` hint when the draft overflows the visible area.** A long paste or multi-line draft that exceeds the input box height previously had no on-screen indication that more content existed below the visible window; the cap is now surfaced as part of the title.
-- **`Ctrl+W` and `Ctrl+K` are now bound in the input box.** `Ctrl+W` deletes the word behind the cursor (the readline / bash / zsh / fish binding) and `Ctrl+K` deletes from the cursor to the end of the line. `Ctrl+U` (delete to start of line) is unchanged.
+### Changed
+
+- **Safe mode now draws the input cursor as a yellow underline**, matching the yellow `safe` status indicator. Normal mode keeps the default block cursor. The cursor updates immediately when you toggle `/safe` or `/normal`.
+- **Slash-popup dismissal is sticky** across small edits inside the same `/command` attempt. Switching to an unrelated command re-opens the popup. Ctrl+C inside the popup dismisses it (it used to quit the session).
+- **`/check-connection` now reports "host reachable"** rather than "API is reachable", because the probe doesn't authenticate.
+- **Passing an API key on the command line prints a warning** when the matching environment variable is unset, recommending you export it instead so it doesn't show up in `ps` or shell history.
+- **Deprecated and conflicting CLI flags print on-screen warnings** (`--thinking-budget`, `--check-connection` together with `--prompt`).
+- **`view_image` rejects `data:` URLs with a clear hint.** Pass a path or an `http(s)://` URL instead.
+- **`view_image` documents that animated GIFs send only the first frame** — ask the user for a still if an animation matters.
 
 ### Fixed
 
-- **`list_directory` no longer over-counts items when output is truncated.** The `[TRUNCATED: …]` footer added when a directory listing exceeds the cap used to be counted as extra items; sofos now strips the footer before counting so the reported count matches the actual entries.
-- **`view_image` rejects `data:` URLs with a clear hint.** The previous flow routed them into the file branch and surfaced a misleading "Image not found" error; the new error explains the accepted shapes (workspace-relative, absolute, `~/`, http(s)://).
-- **MCP safe-mode refusals are now treated as security blocks, not failures.** Tools filtered out by safe mode used to render with the red error styling; they now flow through the same yellow "blocked" channel as native safe-mode refusals.
-- **A corrupt `index.json` no longer fails session saves.** Sofos now treats a malformed index as if it were missing and rebuilds it from the current save instead of failing the whole write.
-- **Mid-turn user messages folded into text-only assistant turns.** Typing while the assistant is producing a text-only reply (no tool calls) now folds the steer message into a follow-up user turn instead of dropping it as a fresh prompt.
-- **Morph stub-response detection covers the 200-500 byte range.** Files in this bracket that collapsed below 30 % of the original used to slip past the absolute 50-byte floor; sofos now flags those merges as likely truncated.
-
-- **Long assistant turns render fluidly again.** The streaming markdown renderer used to re-render the whole accumulated buffer on every new line — quadratic in the length of the reply, which on a 50 KB stream was noticeably laggy. Replies under 16 KB stream per line as before; longer replies batch the work into 1 KB chunks so the total cost stays linear.
-- **Editing past a slash-popup dismissal stays dismissed.** Pressing Esc on `/clear` and then backspacing one character (or adding a typo fix) used to immediately re-open the popup; the dismissal now sticks while the textarea is still in the same `/command` edit family and only clears when the user switches to an unrelated command.
-- **A live draft is preserved while scrolling through input history.** Alt+Up used to discard whatever you had typed when stepping into older prompts; sofos now snapshots the draft on the first Alt+Up and restores it when Alt+Down walks past the newest entry.
-- **The session summary now surfaces the premium-tier crossover.** Crossing the GPT-5.5 / GPT-5.4 input-token threshold doubles the rate for every later turn in the session; the cost summary now prints a dimmed `(premium tier: peak input X exceeded Y threshold)` line below the estimated cost so users can see why the bill is what it is.
-- **A fully-cached session prints a summary instead of nothing.** The early-return that suppressed the post-session table when both fresh-input and output were zero ignored cache reads — a short prompt that re-hit cache used to look like zero usage. Sessions with any cache-read activity now print the usual summary.
-- **A late settlement of Anthropic cache usage in the streaming response is no longer hidden.** The renderer used to surface `cache: 0r 0w` for these turns; the trailing `message_delta` event now refreshes both totals when it carries them so the status row matches the cost summary.
-- **CommonMark `~~~` fences are recognised in streaming commits.** A partial `~~~` fence at a newline boundary used to allow a premature commit on the unclosed code block, which then needed the same fence type to close it; sofos now treats `~~~` like ```` ``` ```` for the commit-safety check.
-- **`Ctrl+C` after `WorkerBusy` is reliably routed to the in-flight job.** The worker used to clear the interrupt flag before announcing it was busy, so a Ctrl+C that landed in the tiny race window slipped through to the shutdown path. Sofos now sends `WorkerBusy` first and clears the flag second, eliminating the race.
-- **A panicking worker no longer prints a zeroed session summary.** The shutdown path now carries an explicit `panicked` flag so the goodbye line is preceded by a "Session ended unexpectedly" warning instead of pretending the run finished cleanly with no usage at all.
-
-- **`Ctrl+C` while the slash-command popup is open dismisses the popup.** It used to fall through to the outer handler and quit the session, which surprised users who only wanted to bail out of the suggestion list. Ctrl+C with the popup closed still requests shutdown.
-- **The input cursor now follows the active mode after `/safe` and `/normal`.** Safe mode draws the cursor as a yellow underline inside the input box (matching the yellow `safe` status indicator); normal mode keeps the default reversed block. Toggling mid-session updates the cursor immediately, matching the startup behaviour.
-- **A panic anywhere inside the TUI now restores the terminal before the backtrace prints.** A process-wide panic hook disables raw mode, disables bracketed paste, pops the keyboard enhancement flags, and shows the cursor through a real-tty handle that bypasses the output-capture pipe — so even a panic that strikes before the local Drop chain runs leaves the user with a usable shell.
-- **Quitting while a confirmation modal is on screen no longer hangs the worker.** The event loop now sends the modal's default answer back before tearing down, unblocking the worker thread that was parked waiting for a reply so the `join` on shutdown completes promptly.
-- **Tool output without newlines no longer freezes the UI.** A captured pipe that delivered a multi-kilobyte blob with no `\n` used to keep the reader thread waiting silently; sofos now flushes the partial line to the UI every 4 KB and continues reading.
-- **History rows render correctly on Windows ConPTY.** The cursor save/restore escapes (`ESC [ s` / `ESC [ u`) that legacy ConPTY silently drops have been replaced by relative `MoveUp` / `MoveDown` motion, so wrapped history lines now repaint reliably across Windows terminals.
-
-- **Anthropic decode failures now name the provider and show what came back.** A non-streaming response that doesn't match the expected JSON shape used to surface as the generic "HTTP request failed: error decoding response body" with no provider context; sofos now reads the body as text first and includes a redacted preview in the error so a misconfigured proxy is obvious at a glance.
-- **Cache-cost numbers settle correctly on turns where server-side compaction lands late.** Anthropic emits the final `cache_read_input_tokens` and `cache_creation_input_tokens` only on the trailing `message_delta` event in those cases; sofos now refreshes both totals when they appear there, so the cost summary picks up the cache-creation premium instead of under-reporting.
-- **OpenAI refusals reach the conversation.** A `{type: "refusal", refusal: "..."}` block used to be dropped silently, surfacing as "Assistant returned an empty response"; sofos now lifts the refusal text into the visible response so both the user and the next turn see what the model said.
-- **OpenAI truncations without an `incomplete.reason` still trigger the token-limit warning.** When the provider sets `status: "incomplete"` but omits `incomplete_details.reason`, sofos now treats it as `max_tokens` so the existing "Response was cut off" warning fires instead of letting a half-formed tool call enter the conversation history.
-
-### Security
-
-- **`web_fetch` follows at most three redirects, and only to http(s) targets.** The default `reqwest` redirect policy would let an LLM-supplied URL chain through up to ten hops including non-http(s) schemes (`file://`, `data:`, custom). Sofos now caps the hop count and rejects any redirect with a non-http(s) scheme so a content URL can't slip into a different protocol mid-chain.
-- **MCP server names are restricted to `[A-Za-z0-9_-]+`.** Two visually-identical Unicode names (`github` vs `gith\u{1d62}ub`) used to produce distinct map entries and route differently while looking the same in config; sofos now refuses non-ASCII server names at load time.
-- **MCP `initialize` uses a 15-second timeout on both stdio and HTTP transports.** Tool calls keep the existing two-minute ceiling, but the handshake no longer holds session startup hostage for two minutes per misconfigured server.
-- **The clipboard image binary check is the effective cap.** Base64 expansion (~33 %) used to make the post-encode check the actual gate, while the binary check at the same limit was dead. Sofos now caps the binary side at three-quarters of the limit so a marginally oversized image fails fast with a clearer reason.
-
-### Changed
-
-- **Deprecated `--thinking-budget` and `--check-connection` + `--prompt` warnings now use the yellow `UI::print_warning` channel.** Users without `RUST_LOG=warn` set previously got no on-screen feedback for either; both now appear consistently.
-- **Passing an API key on the command line now prints a warning when the environment variable is unset.** `--api-key`, `--openai-api-key`, and `--morph-api-key` arguments land in `ps` output and shell history; sofos now recommends exporting the env-var form when it sees a flag-only setup.
-- **`--check-connection` reports "host reachable" instead of "API is reachable".** The probe is a HEAD against the base URL — both providers return 404 there without authenticating, so the previous wording misled users into expecting their key would also work.
-- **Cross-platform `move_file` now reports "concurrent edit" when the destination changed mid-operation.** Combined with the file-modification fixes above, sofos no longer silently overwrites a file that was rewritten between read and write.
-- **Slash-popup dismissal persists across edits within the same `/command` attempt** (covered by the slash-popup fix earlier in this section).
-- **Animated GIFs are documented as first-frame only.** The `view_image` schema text now matches the implementation; ask the user for a still frame if an animation matters.
+- **Long streamed replies stay fluid.** The markdown stream renderer is now linear in length instead of quadratic.
+- **`~~~` fenced code blocks render correctly while streaming.**
+- **OpenAI refusals appear in the reply.** They used to surface as "Assistant returned an empty response".
+- **OpenAI truncations without a documented reason now trigger the "Response was cut off" warning.**
+- **Anthropic decode failures name the provider** and include a redacted preview of what came back.
+- **Cache numbers settle correctly** when Anthropic reports its totals on the last streamed event of a turn.
+- **A fully-cached session prints its usage summary** instead of nothing.
+- **`/clear` keeps safe mode visible to the model** when safe mode is still active.
+- **`/effort` rejects max-tokens settings that would error on the next turn** (Anthropic legacy thinking models).
+- **Slash commands (`/compact`, `/clear`, `/safe`, `/normal`) now persist to the session** even if you quit immediately after.
+- **Resuming a session killed mid-tool-call no longer fails the first request.**
+- **Hitting the tool-iteration cap no longer corrupts the saved session.**
+- **A worker crash prints "Session ended unexpectedly"** instead of a zeroed summary.
+- **A panic inside the TUI restores the terminal** before the backtrace prints, so your shell stays usable.
+- **Quitting while a confirmation modal is on screen no longer hangs the worker.**
+- **Mid-turn output without newlines no longer freezes the UI.** Long no-newline runs are flushed in 4 KB chunks with a "[…continued]" marker.
+- **Ctrl+C right after the worker starts a turn reliably interrupts the in-flight job** rather than slipping through to the shutdown path.
+- **Wrapped history lines render correctly on Windows terminals.**
+- **A corrupt session index no longer fails subsequent saves.**
+- **Messages typed during a text-only assistant reply now feed into the next user turn** instead of being dropped.
+- **`list_directory` reports the correct item count** when the listing is truncated.
+- **MCP safe-mode refusals render as security blocks** (yellow) instead of red errors.
+- **`glob_files` stops at fifty thousand matches with a "narrow the pattern" hint** and breaks symlink cycles when following them.
+- **`edit_file` refuses to overwrite a file that changed during the read** so concurrent edits from other tools aren't silently clobbered.
+- **`write_file` and `edit_file` survive a power loss between rename and writeback.**
+- **Moving a file across filesystems no longer fails outright** — sofos falls back to copy + delete.
+- **Morph stub-response detection now covers 200–500 byte originals** that collapse below 30 %.
+- **MCP server startup no longer pauses the UI on slow filesystems.** Spawning runs on a background worker.
 
 ### Security
 
-- **API-key-shaped strings in provider error bodies are redacted before display.** Provider 401 responses sometimes echo a truncated key (`sk-ant-api03-…` or `Bearer …`); sofos now replaces every matching run with `sk-[redacted]` / `Bearer [redacted]` and caps the body at 4 KB, so a noisy proxy or moderation block can no longer flood the status line or leak key prefixes to transcripts and crash reports.
-- **The SSE re-assembly buffer is capped at 16 MB on both providers.** A server (or middlebox) that streams gigabytes without a newline used to grow the buffer until the 30-minute request timeout fired; sofos now aborts the stream cleanly with a clear error long before memory exhaustion becomes a real risk.
-
-- **Hitting the tool-iteration cap no longer corrupts the saved session.** The recovery turn used to ship with the tools list still attached, so the assistant could answer with a fresh `tool_use` block that was never executed; the next request 400'd and `--resume` was dead on arrival. Sofos now strips tools from that final summary request and removes any tool-related blocks it returns defensively, so the session resumes cleanly afterwards.
-- **`/clear` keeps safe mode visible to the model.** Clearing the history used to strip the "you are running in safe mode" preamble even when the executor was still in safe mode, so the model proposed writes and bash and was met with opaque denials. The preamble is re-added automatically when safe mode is still on.
-- **Switching reasoning effort mid-session refuses combinations the next request would reject.** On the Anthropic legacy thinking models, `/effort high` (or any enabled level) requires `--max-tokens` above 16 384; the gate that startup enforces now also fires from `/effort`, so the next turn doesn't 400 with no clear hint at the cause.
-- **Resuming a session that was killed mid-tool-call no longer fails the first request.** A hard kill between writing the assistant's `tool_use` to disk and writing the matching `tool_result` used to leave the saved history in a shape the provider rejects on resume; sofos now strips the orphan tool-use block on load and replaces it with a short "[Tool call interrupted before execution]" placeholder.
-- **Slash commands now save their effect to the session.** Running `/compact`, `/clear`, `/safe`, or `/normal` and quitting via Ctrl+C without another prompt used to lose the change; the worker now persists the session after every slash command, not only after free-text turns.
-- **`write_file` / `edit_file` survive a power loss between the rename and writeback.** The atomic-write helper now `fsync`s the temp file before the rename and (on Unix) the parent directory after, so ext4/xfs in their default mount options can no longer leave the target with the new inode but zero data after a kernel crash.
-- **Moving a file across filesystems no longer fails outright.** `move_file` used to surface a raw "Invalid cross-device link" error when source and destination lived on different filesystems (macOS APFS volumes, Linux `/tmp` mounts, external drives). Sofos now detects the cross-device case and falls back to a copy + delete so the operation completes.
-
-### Security
-
-- **MCP server children no longer inherit the sofos environment.** Stdio MCP servers used to start with every variable the parent shell exported, so `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MORPH_API_KEY`, ssh agent sockets, and AWS credentials all reached the child. The launcher now clears the environment first and forwards a small allowlist (`PATH`, `HOME` / `USERPROFILE`, `TMPDIR` / `TEMP` / `TMP`, `LANG`, every `LC_*` locale variable, plus Windows essentials like `SYSTEMROOT` and `PATHEXT`); anything else needs to be listed under the server's `env` config field. Existing servers that already declare their required vars in config are unaffected.
-- **MCP HTTP transport no longer follows redirects.** A `302` from a hostile or misconfigured MCP host could otherwise forward a configured `Authorization: Bearer ...` header to a different origin. A redirect status now returns a clear error explaining the refusal; reconfigure the server to its final URL instead.
-- **MCP HTTP response bodies are capped at 32 MB.** A server that streamed multi-GB JSON for a `tools/list` reply could previously stall a turn and exhaust memory under the 120-second timeout. Sofos now rejects oversized responses up front (when `Content-Length` is announced) or aborts mid-stream when the running total crosses the cap.
-- **MCP JSON-RPC responses are matched against the originating request id.** A server that emits an unsolicited frame or replies out of order is rejected with a clear "id mismatch" error instead of returning the wrong result to the caller. The check accepts both numeric and string-shaped echoes of sofos's outgoing numeric id, matching the spec.
-- **Slow MCP child shutdown no longer pauses the tokio executor.** The stdio launcher and the timeout-recovery path bound the kill+wait to about 200 ms with non-blocking polls; a server stuck on uninterruptible IO is left to the OS instead of holding up the runtime.
-
-### Changed
-
-- **MCP stdio servers spawn on a background worker.** Process creation used to happen on the tokio executor thread, which could pause the UI on a slow filesystem or NFS mount; it now runs on the blocking-task pool, so the rest of the session stays responsive while a server starts up.
-
-- **A global deny rule survives a local allow with the same name.** Adding `Bash(rm)` to `.sofos/config.local.toml`'s allow list used to silently strip the matching `Bash(rm)` from `~/.sofos/config.toml`'s deny list; both entries now coexist after merge, so the per-command verdict reflects every configured rule instead of dropping the global guarantee.
-- **`PATH=`, `LD_PRELOAD=`, `LD_LIBRARY_PATH=`, `DYLD_*=`, `NODE_PATH=`, and `PYTHONPATH=` prefixes now route the bash call to a confirmation prompt.** A command like `PATH=. cargo build` used to auto-allow as `cargo`; sofos now asks the user before running anything that swaps the binary the shell will execute, even when the base command is on the allow list or when blanket `Bash` allow is active. Built-in forbidden bases (`rm`, `chmod`, `sudo`, …) still take precedence and stay denied.
-- **A session-scoped Bash path grant now applies only to the file the user named.** Allowing `cat /home/me/.ssh/config` once used to permit every other file under `/home/me/.ssh` for the rest of the session; the grant is now scoped to the specific file, so a follow-up `cat /home/me/.ssh/id_rsa` re-prompts. Grants saved to config (yes-and-remember) still cover the whole `parent/**` directory because the user explicitly opts in to that wider scope.
-- **Repeating a denied command with extra whitespace no longer dodges the session deny.** `ls /etc` and `ls  /etc` (any internal whitespace) now hash to the same session-scoped key, so a model that retries a refused command cannot trigger a fresh prompt by adding spaces or tabs.
+- **Provider error bodies that echo API key prefixes are redacted before display.** `sk-...` and `Bearer ...` are replaced with `[redacted]`; the body itself is capped at 4 KB so a noisy proxy can't flood the status line.
+- **The streaming response buffer is capped at 16 MB** on both providers so a misbehaving server can't grow it without limit.
+- **MCP server children no longer inherit the sofos environment.** A short allowlist (`PATH`, `HOME`/`USERPROFILE`, `TMPDIR`/`TEMP`/`TMP`, `LANG`, every `LC_*`, and Windows essentials) plus anything you declare under the server's `env` config is what reaches the child. Anything else — including `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MORPH_API_KEY`, ssh agent sockets, AWS credentials — is dropped unless you opt it in.
+- **MCP HTTP transport refuses to follow redirects** so a hostile or misconfigured server can't forward your bearer token cross-origin.
+- **MCP HTTP response bodies are capped at 32 MB.**
+- **MCP `initialize` uses a 15-second timeout** on both stdio and HTTP transports. Tool calls keep the existing two-minute ceiling.
+- **MCP JSON-RPC responses must match the originating request id.** A mismatched or unsolicited frame is rejected.
+- **MCP server names must be ASCII** (`A-Z`, `a-z`, `0-9`, `_`, `-`). Visually-identical Unicode lookalikes can no longer create two servers that route to different places.
+- **Slow MCP child shutdown is bounded** to about 200 ms so a stuck server doesn't hold up session exit.
+- **`web_fetch` follows at most three redirects and only to `http(s)://`.** A content URL can no longer chain into `file://`, `data:`, or another scheme.
+- **Clipboard image cap is the binary check, not the base64 check.** A marginally oversized image now fails fast with a clearer reason.
+- **A global deny rule survives a local allow with the same name** instead of being silently dropped during config merge.
+- **Dangerous environment prefixes ask for confirmation** regardless of the base command. `PATH=. cargo build`, `LD_PRELOAD=…`, `DYLD_*=`, `NODE_PATH=`, and `PYTHONPATH=` no longer auto-allow; built-in forbidden commands (`rm`, `chmod`, `sudo`, …) still take precedence.
+- **A session-scoped Bash path grant only covers the file you named.** Allowing `cat /home/me/.ssh/config` once no longer permits every other file under `/home/me/.ssh` for the rest of the session. Saving the grant to config (yes-and-remember) still covers the whole parent directory.
+- **Whitespace tricks no longer dodge a session deny.** `ls /etc` and `ls  /etc` (any internal whitespace) hash to the same key.
 
 ## [0.3.1] - 2026-05-19
 
