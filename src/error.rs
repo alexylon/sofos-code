@@ -19,6 +19,8 @@ const BLOCKED_KEYWORDS: &[&str] = &[
     "tilde paths",
     "output redirection",
     "here-doc",
+    "filtered out",
+    "safe mode",
 ];
 
 #[derive(Error, Debug)]
@@ -77,7 +79,11 @@ impl SofosError {
         match self {
             Self::PathViolation(_) => true,
             Self::ToolExecution(msg) => BLOCKED_KEYWORDS.iter().any(|kw| msg.contains(kw)),
-            Self::McpError(_) => false,
+            // Safe-mode MCP refusals come back as `McpError` from the
+            // executor; the message still carries a "filtered out" /
+            // "safe mode" keyword, so let the same keyword check apply
+            // here instead of treating every MCP error as a failure.
+            Self::McpError(msg) => BLOCKED_KEYWORDS.iter().any(|kw| msg.contains(kw)),
             Self::Join(_) => false,
             Self::Context { source, .. } => source.is_blocked(),
             _ => false,

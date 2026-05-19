@@ -6,11 +6,21 @@ All notable changes to Sofos are documented in this file.
 
 ### Added
 
+- **`glob_files` aborts at fifty thousand matches and breaks symlink cycles.** A `**` pattern over a million-file monorepo used to buffer about 80 MB of strings before output truncation; the walk now stops at 50 000 hits with a "narrow the pattern" sentinel. With `follow_symlinks: true`, the walker tracks canonical directories so a `ln -s . loop` no longer spins forever.
+- **`edit_file` refuses to overwrite a file that changed during the read.** When VSCode auto-save or `cargo watch` rewrites a file between the tool's read and write, sofos now detects the mtime / length change and surfaces a clear "concurrent edit" error so the model re-reads the file instead of clobbering the fresher version.
+
 - **The cache numbers now appear in the status line.** When either cache-read or cache-creation tokens are non-zero, the status row shows `cache: 1234r 56w` alongside the input/output totals so users can see their prompt-cache hit rate without quitting to view the session summary.
 - **The input box title line shows a `… +N more` hint when the draft overflows the visible area.** A long paste or multi-line draft that exceeds the input box height previously had no on-screen indication that more content existed below the visible window; the cap is now surfaced as part of the title.
 - **`Ctrl+W` and `Ctrl+K` are now bound in the input box.** `Ctrl+W` deletes the word behind the cursor (the readline / bash / zsh / fish binding) and `Ctrl+K` deletes from the cursor to the end of the line. `Ctrl+U` (delete to start of line) is unchanged.
 
 ### Fixed
+
+- **`list_directory` no longer over-counts items when output is truncated.** The `[TRUNCATED: …]` footer added when a directory listing exceeds the cap used to be counted as extra items; sofos now strips the footer before counting so the reported count matches the actual entries.
+- **`view_image` rejects `data:` URLs with a clear hint.** The previous flow routed them into the file branch and surfaced a misleading "Image not found" error; the new error explains the accepted shapes (workspace-relative, absolute, `~/`, http(s)://).
+- **MCP safe-mode refusals are now treated as security blocks, not failures.** Tools filtered out by safe mode used to render with the red error styling; they now flow through the same yellow "blocked" channel as native safe-mode refusals.
+- **A corrupt `index.json` no longer fails session saves.** Sofos now treats a malformed index as if it were missing and rebuilds it from the current save instead of failing the whole write.
+- **Mid-turn user messages folded into text-only assistant turns.** Typing while the assistant is producing a text-only reply (no tool calls) now folds the steer message into a follow-up user turn instead of dropping it as a fresh prompt.
+- **Morph stub-response detection covers the 200-500 byte range.** Files in this bracket that collapsed below 30 % of the original used to slip past the absolute 50-byte floor; sofos now flags those merges as likely truncated.
 
 - **Long assistant turns render fluidly again.** The streaming markdown renderer used to re-render the whole accumulated buffer on every new line — quadratic in the length of the reply, which on a 50 KB stream was noticeably laggy. Replies under 16 KB stream per line as before; longer replies batch the work into 1 KB chunks so the total cost stays linear.
 - **Editing past a slash-popup dismissal stays dismissed.** Pressing Esc on `/clear` and then backspacing one character (or adding a typo fix) used to immediately re-open the popup; the dismissal now sticks while the textarea is still in the same `/command` edit family and only clears when the user switches to an unrelated command.
@@ -33,6 +43,22 @@ All notable changes to Sofos are documented in this file.
 - **Cache-cost numbers settle correctly on turns where server-side compaction lands late.** Anthropic emits the final `cache_read_input_tokens` and `cache_creation_input_tokens` only on the trailing `message_delta` event in those cases; sofos now refreshes both totals when they appear there, so the cost summary picks up the cache-creation premium instead of under-reporting.
 - **OpenAI refusals reach the conversation.** A `{type: "refusal", refusal: "..."}` block used to be dropped silently, surfacing as "Assistant returned an empty response"; sofos now lifts the refusal text into the visible response so both the user and the next turn see what the model said.
 - **OpenAI truncations without an `incomplete.reason` still trigger the token-limit warning.** When the provider sets `status: "incomplete"` but omits `incomplete_details.reason`, sofos now treats it as `max_tokens` so the existing "Response was cut off" warning fires instead of letting a half-formed tool call enter the conversation history.
+
+### Security
+
+- **`web_fetch` follows at most three redirects, and only to http(s) targets.** The default `reqwest` redirect policy would let an LLM-supplied URL chain through up to ten hops including non-http(s) schemes (`file://`, `data:`, custom). Sofos now caps the hop count and rejects any redirect with a non-http(s) scheme so a content URL can't slip into a different protocol mid-chain.
+- **MCP server names are restricted to `[A-Za-z0-9_-]+`.** Two visually-identical Unicode names (`github` vs `gith\u{1d62}ub`) used to produce distinct map entries and route differently while looking the same in config; sofos now refuses non-ASCII server names at load time.
+- **MCP `initialize` uses a 15-second timeout.** Tool calls keep the existing two-minute ceiling, but the handshake no longer holds session startup hostage for two minutes per misconfigured server.
+- **The clipboard image binary check is the effective cap.** Base64 expansion (~33 %) used to make the post-encode check the actual gate, while the binary check at the same limit was dead. Sofos now caps the binary side at three-quarters of the limit so a marginally oversized image fails fast with a clearer reason.
+
+### Changed
+
+- **Deprecated `--thinking-budget` and `--check-connection` + `--prompt` warnings now use the yellow `UI::print_warning` channel.** Users without `RUST_LOG=warn` set previously got no on-screen feedback for either; both now appear consistently.
+- **Passing an API key on the command line now prints a warning when the environment variable is unset.** `--api-key`, `--openai-api-key`, and `--morph-api-key` arguments land in `ps` output and shell history; sofos now recommends exporting the env-var form when it sees a flag-only setup.
+- **`--check-connection` reports "host reachable" instead of "API is reachable".** The probe is a HEAD against the base URL — both providers return 404 there without authenticating, so the previous wording misled users into expecting their key would also work.
+- **Cross-platform `move_file` now reports "concurrent edit" when the destination changed mid-operation.** Combined with the file-modification fixes above, sofos no longer silently overwrites a file that was rewritten between read and write.
+- **Slash-popup dismissal persists across edits within the same `/command` attempt** (covered by the slash-popup fix earlier in this section).
+- **Animated GIFs are documented as first-frame only.** The `view_image` schema text now matches the implementation; ask the user for a still frame if an animation matters.
 
 ### Security
 

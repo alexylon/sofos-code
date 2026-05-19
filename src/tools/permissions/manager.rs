@@ -240,8 +240,13 @@ impl PermissionManager {
     }
 
     pub fn get_rule_source(&self, rule: &str) -> String {
+        // Rules merge from `~/.sofos/config.toml` (global) and
+        // `<workspace>/.sofos/config.local.toml` (local). When a rule
+        // appears in the global set we report both candidate files so
+        // the user knows where to look; the local-only path stays
+        // unambiguous.
         if self.global_rules.contains(rule) {
-            "~/.sofos/config.toml or .sofos/config.local.toml".to_string()
+            "~/.sofos/config.toml (or .sofos/config.local.toml if overridden)".to_string()
         } else {
             ".sofos/config.local.toml".to_string()
         }

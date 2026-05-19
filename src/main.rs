@@ -31,10 +31,40 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // API keys on the command line land in `ps` output and shell
+    // history; the env-var form is the safe alternative. clap's
+    // `#[arg(env = ...)]` populates the field from either source, so
+    // "field set but env unset" means the user passed the flag.
+    for (field, env_var, flag) in [
+        (cli.api_key.as_deref(), "ANTHROPIC_API_KEY", "--api-key"),
+        (
+            cli.openai_api_key.as_deref(),
+            "OPENAI_API_KEY",
+            "--openai-api-key",
+        ),
+        (
+            cli.morph_api_key.as_deref(),
+            "MORPH_API_KEY",
+            "--morph-api-key",
+        ),
+    ] {
+        if field.is_some() && std::env::var_os(env_var).is_none() {
+            UI::print_warning(&format!(
+                "{} on the command line exposes the key in `ps` output and shell history. \
+                 Export {} in your shell instead.",
+                flag, env_var
+            ));
+        }
+    }
+
     if cli.thinking_budget != cli::THINKING_BUDGET_DEFAULT {
-        tracing::warn!(
+        // Surface the deprecation through the same yellow `UI` channel
+        // the rest of the program uses for user-facing warnings.
+        // `tracing::warn!` only reaches users with `RUST_LOG` set,
+        // which most don't.
+        UI::print_warning(
             "--thinking-budget is deprecated and has no effect on any provider path. \
-             Use --reasoning-effort to control thinking depth. The flag will be removed in a future release."
+             Use --reasoning-effort to control thinking depth. The flag will be removed in a future release.",
         );
     }
 
@@ -100,9 +130,9 @@ fn main() -> Result<()> {
         // so scripts that combine the two don't quietly drop their
         // input.
         if cli.prompt.is_some() {
-            tracing::warn!(
+            UI::print_warning(
                 "--prompt is ignored when --check-connection is set; \
-                 only the connectivity check will run."
+                 only the connectivity check will run.",
             );
         }
         return check_api_connectivity(&client);
@@ -246,10 +276,16 @@ fn check_api_connectivity(client: &LlmClient) -> Result<()> {
 
     match runtime.block_on(client.check_connectivity()) {
         Ok(()) => {
+            // Use "host reachable" rather than "API is reachable" — the
+            // probe is a HEAD against the base URL, which returns 404
+            // on either provider without authenticating. Saying "API is
+            // reachable" misleads users into expecting a successful
+            // first request, but a missing or wrong key still 401s.
             println!(
-                "{} {} API is reachable",
+                "{} {} host reachable (HEAD {}); key not validated",
                 "✓".bright_green().bold(),
-                provider
+                provider,
+                "/".dimmed()
             );
             Ok(())
         }

@@ -326,7 +326,14 @@ impl Repl {
         // logged as warnings rather than overriding the original error.
         let turn_result = self.process_message(prompt, vec![]);
         if let Err(e) = self.save_current_session() {
-            tracing::warn!(error = %e, "failed to save session after non-interactive turn");
+            // Mirror the interactive worker: surface save failures
+            // through `UI::print_warning` so they appear in the
+            // user's terminal output even without `RUST_LOG` set,
+            // which most one-shot users don't configure.
+            UI::print_warning(&format!(
+                "failed to save session after non-interactive turn: {}",
+                e
+            ));
         }
         turn_result?;
         UI::display_session_summary(

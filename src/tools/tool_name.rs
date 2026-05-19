@@ -111,7 +111,15 @@ impl ToolName {
                     .and_then(|v| v.as_str())
                     .unwrap_or(".");
 
-                let item_count = output
+                // The output ends with a `[TRUNCATED: …]` block when
+                // the listing exceeded the cap. Strip everything from
+                // that marker forward before counting — otherwise the
+                // multi-line footer inflates the reported item count.
+                let counted = match output.find("\n[TRUNCATED:") {
+                    Some(i) => &output[..i],
+                    None => output,
+                };
+                let item_count = counted
                     .lines()
                     .filter(|line| !line.trim().is_empty() && !line.starts_with("Contents of"))
                     .count();

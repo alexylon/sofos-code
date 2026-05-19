@@ -224,6 +224,25 @@ impl ResponseHandler {
             }
 
             if tool_uses.is_empty() {
+                // Drain any in-flight steer messages even when the
+                // assistant only produced text. The follow-up branch
+                // below folds them into the tool-results turn; without
+                // mirroring the drain here, a text-only turn leaves
+                // the steer buffered and the next prompt fires as a
+                // fresh user turn — losing the "mid-turn delivery"
+                // association the user expected.
+                if let Some(steer_text) = self.drain_steer_messages() {
+                    println!(
+                        "{} {}",
+                        "↑".bright_magenta().bold(),
+                        "mid-turn message folded into a new turn".bright_magenta()
+                    );
+                    self.conversation.add_user_message(format!(
+                        "[User sent this message while you were working on the previous task. \
+                         Take it into account and adjust your plan if needed]:\n{}",
+                        steer_text
+                    ));
+                }
                 if text_output.is_empty() && !had_reasoning {
                     println!("{}", "Assistant returned an empty response.".dimmed());
                     println!();

@@ -1,7 +1,7 @@
 use crate::error::{Result, SofosError};
 use crate::mcp::client::{
-    MCP_REQUEST_TIMEOUT, create_call_tool_request, create_init_request, parse_call_tool_response,
-    parse_list_tools_response,
+    MCP_INIT_TIMEOUT, MCP_REQUEST_TIMEOUT, create_call_tool_request, create_init_request,
+    parse_call_tool_response, parse_list_tools_response,
 };
 use crate::mcp::config::McpServerConfig;
 use crate::mcp::protocol::*;
@@ -396,13 +396,13 @@ impl StdioClient {
     /// doesn't pause the executor waiting for the OS to reap it. Used
     /// by both `send_request` and `send_notification` so they share
     /// the same lock/panic/timeout error vocabulary.
-    async fn run_with_timeout<T, F>(&self, label: &str, blocking: F) -> Result<T>
+    async fn run_with_timeout<T, F>(&self, label: &str, timeout: Duration, blocking: F) -> Result<T>
     where
         F: FnOnce() -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
         let task = tokio::task::spawn_blocking(blocking);
-        match tokio::time::timeout(MCP_REQUEST_TIMEOUT, task).await {
+        match tokio::time::timeout(timeout, task).await {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(e))) => Err(e),
             Ok(Err(join_err)) => Err(SofosError::McpError(format!(
@@ -415,7 +415,7 @@ impl StdioClient {
                     "MCP server '{}' {} timed out after {}s",
                     self.server_name,
                     label,
-                    MCP_REQUEST_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 )))
             }
         }
@@ -451,10 +451,14 @@ impl StdioClient {
     }
 
     async fn initialize(&self) -> Result<()> {
+        // The handshake uses a tighter ceiling than tool calls so a
+        // frozen server can't hold session startup hostage for two
+        // minutes per misconfigured config entry.
         let response = self
-            .send_request(
+            .send_request_with_timeout(
                 "initialize",
                 Some(serde_json::to_value(create_init_request())?),
+                MCP_INIT_TIMEOUT,
             )
             .await?;
 
@@ -467,6 +471,16 @@ impl StdioClient {
     }
 
     async fn send_request(&self, method: &str, params: Option<Value>) -> Result<Value> {
+        self.send_request_with_timeout(method, params, MCP_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let request = JsonRpcRequest::new(id, method.to_string(), params);
         let request_json = serde_json::to_string(&request)?;
@@ -476,7 +490,7 @@ impl StdioClient {
         let stdin = Arc::clone(&self.stdin);
         let stdout = Arc::clone(&self.stdout);
         let response = self
-            .run_with_timeout("request", move || {
+            .run_with_timeout("request", timeout, move || {
                 stdio_request_blocking(
                     &server_name,
                     &request_lock,
@@ -515,7 +529,7 @@ impl StdioClient {
         // wedged its read side. Same timeout path as `send_request`.
         let server_name = self.server_name.clone();
         let stdin = Arc::clone(&self.stdin);
-        self.run_with_timeout("notification", move || {
+        self.run_with_timeout("notification", MCP_REQUEST_TIMEOUT, move || {
             stdio_write_blocking(&server_name, &stdin, &notification_json)
         })
         .await

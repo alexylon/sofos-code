@@ -840,10 +840,28 @@ impl ToolExecutor {
                         .collect()
                 };
 
+                // Cap on the number of matches we accumulate before
+                // bailing with a hint. Holds memory bounded for a
+                // pathological pattern over a huge tree (e.g. `**` over
+                // a million-file monorepo would otherwise build 80 MB
+                // of strings before output truncation clipped it).
+                const GLOB_MAX_MATCHES: usize = 50_000;
+
                 let mut matches = Vec::new();
                 let mut stack = vec![search_dir.clone()];
+                // Visited canonical directories for cycle detection
+                // when `follow_symlinks=true`. A `ln -s . loop` would
+                // otherwise spin forever and exhaust memory.
+                let mut visited: std::collections::HashSet<std::path::PathBuf> =
+                    std::collections::HashSet::new();
+                if follow_symlinks {
+                    if let Ok(canon) = std::fs::canonicalize(&search_dir) {
+                        visited.insert(canon);
+                    }
+                }
+                let mut hit_cap = false;
 
-                while let Some(dir) = stack.pop() {
+                'walk: while let Some(dir) = stack.pop() {
                     let entries = match std::fs::read_dir(&dir) {
                         Ok(e) => e,
                         Err(_) => continue,
@@ -865,11 +883,28 @@ impl ToolExecutor {
                             if excluded_basenames.contains(dir_name) {
                                 continue;
                             }
+                            if follow_symlinks {
+                                // Skip directories we've already
+                                // walked under their canonical form —
+                                // breaks symlink cycles.
+                                match std::fs::canonicalize(&path) {
+                                    Ok(canon) => {
+                                        if !visited.insert(canon) {
+                                            continue;
+                                        }
+                                    }
+                                    Err(_) => continue,
+                                }
+                            }
                             stack.push(path);
                         } else if let Ok(rel) = path.strip_prefix(&search_dir) {
                             let rel_str = rel.to_string_lossy();
                             if glob.is_match(rel_str.as_ref()) {
                                 matches.push(rel_str.to_string());
+                                if matches.len() >= GLOB_MAX_MATCHES {
+                                    hit_cap = true;
+                                    break 'walk;
+                                }
                             }
                         }
                     }
@@ -879,6 +914,14 @@ impl ToolExecutor {
 
                 let body = if matches.is_empty() {
                     format!("No files matching '{}' in '{}'", pattern, base)
+                } else if hit_cap {
+                    format!(
+                        "Found {}+ file(s) matching '{}' (capped at {}; narrow the pattern to see the rest):\n{}",
+                        matches.len(),
+                        pattern,
+                        GLOB_MAX_MATCHES,
+                        matches.join("\n")
+                    )
                 } else {
                     format!(
                         "Found {} file(s) matching '{}':\n{}",
@@ -906,12 +949,18 @@ impl ToolExecutor {
                 })?;
                 let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
-                // Guard against truncation markers from conversation history compaction
+                // Guard against truncation markers from conversation history compaction.
+                // Catches every comment style we've seen the model emit:
+                // C-family line/block, shell/Python, HTML/XML, and the
+                // square-bracket variant some templates use.
                 let truncation_markers = [
                     "...[truncated",
                     "// ... existing code ...",
                     "/* ... existing code ... */",
                     "# ... existing code ...",
+                    "<!-- ... existing code ... -->",
+                    "[... existing code ...]",
+                    "{# ... existing code ... #}",
                 ];
                 for marker in &truncation_markers {
                     if old_string.contains(marker) {
@@ -956,6 +1005,14 @@ impl ToolExecutor {
                     self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
                 }
 
+                // Capture mtime + length at read time so the write can
+                // detect a concurrent change (VSCode auto-save, a
+                // `cargo watch` rewriting generated code, the user
+                // editing in another editor). Without this the read /
+                // modify / write window silently overwrites a fresher
+                // version.
+                let pre_meta = std::fs::metadata(&resolved.canonical).ok();
+
                 let original = if resolved.is_inside_workspace {
                     self.fs_tool.read_file(path)?
                 } else {
@@ -976,6 +1033,28 @@ impl ToolExecutor {
                 } else {
                     original.replacen(old_string, new_string, 1)
                 };
+
+                // Re-stat before writing: a different mtime or length
+                // means a concurrent writer changed the file under us,
+                // and proceeding would clobber the change. Best-effort
+                // — a filesystem that doesn't report mtime (very rare)
+                // skips the check.
+                if let Some(pre) = pre_meta.as_ref() {
+                    if let Ok(post) = std::fs::metadata(&resolved.canonical) {
+                        let mtime_changed = match (pre.modified(), post.modified()) {
+                            (Ok(a), Ok(b)) => a != b,
+                            _ => false,
+                        };
+                        if mtime_changed || pre.len() != post.len() {
+                            return Err(SofosError::ToolExecution(format!(
+                                "File '{}' changed on disk between the read and the write \
+                                 (concurrent edit?). Re-run read_file to see the current \
+                                 content and retry.",
+                                path
+                            )));
+                        }
+                    }
+                }
 
                 if resolved.is_inside_workspace {
                     self.fs_tool.write_file(path, &modified)?;
@@ -1322,6 +1401,18 @@ impl ToolExecutor {
                             .to_string(),
                     ));
                 }
+                // `data:` URLs fall into the file branch below and fail
+                // canonicalisation with a confusing "Image not found"
+                // error. Surface a clearer hint before we try to open
+                // anything.
+                if trimmed.starts_with("data:") {
+                    return Err(SofosError::ToolExecution(
+                        "view_image does not accept `data:` URLs. Save the image to a file \
+                         (workspace-relative, absolute, or ~/) or expose it over http(s):// \
+                         and call view_image with that path."
+                            .to_string(),
+                    ));
+                }
 
                 let source = if is_http_url(trimmed) {
                     self.image_loader.prepare_web_image(trimmed)?
@@ -1369,8 +1460,25 @@ impl ToolExecutor {
                     ));
                 }
 
+                // Cap redirect chains to three hops with an http(s)-only
+                // policy. The default policy follows up to ten hops via
+                // any scheme reqwest understands, which lets an LLM-
+                // supplied URL chain through `file://`, `data:`, or
+                // private-network targets without an obvious signal in
+                // the visible URL.
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(30))
+                    .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                        if attempt.previous().len() >= 3 {
+                            return attempt.error("web_fetch follows at most 3 redirects");
+                        }
+                        match attempt.url().scheme() {
+                            "http" | "https" => attempt.follow(),
+                            _ => {
+                                attempt.error("web_fetch refuses to follow a non-http(s) redirect")
+                            }
+                        }
+                    }))
                     .build()
                     .map_err(|e| SofosError::ToolExecution(format!("HTTP client error: {}", e)))?;
 

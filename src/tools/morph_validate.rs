@@ -11,6 +11,13 @@
 /// (upstream) and trailing-newline parity (below) for that.
 const MORPH_STUB_ORIGINAL_MIN: usize = 500;
 const MORPH_STUB_FLOOR_BYTES: usize = 50;
+/// Mid-range bracket: when the original is between this and
+/// `MORPH_STUB_ORIGINAL_MIN`, a merged output that drops below
+/// 30 % of the original is almost certainly a truncated response.
+/// Below this bracket the absolute floor still applies; above it
+/// the legitimate "trim everything except a stub" case dominates.
+const MORPH_STUB_MID_ORIGINAL_MIN: usize = 200;
+const MORPH_STUB_MID_RATIO: f64 = 0.30;
 
 /// Sanity-check a Morph-merged file against the original before committing
 /// it to disk. Returns `Err(reason)` if the merge looks like a truncated
@@ -34,6 +41,24 @@ pub(super) fn validate_morph_output(
             "Morph response shrank from {} to {} bytes — likely truncated",
             original.len(),
             merged.len()
+        ));
+    }
+
+    // Mid-range bracket: a 200-500-byte original whose merged form
+    // collapses below 30 % was previously waved through because the
+    // absolute floor (50 bytes) didn't catch it. Genuine "rewrite as a
+    // tiny stub" edits in this range are rare; truncated responses
+    // are common.
+    if original.len() >= MORPH_STUB_MID_ORIGINAL_MIN
+        && original.len() <= MORPH_STUB_ORIGINAL_MIN
+        && (merged.len() as f64) < (original.len() as f64) * MORPH_STUB_MID_RATIO
+    {
+        return Err(format!(
+            "Morph response shrank from {} to {} bytes (below {}% of original) — \
+             likely truncated",
+            original.len(),
+            merged.len(),
+            (MORPH_STUB_MID_RATIO * 100.0) as u32
         ));
     }
 

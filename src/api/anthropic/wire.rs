@@ -97,6 +97,14 @@ pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
 /// request's signed thinking blocks. Echoing back a stored set of
 /// thinking blocks that the server cross-checks against the request,
 /// and dropping `output_config` would 400 the next turn.
+/// `Off` collapses to `"low"` on the adaptive-thinking path: dropping
+/// `output_config.thinking` entirely would fail the server's
+/// cross-check against any signed thinking blocks already in the
+/// conversation, so adaptive models always send *some* effort label.
+/// Effectively, `effort: off` on Opus 4.7 / Sonnet 4.6 still sends
+/// the minimum adaptive budget; for "no thinking at all" pick a
+/// model whose `requires_adaptive_thinking` returns false and run
+/// it with `--reasoning-effort off`.
 pub fn effort_label(effort: ReasoningEffort) -> &'static str {
     match effort {
         ReasoningEffort::Off | ReasoningEffort::Low => "low",
@@ -125,6 +133,12 @@ pub(super) fn prepare_request(mut request: CreateMessageRequest) -> CreateMessag
 
     // OpenAI-only; drop before serializing for Anthropic.
     request.prompt_cache_key = None;
+    // `reasoning` is the OpenAI Responses-style sibling of Anthropic's
+    // `thinking` field. The request builder never sets it on the
+    // Anthropic path today, but clear it here defensively so a future
+    // caller that constructs a request directly doesn't accidentally
+    // send it and trigger a 400.
+    request.reasoning = None;
 
     if let Some(tools) = request.tools.take() {
         let filtered: Vec<Tool> = tools

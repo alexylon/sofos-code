@@ -4,7 +4,7 @@ use serde_json::json;
 fn read_file_tool() -> Tool {
     Tool::Regular {
         name: "read_file".to_string(),
-        description: "Read the contents of a file. Works within the workspace by default. Can also read files outside the workspace — the user will be prompted to allow access if not already configured.".to_string(),
+        description: "Read the contents of a file. Works within the workspace by default. Can also read files outside the workspace — the user will be prompted to allow access if not already configured. Files larger than 50 MB are rejected outright, and the returned content is itself capped (~64 KB) before being passed to the model, so for very large logs prefer `search_code` or page through with `execute_bash` (`head`, `sed -n 'A,Bp'`).".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -323,8 +323,10 @@ fn view_image_tool() -> Tool {
         "Attach an image to the conversation so you can see it. Use this when the user references a screenshot, diagram, photo, or other image by path or URL. \
          For a folder of images, call list_directory first to discover the files, then call view_image once per image. Passing a folder directly is rejected with a hint to do that. \
          Supports {formats} up to {max_mb} MB per file; larger images are resized to fit within {max_dim} pixels on the long side before they reach the model. \
+         Animated GIFs are decoded but only the first frame is sent — for an animation, ask the user for a still frame instead. \
          Local paths can be workspace-relative, absolute, or use ~/; external paths prompt for Read access the first time. \
-         HTTP/HTTPS URLs are passed through to the model provider, which fetches them on its side.",
+         HTTP/HTTPS URLs are passed through to the model provider, which fetches them on its side. \
+         `data:` URLs are NOT accepted; the user must save the image to a path or expose it as http(s)://.",
         formats = crate::tools::image::SUPPORTED_FORMATS_HUMAN_LIST,
         max_mb = crate::tools::image::MAX_IMAGE_SIZE_MB,
         max_dim = crate::tools::image::MAX_PROMPT_IMAGE_DIMENSION,

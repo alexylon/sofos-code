@@ -21,7 +21,27 @@ impl HistoryManager {
     pub(super) fn update_index(&self, session: &Session) -> Result<()> {
         let index_path = self.index_path();
         let mut index: SessionIndex = if index_path.exists() {
-            serde_json::from_str(&fs::read_to_string(&index_path)?)?
+            // Treat a parse failure as a missing index — we're about
+            // to rewrite the file anyway, so a single corrupt entry
+            // shouldn't poison every later save. The session JSON
+            // itself already landed on disk above; rebuilding the
+            // index from one entry is correct, just less complete
+            // until the next pass walks the directory.
+            match fs::read_to_string(&index_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<SessionIndex>(&s).ok())
+            {
+                Some(parsed) => parsed,
+                None => {
+                    tracing::warn!(
+                        path = %index_path.display(),
+                        "session index unreadable or malformed; rebuilding from this save"
+                    );
+                    SessionIndex {
+                        sessions: Vec::new(),
+                    }
+                }
+            }
         } else {
             SessionIndex {
                 sessions: Vec::new(),

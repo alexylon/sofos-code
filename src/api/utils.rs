@@ -194,9 +194,12 @@ pub fn parse_tool_arguments(name: &str, args: &str) -> serde_json::Value {
     }
 
     let preview_end = truncate_at_char_boundary(args, UNPARSEABLE_ARGS_PREVIEW_BYTES);
+    // Redact `sk-…` / `Bearer …` shapes before tracing — the preview
+    // can land in transcripts and crash reports.
+    let preview = redact_api_secrets(&args[..preview_end]);
     tracing::warn!(
         tool = %name,
-        preview = %&args[..preview_end],
+        preview = %preview,
         "failed to parse tool arguments as JSON; passing raw_arguments through"
     );
     serde_json::json!({"raw_arguments": args})

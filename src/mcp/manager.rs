@@ -63,9 +63,12 @@ pub struct McpManager {
 }
 
 /// Reject server and tool names that contain the prefix separator or
-/// that would produce an empty identifier. Names are otherwise accepted
-/// as-is; provider-level character validation happens on the prefixed
-/// name when the tool list is sent.
+/// that would produce an empty identifier. Server names are restricted
+/// further to ASCII `[A-Za-z0-9_-]+` so visually-identical Unicode
+/// confusables (e.g. `github` vs `gith\u{1d62}ub`) cannot produce two
+/// map entries that look the same in config but route differently.
+/// Tool names stay permissive because the server controls them and
+/// provider-level validation runs on the prefixed name.
 fn validate_mcp_name(kind: &str, name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(SofosError::McpError(format!("MCP {} name is empty", kind)));
@@ -74,6 +77,16 @@ fn validate_mcp_name(kind: &str, name: &str) -> Result<()> {
         return Err(SofosError::McpError(format!(
             "MCP {} name '{}' contains the reserved separator '{}'",
             kind, name, MCP_NAME_SEPARATOR
+        )));
+    }
+    if kind == "server"
+        && !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(SofosError::McpError(format!(
+            "MCP server name '{}' must contain only ASCII letters, digits, '_' or '-'",
+            name
         )));
     }
     Ok(())

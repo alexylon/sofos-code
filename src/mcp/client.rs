@@ -13,6 +13,13 @@ use std::time::Duration;
 /// still bounding a frozen server's blast radius to a single turn.
 pub(crate) const MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Shorter ceiling for the MCP `initialize` handshake. A frozen server
+/// holds startup hostage for the full request timeout otherwise (two
+/// minutes per server). 15 s is long enough for a slow stdio child to
+/// finish booting and short enough that a misconfigured server gives
+/// up quickly so the user can fix the config.
+pub(crate) const MCP_INIT_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub(crate) fn create_init_request() -> InitializeRequest {
     InitializeRequest {
         protocol_version: "2024-11-05".to_string(),
