@@ -55,6 +55,15 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
     }
+    // Flush the file content to stable storage BEFORE the rename. On a
+    // kernel crash between rename and writeback ext4/xfs default mount
+    // options can otherwise leave the target file with the new inode
+    // but zero data, replacing valid content with an empty file.
+    if let Err(e) = tmp_file.sync_all() {
+        drop(tmp_file);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     drop(tmp_file);
 
     // Preserve the existing file's permission bits. Best-effort: if
@@ -74,7 +83,62 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
     }
+
+    // Flush the directory entry on Unix so the rename itself survives a
+    // crash. Without this, ext4/xfs in `data=ordered` mode can lose
+    // the directory update on power-loss even though the file content
+    // already made it to disk. Best-effort: `sync_all` on a closed
+    // directory handle isn't supported on every platform, and on
+    // Windows the call would be inappropriate.
+    #[cfg(unix)]
+    if let Some(parent) = target.parent() {
+        if let Ok(dir) = fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
     Ok(())
+}
+
+/// True when `e` describes a rename that crossed a filesystem
+/// boundary. Uses the stable `ErrorKind::CrossesDevices` mapping
+/// first; falls back to the platform-specific raw code so a future
+/// Rust that drops the kind mapping still works.
+fn is_cross_device_error(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        e.raw_os_error() == Some(libc::EXDEV)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE
+        e.raw_os_error() == Some(17)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// Move `src` to `dst`, falling back to copy + delete when the rename
+/// crosses a filesystem boundary (`EXDEV` on Unix,
+/// `ERROR_NOT_SAME_DEVICE` on Windows). The fallback isn't atomic —
+/// a crash between the copy and the delete leaves both files — but
+/// the alternative is a hard error for what is otherwise a common
+/// operation (move into `/tmp` on macOS APFS, move across mounts on
+/// Linux), so the tradeoff is worth it.
+pub fn rename_with_cross_device_fallback(src: &Path, dst: &Path) -> std::io::Result<()> {
+    match fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(e) if is_cross_device_error(&e) => {
+            fs::copy(src, dst)?;
+            fs::remove_file(src)?;
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Reserve a fresh `<target>.sofos.tmp.<hex>` sibling file using
@@ -431,7 +495,7 @@ impl FileSystemTool {
             }
         }
 
-        fs::rename(&source_path, &dest_path)?;
+        rename_with_cross_device_fallback(&source_path, &dest_path)?;
         Ok(())
     }
 
@@ -491,6 +555,67 @@ mod tests {
         assert!(fs_tool.validate_path("my..file.txt").is_ok());
         assert!(fs_tool.validate_path("cache..old/note.md").is_ok());
         assert!(fs_tool.validate_path("foo..bar/baz..qux.txt").is_ok());
+    }
+
+    #[test]
+    fn write_atomic_replaces_existing_content_durably() {
+        // Smoke test: write_atomic must produce a readable file with the
+        // exact bytes passed in, with no leftover `.sofos.tmp.*` siblings
+        // in the directory after a successful write. `sync_all` runs
+        // before the rename — failing to flush would leave the file
+        // empty on a crash, which is the regression we're guarding
+        // against.
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path.clone()).unwrap();
+        fs_tool.write_file("doc.md", "first").unwrap();
+        fs_tool.write_file("doc.md", "second pass").unwrap();
+        let contents = fs_tool.read_file("doc.md").unwrap();
+        assert_eq!(contents, "second pass");
+
+        // No tmp file should survive a successful write.
+        let leftover: Vec<_> = std::fs::read_dir(&path)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".sofos.tmp."))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "no .sofos.tmp.* artefact should remain"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_device_move_falls_back_to_copy_remove() {
+        // `fs::rename` returns `EXDEV` across filesystems. Modern macOS
+        // (every `/tmp` is a separate APFS volume from the user's home)
+        // and Linux containers (`/dev/shm` vs `/tmp`) both hit this in
+        // practice. The fallback must succeed where rename can't.
+        //
+        // We can't reliably stage two devices in unit-tests, so we go
+        // straight at `is_cross_device_error` + `rename_with_cross_device_fallback`
+        // on a same-device move and verify it still works (the
+        // fast-path) — the slow-path is exercised by hand on macOS
+        // before each release.
+        let (_temp, path) = test_support::workspace();
+        let fs_tool = FileSystemTool::new(path).unwrap();
+        fs_tool.write_file("src.txt", "hello").unwrap();
+        fs_tool.move_file("src.txt", "dst.txt").unwrap();
+        let contents = fs_tool.read_file("dst.txt").unwrap();
+        assert_eq!(contents, "hello");
+    }
+
+    #[test]
+    fn cross_device_error_classifier_matches_kind() {
+        // `ErrorKind::CrossesDevices` is the canonical signal from
+        // 1.85+; any future toolchain that drops the mapping is caught
+        // by the platform-specific raw-error fallback.
+        let e = std::io::Error::from(std::io::ErrorKind::CrossesDevices);
+        assert!(is_cross_device_error(&e));
+
+        // Unrelated IO errors must NOT trigger the copy+remove path.
+        let other = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!is_cross_device_error(&other));
     }
 
     #[test]

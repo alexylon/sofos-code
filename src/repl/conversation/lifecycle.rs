@@ -213,6 +213,51 @@ impl ConversationHistory {
         )
     }
 
+    /// Drop tool-use blocks from the tail assistant message when no
+    /// matching tool-result follows. Triggered by `restore_messages`
+    /// to guard against a session file written between
+    /// `add_assistant_with_blocks` and `add_tool_results` — a hard
+    /// kill at that moment would otherwise leave the resumed
+    /// conversation with an orphan that the provider 400s on the
+    /// next request.
+    pub(super) fn drop_tail_orphaned_tool_uses(&mut self) -> bool {
+        let Some(last) = self.messages.last_mut() else {
+            return false;
+        };
+        if last.role != "assistant" {
+            return false;
+        }
+        let crate::api::MessageContent::Blocks { content } = &mut last.content else {
+            return false;
+        };
+        let had_initiator = content.iter().any(|b| {
+            matches!(
+                b,
+                crate::api::MessageContentBlock::ToolUse { .. }
+                    | crate::api::MessageContentBlock::ServerToolUse { .. }
+                    | crate::api::MessageContentBlock::WebSearchToolResult { .. }
+            )
+        });
+        if !had_initiator {
+            return false;
+        }
+        content.retain(|b| {
+            !matches!(
+                b,
+                crate::api::MessageContentBlock::ToolUse { .. }
+                    | crate::api::MessageContentBlock::ServerToolUse { .. }
+                    | crate::api::MessageContentBlock::WebSearchToolResult { .. }
+            )
+        });
+        if content.is_empty() {
+            content.push(crate::api::MessageContentBlock::Text {
+                text: "[Tool call interrupted before execution]".to_string(),
+                cache_control: None,
+            });
+        }
+        true
+    }
+
     /// Build a brief summary of messages about to be dropped (no LLM, just key facts).
     pub(super) fn build_drop_summary(messages: &[Message]) -> String {
         let mut tools_used = Vec::new();

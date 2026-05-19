@@ -232,7 +232,7 @@ impl ResponseHandler {
             }
 
             let (tool_results, user_cancelled) =
-                self.execute_tools(&tool_uses, display_messages).await?;
+                self.execute_tools(&tool_uses, display_messages).await;
 
             if !tool_results.is_empty() {
                 if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -367,11 +367,19 @@ impl ResponseHandler {
         (text_output, tool_uses, had_reasoning)
     }
 
+    /// Run every tool in the assistant's `tool_use` batch and return
+    /// a `ToolResult` for each one — including a synthesised note for
+    /// any tool we skip after a cancellation. Returns `(results,
+    /// user_cancelled)` directly, without a `Result`, so a caller
+    /// cannot accidentally short-circuit with `?` and leave a
+    /// half-batch on the wire: every `ToolUse` MUST be paired with a
+    /// matching `ToolResult` on the immediate next user turn or the
+    /// provider 400s, and the saved session loads dead.
     async fn execute_tools(
         &self,
         tool_uses: &[(String, String, serde_json::Value)],
         display_messages: &mut Vec<DisplayMessage>,
-    ) -> Result<(Vec<crate::api::MessageContentBlock>, bool)> {
+    ) -> (Vec<crate::api::MessageContentBlock>, bool) {
         let mut tool_results = Vec::new();
         let mut user_cancelled = false;
 
@@ -514,7 +522,7 @@ impl ResponseHandler {
             }
         }
 
-        Ok((tool_results, user_cancelled))
+        (tool_results, user_cancelled)
     }
 
     async fn get_next_response(&mut self) -> Result<crate::api::CreateMessageResponse> {
@@ -624,7 +632,14 @@ impl ResponseHandler {
         // Let the assistant respond to the interruption. Use
         // `run_interruptible` so ESC during this final summary cancels
         // the HTTP call instead of blocking on the server.
-        let request = self.build_request();
+        //
+        // The recovery request is built without tools. Sending the
+        // tools array would let the assistant come back with another
+        // `tool_use` block; persisting that block without the matching
+        // `tool_result` puts the session in a shape the provider
+        // rejects on the next request and breaks `--resume`.
+        let mut request = self.build_request();
+        request.tools = None;
         let client = self.client.clone();
         let response_result = self
             .run_interruptible(async move { client.create_message(request).await })
@@ -654,10 +669,23 @@ impl ResponseHandler {
                     }
                 }
 
+                // Even though the recovery request carried no tools,
+                // strip any tool-related blocks defensively before
+                // appending. A provider that ignores `tools = None`
+                // (or returns a cached tool_use from a previous turn)
+                // would otherwise leave an orphan in the saved session.
                 let message_blocks: Vec<crate::api::MessageContentBlock> = response
                     .content
                     .iter()
                     .map(crate::api::MessageContentBlock::from_content_block_for_api)
+                    .filter(|block| {
+                        !matches!(
+                            block,
+                            crate::api::MessageContentBlock::ToolUse { .. }
+                                | crate::api::MessageContentBlock::ServerToolUse { .. }
+                                | crate::api::MessageContentBlock::WebSearchToolResult { .. }
+                        )
+                    })
                     .collect();
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);

@@ -4,6 +4,16 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hitting the tool-iteration cap no longer corrupts the saved session.** The recovery turn used to ship with the tools list still attached, so the assistant could answer with a fresh `tool_use` block that was never executed; the next request 400'd and `--resume` was dead on arrival. Sofos now strips tools from that final summary request and removes any tool-related blocks it returns defensively, so the session resumes cleanly afterwards.
+- **`/clear` keeps safe mode visible to the model.** Clearing the history used to strip the "you are running in safe mode" preamble even when the executor was still in safe mode, so the model proposed writes and bash and was met with opaque denials. The preamble is re-added automatically when safe mode is still on.
+- **Switching reasoning effort mid-session refuses combinations the next request would reject.** On the Anthropic legacy thinking models, `/effort high` (or any enabled level) requires `--max-tokens` above 16 384; the gate that startup enforces now also fires from `/effort`, so the next turn doesn't 400 with no clear hint at the cause.
+- **Resuming a session that was killed mid-tool-call no longer fails the first request.** A hard kill between writing the assistant's `tool_use` to disk and writing the matching `tool_result` used to leave the saved history in a shape the provider rejects on resume; sofos now strips the orphan tool-use block on load and replaces it with a short "[Tool call interrupted before execution]" placeholder.
+- **Slash commands now save their effect to the session.** Running `/compact`, `/clear`, `/safe`, or `/normal` and quitting via Ctrl+C without another prompt used to lose the change; the worker now persists the session after every slash command, not only after free-text turns.
+- **`write_file` / `edit_file` survive a power loss between the rename and writeback.** The atomic-write helper now `fsync`s the temp file before the rename and (on Unix) the parent directory after, so ext4/xfs in their default mount options can no longer leave the target with the new inode but zero data after a kernel crash.
+- **Moving a file across filesystems no longer fails outright.** `move_file` used to surface a raw "Invalid cross-device link" error when source and destination lived on different filesystems (macOS APFS volumes, Linux `/tmp` mounts, external drives). Sofos now detects the cross-device case and falls back to a copy + delete so the operation completes.
+
 ### Security
 
 - **MCP server children no longer inherit the sofos environment.** Stdio MCP servers used to start with every variable the parent shell exported, so `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MORPH_API_KEY`, ssh agent sockets, and AWS credentials all reached the child. The launcher now clears the environment first and forwards a small allowlist (`PATH`, `HOME` / `USERPROFILE`, `TMPDIR` / `TEMP` / `TMP`, `LANG`, every `LC_*` locale variable, plus Windows essentials like `SYSTEMROOT` and `PATHEXT`); anything else needs to be listed under the server's `env` config field. Existing servers that already declare their required vars in config are unaffected.

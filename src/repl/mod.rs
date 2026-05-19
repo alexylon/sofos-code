@@ -354,6 +354,15 @@ impl Repl {
         let new_session_id = self.history_manager.generate_unique_session_id();
         self.session_state.conversation.clear();
         self.session_state.clear(new_session_id);
+        // The executor stays in safe mode across `/clear`, so the model
+        // also needs to keep seeing the safe-mode preamble. Without
+        // this it confidently proposes write/bash and gets opaque
+        // denials from the tool layer.
+        if self.safe_mode {
+            self.session_state
+                .conversation
+                .add_user_message(SAFE_MODE_MESSAGE.to_string());
+        }
         self.session_state
             .conversation
             .add_user_message("The session history has been cleared".to_string());
@@ -405,6 +414,27 @@ impl Repl {
         {
             println!();
             UI::print_error(&msg);
+            println!();
+            return;
+        }
+        // Anthropic's legacy thinking model rejects requests where
+        // `max_tokens` is below the configured budget ceiling. Startup
+        // refuses that combination outright (see `new` above); the same
+        // gate must fire on mid-session `/effort high` so the next
+        // turn doesn't 400 with no clear hint at the cause.
+        if matches!(self.client, Anthropic(_))
+            && !self.uses_adaptive_thinking()
+            && effort.is_enabled()
+            && self.model_config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
+        {
+            println!();
+            UI::print_error(&format!(
+                "Cannot enable extended thinking on the legacy budget — max_tokens \
+                 ({}) must exceed {}. Relaunch with a higher --max-tokens or pick a \
+                 lower effort.",
+                self.model_config.max_tokens,
+                crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
+            ));
             println!();
             return;
         }

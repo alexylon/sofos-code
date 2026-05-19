@@ -91,6 +91,11 @@ impl ConversationHistory {
         // any inherited anchor index is meaningless content-wise.
         self.invalidate_cache_anchor();
         self.messages = messages;
+        // A session file written between `add_assistant_with_blocks`
+        // and `add_tool_results` carries a tail assistant message with
+        // unmatched tool_use blocks. Resuming that history would 400 on
+        // the next request, so strip the orphan blocks now.
+        self.drop_tail_orphaned_tool_uses();
         self.trim_if_needed();
     }
 }

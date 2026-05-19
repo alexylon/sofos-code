@@ -241,12 +241,13 @@ fn move_between(
         return fs_tool.move_file(source, destination);
     }
     ensure_parent_dir(&dst.canonical)?;
-    std::fs::rename(&src.canonical, &dst.canonical).map_err(|e| {
-        SofosError::ToolExecution(format!(
-            "Failed to move '{}' to '{}': {}",
-            source, destination, e
-        ))
-    })
+    crate::tools::filesystem::rename_with_cross_device_fallback(&src.canonical, &dst.canonical)
+        .map_err(|e| {
+            SofosError::ToolExecution(format!(
+                "Failed to move '{}' to '{}': {}",
+                source, destination, e
+            ))
+        })
 }
 
 /// Copy-file counterpart to [`move_between`]. Same inside/outside matrix;
