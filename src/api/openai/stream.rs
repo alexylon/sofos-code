@@ -11,6 +11,7 @@ use crate::api::openai::client::OPENAI_API_BASE;
 use crate::api::openai::wire::{OpenAIResponse, build_response, build_responses_body};
 use crate::api::types::*;
 use crate::api::utils;
+use crate::api::utils::MAX_SSE_BUFFER_BYTES;
 use crate::error::{Result, SofosError};
 use futures::stream::{Stream, StreamExt};
 use serde_json::json;
@@ -89,6 +90,13 @@ where
 
         let chunk = chunk_result?;
         buffer.extend_from_slice(chunk.as_ref());
+        if buffer.len() > MAX_SSE_BUFFER_BYTES {
+            return Err(SofosError::Api(format!(
+                "OpenAI SSE buffer exceeded {} MB without a line terminator; \
+                 likely a misbehaving server or middlebox",
+                MAX_SSE_BUFFER_BYTES / (1024 * 1024)
+            )));
+        }
 
         while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
             // Re-check the interrupt flag between lines so a single

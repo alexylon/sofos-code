@@ -6,6 +6,16 @@ All notable changes to Sofos are documented in this file.
 
 ### Fixed
 
+- **Anthropic decode failures now name the provider and show what came back.** A non-streaming response that doesn't match the expected JSON shape used to surface as the generic "HTTP request failed: error decoding response body" with no provider context; sofos now reads the body as text first and includes a redacted preview in the error so a misconfigured proxy is obvious at a glance.
+- **Cache-cost numbers settle correctly on turns where server-side compaction lands late.** Anthropic emits the final `cache_read_input_tokens` and `cache_creation_input_tokens` only on the trailing `message_delta` event in those cases; sofos now refreshes both totals when they appear there, so the cost summary picks up the cache-creation premium instead of under-reporting.
+- **OpenAI refusals reach the conversation.** A `{type: "refusal", refusal: "..."}` block used to be dropped silently, surfacing as "Assistant returned an empty response"; sofos now lifts the refusal text into the visible response so both the user and the next turn see what the model said.
+- **OpenAI truncations without an `incomplete.reason` still trigger the token-limit warning.** When the provider sets `status: "incomplete"` but omits `incomplete_details.reason`, sofos now treats it as `max_tokens` so the existing "Response was cut off" warning fires instead of letting a half-formed tool call enter the conversation history.
+
+### Security
+
+- **API-key-shaped strings in provider error bodies are redacted before display.** Provider 401 responses sometimes echo a truncated key (`sk-ant-api03-…` or `Bearer …`); sofos now replaces every matching run with `sk-[redacted]` / `Bearer [redacted]` and caps the body at 4 KB, so a noisy proxy or moderation block can no longer flood the status line or leak key prefixes to transcripts and crash reports.
+- **The SSE re-assembly buffer is capped at 16 MB on both providers.** A server (or middlebox) that streams gigabytes without a newline used to grow the buffer until the 30-minute request timeout fired; sofos now aborts the stream cleanly with a clear error long before memory exhaustion becomes a real risk.
+
 - **Hitting the tool-iteration cap no longer corrupts the saved session.** The recovery turn used to ship with the tools list still attached, so the assistant could answer with a fresh `tool_use` block that was never executed; the next request 400'd and `--resume` was dead on arrival. Sofos now strips tools from that final summary request and removes any tool-related blocks it returns defensively, so the session resumes cleanly afterwards.
 - **`/clear` keeps safe mode visible to the model.** Clearing the history used to strip the "you are running in safe mode" preamble even when the executor was still in safe mode, so the model proposed writes and bash and was met with opaque denials. The preamble is re-added automatically when safe mode is still on.
 - **Switching reasoning effort mid-session refuses combinations the next request would reject.** On the Anthropic legacy thinking models, `/effort high` (or any enabled level) requires `--max-tokens` above 16 384; the gate that startup enforces now also fires from `/effort`, so the next turn doesn't 400 with no clear hint at the cause.

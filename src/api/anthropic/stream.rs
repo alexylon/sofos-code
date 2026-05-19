@@ -7,6 +7,7 @@ use crate::api::anthropic::client::AnthropicClient;
 use crate::api::anthropic::wire::{BETA_HEADER_NAME, anthropic_beta_for, prepare_request};
 use crate::api::types::*;
 use crate::api::utils;
+use crate::api::utils::MAX_SSE_BUFFER_BYTES;
 use crate::error::{Result, SofosError};
 use futures::stream::{Stream, StreamExt};
 use std::sync::Arc;
@@ -130,6 +131,13 @@ where
 
         let chunk = chunk_result?;
         buffer.extend_from_slice(chunk.as_ref());
+        if buffer.len() > MAX_SSE_BUFFER_BYTES {
+            return Err(SofosError::Api(format!(
+                "Anthropic SSE buffer exceeded {} MB without a line terminator; \
+                 likely a misbehaving server or middlebox",
+                MAX_SSE_BUFFER_BYTES / (1024 * 1024)
+            )));
+        }
 
         while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
             // The complete line is in-buffer, so codepoints aren't
@@ -371,6 +379,24 @@ where
                         output_tokens = saturate_u32(
                             u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
                         );
+                        // Server-side compaction can settle the cache-
+                        // related usage numbers only on the trailing
+                        // `message_delta`, not the opening
+                        // `message_start`. Refresh both totals when
+                        // present so the cost line picks up the cache-
+                        // creation premium on turns where compaction
+                        // landed late.
+                        if let Some(read) =
+                            u.get("cache_read_input_tokens").and_then(|v| v.as_u64())
+                        {
+                            cache_read_input_tokens = Some(saturate_u32(read));
+                        }
+                        if let Some(create) = u
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
+                            cache_creation_input_tokens = Some(saturate_u32(create));
+                        }
                     }
                 }
                 "error" => {

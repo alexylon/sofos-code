@@ -72,7 +72,20 @@ impl AnthropicClient {
         )
         .await?;
 
-        let result = response.json::<CreateMessageResponse>().await?;
-        Ok(result)
+        // Read the body as text first so a JSON-shape mismatch surfaces
+        // with the provider name and a snippet of what we actually got
+        // — the bare `response.json::<…>().await?` path otherwise turns
+        // every decode failure into "HTTP request failed: error
+        // decoding response body" with no provider context to debug.
+        let body = response.text().await.map_err(|e| {
+            crate::error::SofosError::Api(format!("Failed to read Anthropic response body: {}", e))
+        })?;
+        serde_json::from_str::<CreateMessageResponse>(&body).map_err(|e| {
+            crate::error::SofosError::Api(format!(
+                "Failed to parse Anthropic response: {} (body preview: {})",
+                e,
+                utils::sanitize_provider_error_body(&body)
+            ))
+        })
     }
 }

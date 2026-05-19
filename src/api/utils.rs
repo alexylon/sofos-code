@@ -346,6 +346,84 @@ pub fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> usize {
     i
 }
 
+/// Upper bound on the provider-error body interpolated into a user-facing
+/// `SofosError::Api`. A misconfigured proxy that returns a multi-MB HTML
+/// page, or a moderation block that echoes the whole request, otherwise
+/// floods stderr and the status line. Beyond this the body is truncated
+/// with a `[…N more bytes elided]` marker so the model still gets some
+/// signal but the UI stays readable.
+pub const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 4 * 1024;
+
+/// Upper bound on the SSE re-assembly buffer used by both the Anthropic
+/// and OpenAI streaming parsers. A server (or a middlebox) that streams
+/// gigabytes without a newline would otherwise grow `buffer` until the
+/// 30-minute request timeout fires, exhausting memory long before the
+/// timeout helps. 16 MB is far above any legitimate single SSE line we
+/// have seen in practice.
+pub const MAX_SSE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
+
+/// Best-effort redaction of API-key-shaped substrings inside a provider
+/// error body. Provider 401 responses sometimes echo the rejected key
+/// (truncated or otherwise), which would land verbatim in transcripts
+/// and crash reports. Scans for `sk-…` style prefixes and `Bearer …`
+/// pairs and rewrites each run as `<keyword>[redacted]`. Caller is
+/// expected to apply [`truncate_at_char_boundary`] separately if the
+/// body needs a length cap.
+pub fn redact_api_secrets(body: &str) -> String {
+    fn is_key_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+    }
+
+    let bytes = body.as_bytes();
+    let mut out = String::with_capacity(body.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"sk-") {
+            let mut end = i + 3;
+            while end < bytes.len() && is_key_byte(bytes[end]) {
+                end += 1;
+            }
+            if end - i >= 11 {
+                out.push_str("sk-[redacted]");
+                i = end;
+                continue;
+            }
+        }
+        if bytes[i..].starts_with(b"Bearer ") || bytes[i..].starts_with(b"bearer ") {
+            let prefix_len = 7;
+            let mut end = i + prefix_len;
+            while end < bytes.len() && is_key_byte(bytes[end]) {
+                end += 1;
+            }
+            if end - i >= prefix_len + 8 {
+                out.push_str(&body[i..i + prefix_len]);
+                out.push_str("[redacted]");
+                i = end;
+                continue;
+            }
+        }
+        // Non-ASCII bytes carry one full UTF-8 char; push it whole so
+        // the surrounding text stays valid.
+        let ch = body[i..].chars().next().unwrap_or('\u{FFFD}');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Truncate `body` to [`MAX_PROVIDER_ERROR_BODY_BYTES`] and run
+/// [`redact_api_secrets`] over the result. Centralised so every error-
+/// to-message hop applies the same cleanup.
+pub fn sanitize_provider_error_body(body: &str) -> String {
+    let cut = truncate_at_char_boundary(body, MAX_PROVIDER_ERROR_BODY_BYTES);
+    let mut truncated = redact_api_secrets(&body[..cut]);
+    if body.len() > cut {
+        let extra = body.len() - cut;
+        truncated.push_str(&format!(" […{} more bytes elided]", extra));
+    }
+    truncated
+}
+
 /// Upper bound applied to the `Retry-After` value advertised by a 429
 /// response. 60 seconds is comfortably above the burst-limit windows
 /// the APIs we integrate with use in practice, and short enough that
@@ -468,7 +546,10 @@ fn api_call_error_to_sofos(service_name: &str, attempts: u32, e: ApiCallError) -
         ApiCallError::ServerError { status, body } | ApiCallError::ClientError { status, body } => {
             SofosError::Api(format!(
                 "{} request failed with status {} after {} attempt(s): {}",
-                service_name, status, attempts, body
+                service_name,
+                status,
+                attempts,
+                sanitize_provider_error_body(&body)
             ))
         }
         ApiCallError::RateLimited { retry_after, body } => SofosError::Api(format!(
@@ -479,7 +560,7 @@ fn api_call_error_to_sofos(service_name: &str, attempts: u32, e: ApiCallError) -
                 None => String::new(),
             },
             attempts,
-            body
+            sanitize_provider_error_body(&body)
         )),
     }
 }
@@ -603,6 +684,54 @@ pub(crate) mod sse_test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_strips_sk_keys_and_bearer_tokens() {
+        let body = "Invalid x-api-key: sk-ant-api03-AAAAaaaa1111BBBBbbbb22 returned error";
+        let cleaned = redact_api_secrets(body);
+        assert!(
+            !cleaned.contains("sk-ant-api03"),
+            "key prefix must be removed, got: {cleaned}"
+        );
+        assert!(cleaned.contains("sk-[redacted]"));
+        assert!(cleaned.contains("returned error"));
+
+        let bearer = "Authorization: Bearer abcdefghijKLMN1234 expired";
+        let cleaned = redact_api_secrets(bearer);
+        assert!(
+            cleaned.contains("Bearer [redacted]"),
+            "bearer token must be redacted, got: {cleaned}"
+        );
+        assert!(cleaned.contains("expired"));
+
+        // Short fragments that LOOK like a key but lack enough chars
+        // after `sk-` stay untouched (avoids redacting unrelated
+        // `sk-` substrings).
+        let small = "see sk-x for details";
+        let unchanged = redact_api_secrets(small);
+        assert_eq!(unchanged, small);
+    }
+
+    #[test]
+    fn sanitize_body_caps_long_payload_with_marker() {
+        let payload = "Z".repeat(MAX_PROVIDER_ERROR_BODY_BYTES * 3);
+        let out = sanitize_provider_error_body(&payload);
+        assert!(out.len() < payload.len());
+        assert!(out.contains("more bytes elided"));
+    }
+
+    #[test]
+    fn sanitize_body_redacts_and_truncates_together() {
+        // Key followed by a long tail must lose the key AND keep the
+        // elision marker for the trailing bytes.
+        let payload = format!(
+            "key=sk-ant-api03-AAAAaaaa1111BBBB tail{}",
+            "Y".repeat(MAX_PROVIDER_ERROR_BODY_BYTES * 2)
+        );
+        let out = sanitize_provider_error_body(&payload);
+        assert!(out.contains("sk-[redacted]"));
+        assert!(out.contains("more bytes elided"));
+    }
 
     #[test]
     fn api_call_error_is_retryable_for_server_error_and_rate_limited() {

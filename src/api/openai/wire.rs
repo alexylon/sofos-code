@@ -306,6 +306,13 @@ pub(super) struct OpenAIOutputContent {
     pub(super) content_type: String,
     #[serde(default)]
     pub(super) text: String,
+    /// OpenAI emits a `refusal` block when the model declines the
+    /// request. The decline text lives under `refusal` instead of
+    /// `text`, so it has to be captured separately or it's silently
+    /// dropped, which surfaces to the user as the very confusing
+    /// "empty response" warning.
+    #[serde(default)]
+    pub(super) refusal: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -432,6 +439,16 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
                 for content in item.content {
                     if content.content_type == "output_text" && !content.text.trim().is_empty() {
                         content_blocks.push(ContentBlock::Text { text: content.text });
+                    } else if content.content_type == "refusal"
+                        && !content.refusal.trim().is_empty()
+                    {
+                        // Surface refusals as plain text so the model
+                        // sees its own decline next turn (instead of
+                        // looking like it returned an empty turn) and
+                        // the user gets the actual refusal text.
+                        content_blocks.push(ContentBlock::Text {
+                            text: content.refusal,
+                        });
                     }
                 }
 
@@ -517,6 +534,13 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
             Some("max_tokens".to_string())
         }
         (Some("incomplete"), Some(other)) => Some(other.to_string()),
+        // OpenAI sometimes reports `status: "incomplete"` without
+        // populating `incomplete_details.reason`. The truncation guard
+        // in the response handler looks for `stop_reason ==
+        // "max_tokens"`, so mapping the missing-reason case there
+        // keeps the warning firing instead of letting a half-formed
+        // tool call enter the conversation history.
+        (Some("incomplete"), None) => Some("max_tokens".to_string()),
         // Anthropic always sets `stop_reason` on a normal stop. Map the
         // OpenAI `status: "completed"` to the same `"end_turn"` value
         // so downstream `if let Some(stop_reason) = ...` branches treat
