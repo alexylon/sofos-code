@@ -230,25 +230,10 @@ impl ConversationHistory {
         let crate::api::MessageContent::Blocks { content } = &mut last.content else {
             return false;
         };
-        let had_initiator = content.iter().any(|b| {
-            matches!(
-                b,
-                crate::api::MessageContentBlock::ToolUse { .. }
-                    | crate::api::MessageContentBlock::ServerToolUse { .. }
-                    | crate::api::MessageContentBlock::WebSearchToolResult { .. }
-            )
-        });
-        if !had_initiator {
+        if !content.iter().any(|b| b.is_tool_call_initiator()) {
             return false;
         }
-        content.retain(|b| {
-            !matches!(
-                b,
-                crate::api::MessageContentBlock::ToolUse { .. }
-                    | crate::api::MessageContentBlock::ServerToolUse { .. }
-                    | crate::api::MessageContentBlock::WebSearchToolResult { .. }
-            )
-        });
+        content.retain(|b| !b.is_tool_call_initiator());
         if content.is_empty() {
             content.push(crate::api::MessageContentBlock::Text {
                 text: "[Tool call interrupted before execution]".to_string(),

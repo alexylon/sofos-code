@@ -156,14 +156,7 @@ impl ResponseHandler {
                     // matching `tool_result` (or a server tool result
                     // without its `server_tool_use`) puts the next
                     // request in a shape the provider will reject.
-                    message_blocks.retain(|block| {
-                        !matches!(
-                            block,
-                            crate::api::MessageContentBlock::ToolUse { .. }
-                                | crate::api::MessageContentBlock::ServerToolUse { .. }
-                                | crate::api::MessageContentBlock::WebSearchToolResult { .. }
-                        )
-                    });
+                    message_blocks.retain(|block| !block.is_tool_call_initiator());
                     if message_blocks.is_empty() {
                         // The truncated response was tool-use only. Record
                         // a short placeholder so the conversation keeps
@@ -697,14 +690,7 @@ impl ResponseHandler {
                     .content
                     .iter()
                     .map(crate::api::MessageContentBlock::from_content_block_for_api)
-                    .filter(|block| {
-                        !matches!(
-                            block,
-                            crate::api::MessageContentBlock::ToolUse { .. }
-                                | crate::api::MessageContentBlock::ServerToolUse { .. }
-                                | crate::api::MessageContentBlock::WebSearchToolResult { .. }
-                        )
-                    })
+                    .filter(|block| !block.is_tool_call_initiator())
                     .collect();
                 if !message_blocks.is_empty() {
                     self.conversation.add_assistant_with_blocks(message_blocks);

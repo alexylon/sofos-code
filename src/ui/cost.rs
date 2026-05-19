@@ -8,20 +8,9 @@ use colored::Colorize;
 /// record.
 const CACHE_READ_RATE: f64 = 0.10;
 /// Multiplier applied to the base input price for tokens written to a
-/// 5-minute Anthropic cache breakpoint. OpenAI has no separate
-/// creation charge (the wire format never reports cache-creation
-/// tokens for OpenAI requests), so the multiplier only fires on
-/// Anthropic responses.
-///
-/// NOTE: Anthropic also exposes a 1-hour TTL on the *last* tool
-/// definition breakpoint, billed at 2× the input rate rather than
-/// 1.25×. Sofos stamps that breakpoint with `ephemeral_one_hour`
-/// today but uses the same constant here, so cost summaries
-/// under-report the cache-creation premium on the 1-hour anchor by
-/// a roughly 40% margin. Weighting by an empirical 5m/1h mix factor
-/// would close the gap, but the absolute amount on a typical session
-/// is small enough that documenting the under-report is more useful
-/// than a model-specific lookup.
+/// 5-minute Anthropic cache breakpoint. OpenAI has no creation charge.
+/// The 1-hour breakpoint Anthropic exposes for the last tool definition
+/// bills at 2×, not 1.25× — the cost summary under-reports that anchor.
 const CACHE_CREATION_RATE: f64 = 1.25;
 
 /// True for models hosted by OpenAI. Used by the cost and

@@ -99,6 +99,14 @@ fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Windows error code returned by `MoveFile` when source and
+/// destination are on different volumes. The `winapi` crate exposes
+/// this as `ERROR_NOT_SAME_DEVICE`; the literal is used directly so
+/// the Unix build doesn't pull in a Windows-only dependency for one
+/// integer.
+#[cfg(windows)]
+const ERROR_NOT_SAME_DEVICE: i32 = 17;
+
 /// True when `e` describes a rename that crossed a filesystem
 /// boundary. Uses the stable `ErrorKind::CrossesDevices` mapping
 /// first; falls back to the platform-specific raw code so a future
@@ -113,8 +121,7 @@ fn is_cross_device_error(e: &std::io::Error) -> bool {
     }
     #[cfg(windows)]
     {
-        // ERROR_NOT_SAME_DEVICE
-        e.raw_os_error() == Some(17)
+        e.raw_os_error() == Some(ERROR_NOT_SAME_DEVICE)
     }
     #[cfg(not(any(unix, windows)))]
     {

@@ -308,6 +308,24 @@ pub struct StdioClient {
     next_id: Arc<AtomicU64>,
 }
 
+/// Send SIGKILL / `TerminateProcess` then poll `try_wait` for up to
+/// [`STDIO_DROP_WAIT_TOTAL`] before giving up. Shared by `Drop` and
+/// the timeout-recovery `kill_child_detached` path so the same
+/// bounded shutdown shape applies whether the reap runs inline or on
+/// a blocking task. Returns once the child has been reaped or the
+/// budget expires; the OS reaps any survivor when sofos exits.
+fn kill_and_reap_bounded(child: &mut Child) {
+    let _ = child.kill();
+    let start = std::time::Instant::now();
+    while start.elapsed() < STDIO_DROP_WAIT_TOTAL {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(STDIO_DROP_POLL_INTERVAL),
+            Err(_) => return,
+        }
+    }
+}
+
 impl Drop for StdioClient {
     fn drop(&mut self) {
         // `Child::drop` does NOT wait on the subprocess, so without
@@ -317,22 +335,9 @@ impl Drop for StdioClient {
         // them, and the kill/wait pair is idempotent: a second `kill`
         // after the child already exited returns `InvalidInput`, and
         // a second `wait` after the child was already reaped returns
-        // a harmless error. Both are discarded.
-        //
-        // The wait is bounded with `try_wait` so a child stuck in
-        // uninterruptible IO cannot freeze session shutdown — after
-        // the budget we leave the child as a zombie and let the OS
-        // reap it when sofos itself exits.
+        // a harmless error.
         if let Ok(mut child) = self.process.lock() {
-            let _ = child.kill();
-            let start = std::time::Instant::now();
-            while start.elapsed() < STDIO_DROP_WAIT_TOTAL {
-                match child.try_wait() {
-                    Ok(Some(_)) => return,
-                    Ok(None) => std::thread::sleep(STDIO_DROP_POLL_INTERVAL),
-                    Err(_) => return,
-                }
-            }
+            kill_and_reap_bounded(&mut child);
         }
     }
 }
@@ -437,15 +442,7 @@ impl StdioClient {
         let process = Arc::clone(&self.process);
         tokio::task::spawn_blocking(move || {
             if let Ok(mut child) = process.lock() {
-                let _ = child.kill();
-                let start = std::time::Instant::now();
-                while start.elapsed() < STDIO_DROP_WAIT_TOTAL {
-                    match child.try_wait() {
-                        Ok(Some(_)) => return,
-                        Ok(None) => std::thread::sleep(STDIO_DROP_POLL_INTERVAL),
-                        Err(_) => return,
-                    }
-                }
+                kill_and_reap_bounded(&mut child);
             }
         });
     }

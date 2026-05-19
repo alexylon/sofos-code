@@ -373,6 +373,15 @@ pub const MAX_SSE_BUFFER_BYTES: usize = 16 * 1024 * 1024;
 /// expected to apply [`truncate_at_char_boundary`] separately if the
 /// body needs a length cap.
 pub fn redact_api_secrets(body: &str) -> String {
+    /// Minimum byte count for a `sk-…` run we treat as a real key.
+    /// Below this, the prefix is just an unrelated `sk-` substring
+    /// (a CSS class, an error code, a stray identifier).
+    const SK_KEY_MIN_LEN: usize = 11;
+    /// Same idea on the bearer side, sized against the random tail
+    /// that follows the `Bearer ` prefix.
+    const BEARER_TAIL_MIN_LEN: usize = 8;
+    const BEARER_PREFIX_LEN: usize = "Bearer ".len();
+
     fn is_key_byte(b: u8) -> bool {
         b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
     }
@@ -386,20 +395,19 @@ pub fn redact_api_secrets(body: &str) -> String {
             while end < bytes.len() && is_key_byte(bytes[end]) {
                 end += 1;
             }
-            if end - i >= 11 {
+            if end - i >= SK_KEY_MIN_LEN {
                 out.push_str("sk-[redacted]");
                 i = end;
                 continue;
             }
         }
         if bytes[i..].starts_with(b"Bearer ") || bytes[i..].starts_with(b"bearer ") {
-            let prefix_len = 7;
-            let mut end = i + prefix_len;
+            let mut end = i + BEARER_PREFIX_LEN;
             while end < bytes.len() && is_key_byte(bytes[end]) {
                 end += 1;
             }
-            if end - i >= prefix_len + 8 {
-                out.push_str(&body[i..i + prefix_len]);
+            if end - i >= BEARER_PREFIX_LEN + BEARER_TAIL_MIN_LEN {
+                out.push_str(&body[i..i + BEARER_PREFIX_LEN]);
                 out.push_str("[redacted]");
                 i = end;
                 continue;

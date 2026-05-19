@@ -494,6 +494,22 @@ pub enum ImageSource {
 }
 
 impl MessageContentBlock {
+    /// True for the three block types that initiate a tool call — the
+    /// blocks that MUST be paired with a matching `tool_result` on the
+    /// next user turn or the provider rejects the request. Sofos
+    /// filters these out from truncated responses, max-iter recovery
+    /// turns, and tail-orphan resume cleanup, so the predicate lives
+    /// next to the enum it discriminates rather than being repeated
+    /// at every call site.
+    pub fn is_tool_call_initiator(&self) -> bool {
+        matches!(
+            self,
+            MessageContentBlock::ToolUse { .. }
+                | MessageContentBlock::ServerToolUse { .. }
+                | MessageContentBlock::WebSearchToolResult { .. }
+        )
+    }
+
     pub fn from_content_block_for_api(block: &ContentBlock) -> Self {
         match block {
             ContentBlock::Text { text } => MessageContentBlock::Text {
