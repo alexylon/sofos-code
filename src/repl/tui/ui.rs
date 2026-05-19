@@ -195,6 +195,16 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     }
     let title = Line::from(title_spans);
 
+    // Yellow underline in safe mode, default reversed block otherwise.
+    if safe {
+        textarea.set_cursor_style(
+            Style::default()
+                .fg(SAFE_MODE_FG)
+                .add_modifier(Modifier::UNDERLINED),
+        );
+    } else {
+        textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
+    }
     textarea.set_block(
         Block::default()
             .borders(Borders::ALL)
