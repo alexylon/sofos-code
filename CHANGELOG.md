@@ -4,6 +4,13 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **A global deny rule survives a local allow with the same name.** Adding `Bash(rm)` to `.sofos/config.local.toml`'s allow list used to silently strip the matching `Bash(rm)` from `~/.sofos/config.toml`'s deny list; both entries now coexist after merge, so the per-command verdict reflects every configured rule instead of dropping the global guarantee.
+- **`PATH=`, `LD_PRELOAD=`, `LD_LIBRARY_PATH=`, `DYLD_*=`, `NODE_PATH=`, and `PYTHONPATH=` prefixes now route the bash call to a confirmation prompt.** A command like `PATH=. cargo build` used to auto-allow as `cargo`; sofos now asks the user before running anything that swaps the binary the shell will execute, even when the base command is on the allow list or when blanket `Bash` allow is active. Built-in forbidden bases (`rm`, `chmod`, `sudo`, …) still take precedence and stay denied.
+- **A session-scoped Bash path grant now applies only to the file the user named.** Allowing `cat /home/me/.ssh/config` once used to permit every other file under `/home/me/.ssh` for the rest of the session; the grant is now scoped to the specific file, so a follow-up `cat /home/me/.ssh/id_rsa` re-prompts. Grants saved to config (yes-and-remember) still cover the whole `parent/**` directory because the user explicitly opts in to that wider scope.
+- **Repeating a denied command with extra whitespace no longer dodges the session deny.** `ls /etc` and `ls  /etc` (any internal whitespace) now hash to the same session-scoped key, so a model that retries a refused command cannot trigger a fresh prompt by adding spaces or tabs.
+
 ## [0.3.1] - 2026-05-19
 
 ### Added

@@ -114,13 +114,14 @@ impl BashExecutor {
     }
 
     pub fn execute(&self, command: &str) -> Result<String> {
-        let normalized = format!("Bash({})", command.trim());
+        let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
+        let normalized = PermissionManager::normalize_command(command);
 
         // Check session-scoped decisions first (for "allow once" / "deny once")
         if let Ok(allowed) = self.session_allowed.lock() {
             if allowed.contains(&normalized) {
                 // Previously allowed this session, skip permission check
-                return self.execute_after_permission_check(command);
+                return self.execute_after_permission_check(command, &mut permission_manager);
             }
         }
         if let Ok(denied) = self.session_denied.lock() {
@@ -134,7 +135,6 @@ impl BashExecutor {
             }
         }
 
-        let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
         let permission = permission_manager.check_command_permission(command)?;
 
         match permission {
@@ -171,14 +171,16 @@ impl BashExecutor {
             }
         }
 
-        self.execute_after_permission_check(command)
+        self.execute_after_permission_check(command, &mut permission_manager)
     }
 
-    fn execute_after_permission_check(&self, command: &str) -> Result<String> {
-        let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
-
+    fn execute_after_permission_check(
+        &self,
+        command: &str,
+        permission_manager: &mut PermissionManager,
+    ) -> Result<String> {
         // Enforce read permissions on paths referenced in the command
-        self.enforce_read_permissions(&permission_manager, command)?;
+        self.enforce_read_permissions(permission_manager, command)?;
 
         // Non-path structural safety checks (parent traversal, redirection, git restrictions)
         if !self.is_safe_command_structure(command) {
@@ -197,7 +199,7 @@ impl BashExecutor {
         self.confirm_askable_command(command)?;
 
         // Check external paths in command — ask user for paths not covered by Bash path grants
-        self.check_bash_external_paths(command, &mut permission_manager)?;
+        self.check_bash_external_paths(command, permission_manager)?;
 
         let outcome = self.spawn_supervised(command)?;
 

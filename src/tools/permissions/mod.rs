@@ -1609,6 +1609,121 @@ ask = []
         assert_eq!(bases, vec!["echo".to_string(), "sudo".to_string()]);
     }
 
+    /// `PATH=. cargo build` previously classified as `cargo` (in the
+    /// allowed set), letting an attacker-controlled `./cargo` execute
+    /// under the auto-allow. The same trick works with `LD_PRELOAD`,
+    /// `DYLD_*`, `NODE_PATH`, `PYTHONPATH`. All must now route through
+    /// the Ask prompt regardless of the base command.
+    #[test]
+    fn dangerous_env_prefix_forces_ask() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        for cmd in [
+            "PATH=. cargo build",
+            "LD_PRELOAD=./evil.so ls",
+            "LD_LIBRARY_PATH=. ./bin",
+            "DYLD_INSERT_LIBRARIES=./evil.dylib ls",
+            "DYLD_LIBRARY_PATH=. ls",
+            "NODE_PATH=. node script.js",
+            "PYTHONPATH=. python script.py",
+        ] {
+            assert_eq!(
+                manager.check_command_permission(cmd).unwrap(),
+                CommandPermission::Ask,
+                "dangerous env prefix should force Ask: {cmd}"
+            );
+        }
+
+        // Harmless env prefixes (PII-style, `FOO=bar`) still fall through
+        // to the base-command check.
+        assert_eq!(
+            manager
+                .check_command_permission("FOO=bar cargo build")
+                .unwrap(),
+            CommandPermission::Allowed
+        );
+    }
+
+    /// Even a blanket `"Bash"` allow does NOT short-circuit the
+    /// dangerous-env check — the user opted in to "trust this command
+    /// family", not to "swap my PATH".
+    #[test]
+    fn dangerous_env_prefix_overrides_blanket_allow() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+        manager.settings.permissions.allow.push("Bash".to_string());
+
+        assert_eq!(
+            manager
+                .check_command_permission("PATH=. cargo build")
+                .unwrap(),
+            CommandPermission::Ask
+        );
+    }
+
+    /// A dangerous env prefix in any segment of a compound shell trips
+    /// the gate — `ls; PATH=. cargo` still routes to Ask.
+    #[test]
+    fn dangerous_env_prefix_in_compound_segment_caught() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        assert_eq!(
+            manager
+                .check_command_permission("ls; PATH=. cargo build")
+                .unwrap(),
+            CommandPermission::Ask
+        );
+        assert_eq!(
+            manager
+                .check_command_permission("cat foo && LD_PRELOAD=evil.so ls")
+                .unwrap(),
+            CommandPermission::Ask
+        );
+    }
+
+    /// A `Bash(rm)` rule in local-allow must NOT silently strip the
+    /// matching `Bash(rm)` from global-deny. Per-list seen sets keep the
+    /// deny entry around (the runtime then arbitrates).
+    #[test]
+    fn merge_does_not_drop_global_deny_for_local_allow() {
+        let mut global = PermissionSettings::default();
+        global.permissions.deny.push("Bash(rm)".to_string());
+
+        let mut local = PermissionSettings::default();
+        local.permissions.allow.push("Bash(rm)".to_string());
+
+        global.merge(local);
+
+        assert!(
+            global.permissions.deny.contains(&"Bash(rm)".to_string()),
+            "global deny must survive a local-allow with the same key"
+        );
+        assert!(
+            global.permissions.allow.contains(&"Bash(rm)".to_string()),
+            "local allow is still merged in"
+        );
+    }
+
+    /// Whitespace in the command must NOT bypass a session-scoped deny.
+    /// `Bash(ls /etc)` and `Bash(ls   /etc)` must produce the same key.
+    #[test]
+    fn normalize_command_collapses_internal_whitespace() {
+        assert_eq!(
+            PermissionManager::normalize_command("ls /etc"),
+            PermissionManager::normalize_command("ls  /etc"),
+        );
+        assert_eq!(
+            PermissionManager::normalize_command("ls\t/etc"),
+            PermissionManager::normalize_command("ls /etc"),
+        );
+        assert_eq!(
+            PermissionManager::normalize_command("  ls /etc  "),
+            "Bash(ls /etc)".to_string()
+        );
+    }
+
     /// `./secrets/../allowed.txt` lexically resolves to `./allowed.txt`,
     /// so the deny rule `Read(./secrets/**)` must NOT match it. The
     /// glob deny on `./secrets/**` must still catch the un-normalised

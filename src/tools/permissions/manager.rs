@@ -1,6 +1,6 @@
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::CommandPermission;
-use crate::tools::permissions::command_parse::command_lookup_key;
+use crate::tools::permissions::command_parse::{command_lookup_key, leading_dangerous_env_prefix};
 use crate::tools::permissions::pattern::BLANKET_BASH;
 use crate::tools::permissions::settings::PermissionSettings;
 use crate::tools::utils::{ConfirmationType, confirm_multi_choice};
@@ -406,6 +406,18 @@ impl PermissionManager {
             return Ok(CommandPermission::Denied);
         }
 
+        // Dangerous env prefixes (`PATH=.`, `LD_PRELOAD=...`, ...) can
+        // swap the binary the shell ends up running, so an Allowed
+        // verdict gets downgraded to Ask. Denies still fire normally
+        // — an explicit `Bash(...)` deny or a forbidden base wins
+        // because the deny is the conservative choice either way.
+        let dangerous_env = Self::command_has_dangerous_env_prefix(command);
+        let allow_verdict = if dangerous_env {
+            CommandPermission::Ask
+        } else {
+            CommandPermission::Allowed
+        };
+
         let normalized = Self::normalize_command(command);
         let base_command = Self::extract_base_command(command);
 
@@ -429,11 +441,11 @@ impl PermissionManager {
             {
                 return Ok(CommandPermission::Denied);
             }
-            return Ok(CommandPermission::Allowed);
+            return Ok(allow_verdict);
         }
 
         if self.settings.permissions.allow.contains(&normalized) {
-            return Ok(CommandPermission::Allowed);
+            return Ok(allow_verdict);
         }
 
         if self.settings.permissions.deny.contains(&normalized) {
@@ -442,7 +454,7 @@ impl PermissionManager {
 
         let wildcard_pattern = format!("Bash({}:*)", base_command);
         if self.settings.permissions.allow.contains(&wildcard_pattern) {
-            return Ok(CommandPermission::Allowed);
+            return Ok(allow_verdict);
         }
 
         if self.settings.permissions.deny.contains(&wildcard_pattern) {
@@ -478,7 +490,7 @@ impl PermissionManager {
             .iter()
             .all(|b| self.allowed_commands.contains(&command_lookup_key(b)))
         {
-            return Ok(CommandPermission::Allowed);
+            return Ok(allow_verdict);
         }
 
         Ok(CommandPermission::Ask)
@@ -495,6 +507,16 @@ impl PermissionManager {
         } else {
             compound_bases
         }
+    }
+
+    /// True when any sub-command of a compound shell leads with a
+    /// dangerous env-assignment (`PATH=`, `LD_PRELOAD=`, etc.). Walking
+    /// every segment means `ls; PATH=. cargo build` is caught even though
+    /// the first segment is plain.
+    pub(super) fn command_has_dangerous_env_prefix(command: &str) -> bool {
+        Self::split_compound_command(command)
+            .iter()
+            .any(|seg| leading_dangerous_env_prefix(seg).is_some())
     }
 
     pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {

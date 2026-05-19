@@ -228,6 +228,14 @@ impl PermissionManager {
             }
         }
 
+        // Default-Allowed when no explicit rule matches. Inside-workspace
+        // reads are expected to pass through; paths that leave the
+        // workspace are gated separately by
+        // `BashExecutor::check_bash_external_paths`, which runs the
+        // interactive prompt and the deny-glob check on its own. Do NOT
+        // collapse these two paths without preserving that boundary —
+        // the bash side enforces explicit confirmation for external
+        // paths, which this default branch would skip.
         CommandPermission::Allowed
     }
 

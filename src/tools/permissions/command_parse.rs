@@ -26,6 +26,41 @@ pub(super) const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"]
 /// base command at all and should yield no entry.
 pub(super) const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
 
+/// Env-assignment keys whose value can swap the binary the shell ends
+/// up running, regardless of what base command follows. `PATH=. cargo
+/// build` reads `cargo` from the current directory; `LD_PRELOAD=evil.so
+/// ls` runs `ls` under a hijacked loader. The base-command lookup
+/// would otherwise classify these as `cargo` / `ls` and auto-allow,
+/// so the permission system has to surface them explicitly.
+const DANGEROUS_ENV_KEYS: &[&str] = &[
+    "PATH",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "NODE_PATH",
+    "PYTHONPATH",
+];
+
+/// Returns the dangerous env-key (verbatim, uppercased) found among
+/// the leading env-assignment tokens of `segment`. Stops at the first
+/// token that is not a `KEY=value`, since that's the base command and
+/// any later occurrence isn't an env prefix any more.
+pub(super) fn leading_dangerous_env_prefix(segment: &str) -> Option<&'static str> {
+    for tok in segment.split_whitespace() {
+        if !is_env_assignment(tok) {
+            return None;
+        }
+        let key = tok.split_once('=').map(|(k, _)| k).unwrap_or(tok);
+        let upper = key.to_ascii_uppercase();
+        if upper.starts_with("DYLD_") {
+            return Some("DYLD_*");
+        }
+        if let Some(name) = DANGEROUS_ENV_KEYS.iter().find(|d| **d == upper.as_str()) {
+            return Some(*name);
+        }
+    }
+    None
+}
+
 /// Match POSIX-shell `KEY=value` assignment tokens: the key starts with
 /// a letter or underscore, is alphanumeric+`_` throughout, and is
 /// followed by `=`. Used by `extract_base_command` to skip leading

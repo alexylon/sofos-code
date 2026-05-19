@@ -5,7 +5,7 @@
 //! place to land.
 
 use crate::tools::permissions::PermissionManager;
-use crate::tools::utils::is_absolute_path;
+use crate::tools::utils::{is_absolute_path, normalize_command_whitespace};
 
 /// Bare `"Bash"` in an `allow` or `deny` list acts as a blanket rule
 /// over all bash commands. In `allow` it auto-passes everything except
@@ -37,8 +37,15 @@ impl PermissionManager {
         None
     }
 
-    pub(super) fn normalize_command(command: &str) -> String {
-        format!("Bash({})", command.trim())
+    /// Canonical `Bash(...)` shape for a command string. Internal
+    /// whitespace runs are collapsed so `ls /etc` and `ls  /etc` resolve
+    /// to the same rule key — a session-scoped deny on the first form
+    /// stays in force when the model retries with extra spacing. Exposed
+    /// `pub` so the bash executor can key session state through the
+    /// same normaliser as the rule lookups.
+    pub fn normalize_command(command: &str) -> String {
+        let collapsed = normalize_command_whitespace(command);
+        format!("Bash({})", collapsed.trim())
     }
 
     pub(super) fn normalize_read(path: &str) -> String {

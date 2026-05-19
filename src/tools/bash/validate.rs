@@ -322,14 +322,19 @@ impl BashExecutor {
         if allowed {
             if !remember {
                 if let Ok(mut dirs) = self.bash_path_session_allowed.lock() {
-                    dirs.insert(parent.to_string());
+                    // Session-only grant: store the file path itself, not
+                    // the parent, so a second file under the same parent
+                    // re-prompts. Persistent grants (remember=true) keep
+                    // `Bash(parent/**)` because the user explicitly
+                    // opted in to that scope through `ask_user_path_permission`.
+                    dirs.insert(check_path.to_string());
                 }
             }
             Ok(())
         } else {
             if !remember {
                 if let Ok(mut dirs) = self.bash_path_session_denied.lock() {
-                    dirs.insert(parent.to_string());
+                    dirs.insert(check_path.to_string());
                 }
             }
             Err(SofosError::ToolExecution(format!(
