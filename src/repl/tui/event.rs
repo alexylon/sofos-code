@@ -19,6 +19,11 @@ pub struct ExitSummary {
     /// pricing cliffs (e.g. gpt-5.4/5.5 at 272K) so the displayed
     /// session cost reflects the rate the provider actually billed.
     pub peak_single_turn_input_tokens: u32,
+    /// True when the worker exits because it panicked rather than via
+    /// the normal shutdown path. Lets the UI prefix the goodbye line
+    /// with a "Session ended unexpectedly" notice instead of pretending
+    /// the run finished cleanly with zeroed totals.
+    pub panicked: bool,
 }
 
 /// Tool access mode shown in the status line.
@@ -48,6 +53,12 @@ pub struct StatusSnapshot {
     pub reasoning: String,
     pub input_tokens: u32,
     pub output_tokens: u32,
+    /// Cumulative cache-read tokens for the session — exposed in the
+    /// status line so users can see their prompt-cache hit rate
+    /// without quitting to view the session summary.
+    pub cache_read_tokens: u32,
+    /// Cumulative cache-creation tokens billed at the premium rate.
+    pub cache_creation_tokens: u32,
 }
 
 /// Which standard stream a captured line came from.

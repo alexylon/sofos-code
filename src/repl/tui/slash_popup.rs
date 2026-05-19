@@ -103,13 +103,16 @@ impl SlashPopup {
     /// Show the popup whenever the first line still looks like a partially
     /// typed slash command; hide it otherwise.
     pub fn sync(&mut self, input: &str) {
-        // Honour a prior `dismiss` until the input changes.
-        if self
-            .dismissed_for
-            .as_deref()
-            .is_some_and(|prev| prev == input)
-        {
-            return;
+        // Honour a prior `dismiss` while the user is editing within the
+        // same slash-command "family" — either the current input still
+        // begins with the dismissed text (kept typing) or the dismissed
+        // text begins with the current input (backspaced). Switching
+        // to an unrelated command (e.g. dismiss `/clear`, then type
+        // `/list`) breaks both prefix tests and re-opens the popup.
+        if let Some(prev) = self.dismissed_for.as_deref() {
+            if prev == input || input.starts_with(prev) || prev.starts_with(input) {
+                return;
+            }
         }
         self.dismissed_for = None;
 
@@ -324,8 +327,21 @@ mod tests {
         popup.sync("/c");
         assert!(!popup.is_visible());
 
-        // Typing another character clears the dismissal.
+        // Typing more inside the same prefix family keeps the dismissal
+        // — the user is still editing the same slash-command attempt,
+        // and a small typo fix shouldn't reopen the suggestion list.
         popup.sync("/cl");
+        assert!(!popup.is_visible());
+
+        // Backspacing into a shared prefix likewise keeps the dismissal.
+        popup.sync("/");
+        assert!(!popup.is_visible());
+
+        // Switching to a clearly different slash-command attempt
+        // re-opens the popup: neither input is a prefix of the
+        // dismissed text (`/r` is a real prefix in the catalog —
+        // `/resume`).
+        popup.sync("/r");
         assert!(popup.is_visible());
     }
 }

@@ -297,6 +297,8 @@ impl Repl {
             reasoning,
             input_tokens: self.session_state.total_input_tokens,
             output_tokens: self.session_state.total_output_tokens,
+            cache_read_tokens: self.session_state.total_cache_read_tokens,
+            cache_creation_tokens: self.session_state.total_cache_creation_tokens,
         }
     }
 
@@ -347,6 +349,7 @@ impl Repl {
             cache_read_tokens: self.session_state.total_cache_read_tokens,
             cache_creation_tokens: self.session_state.total_cache_creation_tokens,
             peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
+            panicked: false,
         }
     }
 

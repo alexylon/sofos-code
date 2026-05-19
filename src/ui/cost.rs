@@ -38,7 +38,13 @@ impl UI {
         total_cache_creation_tokens: u32,
         peak_single_turn_input_tokens: u32,
     ) -> bool {
-        if total_input_tokens == 0 && total_output_tokens == 0 {
+        // A fully-cached session has `total_input_tokens == 0` and
+        // `total_output_tokens == 0` because the new-input field
+        // doesn't include cache reads. Without the cache-read clause
+        // a session that only re-hit cache would print no summary at
+        // all, which looks like a bug to users running short
+        // exploratory prompts.
+        if total_input_tokens == 0 && total_output_tokens == 0 && total_cache_read_tokens == 0 {
             return false;
         }
 
@@ -101,6 +107,26 @@ impl UI {
             "Estimated cost:".bright_white().bold(),
             format!("${:.4}", estimated_cost).bright_yellow().bold()
         );
+
+        // Surface the per-prompt cliff when premium pricing kicked in
+        // — users otherwise have no way to tell that crossing the
+        // GPT-5.5 / GPT-5.4 input-token threshold doubled the rate
+        // for every later turn in this session.
+        let info = crate::api::model_info::lookup(model);
+        if let Some(tier) = info.premium_tier {
+            if peak_single_turn_input_tokens > tier.input_threshold {
+                println!(
+                    "{:<20} {}",
+                    "".bright_white(),
+                    format!(
+                        "(premium tier: peak input {} exceeded {} threshold)",
+                        Self::format_number(peak_single_turn_input_tokens),
+                        Self::format_number(tier.input_threshold)
+                    )
+                    .dimmed()
+                );
+            }
+        }
 
         println!("{}", "─".repeat(50).bright_cyan());
         println!();

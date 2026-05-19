@@ -342,6 +342,15 @@ pub fn run(mut repl: Repl) -> Result<()> {
     colored::control::unset_override();
 
     if let Some(summary) = app.exit_summary.take() {
+        if summary.panicked {
+            // The worker exited via panic rather than the normal
+            // shutdown path. The counts in `summary` are zeroed
+            // placeholders from `ShutdownSender::send_now`, so the
+            // session-summary table would be misleading; surface the
+            // explicit notice and skip straight to the goodbye line.
+            println!();
+            UI::print_warning("Session ended unexpectedly. See backtrace above for details.");
+        }
         let summary_printed = UI::display_session_summary(
             &summary.model,
             summary.input_tokens,

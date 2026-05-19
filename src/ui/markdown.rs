@@ -195,13 +195,13 @@ fn safe_commit_end(buf: &str) -> usize {
 }
 
 /// True when `line` opens or closes a fenced code block under CommonMark
-/// indentation rules: at most three leading spaces, then ```. A line
-/// with four or more leading spaces is part of an indented code block
-/// instead, even if its first non-space content is ```.
+/// indentation rules: at most three leading spaces, then either ``` or
+/// ~~~. A line with four or more leading spaces is part of an indented
+/// code block instead, even if its first non-space content is a fence.
 fn is_fence_line(line: &str) -> bool {
     let after_spaces = line.trim_start_matches(' ');
     let indent = line.len() - after_spaces.len();
-    indent <= 3 && after_spaces.starts_with("```")
+    indent <= 3 && (after_spaces.starts_with("```") || after_spaces.starts_with("~~~"))
 }
 
 /// Newline-gated markdown renderer for streaming output. Accumulates
@@ -216,9 +216,25 @@ fn is_fence_line(line: &str) -> bool {
 /// full buffer would produce). The cost is one full re-render per
 /// committed chunk, which is acceptable because pulldown_cmark is fast
 /// and assistant turns rarely exceed a few KB.
+/// Above this buffer length, `commit` batches incremental updates
+/// instead of re-rendering on every new line. Streaming a 50 KB
+/// reply with one re-render per line otherwise costs O(N^2) work in
+/// the markdown renderer; batching at this threshold keeps the
+/// experience snappy for short replies (where re-rendering each
+/// line is cheap) and linear for long ones.
+const COMMIT_THROTTLE_BUFFER_BYTES: usize = 16 * 1024;
+/// Once the buffer crosses [`COMMIT_THROTTLE_BUFFER_BYTES`], wait
+/// until at least this many bytes have been appended since the last
+/// commit before re-rendering again.
+const COMMIT_THROTTLE_STEP_BYTES: usize = 1024;
+
 pub(super) struct MarkdownStreamRenderer {
     buffer: String,
     committed_lines: usize,
+    /// Byte offset of the last `safe_end` that was actually emitted —
+    /// used by the throttle to decide whether enough new content has
+    /// arrived to justify another full re-render.
+    last_safe_end: usize,
 }
 
 impl MarkdownStreamRenderer {
@@ -226,6 +242,7 @@ impl MarkdownStreamRenderer {
         Self {
             buffer: String::new(),
             committed_lines: 0,
+            last_safe_end: 0,
         }
     }
 
@@ -247,6 +264,18 @@ impl MarkdownStreamRenderer {
         if safe_end == 0 {
             return Ok(String::new());
         }
+        // Throttle once the buffer gets large: hold off re-rendering
+        // until at least `COMMIT_THROTTLE_STEP_BYTES` of new content
+        // have arrived since the last actual commit. Short turns
+        // (under `COMMIT_THROTTLE_BUFFER_BYTES`) re-render per line
+        // and stream as fluidly as before; long turns stay linear in
+        // total work.
+        if self.buffer.len() > COMMIT_THROTTLE_BUFFER_BYTES {
+            let new_bytes = safe_end.saturating_sub(self.last_safe_end);
+            if new_bytes < COMMIT_THROTTLE_STEP_BYTES {
+                return Ok(String::new());
+            }
+        }
         // Drop the trailing blank during commit: pulldown's render is
         // not monotonic when a paragraph stays open across deltas (the
         // End-of-Paragraph blank "moves" further down as more text
@@ -255,6 +284,7 @@ impl MarkdownStreamRenderer {
         // behind a prematurely-committed paragraph terminator.
         let (new, total) = self.render_new_lines(&self.buffer[..safe_end], true)?;
         self.committed_lines = total;
+        self.last_safe_end = safe_end;
         Ok(new)
     }
 
@@ -273,6 +303,7 @@ impl MarkdownStreamRenderer {
         let (new, _) = self.render_new_lines(&source, false)?;
         self.buffer.clear();
         self.committed_lines = 0;
+        self.last_safe_end = 0;
         Ok(new)
     }
 

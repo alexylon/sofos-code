@@ -171,14 +171,30 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
 
     let safe = app.is_safe_mode();
     let prompt_glyph = if safe { " : " } else { " > " };
-    let title = Line::from(vec![Span::styled(
+    let content_width = area.width.saturating_sub(2);
+
+    let mut textarea = app.textarea.clone();
+    let measure = textarea.measure(content_width);
+    let overflow_rows = measure.content_rows.saturating_sub(MAX_INPUT_CONTENT_ROWS);
+
+    let mut title_spans = vec![Span::styled(
         prompt_glyph,
         Style::default()
             .fg(if safe { Color::Yellow } else { TITLE_FG })
             .add_modifier(Modifier::BOLD),
-    )]);
+    )];
+    if overflow_rows > 0 {
+        // Long paste / long draft: the textarea is showing only the
+        // first `MAX_INPUT_CONTENT_ROWS` rows. Surface the cap in the
+        // title line so the user knows their input continues below the
+        // visible window.
+        title_spans.push(Span::styled(
+            format!(" … +{} more ", overflow_rows),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    let title = Line::from(title_spans);
 
-    let mut textarea = app.textarea.clone();
     textarea.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -301,15 +317,25 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     // Fall back to the model name we already know if the worker hasn't
     // pushed a full snapshot yet (e.g. very first frame).
-    let (model, mode, reasoning, in_tok, out_tok) = match &app.status {
+    let (model, mode, reasoning, in_tok, out_tok, cache_read, cache_create) = match &app.status {
         Some(s) => (
             s.model.as_str(),
             s.mode,
             s.reasoning.as_str(),
             s.input_tokens,
             s.output_tokens,
+            s.cache_read_tokens,
+            s.cache_creation_tokens,
         ),
-        None => (app.model_label.as_str(), Mode::Normal, "", 0u32, 0u32),
+        None => (
+            app.model_label.as_str(),
+            Mode::Normal,
+            "",
+            0u32,
+            0u32,
+            0u32,
+            0u32,
+        ),
     };
 
     let mode_style = match mode {
@@ -338,6 +364,18 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             format!("tokens: {}↑ {}↓", in_tok, out_tok),
+            Style::default().fg(MODEL_FG),
+        ));
+    }
+
+    // Surface the cache numbers when either side has a non-zero
+    // total. The cache-read percentage is the cheapest cost lever
+    // the user has and they otherwise can't see it without
+    // dropping out of the session.
+    if cache_read > 0 || cache_create > 0 {
+        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            format!("cache: {}r {}w", cache_read, cache_create),
             Style::default().fg(MODEL_FG),
         ));
     }

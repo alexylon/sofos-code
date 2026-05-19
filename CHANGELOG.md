@@ -6,9 +6,21 @@ All notable changes to Sofos are documented in this file.
 
 ### Added
 
+- **The cache numbers now appear in the status line.** When either cache-read or cache-creation tokens are non-zero, the status row shows `cache: 1234r 56w` alongside the input/output totals so users can see their prompt-cache hit rate without quitting to view the session summary.
+- **The input box title line shows a `… +N more` hint when the draft overflows the visible area.** A long paste or multi-line draft that exceeds the input box height previously had no on-screen indication that more content existed below the visible window; the cap is now surfaced as part of the title.
 - **`Ctrl+W` and `Ctrl+K` are now bound in the input box.** `Ctrl+W` deletes the word behind the cursor (the readline / bash / zsh / fish binding) and `Ctrl+K` deletes from the cursor to the end of the line. `Ctrl+U` (delete to start of line) is unchanged.
 
 ### Fixed
+
+- **Long assistant turns render fluidly again.** The streaming markdown renderer used to re-render the whole accumulated buffer on every new line — quadratic in the length of the reply, which on a 50 KB stream was noticeably laggy. Replies under 16 KB stream per line as before; longer replies batch the work into 1 KB chunks so the total cost stays linear.
+- **Editing past a slash-popup dismissal stays dismissed.** Pressing Esc on `/clear` and then backspacing one character (or adding a typo fix) used to immediately re-open the popup; the dismissal now sticks while the textarea is still in the same `/command` edit family and only clears when the user switches to an unrelated command.
+- **A live draft is preserved while scrolling through input history.** Alt+Up used to discard whatever you had typed when stepping into older prompts; sofos now snapshots the draft on the first Alt+Up and restores it when Alt+Down walks past the newest entry.
+- **The session summary now surfaces the premium-tier crossover.** Crossing the GPT-5.5 / GPT-5.4 input-token threshold doubles the rate for every later turn in the session; the cost summary now prints a dimmed `(premium tier: peak input X exceeded Y threshold)` line below the estimated cost so users can see why the bill is what it is.
+- **A fully-cached session prints a summary instead of nothing.** The early-return that suppressed the post-session table when both fresh-input and output were zero ignored cache reads — a short prompt that re-hit cache used to look like zero usage. Sessions with any cache-read activity now print the usual summary.
+- **A late settlement of Anthropic cache usage in the streaming response is no longer hidden.** The renderer used to surface `cache: 0r 0w` for these turns; the trailing `message_delta` event now refreshes both totals when it carries them so the status row matches the cost summary.
+- **CommonMark `~~~` fences are recognised in streaming commits.** A partial `~~~` fence at a newline boundary used to allow a premature commit on the unclosed code block, which then needed the same fence type to close it; sofos now treats `~~~` like ```` ``` ```` for the commit-safety check.
+- **`Ctrl+C` after `WorkerBusy` is reliably routed to the in-flight job.** The worker used to clear the interrupt flag before announcing it was busy, so a Ctrl+C that landed in the tiny race window slipped through to the shutdown path. Sofos now sends `WorkerBusy` first and clears the flag second, eliminating the race.
+- **A panicking worker no longer prints a zeroed session summary.** The shutdown path now carries an explicit `panicked` flag so the goodbye line is preceded by a "Session ended unexpectedly" warning instead of pretending the run finished cleanly with no usage at all.
 
 - **`Ctrl+C` while the slash-command popup is open dismisses the popup.** It used to fall through to the outer handler and quit the session, which surprised users who only wanted to bail out of the suggestion list. Ctrl+C with the popup closed still requests shutdown.
 - **The cursor shape now follows the active mode after `/safe` and `/normal`.** Toggling safe mode mid-session previously updated the status line but left the cursor in its old shape; the cursor now switches to the safe-mode underscore on `/safe` and back to the default block on `/normal`, matching the startup behaviour.

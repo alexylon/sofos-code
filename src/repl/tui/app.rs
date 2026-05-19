@@ -68,6 +68,11 @@ pub struct App {
     /// `Alt+Up` / `Alt+Down` history navigation. Capped at
     /// [`INPUT_HISTORY_CAP`]; the oldest entries are dropped once full.
     pub input_history: VecDeque<String>,
+    /// Live draft saved when the user first presses Alt+Up to enter
+    /// history. Restored when `history_next` walks past the newest
+    /// entry, so a typed-but-unsent draft isn't silently erased when
+    /// the user wanted to scroll through prior prompts.
+    pub history_draft: Option<String>,
     /// Current position in the history ring while navigating.
     /// `None` means the textarea holds the user's live draft (not a
     /// historical entry).
@@ -206,6 +211,7 @@ impl App {
             confirmation: None,
             pasted_images: Vec::new(),
             input_history: VecDeque::new(),
+            history_draft: None,
             history_cursor: None,
             slash_popup: SlashPopup::new(),
         }
@@ -249,13 +255,18 @@ impl App {
 
     /// Move one step backward (older) through input history and load the
     /// resulting entry into the textarea. No-op when the history is
-    /// empty. When currently showing the live draft, snapshot... no — we
-    /// deliberately don't snapshot the live draft; going forward past the
-    /// newest entry restores an empty textarea, matching reedline's
-    /// default behaviour.
+    /// empty. Snapshots the in-progress draft on the first press so a
+    /// later `history_next` past the newest entry can put it back.
     pub fn history_prev(&mut self) {
         if self.input_history.is_empty() {
             return;
+        }
+        // First step into history captures the live draft so we can
+        // restore it on the way out. Subsequent steps don't overwrite
+        // it — moving between two history entries doesn't change the
+        // original draft.
+        if self.history_cursor.is_none() {
+            self.history_draft = Some(self.input_text());
         }
         let next = match self.history_cursor {
             None => self.input_history.len() - 1,
@@ -267,15 +278,20 @@ impl App {
     }
 
     /// Move one step forward (newer) through input history. When stepping
-    /// past the newest entry, clears the textarea back to the live-draft
-    /// state (`history_cursor = None`).
+    /// past the newest entry, restores the live draft captured by
+    /// `history_prev`, falling back to an empty textarea when no draft
+    /// was saved.
     pub fn history_next(&mut self) {
         let Some(cursor) = self.history_cursor else {
             return;
         };
         if cursor + 1 >= self.input_history.len() {
             self.history_cursor = None;
+            let draft = self.history_draft.take().unwrap_or_default();
             self.clear_input();
+            if !draft.is_empty() {
+                self.textarea.insert_str(draft);
+            }
             return;
         }
         let next = cursor + 1;
@@ -497,6 +513,8 @@ mod tests {
             reasoning: String::new(),
             input_tokens: 0,
             output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         });
         assert!(a.is_safe_mode());
         a.status.as_mut().unwrap().mode = Mode::Normal;
@@ -740,6 +758,8 @@ mod tests {
             reasoning: "thinking: 10000 tok".into(),
             input_tokens: 123,
             output_tokens: 456,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
         });
         let s = a.status.as_ref().unwrap();
         assert_eq!(s.mode.label(), "safe");

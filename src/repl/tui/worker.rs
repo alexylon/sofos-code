@@ -75,6 +75,10 @@ impl<'a> ShutdownSender<'a> {
         if self.sent {
             return;
         }
+        // Reaching `send_now` without an installed summary means the
+        // worker is panicking on the way out — set `panicked: true`
+        // so the UI can prefix the goodbye line instead of pretending
+        // a fully zeroed normal exit.
         let summary = self.summary.take().unwrap_or(ExitSummary {
             model: String::new(),
             input_tokens: 0,
@@ -82,6 +86,7 @@ impl<'a> ShutdownSender<'a> {
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
             peak_single_turn_input_tokens: 0,
+            panicked: true,
         });
         let _ = self.ui_tx.send(UiEvent::WorkerShutdown(summary));
         self.sent = true;
@@ -107,8 +112,15 @@ fn run(
         match job {
             Job::Shutdown => break,
             Job::Message { text, images } => {
-                interrupt.store(false, Ordering::SeqCst);
+                // Notify the UI we're busy BEFORE clearing the
+                // interrupt flag. Otherwise a Ctrl+C that lands in
+                // the window between the two falls through to
+                // `request_shutdown` (the bare-press handler in
+                // `input.rs`) instead of interrupting the upcoming
+                // turn — `app.busy()` is still false because
+                // `WorkerBusy` hasn't been delivered yet.
                 let _ = ui_tx.send(UiEvent::WorkerBusy("processing".into()));
+                interrupt.store(false, Ordering::SeqCst);
                 if let Err(e) = repl.process_message(&text, images) {
                     if !matches!(e, crate::error::SofosError::Interrupted) {
                         if e.is_blocked() {
