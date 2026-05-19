@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-19
+
 ### Added
 
 - **Ctrl+W and Ctrl+K bindings in the input box.** Ctrl+W deletes the previous word; Ctrl+K deletes to the end of the line. Ctrl+U (delete to start) is unchanged.
