@@ -1,7 +1,7 @@
 use crate::error::{Result, SofosError};
 use crate::mcp::client::{
-    MCP_REQUEST_TIMEOUT, create_call_tool_request, create_init_request, parse_call_tool_response,
-    parse_list_tools_response,
+    MCP_INIT_TIMEOUT, MCP_REQUEST_TIMEOUT, create_call_tool_request, create_init_request,
+    parse_call_tool_response, parse_list_tools_response,
 };
 use crate::mcp::config::McpServerConfig;
 use crate::mcp::protocol::*;
@@ -73,23 +73,28 @@ impl HttpClient {
     }
 
     async fn initialize(&self) -> Result<()> {
-        let response = self
-            .send_request(
-                "initialize",
-                Some(serde_json::to_value(create_init_request())?),
-            )
-            .await?;
-
-        let _init_result: InitializeResult = serde_json::from_value(response)?;
-
-        // The MCP spec requires the client to confirm the handshake
-        // with a `notifications/initialized` message before sending any
-        // other request. The stdio transport already did this; HTTP
-        // didn't, which caused strict servers to reject every later
-        // request as "not initialized".
-        self.send_notification_initialized().await?;
-
-        Ok(())
+        // Handshake under a tighter ceiling than tool calls so a
+        // frozen server can't hold session startup hostage.
+        let handshake = async {
+            let response = self
+                .send_request(
+                    "initialize",
+                    Some(serde_json::to_value(create_init_request())?),
+                )
+                .await?;
+            let _init_result: InitializeResult = serde_json::from_value(response)?;
+            self.send_notification_initialized().await?;
+            Ok::<(), SofosError>(())
+        };
+        tokio::time::timeout(MCP_INIT_TIMEOUT, handshake)
+            .await
+            .map_err(|_| {
+                SofosError::McpError(format!(
+                    "MCP server '{}' initialize timed out after {}s",
+                    self.server_name,
+                    MCP_INIT_TIMEOUT.as_secs()
+                ))
+            })?
     }
 
     async fn send_notification_initialized(&self) -> Result<()> {

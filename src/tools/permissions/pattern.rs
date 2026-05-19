@@ -37,13 +37,18 @@ impl PermissionManager {
         None
     }
 
-    /// Canonical `Bash(...)` shape for a command string. Internal
-    /// whitespace runs are collapsed so `ls /etc` and `ls  /etc` resolve
-    /// to the same rule key — a session-scoped deny on the first form
-    /// stays in force when the model retries with extra spacing. Exposed
-    /// `pub` so the bash executor can key session state through the
-    /// same normaliser as the rule lookups.
+    /// `Bash(...)` wrapper that preserves internal whitespace. Used by
+    /// path-grant lookups so a filename with legitimate multi-whitespace
+    /// matches its config entry verbatim.
     pub fn normalize_command(command: &str) -> String {
+        format!("Bash({})", command.trim())
+    }
+
+    /// Command-key variant of [`Self::normalize_command`]: collapses
+    /// internal whitespace so the same logical command hashes to one
+    /// rule key regardless of spacing. Use this for command lookups,
+    /// not paths.
+    pub fn normalize_command_key(command: &str) -> String {
         let collapsed = normalize_command_whitespace(command);
         format!("Bash({})", collapsed.trim())
     }

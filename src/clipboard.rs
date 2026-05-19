@@ -71,11 +71,9 @@ pub fn get_clipboard_image() -> Option<PastedImage> {
         writer.write_image_data(&image.bytes).ok()?;
     }
 
-    // Base64 expands binary by ~33%, so a binary blob just under
-    // MAX_CLIPBOARD_IMAGE_BYTES becomes ~1.33x that after encoding and
-    // then trips the second check anyway. Cap the binary side at three
-    // quarters of the limit so the binary check is the effective gate
-    // and a marginally-oversize blob fails fast with a clearer reason.
+    // Binary cap is 3/4 of the API limit because base64 inflates by
+    // ~33% — without it the binary check is dead and the post-encode
+    // check is the effective gate.
     let binary_cap = MAX_CLIPBOARD_IMAGE_BYTES * 3 / 4;
     if buf.len() > binary_cap {
         tracing::warn!(

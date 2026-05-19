@@ -48,7 +48,7 @@ All notable changes to Sofos are documented in this file.
 
 - **`web_fetch` follows at most three redirects, and only to http(s) targets.** The default `reqwest` redirect policy would let an LLM-supplied URL chain through up to ten hops including non-http(s) schemes (`file://`, `data:`, custom). Sofos now caps the hop count and rejects any redirect with a non-http(s) scheme so a content URL can't slip into a different protocol mid-chain.
 - **MCP server names are restricted to `[A-Za-z0-9_-]+`.** Two visually-identical Unicode names (`github` vs `gith\u{1d62}ub`) used to produce distinct map entries and route differently while looking the same in config; sofos now refuses non-ASCII server names at load time.
-- **MCP `initialize` uses a 15-second timeout.** Tool calls keep the existing two-minute ceiling, but the handshake no longer holds session startup hostage for two minutes per misconfigured server.
+- **MCP `initialize` uses a 15-second timeout on both stdio and HTTP transports.** Tool calls keep the existing two-minute ceiling, but the handshake no longer holds session startup hostage for two minutes per misconfigured server.
 - **The clipboard image binary check is the effective cap.** Base64 expansion (~33 %) used to make the post-encode check the actual gate, while the binary check at the same limit was dead. Sofos now caps the binary side at three-quarters of the limit so a marginally oversized image fails fast with a clearer reason.
 
 ### Changed

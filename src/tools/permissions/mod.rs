@@ -1708,19 +1708,28 @@ ask = []
 
     /// Whitespace in the command must NOT bypass a session-scoped deny.
     /// `Bash(ls /etc)` and `Bash(ls   /etc)` must produce the same key.
+    /// Path-shaped `normalize_command` keeps internal whitespace because
+    /// filenames may legitimately contain it.
     #[test]
-    fn normalize_command_collapses_internal_whitespace() {
+    fn normalize_command_key_collapses_internal_whitespace() {
         assert_eq!(
-            PermissionManager::normalize_command("ls /etc"),
-            PermissionManager::normalize_command("ls  /etc"),
+            PermissionManager::normalize_command_key("ls /etc"),
+            PermissionManager::normalize_command_key("ls  /etc"),
         );
         assert_eq!(
-            PermissionManager::normalize_command("ls\t/etc"),
-            PermissionManager::normalize_command("ls /etc"),
+            PermissionManager::normalize_command_key("ls\t/etc"),
+            PermissionManager::normalize_command_key("ls /etc"),
         );
         assert_eq!(
-            PermissionManager::normalize_command("  ls /etc  "),
+            PermissionManager::normalize_command_key("  ls /etc  "),
             "Bash(ls /etc)".to_string()
+        );
+
+        // The path-shaped wrapper does NOT collapse — preserves
+        // filenames that contain literal multi-whitespace.
+        assert_eq!(
+            PermissionManager::normalize_command("/tmp/file  with spaces"),
+            "Bash(/tmp/file  with spaces)".to_string()
         );
     }
 

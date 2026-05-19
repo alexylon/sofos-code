@@ -112,13 +112,9 @@ fn run(
         match job {
             Job::Shutdown => break,
             Job::Message { text, images } => {
-                // Notify the UI we're busy BEFORE clearing the
-                // interrupt flag. Otherwise a Ctrl+C that lands in
-                // the window between the two falls through to
-                // `request_shutdown` (the bare-press handler in
-                // `input.rs`) instead of interrupting the upcoming
-                // turn — `app.busy()` is still false because
-                // `WorkerBusy` hasn't been delivered yet.
+                // Send WorkerBusy before clearing the interrupt flag
+                // so an early Ctrl+C is routed to the polite-interrupt
+                // path rather than `request_shutdown`.
                 let _ = ui_tx.send(UiEvent::WorkerBusy("processing".into()));
                 interrupt.store(false, Ordering::SeqCst);
                 if let Err(e) = repl.process_message(&text, images) {

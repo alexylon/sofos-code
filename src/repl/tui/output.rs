@@ -311,11 +311,20 @@ fn spawn_reader(
             // before sending so the batch-joiner sees a self-contained
             // styled line.
             let mut state = SgrState::default();
+            // True when the previous read returned without a newline
+            // (cap reached). The next read prepends a `[…continued]`
+            // marker so the user can tell two consecutive captured
+            // lines logically belong to the same original output.
+            let mut previous_was_capped = false;
             loop {
                 line.clear();
                 match read_until_or_cap(&mut buf, b'\n', &mut line, READER_CHUNK_BYTES) {
                     Ok(0) => break,
                     Ok(_) => {
+                        // Whether THIS read ended at the cap rather
+                        // than on a real line terminator. Checked
+                        // before the trailing-newline strip below.
+                        let this_capped = !matches!(line.last(), Some(b'\n') | Some(b'\r'));
                         // Log the *raw* bytes — including the `\n` /
                         // `\r` suffix — before any stripping. That
                         // way the log shows exactly what arrived in
@@ -341,6 +350,9 @@ fn spawn_reader(
                         // resolved-state prefix is still accurate
                         // across the drop.
                         strip_trailing_incomplete_csi(&mut text);
+                        if previous_was_capped {
+                            text.insert_str(0, "[…continued] ");
+                        }
                         let prefix = state.to_ansi_prefix();
                         state.apply(&text);
                         let payload = if prefix.is_empty() {
@@ -360,6 +372,7 @@ fn spawn_reader(
                         {
                             break;
                         }
+                        previous_was_capped = this_capped;
                     }
                     Err(_) => break,
                 }

@@ -840,18 +840,15 @@ impl ToolExecutor {
                         .collect()
                 };
 
-                // Cap on the number of matches we accumulate before
-                // bailing with a hint. Holds memory bounded for a
-                // pathological pattern over a huge tree (e.g. `**` over
-                // a million-file monorepo would otherwise build 80 MB
-                // of strings before output truncation clipped it).
+                // Stop accumulating beyond this many hits — bounds
+                // memory on pathological patterns like `**` over a
+                // huge tree.
                 const GLOB_MAX_MATCHES: usize = 50_000;
 
                 let mut matches = Vec::new();
                 let mut stack = vec![search_dir.clone()];
-                // Visited canonical directories for cycle detection
-                // when `follow_symlinks=true`. A `ln -s . loop` would
-                // otherwise spin forever and exhaust memory.
+                // Canonical dirs we've descended into — breaks symlink
+                // cycles when `follow_symlinks=true`.
                 let mut visited: std::collections::HashSet<std::path::PathBuf> =
                     std::collections::HashSet::new();
                 if follow_symlinks {
@@ -884,9 +881,8 @@ impl ToolExecutor {
                                 continue;
                             }
                             if follow_symlinks {
-                                // Skip directories we've already
-                                // walked under their canonical form —
-                                // breaks symlink cycles.
+                                // Skip dirs we already descended under
+                                // their canonical form.
                                 match std::fs::canonicalize(&path) {
                                     Ok(canon) => {
                                         if !visited.insert(canon) {
@@ -1005,12 +1001,9 @@ impl ToolExecutor {
                     self.check_write_access(path, &resolved.canonical_str, &resolved.canonical)?;
                 }
 
-                // Capture mtime + length at read time so the write can
-                // detect a concurrent change (VSCode auto-save, a
-                // `cargo watch` rewriting generated code, the user
-                // editing in another editor). Without this the read /
-                // modify / write window silently overwrites a fresher
-                // version.
+                // Snapshot mtime + len so the post-modify re-stat can
+                // detect a concurrent writer (auto-save, cargo-watch,
+                // another editor) before we clobber their change.
                 let pre_meta = std::fs::metadata(&resolved.canonical).ok();
 
                 let original = if resolved.is_inside_workspace {
@@ -1034,11 +1027,8 @@ impl ToolExecutor {
                     original.replacen(old_string, new_string, 1)
                 };
 
-                // Re-stat before writing: a different mtime or length
-                // means a concurrent writer changed the file under us,
-                // and proceeding would clobber the change. Best-effort
-                // — a filesystem that doesn't report mtime (very rare)
-                // skips the check.
+                // Re-stat: any mtime/length drift means another writer
+                // touched the file mid-edit. Best-effort.
                 if let Some(pre) = pre_meta.as_ref() {
                     if let Ok(post) = std::fs::metadata(&resolved.canonical) {
                         let mtime_changed = match (pre.modified(), post.modified()) {
@@ -1401,10 +1391,9 @@ impl ToolExecutor {
                             .to_string(),
                     ));
                 }
-                // `data:` URLs fall into the file branch below and fail
-                // canonicalisation with a confusing "Image not found"
-                // error. Surface a clearer hint before we try to open
-                // anything.
+                // Reject `data:` URLs up front; otherwise they fall
+                // into the file branch and fail with a confusing
+                // "Image not found".
                 if trimmed.starts_with("data:") {
                     return Err(SofosError::ToolExecution(
                         "view_image does not accept `data:` URLs. Save the image to a file \
@@ -1460,12 +1449,8 @@ impl ToolExecutor {
                     ));
                 }
 
-                // Cap redirect chains to three hops with an http(s)-only
-                // policy. The default policy follows up to ten hops via
-                // any scheme reqwest understands, which lets an LLM-
-                // supplied URL chain through `file://`, `data:`, or
-                // private-network targets without an obvious signal in
-                // the visible URL.
+                // Limit redirects to three hops and only http(s); the
+                // default policy follows ten hops across any scheme.
                 let client = reqwest::Client::builder()
                     .timeout(std::time::Duration::from_secs(30))
                     .redirect(reqwest::redirect::Policy::custom(|attempt| {

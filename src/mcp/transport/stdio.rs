@@ -256,11 +256,8 @@ fn stdio_request_blocking(
         )));
     }
 
-    // Parse first as a generic Value so we can tell a server-initiated
-    // request (`method`) apart from a response. We don't speak the
-    // request side of the spec — `roots/list`, `sampling/createMessage`
-    // — so a frame carrying `method` is rejected here rather than
-    // confusing it with a response to our outgoing request.
+    // Parse as Value first; a `method` field means a server-initiated
+    // request, which sofos doesn't implement — reject explicitly.
     let raw: Value = serde_json::from_str(&response_line).map_err(|e| {
         SofosError::McpError(format!(
             "Failed to parse response from MCP server '{}': {}",
@@ -282,11 +279,8 @@ fn stdio_request_blocking(
         ))
     })?;
 
-    // JSON-RPC requires the response id to match the request id. With
-    // the in-flight `request_lock` this shouldn't fail today, but
-    // checking guards against future concurrent variants and against
-    // servers that emit an unsolicited frame. Accepts both numeric
-    // and string-shaped echoes of our outgoing numeric id.
+    // Reject id mismatches; accept either numeric or string echoes
+    // of the outgoing numeric id (spec lets servers reshape).
     if !response.id.matches_outgoing(request_id) {
         return Err(SofosError::McpError(format!(
             "MCP server '{}' returned response with id {:?}, expected {}",
@@ -308,12 +302,10 @@ pub struct StdioClient {
     next_id: Arc<AtomicU64>,
 }
 
-/// Send SIGKILL / `TerminateProcess` then poll `try_wait` for up to
-/// [`STDIO_DROP_WAIT_TOTAL`] before giving up. Shared by `Drop` and
-/// the timeout-recovery `kill_child_detached` path so the same
-/// bounded shutdown shape applies whether the reap runs inline or on
-/// a blocking task. Returns once the child has been reaped or the
-/// budget expires; the OS reaps any survivor when sofos exits.
+/// Kill and reap with a bounded `try_wait` loop. Shared by `Drop`
+/// and the detached kill path so neither blocks the executor on a
+/// child stuck in uninterruptible IO. The OS reaps any survivor
+/// when sofos exits.
 fn kill_and_reap_bounded(child: &mut Child) {
     let _ = child.kill();
     let start = std::time::Instant::now();
@@ -351,10 +343,8 @@ impl StdioClient {
         let args = config.args.unwrap_or_default();
         let env_vars = config.env.unwrap_or_default();
 
-        // Spawn the child on a blocking worker. `Command::spawn` performs
-        // synchronous syscalls (fork+exec / CreateProcess) that on a slow
-        // filesystem or under load can pause the tokio executor for tens
-        // to hundreds of milliseconds.
+        // Spawn off the executor — `Command::spawn` is synchronous and
+        // can pause tokio noticeably on slow filesystems.
         let spawn_name = server_name.clone();
         let process = tokio::task::spawn_blocking(move || -> std::io::Result<Child> {
             spawn_stdio_child(&command, &args, &env_vars)

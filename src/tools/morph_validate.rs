@@ -11,11 +11,8 @@
 /// (upstream) and trailing-newline parity (below) for that.
 const MORPH_STUB_ORIGINAL_MIN: usize = 500;
 const MORPH_STUB_FLOOR_BYTES: usize = 50;
-/// Mid-range bracket: when the original is between this and
-/// `MORPH_STUB_ORIGINAL_MIN`, a merged output that drops below
-/// 30 % of the original is almost certainly a truncated response.
-/// Below this bracket the absolute floor still applies; above it
-/// the legitimate "trim everything except a stub" case dominates.
+/// Mid-range bracket (200..=500 bytes): catches merges that drop
+/// below 30% of the original. Tighter than the absolute floor.
 const MORPH_STUB_MID_ORIGINAL_MIN: usize = 200;
 const MORPH_STUB_MID_RATIO: f64 = 0.30;
 
@@ -44,11 +41,8 @@ pub(super) fn validate_morph_output(
         ));
     }
 
-    // Mid-range bracket: a 200-500-byte original whose merged form
-    // collapses below 30 % was previously waved through because the
-    // absolute floor (50 bytes) didn't catch it. Genuine "rewrite as a
-    // tiny stub" edits in this range are rare; truncated responses
-    // are common.
+    // Mid-range bracket: 200..=500-byte originals whose merged form
+    // drops below 30% are almost always truncated.
     if original.len() >= MORPH_STUB_MID_ORIGINAL_MIN
         && original.len() <= MORPH_STUB_ORIGINAL_MIN
         && (merged.len() as f64) < (original.len() as f64) * MORPH_STUB_MID_RATIO

@@ -411,11 +411,9 @@ impl PermissionManager {
             return Ok(CommandPermission::Denied);
         }
 
-        // Dangerous env prefixes (`PATH=.`, `LD_PRELOAD=...`, ...) can
-        // swap the binary the shell ends up running, so an Allowed
-        // verdict gets downgraded to Ask. Denies still fire normally
-        // — an explicit `Bash(...)` deny or a forbidden base wins
-        // because the deny is the conservative choice either way.
+        // Dangerous env prefixes (`PATH=.`, `LD_PRELOAD=...`) can swap
+        // the binary the shell runs, so allow paths downgrade to Ask.
+        // Denies still fire normally.
         let dangerous_env = Self::command_has_dangerous_env_prefix(command);
         let allow_verdict = if dangerous_env {
             CommandPermission::Ask
@@ -423,7 +421,7 @@ impl PermissionManager {
             CommandPermission::Allowed
         };
 
-        let normalized = Self::normalize_command(command);
+        let normalized = Self::normalize_command_key(command);
         let base_command = Self::extract_base_command(command);
 
         // Blanket `"Bash"` allow short-circuits below the deny check but
@@ -449,8 +447,11 @@ impl PermissionManager {
             return Ok(allow_verdict);
         }
 
+        // An exact-match allow is an explicit opt-in to the full
+        // command (env prefix included), so it bypasses the
+        // dangerous-env downgrade. Wildcards below still downgrade.
         if self.settings.permissions.allow.contains(&normalized) {
-            return Ok(allow_verdict);
+            return Ok(CommandPermission::Allowed);
         }
 
         if self.settings.permissions.deny.contains(&normalized) {
@@ -525,7 +526,7 @@ impl PermissionManager {
     }
 
     pub fn ask_user_permission(&mut self, command: &str) -> Result<(bool, bool)> {
-        let normalized = Self::normalize_command(command);
+        let normalized = Self::normalize_command_key(command);
         let prompt = format!("Allow command `{}`?", command);
 
         // For commands whose args change every call (sed line ranges,

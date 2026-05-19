@@ -115,7 +115,7 @@ impl BashExecutor {
 
     pub fn execute(&self, command: &str) -> Result<String> {
         let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
-        let normalized = PermissionManager::normalize_command(command);
+        let normalized = PermissionManager::normalize_command_key(command);
 
         // Check session-scoped decisions first (for "allow once" / "deny once")
         if let Ok(allowed) = self.session_allowed.lock() {

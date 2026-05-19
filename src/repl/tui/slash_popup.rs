@@ -109,9 +109,16 @@ impl SlashPopup {
         // text begins with the current input (backspaced). Switching
         // to an unrelated command (e.g. dismiss `/clear`, then type
         // `/list`) breaks both prefix tests and re-opens the popup.
-        if let Some(prev) = self.dismissed_for.as_deref() {
-            if prev == input || input.starts_with(prev) || prev.starts_with(input) {
-                return;
+        //
+        // An empty input fully resets the dismissal: every dismissed
+        // string trivially starts with "", which would otherwise keep
+        // the popup suppressed even after the textarea has been
+        // emptied and a fresh `/` is typed.
+        if !input.is_empty() {
+            if let Some(prev) = self.dismissed_for.as_deref() {
+                if prev == input || input.starts_with(prev) || prev.starts_with(input) {
+                    return;
+                }
             }
         }
         self.dismissed_for = None;

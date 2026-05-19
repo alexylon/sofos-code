@@ -217,13 +217,9 @@ impl ResponseHandler {
             }
 
             if tool_uses.is_empty() {
-                // Drain any in-flight steer messages even when the
-                // assistant only produced text. The follow-up branch
-                // below folds them into the tool-results turn; without
-                // mirroring the drain here, a text-only turn leaves
-                // the steer buffered and the next prompt fires as a
-                // fresh user turn — losing the "mid-turn delivery"
-                // association the user expected.
+                // Drain pending steer messages on a text-only turn so
+                // they aren't lost between this reply and the next
+                // user prompt.
                 if let Some(steer_text) = self.drain_steer_messages() {
                     println!(
                         "{} {}",
@@ -641,15 +637,9 @@ impl ResponseHandler {
             content: "[System: Maximum tool iterations reached]".to_string(),
         });
 
-        // Let the assistant respond to the interruption. Use
-        // `run_interruptible` so ESC during this final summary cancels
-        // the HTTP call instead of blocking on the server.
-        //
-        // The recovery request is built without tools. Sending the
-        // tools array would let the assistant come back with another
-        // `tool_use` block; persisting that block without the matching
-        // `tool_result` puts the session in a shape the provider
-        // rejects on the next request and breaks `--resume`.
+        // Recovery turn is text-only: clearing `tools` stops the
+        // assistant from emitting a `tool_use` we'd have to discard
+        // or pair with a synthetic result before saving.
         let mut request = self.build_request();
         request.tools = None;
         let client = self.client.clone();
@@ -681,11 +671,8 @@ impl ResponseHandler {
                     }
                 }
 
-                // Even though the recovery request carried no tools,
-                // strip any tool-related blocks defensively before
-                // appending. A provider that ignores `tools = None`
-                // (or returns a cached tool_use from a previous turn)
-                // would otherwise leave an orphan in the saved session.
+                // Defensive strip in case the provider returns a cached
+                // tool_use despite `tools = None`.
                 let message_blocks: Vec<crate::api::MessageContentBlock> = response
                     .content
                     .iter()

@@ -364,10 +364,8 @@ impl Repl {
         let new_session_id = self.history_manager.generate_unique_session_id();
         self.session_state.conversation.clear();
         self.session_state.clear(new_session_id);
-        // The executor stays in safe mode across `/clear`, so the model
-        // also needs to keep seeing the safe-mode preamble. Without
-        // this it confidently proposes write/bash and gets opaque
-        // denials from the tool layer.
+        // Safe mode survives `/clear`, so the preamble has to ride
+        // along too — otherwise the model proposes blocked tools.
         if self.safe_mode {
             self.session_state
                 .conversation
@@ -427,11 +425,8 @@ impl Repl {
             println!();
             return;
         }
-        // Anthropic's legacy thinking model rejects requests where
-        // `max_tokens` is below the configured budget ceiling. Startup
-        // refuses that combination outright (see `new` above); the same
-        // gate must fire on mid-session `/effort high` so the next
-        // turn doesn't 400 with no clear hint at the cause.
+        // Mirror the startup gate: legacy Anthropic thinking needs
+        // max_tokens above the budget ceiling.
         if matches!(self.client, Anthropic(_))
             && !self.uses_adaptive_thinking()
             && effort.is_enabled()
