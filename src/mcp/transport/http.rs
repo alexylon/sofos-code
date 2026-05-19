@@ -5,6 +5,7 @@ use crate::mcp::client::{
 };
 use crate::mcp::config::McpServerConfig;
 use crate::mcp::protocol::*;
+use futures::StreamExt;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,11 @@ use std::time::Duration;
 /// (`MCP_REQUEST_TIMEOUT`, currently 120 s) before failing — confusing
 /// when the user just wants a quick "server unreachable" signal.
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on a single MCP HTTP response body. A hostile or buggy server
+/// can otherwise stream multi-GB JSON for a `tools/list` reply and
+/// OOM the host long before the request timeout fires.
+const MCP_HTTP_BODY_CAP: usize = 32 * 1024 * 1024;
 
 pub struct HttpClient {
     server_name: String,
@@ -40,9 +46,16 @@ impl HttpClient {
         // connect timeout is shorter than the overall ceiling so an
         // unreachable host fails fast instead of holding the full
         // request budget on DNS / TCP / TLS.
+        //
+        // Redirects are disabled outright. The default reqwest policy
+        // would follow up to 10 hops and forward custom headers like
+        // `Authorization: Bearer ...` across origins, leaking the
+        // bearer token to whatever host the server pointed at. A 3xx
+        // here surfaces as an explicit error instead.
         let client = reqwest::Client::builder()
             .timeout(MCP_REQUEST_TIMEOUT)
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| SofosError::McpError(format!("Failed to build MCP HTTP client: {}", e)))?;
 
@@ -119,12 +132,71 @@ impl HttpClient {
             ))
         })?;
 
-        let response_json: JsonRpcResponse = response.json().await.map_err(|e| {
+        let status = response.status();
+        if status.is_redirection() {
+            return Err(SofosError::McpError(format!(
+                "MCP server '{}' returned redirect status {}; refused to follow \
+                 to keep the configured bearer token from leaking cross-origin",
+                self.server_name, status
+            )));
+        }
+
+        if let Some(announced) = response.content_length() {
+            if announced as usize > MCP_HTTP_BODY_CAP {
+                return Err(SofosError::McpError(format!(
+                    "MCP server '{}' announced a {} byte response, exceeds {} MB cap",
+                    self.server_name,
+                    announced,
+                    MCP_HTTP_BODY_CAP / (1024 * 1024)
+                )));
+            }
+        }
+
+        let mut buffered: Vec<u8> = Vec::with_capacity(8 * 1024);
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| {
+                SofosError::McpError(format!(
+                    "Failed to read response body from MCP server '{}': {}",
+                    self.server_name, e
+                ))
+            })?;
+            if buffered.len().saturating_add(chunk.len()) > MCP_HTTP_BODY_CAP {
+                return Err(SofosError::McpError(format!(
+                    "MCP server '{}' exceeded the {} MB response cap mid-stream",
+                    self.server_name,
+                    MCP_HTTP_BODY_CAP / (1024 * 1024)
+                )));
+            }
+            buffered.extend_from_slice(&chunk);
+        }
+
+        let raw: Value = serde_json::from_slice(&buffered).map_err(|e| {
             SofosError::McpError(format!(
                 "Failed to parse response from MCP server '{}': {}",
                 self.server_name, e
             ))
         })?;
+        if raw.get("method").is_some() {
+            return Err(SofosError::McpError(format!(
+                "MCP server '{}' sent a server-initiated message; sofos does not \
+                 implement the server-to-client side of the spec",
+                self.server_name
+            )));
+        }
+
+        let response_json: JsonRpcResponse = serde_json::from_value(raw).map_err(|e| {
+            SofosError::McpError(format!(
+                "Failed to parse response envelope from MCP server '{}': {}",
+                self.server_name, e
+            ))
+        })?;
+        if !response_json.id.matches_outgoing(id) {
+            return Err(SofosError::McpError(format!(
+                "MCP server '{}' returned response with id {:?}, expected {}",
+                self.server_name, response_json.id, id
+            )));
+        }
 
         if let Some(error) = response_json.error {
             return Err(SofosError::McpError(format!(

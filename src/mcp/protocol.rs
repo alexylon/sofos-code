@@ -23,6 +23,19 @@ impl From<u64> for Id {
     }
 }
 
+impl Id {
+    /// True when this id matches a request id sofos sent. Sofos always
+    /// sends numeric ids, but the spec lets the server echo them as
+    /// strings (`"1"` instead of `1`), so the comparison accepts both
+    /// shapes for the same logical value.
+    pub fn matches_outgoing(&self, outgoing: u64) -> bool {
+        match self {
+            Id::Number(n) => *n == outgoing,
+            Id::String(s) => s == &outgoing.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,

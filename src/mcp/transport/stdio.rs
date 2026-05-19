@@ -6,10 +6,98 @@ use crate::mcp::client::{
 use crate::mcp::config::McpServerConfig;
 use crate::mcp::protocol::*;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Cross-platform env keys forwarded to MCP stdio children after
+/// [`Command::env_clear`]. Everything outside this allowlist (including
+/// `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MORPH_API_KEY`, ssh agent
+/// sockets, AWS credentials, etc.) is dropped unless the user opts in
+/// through the server's `env` config field.
+const FORWARDED_ENV_KEYS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+];
+
+/// Extra Windows essentials. Many programs misbehave without
+/// `SYSTEMROOT` / `COMSPEC` / `PATHEXT`, so a strict allowlist would
+/// break MCP servers that shell out under the hood.
+#[cfg(windows)]
+const FORWARDED_ENV_KEYS_WINDOWS: &[&str] = &[
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PROCESSOR_ARCHITECTURE",
+    "NUMBER_OF_PROCESSORS",
+];
+
+/// Upper bound on the Drop-time wait for an MCP child. Beyond this we
+/// give up and accept a brief zombie — the OS reaps it once sofos
+/// itself exits. Keeps process shutdown bounded even if a server
+/// child hangs on a closed pipe.
+const STDIO_DROP_WAIT_TOTAL: Duration = Duration::from_millis(200);
+const STDIO_DROP_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Build and spawn the stdio MCP child with a sanitised environment.
+/// Clears the parent env, forwards a small platform-specific allowlist
+/// (locale, paths, Windows essentials), then applies the user's
+/// configured `env` entries on top. This is what keeps
+/// `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `MORPH_API_KEY` and
+/// arbitrary other secrets out of every MCP child unless the user
+/// explicitly forwards them.
+fn spawn_stdio_child(
+    command: &str,
+    args: &[String],
+    env_vars: &HashMap<String, String>,
+) -> std::io::Result<Child> {
+    let mut cmd = Command::new(command);
+    cmd.args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    cmd.env_clear();
+
+    for key in FORWARDED_ENV_KEYS {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+    for (key, value) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("LC_") {
+            cmd.env(key, value);
+        }
+    }
+    #[cfg(windows)]
+    for key in FORWARDED_ENV_KEYS_WINDOWS {
+        if let Some(value) = std::env::var_os(key) {
+            cmd.env(key, value);
+        }
+    }
+
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+
+    cmd.spawn()
+}
 
 /// Take stdin/stdout/stderr from a freshly-spawned MCP child. Reaching
 /// the `Err` branch is practically unreachable — `Command::spawn` with
@@ -137,6 +225,7 @@ fn stdio_request_blocking(
     request_lock: &Arc<Mutex<()>>,
     stdin: &Arc<Mutex<ChildStdin>>,
     stdout: &Arc<Mutex<BufReader<ChildStdout>>>,
+    request_id: u64,
     request_json: &str,
 ) -> Result<JsonRpcResponse> {
     let _request_guard = request_lock
@@ -167,12 +256,45 @@ fn stdio_request_blocking(
         )));
     }
 
-    serde_json::from_str(&response_line).map_err(|e| {
+    // Parse first as a generic Value so we can tell a server-initiated
+    // request (`method`) apart from a response. We don't speak the
+    // request side of the spec — `roots/list`, `sampling/createMessage`
+    // — so a frame carrying `method` is rejected here rather than
+    // confusing it with a response to our outgoing request.
+    let raw: Value = serde_json::from_str(&response_line).map_err(|e| {
         SofosError::McpError(format!(
             "Failed to parse response from MCP server '{}': {}",
             server_name, e
         ))
-    })
+    })?;
+    if raw.get("method").is_some() {
+        return Err(SofosError::McpError(format!(
+            "MCP server '{}' sent a server-initiated message while a response was expected; \
+             sofos does not implement the server-to-client side of the spec",
+            server_name
+        )));
+    }
+
+    let response: JsonRpcResponse = serde_json::from_value(raw).map_err(|e| {
+        SofosError::McpError(format!(
+            "Failed to parse response envelope from MCP server '{}': {}",
+            server_name, e
+        ))
+    })?;
+
+    // JSON-RPC requires the response id to match the request id. With
+    // the in-flight `request_lock` this shouldn't fail today, but
+    // checking guards against future concurrent variants and against
+    // servers that emit an unsolicited frame. Accepts both numeric
+    // and string-shaped echoes of our outgoing numeric id.
+    if !response.id.matches_outgoing(request_id) {
+        return Err(SofosError::McpError(format!(
+            "MCP server '{}' returned response with id {:?}, expected {}",
+            server_name, response.id, request_id
+        )));
+    }
+
+    Ok(response)
 }
 
 pub struct StdioClient {
@@ -196,9 +318,21 @@ impl Drop for StdioClient {
         // after the child already exited returns `InvalidInput`, and
         // a second `wait` after the child was already reaped returns
         // a harmless error. Both are discarded.
+        //
+        // The wait is bounded with `try_wait` so a child stuck in
+        // uninterruptible IO cannot freeze session shutdown — after
+        // the budget we leave the child as a zombie and let the OS
+        // reap it when sofos itself exits.
         if let Ok(mut child) = self.process.lock() {
             let _ = child.kill();
-            let _ = child.wait();
+            let start = std::time::Instant::now();
+            while start.elapsed() < STDIO_DROP_WAIT_TOTAL {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(STDIO_DROP_POLL_INTERVAL),
+                    Err(_) => return,
+                }
+            }
         }
     }
 }
@@ -212,20 +346,25 @@ impl StdioClient {
         let args = config.args.unwrap_or_default();
         let env_vars = config.env.unwrap_or_default();
 
-        let mut cmd = Command::new(&command);
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        for (key, value) in env_vars {
-            cmd.env(key, value);
-        }
-
-        let process = cmd.spawn().map_err(|e| {
+        // Spawn the child on a blocking worker. `Command::spawn` performs
+        // synchronous syscalls (fork+exec / CreateProcess) that on a slow
+        // filesystem or under load can pause the tokio executor for tens
+        // to hundreds of milliseconds.
+        let spawn_name = server_name.clone();
+        let process = tokio::task::spawn_blocking(move || -> std::io::Result<Child> {
+            spawn_stdio_child(&command, &args, &env_vars)
+        })
+        .await
+        .map_err(|e| {
+            SofosError::McpError(format!(
+                "MCP spawn worker panicked for server '{}': {}",
+                spawn_name, e
+            ))
+        })?
+        .map_err(|e| {
             SofosError::McpError(format!(
                 "Failed to start MCP server '{}': {}",
-                server_name, e
+                spawn_name, e
             ))
         })?;
 
@@ -289,12 +428,24 @@ impl StdioClient {
     /// forgetting is safe because tokio drains blocking tasks on
     /// runtime shutdown, and the `Drop` impl is idempotent against
     /// an already-reaped child.
+    ///
+    /// Reaping uses the same bounded `try_wait` loop as `Drop`, so a
+    /// child stuck on uninterruptible IO doesn't leave a blocking
+    /// task pinned to the runtime forever — after the budget we
+    /// release the lock and accept the zombie.
     fn kill_child_detached(&self) {
         let process = Arc::clone(&self.process);
         tokio::task::spawn_blocking(move || {
             if let Ok(mut child) = process.lock() {
                 let _ = child.kill();
-                let _ = child.wait();
+                let start = std::time::Instant::now();
+                while start.elapsed() < STDIO_DROP_WAIT_TOTAL {
+                    match child.try_wait() {
+                        Ok(Some(_)) => return,
+                        Ok(None) => std::thread::sleep(STDIO_DROP_POLL_INTERVAL),
+                        Err(_) => return,
+                    }
+                }
             }
         });
     }
@@ -326,7 +477,14 @@ impl StdioClient {
         let stdout = Arc::clone(&self.stdout);
         let response = self
             .run_with_timeout("request", move || {
-                stdio_request_blocking(&server_name, &request_lock, &stdin, &stdout, &request_json)
+                stdio_request_blocking(
+                    &server_name,
+                    &request_lock,
+                    &stdin,
+                    &stdout,
+                    id,
+                    &request_json,
+                )
             })
             .await?;
 
@@ -383,7 +541,7 @@ impl StdioClient {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi_escapes;
+    use super::*;
 
     #[test]
     fn strips_csi_color_run() {
@@ -402,5 +560,34 @@ mod tests {
     #[test]
     fn drops_bare_escape() {
         assert_eq!(strip_ansi_escapes("a\x1bXb"), "ab");
+    }
+
+    /// Mismatched response ids must be rejected so a server cannot
+    /// satisfy a request with the result of an earlier (or fabricated)
+    /// call. Tested against the live `stdio_request_blocking` path is
+    /// awkward without a real child, so the id check is exercised
+    /// directly through `Id::matches_outgoing`.
+    #[test]
+    fn id_matches_outgoing_accepts_both_shapes() {
+        assert!(Id::Number(7).matches_outgoing(7));
+        assert!(Id::String("7".to_string()).matches_outgoing(7));
+        assert!(!Id::Number(8).matches_outgoing(7));
+        assert!(!Id::String("eight".to_string()).matches_outgoing(7));
+    }
+
+    /// Built MCP children must not inherit the parent env. We can't
+    /// spawn here without a real binary, but we can verify the helper
+    /// shape: pulling `spawn_stdio_child` would create a Command with
+    /// `env_clear` applied. We assert the constants stay in sync with
+    /// the audit allowlist instead — the actual env removal is exercised
+    /// indirectly by clippy + the integration paths.
+    #[test]
+    fn forwarded_env_keys_include_audit_allowlist() {
+        for required in &["PATH", "HOME", "USERPROFILE", "TMPDIR", "TEMP", "LANG"] {
+            assert!(
+                FORWARDED_ENV_KEYS.contains(required),
+                "{required} must be in the forwarded allowlist"
+            );
+        }
     }
 }
