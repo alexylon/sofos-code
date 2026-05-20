@@ -30,22 +30,27 @@ impl Repl {
             return Ok(false);
         }
 
-        self.session_state
-            .conversation
-            .truncate_tool_results(split_point);
-
-        if !force && !self.session_state.conversation.needs_compaction() {
-            let tokens_after = self.session_state.conversation.estimate_total_tokens();
-            println!(
-                "\n{} {} -> {} tokens (tool results truncated)\n",
-                "Compacted:".bright_green(),
-                tokens_before,
-                tokens_after
-            );
-            return Ok(true);
+        // Truncate a clone first: commit the truncation only when it
+        // alone frees enough tokens, so a failed or interrupted phase 2
+        // never persists half-shortened tool results.
+        if !force {
+            let mut truncated = self.session_state.conversation.clone();
+            truncated.truncate_tool_results(split_point);
+            if !truncated.needs_compaction() {
+                let tokens_after = truncated.estimate_total_tokens();
+                self.session_state.conversation = truncated;
+                println!(
+                    "\n{} {} -> {} tokens (tool results truncated)\n",
+                    "Compacted:".bright_green(),
+                    tokens_before,
+                    tokens_after
+                );
+                return Ok(true);
+            }
         }
 
-        // Phase 2: Summarize older messages via the LLM
+        // Phase 2: Summarize older messages via the LLM, leaving the
+        // history un-truncated so a failed summary trims whole messages.
         let older_messages: Vec<_> =
             self.session_state.conversation.messages()[..split_point].to_vec();
         let serialized = ConversationHistory::serialize_messages_for_summary(&older_messages);

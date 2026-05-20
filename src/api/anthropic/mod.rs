@@ -408,6 +408,35 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn error_event_keeps_partial_reply_text() {
+            // A mid-stream error must keep the reply text already
+            // streamed to the screen so the next turn is not blind to it.
+            let events = vec![
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Here is the fix: "}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "rename the field"}}),
+                json!({"type": "error", "error": {"message": "overloaded"}}),
+            ];
+
+            let stream = sse_stream_from_events(events);
+            let err = parse_stream(stream, |_| {}, |_| {}, flag())
+                .await
+                .expect_err("error event must surface as error");
+            let crate::error::SofosError::Api(msg) = &err else {
+                panic!("expected SofosError::Api, got: {err:?}");
+            };
+            assert!(
+                msg.contains("overloaded"),
+                "keeps the provider message: {msg}"
+            );
+            assert!(
+                msg.contains("Here is the fix: rename the field"),
+                "must carry the partial reply text: {msg}"
+            );
+        }
+
+        #[tokio::test]
         async fn multibyte_codepoint_split_across_chunks_is_preserved() {
             // Reproduces the pre-fix corruption: a UTF-8 codepoint
             // straddling two HTTP chunks used to be decoded chunk-by-

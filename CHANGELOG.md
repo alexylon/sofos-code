@@ -4,6 +4,12 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed or interrupted compaction no longer drops part of the conversation.** Compaction shortens older tool output before summarising; if the summary step then failed or was cancelled, the shortened output used to be saved anyway. The conversation is now kept intact unless compaction finishes cleanly.
+- **Photos are no longer sent to the model rotated sideways.** Images that get resized now keep the upright orientation recorded by the camera.
+- **A streamed reply cut short by a provider error keeps the text shown so far.** That text is carried into the error and the conversation, so a retry still has the context.
+
 ## [0.3.2] - 2026-05-19
 
 ### Added

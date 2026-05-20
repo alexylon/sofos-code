@@ -42,6 +42,10 @@ fn saturate_u32(n: u64) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
+/// Cap on streamed reply text folded into a mid-stream error, so the
+/// error and the saved session stay bounded.
+const MAX_PARTIAL_REPLY_BYTES: usize = 2000;
+
 impl AnthropicClient {
     pub async fn create_message_streaming<FText, FThink>(
         &self,
@@ -405,7 +409,35 @@ where
                         .and_then(|e| e.get("message"))
                         .and_then(|m| m.as_str())
                         .unwrap_or("Unknown streaming error");
-                    return Err(SofosError::Api(format!("Streaming error: {}", error_msg)));
+                    // Returning here drops the accumulated content_blocks,
+                    // so keep the streamed text in the error for the next turn.
+                    let mut partial: String = content_blocks
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    if current_block_type == Some(StreamBlockKind::Text) {
+                        partial.push_str(&current_text);
+                    }
+                    let partial = partial.trim();
+                    let context = if partial.is_empty() {
+                        String::new()
+                    } else {
+                        let cutoff =
+                            utils::truncate_at_char_boundary(partial, MAX_PARTIAL_REPLY_BYTES);
+                        let ellipsis = if cutoff < partial.len() { "…" } else { "" };
+                        format!(
+                            " (partial reply before the error: {}{})",
+                            &partial[..cutoff],
+                            ellipsis
+                        )
+                    };
+                    return Err(SofosError::Api(format!(
+                        "Streaming error: {}{}",
+                        error_msg, context
+                    )));
                 }
                 _ => {}
             }

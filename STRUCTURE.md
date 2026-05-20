@@ -1010,7 +1010,7 @@ Rules:
 
 It contains:
 
-- decode plus optional resize (long side fits within 2048 pixels) before the bytes reach the model;
+- decode, applying any orientation the photo's metadata records, plus optional resize (long side fits within 2048 pixels) before the bytes reach the model;
 - byte-level format detection: PNG, JPEG, GIF, and WebP pass through unchanged when small enough; other decodable formats (e.g. BMP) are re-encoded as PNG;
 - base64 encoding and media-type assignment;
 - the 20 MB per-file size cap on the raw bytes;

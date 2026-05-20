@@ -2,7 +2,9 @@ use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{is_absolute_or_tilde, is_http_url};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use image::{DynamicImage, GenericImageView, ImageEncoder, ImageFormat as ImageCrateFormat};
+use image::{
+    DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat as ImageCrateFormat,
+};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -39,11 +41,7 @@ pub struct EncodedImage {
 pub fn encode_image_for_prompt(bytes: Vec<u8>) -> Result<EncodedImage> {
     let detected = image::guess_format(&bytes).ok();
 
-    let decoded = image::load_from_memory(&bytes).map_err(|e| {
-        SofosError::ToolExecution(format!(
-            "Failed to decode image: {e}. Supported: {SUPPORTED_FORMATS_HUMAN_LIST}."
-        ))
-    })?;
+    let decoded = decode_with_orientation(&bytes)?;
     let (width, height) = decoded.dimensions();
 
     let within_bound = width <= MAX_PROMPT_IMAGE_DIMENSION && height <= MAX_PROMPT_IMAGE_DIMENSION;
@@ -74,6 +72,26 @@ pub fn encode_image_for_prompt(bytes: Vec<u8>) -> Result<EncodedImage> {
         bytes: encoded_bytes,
         mime: mime_for_image_format(format).to_string(),
     })
+}
+
+/// Decode image bytes, applying any EXIF orientation. A resize +
+/// re-encode strips EXIF, so the orientation is baked into the pixels.
+fn decode_with_orientation(bytes: &[u8]) -> Result<DynamicImage> {
+    fn decode_err<E: std::fmt::Display>(e: E) -> SofosError {
+        SofosError::ToolExecution(format!(
+            "Failed to decode image: {e}. Supported: {SUPPORTED_FORMATS_HUMAN_LIST}."
+        ))
+    }
+
+    let mut decoder = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(decode_err)?
+        .into_decoder()
+        .map_err(decode_err)?;
+    let orientation = decoder.orientation().map_err(decode_err)?;
+    let mut decoded = DynamicImage::from_decoder(decoder).map_err(decode_err)?;
+    decoded.apply_orientation(orientation);
+    Ok(decoded)
 }
 
 fn is_passthrough_format(format: ImageCrateFormat) -> bool {
@@ -375,5 +393,64 @@ mod tests {
             msg.to_lowercase().contains("decode") || msg.to_lowercase().contains("supported"),
             "error should explain the failure; got: {msg}"
         );
+    }
+
+    /// Build a JPEG carrying an EXIF orientation tag, so the decode
+    /// path under test has a real orientation to read.
+    fn jpeg_with_exif_orientation(
+        width: u32,
+        height: u32,
+        rgba: [u8; 4],
+        orientation: u16,
+    ) -> Vec<u8> {
+        let base = encode_fixture(width, height, rgba, ImageCrateFormat::Jpeg);
+        assert!(
+            base.starts_with(&[0xFF, 0xD8]),
+            "JPEG must open with the start-of-image marker"
+        );
+
+        // EXIF holds the orientation in a little-endian TIFF block: a
+        // byte-order marker, then a directory with one entry.
+        let mut tiff = Vec::new();
+        tiff.extend_from_slice(&[0x49, 0x49, 0x2A, 0x00]); // "II" marker + magic 42
+        tiff.extend_from_slice(&8u32.to_le_bytes()); // byte offset of the directory
+        tiff.extend_from_slice(&1u16.to_le_bytes()); // entry count
+        tiff.extend_from_slice(&0x0112u16.to_le_bytes()); // orientation tag id
+        tiff.extend_from_slice(&3u16.to_le_bytes()); // field type: 16-bit unsigned
+        tiff.extend_from_slice(&1u32.to_le_bytes()); // value count
+        tiff.extend_from_slice(&u32::from(orientation).to_le_bytes());
+        tiff.extend_from_slice(&0u32.to_le_bytes()); // no following directory
+
+        let mut body = b"Exif\0\0".to_vec();
+        body.extend_from_slice(&tiff);
+
+        let mut app1 = vec![0xFF, 0xE1]; // EXIF metadata marker
+        // The segment length counts its own two length bytes.
+        let segment_len = (2 + body.len()) as u16;
+        app1.extend_from_slice(&segment_len.to_be_bytes());
+        app1.extend_from_slice(&body);
+
+        let mut out = Vec::with_capacity(base.len() + app1.len());
+        out.extend_from_slice(&base[..2]);
+        out.extend_from_slice(&app1);
+        out.extend_from_slice(&base[2..]);
+        out
+    }
+
+    #[test]
+    fn applies_exif_orientation_when_decoding() {
+        // A wide JPEG tagged "rotate 90°" must come back with its
+        // dimensions swapped — the orientation is applied before the
+        // resize + re-encode that would otherwise strip the EXIF tag.
+        let bytes = jpeg_with_exif_orientation(8, 4, [180, 60, 60, 255], 6);
+        let decoded = decode_with_orientation(&bytes).expect("decode oriented JPEG");
+        assert_eq!(decoded.dimensions(), (4, 8));
+    }
+
+    #[test]
+    fn identity_exif_orientation_keeps_dimensions() {
+        let bytes = jpeg_with_exif_orientation(8, 4, [180, 60, 60, 255], 1);
+        let decoded = decode_with_orientation(&bytes).expect("decode JPEG");
+        assert_eq!(decoded.dimensions(), (8, 4));
     }
 }

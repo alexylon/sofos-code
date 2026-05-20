@@ -587,6 +587,56 @@ mod tests {
     }
 
     #[test]
+    fn truncate_tool_results_on_clone_leaves_original_intact() {
+        // compact_conversation truncates a clone to test whether
+        // truncation alone frees enough tokens; the original must stay
+        // byte-identical so a failed summary can fall back to it.
+        let mut history = ConversationHistory::new();
+        history.config.tool_result_truncate_threshold = 100;
+        let original_text = "x".repeat(500);
+        history.messages.push(Message::user_with_tool_results(vec![
+            MessageContentBlock::ToolResult {
+                tool_use_id: "id1".to_string(),
+                content: original_text.clone(),
+                cache_control: None,
+            },
+        ]));
+
+        let mut probe = history.clone();
+        probe.truncate_tool_results(1);
+
+        let crate::api::MessageContent::Blocks { content } = &probe.messages()[0].content else {
+            panic!("expected Blocks");
+        };
+        let MessageContentBlock::ToolResult {
+            content: probe_text,
+            ..
+        } = &content[0]
+        else {
+            panic!("expected ToolResult");
+        };
+        assert!(
+            probe_text.contains("truncated"),
+            "the clone must be truncated"
+        );
+
+        let crate::api::MessageContent::Blocks { content } = &history.messages()[0].content else {
+            panic!("expected Blocks");
+        };
+        let MessageContentBlock::ToolResult {
+            content: original_after,
+            ..
+        } = &content[0]
+        else {
+            panic!("expected ToolResult");
+        };
+        assert_eq!(
+            original_after, &original_text,
+            "truncating the clone must not touch the original conversation"
+        );
+    }
+
+    #[test]
     fn test_replace_with_summary() {
         let mut history = ConversationHistory::new();
 

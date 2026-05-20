@@ -130,7 +130,6 @@ impl PermissionManager {
         )
     }
 
-    #[allow(dead_code)]
     pub fn check_write_permission(&self, path: &str) -> CommandPermission {
         self.check_scope_permission(
             path,
@@ -145,18 +144,8 @@ impl PermissionManager {
         self.is_scope_explicit_allow(path, Self::normalize_read, &self.read_allow_set)
     }
 
-    #[allow(dead_code)]
-    pub fn is_read_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
-        self.is_read_explicit_allow(original) || self.is_read_explicit_allow(canonical)
-    }
-
     pub fn is_write_explicit_allow(&self, path: &str) -> bool {
         self.is_scope_explicit_allow(path, Self::normalize_write, &self.write_allow_set)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_write_explicit_allow_both_forms(&self, original: &str, canonical: &str) -> bool {
-        self.is_write_explicit_allow(original) || self.is_write_explicit_allow(canonical)
     }
 
     /// Check if a path is covered by a Bash(/path/**) grant
