@@ -105,7 +105,7 @@ Optional:
 
 ### Prebuilt binary
 
-Download the latest binary from GitHub Releases.
+Download the latest binary from [GitHub Releases](https://github.com/alexylon/sofos-code/releases).
 
 ```bash
 # macOS / Linux
