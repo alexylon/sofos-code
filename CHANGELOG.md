@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-20
+
 ### Fixed
 
 - **A failed or interrupted compaction no longer drops part of the conversation.** Compaction shortens older tool output before summarising; if the summary step then failed or was cancelled, the shortened output used to be saved anyway. The conversation is now kept intact unless compaction finishes cleanly.
