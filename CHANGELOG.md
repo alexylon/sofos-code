@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The assistant's thinking is now shown fully dimmed.** Inline code, bold, lists, or a heading inside a thinking block used to make the text after them switch back to normal brightness.
+
 ## [0.3.3] - 2026-05-20
 
 ### Fixed

@@ -11,20 +11,27 @@ const SGR_ITALIC: &str = "\x1b[3m";
 /// Heading Start and the restorer; restoring just `\x1b[36m` would silently
 /// drop the bold half.
 const SGR_HEADING: &str = "\x1b[1;36m";
-/// SGR code for the blockquote dim. Strong End (`\x1b[22m`) clears bold
-/// *and* faint, and inline Code/Link close with `\x1b[0m` which clears
-/// every attribute — so the restorer re-applies this when a tag closes
-/// inside a blockquote.
-const SGR_BLOCKQUOTE: &str = "\x1b[2m";
+/// SGR faint. Used for blockquote bodies and for the ambient dim of a
+/// streamed thinking block. `\x1b[22m` and `\x1b[0m` both clear faint,
+/// so the restorer re-applies it after those resets.
+const SGR_FAINT: &str = "\x1b[2m";
 
 impl UI {
     pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
         let mut out = stdout().lock();
-        self.render_markdown_to(&mut out, md)?;
+        self.render_markdown_to(&mut out, md, false)?;
         out.flush()
     }
 
-    pub(super) fn render_markdown_to(&self, out: &mut impl io::Write, md: &str) -> io::Result<()> {
+    /// Render `md` to `out` as ANSI-styled text. With `dimmed`, faint is
+    /// re-applied after each internal SGR reset so streamed thinking
+    /// stays dim across inline code, links, and headings.
+    pub(super) fn render_markdown_to(
+        &self,
+        out: &mut impl io::Write,
+        md: &str,
+        dimmed: bool,
+    ) -> io::Result<()> {
         use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
         // Re-emit any ambient inline styles after a full SGR reset, so nested inline
@@ -35,6 +42,7 @@ impl UI {
             italic: bool,
             in_heading: bool,
             in_blockquote: bool,
+            dimmed: bool,
         ) -> io::Result<()> {
             if bold {
                 write!(out, "{}", SGR_BOLD)?;
@@ -45,8 +53,16 @@ impl UI {
             if in_heading {
                 write!(out, "{}", SGR_HEADING)?;
             }
-            if in_blockquote {
-                write!(out, "{}", SGR_BLOCKQUOTE)?;
+            if in_blockquote || dimmed {
+                write!(out, "{}", SGR_FAINT)?;
+            }
+            Ok(())
+        }
+
+        // Re-apply the ambient faint that a block-level SGR reset clears.
+        fn restore_faint(out: &mut impl io::Write, dimmed: bool) -> io::Result<()> {
+            if dimmed {
+                write!(out, "{}", SGR_FAINT)?;
             }
             Ok(())
         }
@@ -69,7 +85,9 @@ impl UI {
                 }
                 Event::End(TagEnd::Heading(_)) => {
                     in_heading = false;
-                    writeln!(out, "\x1b[0m")?;
+                    write!(out, "\x1b[0m")?;
+                    restore_faint(out, dimmed)?;
+                    writeln!(out)?;
                 }
                 Event::Start(Tag::Strong) => {
                     bold = true;
@@ -78,7 +96,7 @@ impl UI {
                 Event::End(TagEnd::Strong) => {
                     bold = false;
                     write!(out, "\x1b[22m")?;
-                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
                 }
                 Event::Start(Tag::Emphasis) => {
                     italic = true;
@@ -99,11 +117,13 @@ impl UI {
                 Event::End(TagEnd::CodeBlock) => {
                     in_code_block = false;
                     let highlighted = self.highlighter.highlight_code(&code_buf, &code_lang);
-                    writeln!(out, "{}", highlighted)?;
+                    write!(out, "{}", highlighted)?;
+                    restore_faint(out, dimmed)?;
+                    writeln!(out)?;
                 }
                 Event::Code(code) => {
                     write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
-                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
                 }
                 Event::Text(text) => {
                     if in_code_block {
@@ -129,17 +149,20 @@ impl UI {
                 Event::End(TagEnd::List(_)) => {}
                 Event::Start(Tag::Item) => {
                     write!(out, "  {} ", "•".dimmed())?;
+                    restore_faint(out, dimmed)?;
                 }
                 Event::End(TagEnd::Item) => {
                     writeln!(out)?;
                 }
                 Event::Start(Tag::BlockQuote(_)) => {
                     in_blockquote = true;
-                    write!(out, "{}> ", SGR_BLOCKQUOTE)?;
+                    write!(out, "{}> ", SGR_FAINT)?;
                 }
                 Event::End(TagEnd::BlockQuote(_)) => {
                     in_blockquote = false;
-                    writeln!(out, "\x1b[0m")?;
+                    write!(out, "\x1b[0m")?;
+                    restore_faint(out, dimmed)?;
+                    writeln!(out)?;
                 }
                 Event::Start(Tag::Link { dest_url, .. }) => {
                     // OSC 8 URI terminates on BEL/ESC; bypass the wrapper if dest_url has any control byte.
@@ -151,10 +174,12 @@ impl UI {
                 }
                 Event::End(TagEnd::Link) => {
                     write!(out, "\x1b[0m\x1b]8;;\x07")?;
-                    restore_ambient(out, bold, italic, in_heading, in_blockquote)?;
+                    restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
                 }
                 Event::Rule => {
-                    writeln!(out, "{}", "─".repeat(40).dimmed())?;
+                    write!(out, "{}", "─".repeat(40).dimmed())?;
+                    restore_faint(out, dimmed)?;
+                    writeln!(out)?;
                 }
                 _ => {}
             }
@@ -235,6 +260,8 @@ pub(super) struct MarkdownStreamRenderer {
     /// used by the throttle to decide whether enough new content has
     /// arrived to justify another full re-render.
     last_safe_end: usize,
+    /// Passed to the renderer so thinking output keeps its ambient dim.
+    dimmed: bool,
 }
 
 impl MarkdownStreamRenderer {
@@ -243,6 +270,15 @@ impl MarkdownStreamRenderer {
             buffer: String::new(),
             committed_lines: 0,
             last_safe_end: 0,
+            dimmed: false,
+        }
+    }
+
+    /// Like [`new`](Self::new), but renders for a dimmed thinking block.
+    pub(super) fn new_dimmed() -> Self {
+        Self {
+            dimmed: true,
+            ..Self::new()
         }
     }
 
@@ -320,7 +356,7 @@ impl MarkdownStreamRenderer {
         drop_trailing_blank: bool,
     ) -> io::Result<(String, usize)> {
         let mut buf: Vec<u8> = Vec::new();
-        UI::shared().render_markdown_to(&mut buf, source)?;
+        UI::shared().render_markdown_to(&mut buf, source, self.dimmed)?;
         let rendered = String::from_utf8_lossy(&buf).into_owned();
         let lines: Vec<&str> = rendered.split_inclusive('\n').collect();
         let mut effective_len = lines.len();
@@ -349,7 +385,14 @@ mod render_tests {
     fn render(md: &str) -> String {
         let ui = UI::new();
         let mut buf = Vec::new();
-        ui.render_markdown_to(&mut buf, md).unwrap();
+        ui.render_markdown_to(&mut buf, md, false).unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    fn render_dimmed(md: &str) -> String {
+        let ui = UI::new();
+        let mut buf = Vec::new();
+        ui.render_markdown_to(&mut buf, md, true).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -432,7 +475,7 @@ mod render_tests {
             .find(" rest")
             .expect("trailing text must be present");
         assert!(
-            after_strong_end[..rest_idx].contains(SGR_BLOCKQUOTE),
+            after_strong_end[..rest_idx].contains(SGR_FAINT),
             "blockquote dim not restored between Strong End and trailing text; segment={:?}",
             &after_strong_end[..rest_idx]
         );
@@ -451,7 +494,7 @@ mod render_tests {
             .find(" rest")
             .expect("trailing text must be present");
         assert!(
-            after_code_reset[..rest_idx].contains(SGR_BLOCKQUOTE),
+            after_code_reset[..rest_idx].contains(SGR_FAINT),
             "blockquote dim not restored between inline Code and trailing text; segment={:?}",
             &after_code_reset[..rest_idx]
         );
@@ -468,7 +511,7 @@ mod render_tests {
             .find(" rest")
             .expect("trailing text must be present");
         assert!(
-            after_link_close[..rest_idx].contains(SGR_BLOCKQUOTE),
+            after_link_close[..rest_idx].contains(SGR_FAINT),
             "blockquote dim not restored between Link End and trailing text; segment={:?}",
             &after_link_close[..rest_idx]
         );
@@ -490,6 +533,83 @@ mod render_tests {
             &after_link_close[..rest_idx]
         );
     }
+
+    #[test]
+    fn code_in_dimmed_restores_faint() {
+        // Inline Code closes with \x1b[0m, wiping the thinking block's
+        // ambient faint; the dimmed renderer must put it back.
+        let out = render_dimmed("the readme uses `gulp watch` then more");
+        let after_code_reset = out
+            .split("\x1b[0m")
+            .nth(1)
+            .expect("inline Code emits \\x1b[0m");
+        let rest_idx = after_code_reset
+            .find(" then more")
+            .expect("trailing text must be present");
+        assert!(
+            after_code_reset[..rest_idx].contains(SGR_FAINT),
+            "faint not restored between inline Code and trailing text; segment={:?}",
+            &after_code_reset[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn strong_in_dimmed_restores_faint() {
+        // Strong End emits \x1b[22m, which clears faint as well as bold.
+        let out = render_dimmed("plain **bold** rest");
+        let after_strong_end = out
+            .split("\x1b[22m")
+            .nth(1)
+            .expect("Strong End must emit \\x1b[22m");
+        let rest_idx = after_strong_end
+            .find(" rest")
+            .expect("trailing text must be present");
+        assert!(
+            after_strong_end[..rest_idx].contains(SGR_FAINT),
+            "faint not restored between Strong End and trailing text; segment={:?}",
+            &after_strong_end[..rest_idx]
+        );
+    }
+
+    #[test]
+    fn heading_end_in_dimmed_restores_faint() {
+        // Heading End emits \x1b[0m; the paragraph after it must come
+        // back dim.
+        let out = render_dimmed("# Title\n\nbody text");
+        let body_idx = out.find("body text").expect("body must be present");
+        let last_reset = out[..body_idx]
+            .rfind("\x1b[0m")
+            .expect("Heading End emits \\x1b[0m");
+        assert!(
+            out[last_reset..body_idx].contains(SGR_FAINT),
+            "faint not restored between Heading End and body; segment={:?}",
+            &out[last_reset..body_idx]
+        );
+    }
+
+    #[test]
+    fn code_block_in_dimmed_restores_faint() {
+        // A code block's syntax highlighting leaves the terminal on a
+        // non-dim style; the prose after it must come back dim.
+        let out = render_dimmed("```\nlet x = 1;\n```\n\nafter the block");
+        assert!(
+            out.contains("\x1b[2m\nafter the block"),
+            "faint not restored between code block and trailing text; out={:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn list_item_in_dimmed_restores_faint() {
+        // The bullet's own styling closes on a reset; the item text
+        // after it must stay dim.
+        let out = render_dimmed("- first item\n- second item");
+        assert!(
+            out.contains("\x1b[2mfirst item"),
+            "faint not restored between bullet and item text; out={:?}",
+            out
+        );
+    }
 }
 
 #[cfg(test)]
@@ -499,7 +619,7 @@ mod stream_tests {
     fn full_render(md: &str) -> String {
         let ui = UI::new();
         let mut buf = Vec::new();
-        ui.render_markdown_to(&mut buf, md).unwrap();
+        ui.render_markdown_to(&mut buf, md, false).unwrap();
         String::from_utf8(buf).unwrap()
     }
 

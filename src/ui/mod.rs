@@ -207,9 +207,9 @@ impl UI {
 /// assistant text is fed through a [`MarkdownStreamRenderer`] so
 /// headings, lists, emphasis, and code fences render with ANSI styling
 /// instead of leaking raw markdown to the terminal. Thinking deltas go
-/// through a separate renderer of the same type, with the rendered
-/// output wrapped in a faint SGR pair so the body keeps the dim
-/// "thinking" look without losing markdown formatting.
+/// through a separate dim-aware renderer, with the rendered output
+/// wrapped in a faint SGR pair so the body keeps the dim "thinking"
+/// look without losing markdown formatting.
 pub struct StreamPrinter {
     thinking_started: AtomicBool,
     text_started: AtomicBool,
@@ -223,7 +223,7 @@ impl StreamPrinter {
             thinking_started: AtomicBool::new(false),
             text_started: AtomicBool::new(false),
             text_renderer: Mutex::new(MarkdownStreamRenderer::new()),
-            thinking_renderer: Mutex::new(MarkdownStreamRenderer::new()),
+            thinking_renderer: Mutex::new(MarkdownStreamRenderer::new_dimmed()),
         }
     }
 
