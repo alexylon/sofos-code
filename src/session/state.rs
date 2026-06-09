@@ -76,8 +76,8 @@ pub struct SessionState {
     /// this at 0.
     pub total_cache_creation_tokens: u32,
     /// Largest input-token count observed on any single API call this
-    /// session. Used to detect tiered-pricing cliffs (gpt-5.4/5.5
-    /// flip the entire session to premium rates once any prompt
+    /// session. Used to detect tiered-pricing cliffs (premium-tier
+    /// models flip the entire session to premium rates once any prompt
     /// crosses 272K input tokens). Compared against
     /// `Model::premium_tier.input_threshold` in `calculate_cost`
     /// so the displayed cost reflects what the provider actually

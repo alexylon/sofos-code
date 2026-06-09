@@ -47,8 +47,8 @@ pub struct Cli {
     /// modern frontier models writing long files — a `write_file` call
     /// with multi-KB content hits this limit mid-stream and truncates
     /// the tool-call JSON, surfacing as "Missing 'path' parameter".
-    /// Claude Sonnet 4 and GPT-4.1 both support 32k+; smaller models
-    /// cap at their own limit so this is safe as a default.
+    /// Modern frontier models support 32k+; smaller models cap at
+    /// their own limit so this is safe as a default.
     /// Must be > 16384 when reasoning effort is enabled (the legacy
     /// Anthropic thinking-budget ceiling); the default 32768 satisfies it.
     #[arg(long, default_value = "32768")]
@@ -58,11 +58,11 @@ pub struct Cli {
     /// `medium`. `Off` skips reasoning entirely on OpenAI (effort=
     /// minimal, summary suppressed) and disables Anthropic extended
     /// thinking on non-adaptive models. Anthropic adaptive models
-    /// (Opus 4.7, Sonnet 4.6) collapse `Off` to the lowest accepted
-    /// level (`low`). `xhigh` is accepted by Claude Opus 4.7 and the
-    /// OpenAI gpt-5 reasoning models only; `max` is accepted by
-    /// Claude Opus 4.7 and Sonnet 4.6 only. Sofos refuses to start
-    /// with an unsupported `(model, effort)` pair.
+    /// collapse `Off` to the lowest accepted level (`low`). `xhigh` is
+    /// accepted by the larger Anthropic models and the OpenAI reasoning
+    /// models only; `max` is accepted by Anthropic adaptive models
+    /// only. Sofos refuses to start with an unsupported
+    /// `(model, effort)` pair.
     //
     // Parsed as a raw `String` here, then validated and converted in
     // `main`, so the per-model rejection and the parse-failure
@@ -75,7 +75,7 @@ pub struct Cli {
 
     /// Deprecated. The flag has no effect on any path: legacy Anthropic
     /// uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
-    /// adaptive Anthropic (Opus 4.7+) uses `output_config.effort`, and
+    /// adaptive Anthropic uses `output_config.effort`, and
     /// OpenAI uses `reasoning.effort`. The flag still parses so older
     /// scripts don't break; `main.rs` warns at startup when a non-default
     /// value is supplied. Hidden from `--help`. Will be removed in a

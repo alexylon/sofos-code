@@ -31,10 +31,9 @@ pub struct SofosConfig {
 
 impl Default for SofosConfig {
     fn default() -> Self {
-        // Defaults track the application-default model
-        // (`claude-sonnet-4-6` — see `crate::api::Model::default`)
-        // so the numbers visible before the user has picked a model
-        // match the ones `--model claude-sonnet-4-6` would produce.
+        // Defaults track the application-default model (see
+        // `crate::api::Model::default`) so the numbers visible before
+        // the user has picked a model match what the default produces.
         // These get overwritten by model-specific values at REPL
         // startup.
         let info = crate::api::Model::default();

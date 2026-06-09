@@ -739,7 +739,7 @@ mod truncation_tests {
             client,
             tool_executor,
             conversation,
-            "claude-sonnet-4-6".to_string(),
+            crate::api::model_info::CLAUDE_SONNET.to_string(),
             8_192,
             ReasoningEffort::Off,
             Vec::new(),

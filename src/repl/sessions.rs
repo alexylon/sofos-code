@@ -160,9 +160,8 @@ impl Repl {
         // written before this field existed — keep whatever the CLI
         // selected in that case so old sessions don't lose the user's
         // current `--model` choice. Saved slugs land in canonical form
-        // so a mixed-case file (`Claude-Opus-4-7`) still compares equal
-        // to the picker rows and the wire payload uses the spelling the
-        // provider expects.
+        // so a mixed-case file still compares equal to the picker rows
+        // and the wire payload uses the spelling the provider expects.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
                 let canonical = crate::api::model_info::canonical_model(saved_model)
@@ -229,8 +228,8 @@ mod tests {
             );
         }
         // Unsupported slugs fall through to the default model's
-        // provider (Anthropic, because `claude-sonnet-4-6` is the
-        // default); `build_llm_client` mirrors that fallback.
+        // provider (Anthropic, because the default is an Anthropic
+        // model); `build_llm_client` mirrors that fallback.
         assert_eq!(provider_of("unknown-model"), "Anthropic");
     }
 }

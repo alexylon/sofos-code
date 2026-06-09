@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     // Reject `--model` values outside the supported whitelist before
     // anything else looks at the slug, and normalise the case to the
     // canonical form so internal state and the provider wire payload
-    // never carry a `Claude-Opus-4-7`-style mixed-case spelling.
+    // never carry a mixed-case spelling.
     let mut cli = cli;
     match crate::api::model_info::canonical_model(&cli.model) {
         Some(choice) => cli.model = choice.name.to_string(),
@@ -168,8 +168,8 @@ fn main() -> Result<()> {
             reasoning_effort.as_label()
         ));
     } else if crate::api::anthropic::requires_adaptive_thinking(&cli.model) {
-        // Adaptive-thinking models (Opus 4.7, Sonnet 4.6) pick
-        // their own budget; advertising a token count would be a lie.
+        // Adaptive-thinking models pick their own budget; advertising
+        // a token count would be a lie.
         // Surface the `output_config.effort` we actually send.
         startup_banner.push_str(&format!(
             "{} {}\n",

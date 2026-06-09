@@ -30,7 +30,7 @@ mod tests {
 
     fn req_with_cache_key(key: Option<&str>) -> CreateMessageRequest {
         CreateMessageRequest {
-            model: "gpt-5.5".to_string(),
+            model: crate::api::model_info::GPT_FLAGSHIP.to_string(),
             max_tokens: 4096,
             messages: vec![Message::user("hi".to_string())],
             system: None,
@@ -82,7 +82,7 @@ mod tests {
     fn reasoning_block_serializes_back_with_encrypted_content() {
         use crate::api::{CreateMessageRequest, Message, MessageContent, MessageContentBlock};
         let req = CreateMessageRequest {
-            model: "gpt-5.5".to_string(),
+            model: crate::api::model_info::GPT_FLAGSHIP.to_string(),
             max_tokens: 4096,
             messages: vec![Message {
                 role: "assistant".to_string(),
@@ -132,7 +132,7 @@ mod tests {
         // generation order); the wire output must preserve that.
         use crate::api::{CreateMessageRequest, Message, MessageContent, MessageContentBlock};
         let req = CreateMessageRequest {
-            model: "gpt-5.5".to_string(),
+            model: crate::api::model_info::GPT_FLAGSHIP.to_string(),
             max_tokens: 4096,
             messages: vec![Message {
                 role: "assistant".to_string(),
@@ -300,7 +300,7 @@ mod tests {
                 "type": "response.completed",
                 "response": {
                     "id": "resp_test",
-                    "model": "gpt-5.5",
+                    "model": crate::api::model_info::GPT_FLAGSHIP,
                     "status": "completed",
                     "output": [{
                         "type": "message",
@@ -592,7 +592,7 @@ mod tests {
                 "type": "response.completed",
                 "response": {
                     "id": "resp_dup",
-                    "model": "gpt-5.5",
+                    "model": crate::api::model_info::GPT_FLAGSHIP,
                     "status": "completed",
                     "output": [
                         {
@@ -658,7 +658,7 @@ mod tests {
                 "type": "response.incomplete",
                 "response": {
                     "id": "resp_test",
-                    "model": "gpt-5.5",
+                    "model": crate::api::model_info::GPT_FLAGSHIP,
                     "status": "incomplete",
                     "incomplete_details": {"reason": "max_output_tokens"},
                     "output": [],

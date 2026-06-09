@@ -8,15 +8,15 @@
 use crate::api::types::*;
 
 /// Compact `anthropic-beta` set sent on every Anthropic request.
-/// `prompt-caching-2024-07-31` is implicit for the Sonnet 4.x / Opus
-/// 4.x line, so we only have to ship token-efficient tools and the
-/// compaction beta where it applies.
+/// `prompt-caching-2024-07-31` is implicit for current Claude models,
+/// so we only have to ship token-efficient tools and the compaction
+/// beta where it applies.
 pub(super) const BETA_HEADER_NAME: &str = "anthropic-beta";
 
 /// Token-efficient tools beta — opt-in to the smaller tool-result
-/// schema. Cuts ~30% off tool-result tokens on Sonnet 3.7 / 4 /
-/// 4.5 by streaming results in the compact wire shape. Older models
-/// (Sonnet 3.5 and Opus 4.x) just ignore the header.
+/// schema. Cuts ~30% off tool-result tokens on the models that
+/// support it by streaming results in the compact wire shape. Models
+/// that don't recognise the beta just ignore the header.
 pub(super) const BETA_TOKEN_EFFICIENT: &str = "token-efficient-tools-2025-02-19";
 
 /// Server-side compaction beta — Anthropic prunes earlier turns when
@@ -24,8 +24,8 @@ pub(super) const BETA_TOKEN_EFFICIENT: &str = "token-efficient-tools-2025-02-19"
 /// returning a `compaction` content block in the next assistant
 /// response that we round-trip on subsequent calls.
 ///
-/// Only ships when the target model supports it (Opus 4.x, Sonnet
-/// 4.6 and newer) — older models 400 on the unknown beta token.
+/// Only ships when the target model supports it — older models 400
+/// on the unknown beta token.
 /// Referenced by name only inside the cross-check test
 /// `beta_with_compact_matches_components`; the production header is
 /// served as the literal in `BETA_TOKEN_EFFICIENT_AND_COMPACT`.
@@ -51,11 +51,11 @@ pub(super) fn anthropic_beta_for(model: &str) -> &'static str {
     }
 }
 
-/// Legacy `thinking.budget_tokens` values used for Sonnet 3.7 and
-/// older models that don't accept the adaptive `output_config`
-/// reasoning request shape. The four-tier mapping mirrors the
-/// reasoning-effort enum: `Off` → no budget at all (no thinking
-/// block), `Low` / `Medium` / `High` → these three constants.
+/// Legacy `thinking.budget_tokens` values used by models that don't
+/// accept the adaptive `output_config` reasoning request shape. The
+/// four-tier mapping mirrors the reasoning-effort enum: `Off` → no
+/// budget at all (no thinking block), `Low` / `Medium` / `High` →
+/// these three constants.
 pub const LEGACY_THINKING_BUDGET_LOW: u32 = 1024;
 pub const LEGACY_THINKING_BUDGET_MEDIUM: u32 = 5120;
 pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
@@ -73,38 +73,23 @@ pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
     match effort {
         ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
         ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
-        // Legacy-thinking models (Haiku 4.5) only expose budget tiers
-        // up to High. `XHigh` and `Max` are
-        // adaptive-only rungs that upstream validation refuses to pair
-        // with a legacy model, so this branch is unreachable in
-        // practice; clamp defensively to the highest legal budget.
+        // Legacy-thinking models only expose budget tiers up to High.
+        // `XHigh` and `Max` are adaptive-only rungs that upstream
+        // validation refuses to pair with a legacy model, so this
+        // branch is unreachable in practice; clamp defensively to the
+        // highest legal budget.
         ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
             LEGACY_THINKING_BUDGET_HIGH
         }
     }
 }
 
-/// True for models that speak the adaptive `output_config.thinking`
-/// reasoning request shape instead of the legacy
-/// `thinking.budget_tokens` field. Currently only Opus 4.7 — every
-/// other model wants the legacy budget. The adaptive shape lets the
-/// server pick the budget; sending both fields would 400, sending
-/// neither omits thinking entirely, so request_builder uses this
-/// predicate to pick exactly one path.
-///
-/// Important: adaptive requests carry a `effort_label` field on
-/// `output_config.thinking` that the server cross-checks against the
-/// request's signed thinking blocks. Echoing back a stored set of
-/// thinking blocks that the server cross-checks against the request,
-/// and dropping `output_config` would 400 the next turn.
-/// `Off` collapses to `"low"` on the adaptive-thinking path: dropping
-/// `output_config.thinking` entirely would fail the server's
-/// cross-check against any signed thinking blocks already in the
-/// conversation, so adaptive models always send *some* effort label.
-/// Effectively, `effort: off` on Opus 4.7 / Sonnet 4.6 still sends
-/// the minimum adaptive budget; for "no thinking at all" pick a
-/// model whose `requires_adaptive_thinking` returns false and run
-/// it with `--reasoning-effort off`.
+/// Maps a reasoning-effort level to the `output_config.effort` label
+/// for adaptive-thinking requests. `Off` collapses to `"low"`: an
+/// adaptive model rejects a request that carries signed thinking
+/// blocks without an effort label, so there is no "no thinking" path
+/// here. For no thinking at all, run a model whose
+/// `requires_adaptive_thinking` is false with `--reasoning-effort off`.
 pub fn effort_label(effort: ReasoningEffort) -> &'static str {
     match effort {
         ReasoningEffort::Off | ReasoningEffort::Low => "low",

@@ -1,4 +1,4 @@
-and anthropi# Sofos - AI Coding Assistant Project Context
+Sofos – AI Coding Assistant Project Context
 
 ## Project Overview
 
@@ -430,7 +430,7 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
 - Use idiomatic Rust and repository naming conventions.
 - Keep code DRY and focused.
 - Avoid magic strings and numbers.
-- Keep comments short. Long, multi-paragraph narratives belong in documentation files, not in source code.
+- **Comments.** Non-doc comments (`//`) MUST be tight and earn their place: no unnecessary words, no restating what the code already says, plain international English, no jargon. If the comment only paraphrases the line beneath it, delete it. Doc comments (`///`, `//!`, rustdoc) MUST be professional and crystal clear — they are the public contract a reader sees in the API surface and on docs.rs, so explain purpose, invariants, error conditions, and any non-obvious caller obligations precisely and without hand-waving.
 - Do not add self-explanatory comments. Doc comments (`///` and `//!`) on public APIs are the exception.
 - Do not use jargon, abbreviations, or insider shorthand in comments, error messages, or documentation. Prefer wording a non-specialist reader can follow.
 - Do not leave `unwrap()` or `expect()` in normal code paths.
@@ -438,7 +438,7 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
 - Add or update important tests and keep them self-contained.
 - After each important change, but only when you have finalized the current task, update if relevant:
     - `README.md`
-    - `CHANGELOG.md` under `[Unreleased]`. Stick to the standard Keep-a-Changelog categories (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) — do NOT add an `Internal` section. Pure refactors, dead-code removals, and test-only additions are not user-notable; leave them out. The changelog is for users, not contributors. Within each entry, describe the user-visible behaviour in plain English: no file paths, no bare `Type::method` shorthand, no Rust attribute syntax, no crate names. CLI flags, env vars, slash commands, and API wire formats are fine because the user encounters them directly.
+    - `CHANGELOG.md` under `[Unreleased]`. Stick to the standard Keep-a-Changelog categories (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`) — do NOT add an `Internal` section. **Strictly user-facing** and held to the same writing standard as comments above: tight, plain international English, no jargon, professional and crystal clear. Pure refactors, dead-code removals, and test-only additions are not user-notable; leave them out. The changelog is for users, not contributors. Within each entry, describe the user-visible behaviour in plain English: no file paths, no bare `Type::method` shorthand, no Rust attribute syntax, no crate names. CLI flags, env vars, slash commands, and API wire formats are fine because the user encounters them directly.
     - `STRUCTURE.md`
 - Run:
     - `cargo fmt --all`

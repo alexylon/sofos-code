@@ -40,18 +40,18 @@ impl<'a> RequestBuilder<'a> {
         let adaptive =
             is_anthropic && crate::api::anthropic::requires_adaptive_thinking(self.model);
 
-        // Adaptive-thinking models (Opus 4.7, Sonnet 4.6) take
-        // `thinking: adaptive` + `output_config.effort`; Opus 4.7
-        // outright rejects the legacy `enabled` shape, and Sonnet 4.6
-        // accepts it but Anthropic recommends adaptive. Haiku 4.5
-        // still takes the manual `budget_tokens` shape. On adaptive models we *always* send `thinking:
-        // adaptive` even when the user picked `Off` — dropping it
-        // would 400 the next turn if the conversation history already
-        // contains echoed thinking blocks from an earlier on turn
-        // (Anthropic rejects requests carrying thinking blocks
-        // without a matching top-level thinking config). The level
-        // is expressed through `output_config.effort` instead, which
-        // collapses `Off` to `low` for the same reason.
+        // Adaptive-thinking models take `thinking: adaptive` +
+        // `output_config.effort`; some of them outright reject the
+        // legacy `enabled` shape, and others accept it but Anthropic
+        // recommends adaptive. Non-adaptive Anthropic models still take
+        // the manual `budget_tokens` shape. On adaptive models we
+        // *always* send `thinking: adaptive` even when the user picked
+        // `Off` — dropping it would 400 the next turn if the
+        // conversation history already contains echoed thinking blocks
+        // from an earlier turn (Anthropic rejects requests carrying
+        // thinking blocks without a matching top-level thinking config).
+        // The level is expressed through `output_config.effort` instead,
+        // which collapses `Off` to `low` for the same reason.
         let (thinking_config, output_config) = if is_anthropic && adaptive {
             let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
             (
@@ -59,7 +59,7 @@ impl<'a> RequestBuilder<'a> {
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
         } else if is_anthropic && self.reasoning_effort.is_enabled() {
-            // Non-adaptive Anthropic models (Haiku 4.5) take the legacy
+            // Non-adaptive Anthropic models take the legacy
             // `{type: "enabled", budget_tokens}` shape.
             // The per-tier mapping lives in `crate::api::anthropic` so
             // the startup validation in `repl/mod.rs` can reference the
@@ -94,12 +94,11 @@ impl<'a> RequestBuilder<'a> {
         // Send system prompt to both Anthropic and OpenAI; cache hints are handled per API
         let system_prompt = Some(self.conversation.system_prompt().clone());
 
-        // Anthropic server-side compaction. Enabled only on models
-        // that advertise it via `Model::supports_server_compaction`
-        // (currently Opus 4.7 and Sonnet 4.6). The trigger value is
-        // the same `auto_compact_at` number the rest of the crate
-        // reads, so the per-model cost cap stays the single source
-        // of truth. OpenAI has no server-side equivalent.
+        // Anthropic server-side compaction. Enabled only on models that
+        // advertise it via `Model::supports_server_compaction`. The
+        // trigger value is the same `auto_compact_at` number the rest
+        // of the crate reads, so the per-model cost cap stays the single
+        // source of truth. OpenAI has no server-side equivalent.
         let context_management = if matches!(self.client, Anthropic(_)) {
             let info = crate::api::model_info::lookup(self.model);
             if info.supports_server_compaction {
@@ -107,10 +106,10 @@ impl<'a> RequestBuilder<'a> {
                     edits: vec![crate::api::ContextEdit::Compact20260112 {
                         // Clamp to Anthropic's documented floor. No
                         // model in the registry today drops below it
-                        // (Haiku 4.5 sits at 170K and doesn't carry
-                        // `supports_server_compaction` anyway), but a
-                        // future small-window addition would otherwise
-                        // 400 the request.
+                        // (the smallest-window model sits at 170K and
+                        // doesn't carry `supports_server_compaction`
+                        // anyway), but a future small-window addition
+                        // would otherwise 400 the request.
                         trigger: Some(crate::api::CompactionTrigger::InputTokens {
                             value: info
                                 .auto_compact_at()
@@ -267,7 +266,7 @@ mod tests {
         let conv = ConversationHistory::new();
         let request = RequestBuilder::new(
             &openai_client(),
-            "gpt-5.5",
+            crate::api::model_info::GPT_FLAGSHIP,
             8192,
             &conv,
             one_regular_tool(),
@@ -289,7 +288,7 @@ mod tests {
 
         let anth = RequestBuilder::new(
             &anthropic_client(),
-            "claude-sonnet-4-6",
+            crate::api::model_info::CLAUDE_SONNET,
             8192,
             &conv,
             one_regular_tool(),
@@ -310,7 +309,7 @@ mod tests {
 
         let oai = RequestBuilder::new(
             &openai_client(),
-            "gpt-5.5",
+            crate::api::model_info::GPT_FLAGSHIP,
             8192,
             &conv,
             one_regular_tool(),
@@ -462,7 +461,7 @@ mod tests {
 
         let req = RequestBuilder::new(
             &anthropic_client(),
-            "claude-sonnet-4-6",
+            crate::api::model_info::CLAUDE_SONNET,
             8192,
             &conv,
             one_regular_tool(),
@@ -501,7 +500,7 @@ mod tests {
         let conv = ConversationHistory::new();
         let req = RequestBuilder::new(
             &anthropic_client(),
-            "claude-opus-4-7",
+            crate::api::model_info::CLAUDE_OPUS,
             8192,
             &conv,
             one_regular_tool(),
@@ -511,7 +510,7 @@ mod tests {
         .build();
         let cm = req
             .context_management
-            .expect("Opus 4.7 should carry context_management");
+            .expect("this model should carry context_management");
         let json = serde_json::to_value(&cm).unwrap();
         // Wire shape matches Anthropic's docs: edits[].type ==
         // "compact_20260112" with an input_tokens trigger.
@@ -526,7 +525,7 @@ mod tests {
 
     #[test]
     fn legacy_anthropic_thinking_budget_scales_with_effort() {
-        // On non-adaptive Anthropic models (Haiku 4.5),
+        // On non-adaptive Anthropic models,
         // `/effort low|medium|high` used to all collapse to the same
         // `thinking_budget`. Verify each tier now produces a strictly
         // larger budget so the slider has a visible effect.
@@ -534,7 +533,7 @@ mod tests {
         let budget_for = |effort| {
             let req = RequestBuilder::new(
                 &anthropic_client(),
-                "claude-haiku-4-5",
+                crate::api::model_info::CLAUDE_HAIKU,
                 65_536,
                 &conv,
                 one_regular_tool(),
@@ -561,7 +560,7 @@ mod tests {
         let conv = ConversationHistory::new();
         let haiku_req = RequestBuilder::new(
             &anthropic_client(),
-            "claude-haiku-4-5",
+            crate::api::model_info::CLAUDE_HAIKU,
             8192,
             &conv,
             one_regular_tool(),
@@ -571,12 +570,12 @@ mod tests {
         .build();
         assert!(
             haiku_req.context_management.is_none(),
-            "Haiku 4.5 isn't on Anthropic's compaction-supported list"
+            "this model isn't on Anthropic's compaction-supported list"
         );
 
         let openai_req = RequestBuilder::new(
             &openai_client(),
-            "gpt-5.5",
+            crate::api::model_info::GPT_FLAGSHIP,
             8192,
             &conv,
             one_regular_tool(),

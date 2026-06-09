@@ -582,19 +582,19 @@ mod tests {
     fn model_picker_lands_cursor_on_current_model() {
         let entries = vec![
             ModelPickerEntry {
-                name: "claude-opus-4-7",
+                name: crate::api::model_info::CLAUDE_OPUS,
                 description: "flagship",
                 is_current: false,
                 is_available: true,
             },
             ModelPickerEntry {
-                name: "claude-sonnet-4-6",
+                name: crate::api::model_info::CLAUDE_SONNET,
                 description: "default",
                 is_current: true,
                 is_available: true,
             },
             ModelPickerEntry {
-                name: "gpt-5.5",
+                name: crate::api::model_info::GPT_FLAGSHIP,
                 description: "openai",
                 is_current: false,
                 is_available: true,
@@ -602,7 +602,10 @@ mod tests {
         ];
         let p = ModelPicker::new(entries);
         assert_eq!(p.cursor, 1);
-        assert_eq!(p.selected().unwrap().name, "claude-sonnet-4-6");
+        assert_eq!(
+            p.selected().unwrap().name,
+            crate::api::model_info::CLAUDE_SONNET
+        );
     }
 
     #[test]
@@ -753,7 +756,7 @@ mod tests {
         let mut a = app();
         assert!(a.status.is_none());
         a.status = Some(StatusSnapshot {
-            model: "claude-opus-4-7".into(),
+            model: crate::api::model_info::CLAUDE_OPUS.into(),
             mode: Mode::Safe,
             reasoning: "thinking: 10000 tok".into(),
             input_tokens: 123,
@@ -763,7 +766,7 @@ mod tests {
         });
         let s = a.status.as_ref().unwrap();
         assert_eq!(s.mode.label(), "safe");
-        assert_eq!(s.model, "claude-opus-4-7");
+        assert_eq!(s.model, crate::api::model_info::CLAUDE_OPUS);
         assert_eq!(s.input_tokens, 123);
     }
 }

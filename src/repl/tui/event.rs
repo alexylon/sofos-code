@@ -16,8 +16,9 @@ pub struct ExitSummary {
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
     /// Largest single-turn input observed; used to detect tiered
-    /// pricing cliffs (e.g. gpt-5.4/5.5 at 272K) so the displayed
-    /// session cost reflects the rate the provider actually billed.
+    /// pricing cliffs (e.g. premium-tier models at 272K) so the
+    /// displayed session cost reflects the rate the provider actually
+    /// billed.
     pub peak_single_turn_input_tokens: u32,
     /// True when the worker exits because it panicked rather than via
     /// the normal shutdown path. Lets the UI prefix the goodbye line

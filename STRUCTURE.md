@@ -552,6 +552,7 @@ Rules:
 It contains:
 
 - the `SUPPORTED_MODELS` whitelist — every model id accepted by `--model` and shown in the `/model` picker, with its description and provider;
+- version-free model-id constants (`CLAUDE_OPUS`, `GPT_FLAGSHIP`, and so on) that every model id in the codebase refers to, so renaming a model on the wire is a one-line change to the constant's value;
 - helpers `canonical_model`, `model_support_error`, and `supported_models_label` that share one source of truth with the CLI rejection message and the picker rows;
 - model registry entries;
 - context-window sizes;

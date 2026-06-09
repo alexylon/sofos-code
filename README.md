@@ -262,10 +262,11 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 
 ## Models and reasoning effort
 
-Sofos supports seven models, in `/model` picker order:
+Sofos supports eight models, in `/model` picker order:
 
 | Model | Provider |
 |---|---|
+| `claude-fable-5` | Anthropic |
 | `claude-opus-4-7` | Anthropic |
 | `claude-sonnet-4-6` (default) | Anthropic |
 | `claude-haiku-4-5` | Anthropic |
@@ -296,19 +297,19 @@ sofos -e xhigh --model gpt-5.5        # Highest OpenAI gpt-5 reasoning level.
 
 Support matrix:
 
-| Effort | Opus 4.7 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
-|---|:---:|:---:|:---:|:---:|
-| `off` | ✓ | ✓ | ✓ | ✓ |
-| `low` | ✓ | ✓ | ✓ | ✓ |
-| `medium` | ✓ | ✓ | ✓ | ✓ |
-| `high` | ✓ | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ | ✗ | ✗ | ✓ |
-| `max` | ✓ | ✓ | ✗ | ✗ |
+| Effort | Fable 5 | Opus 4.7 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `off` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `max` | ✓ | ✓ | ✓ | ✗ | ✗ |
 
 Provider mapping:
 
 - **OpenAI** sends `reasoning.effort`; `off` maps to minimal reasoning and suppresses reasoning summaries.
-- **Claude Opus 4.7 and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
+- **Claude Fable 5, Opus 4.7, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
 
 ---

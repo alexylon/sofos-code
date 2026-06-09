@@ -4,17 +4,22 @@
 //! at startup, and the `/model` picker, the request builder, and the
 //! cost calculator all reach for the same table through [`lookup`].
 //!
+//! Every model id lives in exactly one place: the version-free
+//! constants below (`CLAUDE_OPUS`, `GPT_FLAGSHIP`, and so on). Their
+//! value is the slug sent on the wire, so renaming a model is a
+//! one-line change to that value — the table, the request builders,
+//! and the tests all reference the constant, never the raw string.
+//!
 //! Adding a model is one struct literal in [`SUPPORTED_MODELS`] (in
 //! the order it should appear in the picker). Removing a model is
 //! one deletion in the same array.
 
 use crate::api::ReasoningEffort;
 
-/// Tiered-pricing rule. Some OpenAI models (gpt-5.4, gpt-5.5) charge a
-/// premium for the *entire session* once a single prompt's input
-/// crosses a documented threshold. Once tripped, every subsequent
-/// turn in the session is billed at the premium rate, not just the
-/// triggering turn.
+/// Tiered-pricing rule. Some OpenAI models charge a premium for the
+/// *entire session* once a single prompt's input crosses a documented
+/// threshold. Once tripped, every subsequent turn in the session is
+/// billed at the premium rate, not just the triggering turn.
 #[derive(Debug, Clone, Copy)]
 pub struct PremiumPricingTier {
     pub input_threshold: u32,
@@ -62,9 +67,11 @@ pub struct Model {
     /// `context_window`.
     pub auto_compact_token_limit: Option<u32>,
     /// True for Anthropic models that use the `thinking: adaptive`
-    /// shape with `output_config.effort`. Opus 4.7 rejects the legacy
-    /// `{type: "enabled", budget_tokens}` shape outright; Sonnet 4.6
-    /// accepts both but Anthropic recommends adaptive.
+    /// shape with `output_config.effort` rather than the legacy
+    /// `{type: "enabled", budget_tokens}` shape. Some adaptive models
+    /// reject the legacy shape outright; others accept both, but
+    /// Anthropic recommends adaptive, so the request builder opts in
+    /// wherever this flag is set.
     pub requires_adaptive_thinking: bool,
     /// True for Anthropic models that support the server-side
     /// compaction beta (`compact-2026-01-12`). When set, the request
@@ -73,8 +80,9 @@ pub struct Model {
     pub supports_server_compaction: bool,
     /// Reasoning-effort levels this model accepts on the wire.
     /// Startup validation and the `/effort` handler use this list to
-    /// reject mismatched pairs (`xhigh` on Sonnet 4.6, `max` on any
-    /// OpenAI model) before they reach the server.
+    /// reject mismatched pairs (for example `xhigh` on a model that
+    /// tops out at `high`, or `max` on any OpenAI model) before they
+    /// reach the server.
     pub supported_efforts: &'static [ReasoningEffort],
     /// Per-million-token USD price for non-cached input.
     pub price_input_per_m: f64,
@@ -124,7 +132,7 @@ impl Default for Model {
     /// slug outside the whitelist. Matches the CLI's `--model`
     /// default, so any path that runs before the user has chosen a
     /// model (`SofosConfig::default`, internal helpers) starts on the
-    /// same numbers `--model claude-sonnet-4-6` would produce.
+    /// same numbers the default model would produce.
     fn default() -> Self {
         SUPPORTED_MODELS[DEFAULT_MODEL_INDEX]
     }
@@ -134,7 +142,7 @@ impl Default for Model {
 /// [`SUPPORTED_MODELS`]. Kept as a named index so the array order can
 /// be reshuffled without losing track of which entry the rest of the
 /// code treats as the default.
-const DEFAULT_MODEL_INDEX: usize = 1;
+const DEFAULT_MODEL_INDEX: usize = 2;
 
 /// Slug of the application-wide default model. Exposed as a `const`
 /// so the CLI `default_value` attribute and the `Model::default`
@@ -143,26 +151,62 @@ const DEFAULT_MODEL_INDEX: usize = 1;
 pub const DEFAULT_MODEL_NAME: &str = SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name;
 
 /// Compile-time guard: the default-model index must stay inside the
-/// array. A reorder that drops below two entries (or a refactor that
+/// array. A reorder that drops below the index (or a refactor that
 /// renames the constant out of step with the array) trips here
 /// instead of panicking at runtime when the first request hits.
 const _: () = assert!(DEFAULT_MODEL_INDEX < SUPPORTED_MODELS.len());
 
-/// Input-token threshold at which OpenAI's gpt-5.x premium-pricing
-/// cliff fires. Sessions that cross this on any single prompt are
-/// billed at the premium rate for every subsequent turn, so the
-/// auto-compact triggers on `gpt-5.4` and `gpt-5.5` are kept below
-/// it on purpose.
+/// Input-token threshold at which OpenAI's premium-pricing cliff
+/// fires. Sessions that cross this on any single prompt are billed at
+/// the premium rate for every subsequent turn, so the auto-compact
+/// triggers on the premium-tier OpenAI models are kept below it on
+/// purpose.
 const OPENAI_PREMIUM_INPUT_THRESHOLD: u32 = 272_000;
 
-/// Every model the application accepts on `--model`, in the order
-/// they appear in the `/model` picker. The first row is the
-/// strongest pick; the default model (`claude-sonnet-4-6`) is second
-/// so users without a preference see it next to its faster sibling.
+/// Canonical model-id strings — the slug each model is known by on the
+/// wire. Every reference to a model id (the [`SUPPORTED_MODELS`] table,
+/// the request builders, the tests) goes through one of these
+/// constants, so changing what a model is called is a one-line edit to
+/// the value here. The identifiers are deliberately version-free for
+/// the same reason: a rename never touches an identifier or its uses.
+pub const CLAUDE_FABLE: &str = "claude-fable-5";
+pub const CLAUDE_OPUS: &str = "claude-opus-4-8";
+pub const CLAUDE_SONNET: &str = "claude-sonnet-4-6";
+pub const CLAUDE_HAIKU: &str = "claude-haiku-4-5";
+pub const GPT_FLAGSHIP: &str = "gpt-5.5";
+pub const GPT_MID_TIER: &str = "gpt-5.4";
+pub const GPT_MINI: &str = "gpt-5.4-mini";
+pub const GPT_CODEX: &str = "gpt-5.3-codex";
+
+/// Every model the application accepts on `--model`, in the order they
+/// appear in the `/model` picker. The strongest models come first; the
+/// default model sits just below them, so a user without a preference
+/// lands on a balanced everyday model rather than the most expensive
+/// one.
 pub const SUPPORTED_MODELS: &[Model] = &[
     Model {
-        name: "claude-opus-4-7",
-        description: "Anthropic flagship - strongest reasoning, 1M context",
+        name: CLAUDE_FABLE,
+        description: "Anthropic's most capable model - demanding reasoning, 1M context",
+        provider: Provider::Anthropic,
+        context_window: 1_000_000,
+        auto_compact_token_limit: Some(250_000),
+        requires_adaptive_thinking: true,
+        supports_server_compaction: true,
+        supported_efforts: &[
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        price_input_per_m: 10.0,
+        price_output_per_m: 50.0,
+        premium_tier: None,
+    },
+    Model {
+        name: CLAUDE_OPUS,
+        description: "Powerful Anthropic reasoning model, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
         auto_compact_token_limit: Some(250_000),
@@ -181,7 +225,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         premium_tier: None,
     },
     Model {
-        name: "claude-sonnet-4-6",
+        name: CLAUDE_SONNET,
         description: "Balanced Anthropic model - default for day-to-day coding",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
@@ -200,7 +244,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         premium_tier: None,
     },
     Model {
-        name: "claude-haiku-4-5",
+        name: CLAUDE_HAIKU,
         description: "Fastest, cheapest Anthropic model - 200k context",
         provider: Provider::Anthropic,
         context_window: 200_000,
@@ -217,17 +261,17 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         price_output_per_m: 5.0,
         premium_tier: None,
     },
-    // gpt-5.4 / gpt-5.5 charge 2x input / 1.5x output for the *entire
-    // session* once any single prompt crosses
+    // The premium-tier OpenAI models charge 2x input / 1.5x output for
+    // the *entire session* once any single prompt crosses
     // `OPENAI_PREMIUM_INPUT_THRESHOLD` input tokens. The 250K
     // auto-compact trigger sits below that cliff, so the listed
-    // `price_*` values stay on the standard tier — by design.
-    // Raising the override past the threshold would silently double
-    // the input bill and is the wrong knob to pull for cost. The
-    // `premium_tier` value is what `ui::calculate_cost` uses to bill
-    // honestly when the cliff is tripped (e.g. by a huge pasted file).
+    // `price_*` values stay on the standard tier — by design. Raising
+    // the override past the threshold would silently double the input
+    // bill and is the wrong knob to pull for cost. The `premium_tier`
+    // value is what `ui::calculate_cost` uses to bill honestly when the
+    // cliff is tripped (e.g. by a huge pasted file).
     Model {
-        name: "gpt-5.5",
+        name: GPT_FLAGSHIP,
         description: "OpenAI flagship - strongest GPT for code and long context",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -250,8 +294,8 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         }),
     },
     Model {
-        name: "gpt-5.4",
-        description: "Mid-tier OpenAI reasoning model - cheaper than 5.5",
+        name: GPT_MID_TIER,
+        description: "Mid-tier OpenAI reasoning model - cheaper than the flagship",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
         auto_compact_token_limit: Some(250_000),
@@ -273,7 +317,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         }),
     },
     Model {
-        name: "gpt-5.4-mini",
+        name: GPT_MINI,
         description: "Compact OpenAI model - best price for coding and tool use",
         provider: Provider::OpenAI,
         context_window: 400_000,
@@ -292,7 +336,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         premium_tier: None,
     },
     Model {
-        name: "gpt-5.3-codex",
+        name: GPT_CODEX,
         description: "Code-specialised OpenAI model for software engineering",
         provider: Provider::OpenAI,
         context_window: 400_000,
@@ -356,11 +400,10 @@ pub fn provider_for(name: &str) -> Provider {
 }
 
 /// Look up metadata for a model by id. Matching is case-insensitive.
-/// Unsupported slugs return the default model (`claude-sonnet-4-6`),
-/// the same entry `--model` falls back to when the user does not
-/// pass the flag; the CLI rejects unknown ids up front so this
-/// fallback only fires from internal call sites that pass arbitrary
-/// strings.
+/// Unsupported slugs return the default model — the same entry
+/// `--model` falls back to when the user does not pass the flag; the
+/// CLI rejects unknown ids up front so this fallback only fires from
+/// internal call sites that pass arbitrary strings.
 pub fn lookup(name: &str) -> &'static Model {
     canonical_model(name).unwrap_or(&SUPPORTED_MODELS[DEFAULT_MODEL_INDEX])
 }
@@ -390,17 +433,21 @@ mod tests {
 
     #[test]
     fn provider_routes_supported_models_correctly() {
-        assert_eq!(provider_for("claude-opus-4-7"), Provider::Anthropic);
-        assert_eq!(provider_for("claude-sonnet-4-6"), Provider::Anthropic);
-        assert_eq!(provider_for("claude-haiku-4-5"), Provider::Anthropic);
-        assert_eq!(provider_for("gpt-5.5"), Provider::OpenAI);
-        assert_eq!(provider_for("gpt-5.4"), Provider::OpenAI);
-        assert_eq!(provider_for("gpt-5.4-mini"), Provider::OpenAI);
-        assert_eq!(provider_for("gpt-5.3-codex"), Provider::OpenAI);
-        // Case insensitivity covers `--model CLAUDE-OPUS-4-7`.
-        assert_eq!(provider_for("CLAUDE-OPUS-4-7"), Provider::Anthropic);
+        assert_eq!(provider_for(CLAUDE_FABLE), Provider::Anthropic);
+        assert_eq!(provider_for(CLAUDE_OPUS), Provider::Anthropic);
+        assert_eq!(provider_for(CLAUDE_SONNET), Provider::Anthropic);
+        assert_eq!(provider_for(CLAUDE_HAIKU), Provider::Anthropic);
+        assert_eq!(provider_for(GPT_FLAGSHIP), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_MID_TIER), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_MINI), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_CODEX), Provider::OpenAI);
+        // Case insensitivity covers an upper-cased `--model` argument.
+        assert_eq!(
+            provider_for(&CLAUDE_OPUS.to_uppercase()),
+            Provider::Anthropic
+        );
         // Unsupported slugs fall back to the default model's provider
-        // (Anthropic, since `claude-sonnet-4-6` is the default).
+        // (Anthropic, since the default is an Anthropic model).
         assert_eq!(provider_for("unknown-model"), Provider::Anthropic);
     }
 
@@ -416,30 +463,28 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "claude-opus-4-7",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5",
-                "gpt-5.5",
-                "gpt-5.4",
-                "gpt-5.4-mini",
-                "gpt-5.3-codex",
+                CLAUDE_FABLE,
+                CLAUDE_OPUS,
+                CLAUDE_SONNET,
+                CLAUDE_HAIKU,
+                GPT_FLAGSHIP,
+                GPT_MID_TIER,
+                GPT_MINI,
+                GPT_CODEX,
             ]
         );
     }
 
     #[test]
     fn default_model_is_the_cli_default() {
-        assert_eq!(Model::default().name, "claude-sonnet-4-6");
-        assert_eq!(
-            SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name,
-            "claude-sonnet-4-6"
-        );
+        assert_eq!(Model::default().name, CLAUDE_SONNET);
+        assert_eq!(SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name, CLAUDE_SONNET);
     }
 
     #[test]
     fn canonical_model_normalises_case() {
-        let m = canonical_model("Claude-Sonnet-4-6").expect("matches whitelist");
-        assert_eq!(m.name, "claude-sonnet-4-6");
+        let m = canonical_model(&CLAUDE_SONNET.to_uppercase()).expect("matches whitelist");
+        assert_eq!(m.name, CLAUDE_SONNET);
     }
 
     #[test]
@@ -463,8 +508,8 @@ mod tests {
     }
 
     #[test]
-    fn opus_4_7_has_1m_context_and_server_compaction() {
-        let info = lookup("claude-opus-4-7");
+    fn flagship_has_1m_context_and_server_compaction() {
+        let info = lookup(CLAUDE_FABLE);
         assert_eq!(info.context_window, 1_000_000);
         assert!(info.requires_adaptive_thinking);
         assert!(info.supports_server_compaction);
@@ -472,14 +517,14 @@ mod tests {
 
     #[test]
     fn anthropic_adaptive_models_match_their_lookup_flag() {
-        for slug in ["claude-opus-4-7", "claude-sonnet-4-6"] {
+        for slug in [CLAUDE_FABLE, CLAUDE_OPUS, CLAUDE_SONNET] {
             assert!(
                 lookup(slug).requires_adaptive_thinking,
                 "{slug} should use adaptive thinking"
             );
         }
-        // Haiku 4.5 stays on the legacy `budget_tokens` shape.
-        assert!(!lookup("claude-haiku-4-5").requires_adaptive_thinking);
+        // The fastest model stays on the legacy `budget_tokens` shape.
+        assert!(!lookup(CLAUDE_HAIKU).requires_adaptive_thinking);
     }
 
     #[test]
@@ -494,9 +539,9 @@ mod tests {
     }
 
     #[test]
-    fn gpt_54_mini_uses_its_own_pricing_not_full_size() {
-        let mini = lookup("gpt-5.4-mini");
-        let full = lookup("gpt-5.4");
+    fn gpt_mini_uses_its_own_pricing_not_full_size() {
+        let mini = lookup(GPT_MINI);
+        let full = lookup(GPT_MID_TIER);
         assert!(
             mini.price_input_per_m < full.price_input_per_m,
             "mini should be cheaper than full"
@@ -538,7 +583,7 @@ mod tests {
 
     #[test]
     fn cliff_models_compact_below_premium_threshold() {
-        for slug in ["gpt-5.5", "gpt-5.4"] {
+        for slug in [GPT_FLAGSHIP, GPT_MID_TIER] {
             let info = lookup(slug);
             assert!(info.auto_compact_at() < OPENAI_PREMIUM_INPUT_THRESHOLD);
             let tier = info
@@ -551,7 +596,7 @@ mod tests {
 
     #[test]
     fn anthropic_adaptive_models_advertise_server_compaction() {
-        for slug in ["claude-opus-4-7", "claude-sonnet-4-6"] {
+        for slug in [CLAUDE_FABLE, CLAUDE_OPUS, CLAUDE_SONNET] {
             assert!(
                 lookup(slug).supports_server_compaction,
                 "{slug} should opt into server-side compaction"
@@ -560,10 +605,11 @@ mod tests {
     }
 
     #[test]
-    fn haiku_does_not_advertise_server_compaction() {
-        // Haiku 4.5 isn't on Anthropic's compaction-supported list,
-        // so the request builder must not send the beta header for it.
-        assert!(!lookup("claude-haiku-4-5").supports_server_compaction);
+    fn fastest_model_does_not_advertise_server_compaction() {
+        // The fastest model isn't on Anthropic's compaction-supported
+        // list, so the request builder must not send the beta header
+        // for it.
+        assert!(!lookup(CLAUDE_HAIKU).supports_server_compaction);
     }
 
     #[test]
@@ -579,29 +625,32 @@ mod tests {
             }
         }
 
-        // `xhigh`: Opus 4.7 + every gpt-5.x reasoning model only.
-        assert!(supports("claude-opus-4-7", XHigh));
-        assert!(supports("gpt-5.5", XHigh));
-        assert!(supports("gpt-5.4", XHigh));
-        assert!(supports("gpt-5.4-mini", XHigh));
-        assert!(supports("gpt-5.3-codex", XHigh));
-        assert!(!supports("claude-sonnet-4-6", XHigh));
-        assert!(!supports("claude-haiku-4-5", XHigh));
+        // `xhigh`: the larger Anthropic models plus every OpenAI
+        // reasoning model.
+        assert!(supports(CLAUDE_FABLE, XHigh));
+        assert!(supports(CLAUDE_OPUS, XHigh));
+        assert!(supports(GPT_FLAGSHIP, XHigh));
+        assert!(supports(GPT_MID_TIER, XHigh));
+        assert!(supports(GPT_MINI, XHigh));
+        assert!(supports(GPT_CODEX, XHigh));
+        assert!(!supports(CLAUDE_SONNET, XHigh));
+        assert!(!supports(CLAUDE_HAIKU, XHigh));
 
         // `max`: Anthropic adaptive models only.
-        assert!(supports("claude-opus-4-7", Max));
-        assert!(supports("claude-sonnet-4-6", Max));
-        assert!(!supports("claude-haiku-4-5", Max));
-        assert!(!supports("gpt-5.5", Max));
-        assert!(!supports("gpt-5.4-mini", Max));
-        assert!(!supports("gpt-5.3-codex", Max));
+        assert!(supports(CLAUDE_FABLE, Max));
+        assert!(supports(CLAUDE_OPUS, Max));
+        assert!(supports(CLAUDE_SONNET, Max));
+        assert!(!supports(CLAUDE_HAIKU, Max));
+        assert!(!supports(GPT_FLAGSHIP, Max));
+        assert!(!supports(GPT_MINI, Max));
+        assert!(!supports(GPT_CODEX, Max));
     }
 
     #[test]
     fn effort_support_error_lists_supported_levels_for_the_model() {
-        let err = effort_support_error("gpt-5.5", ReasoningEffort::Max)
-            .expect("max on gpt-5.5 should be rejected");
-        assert!(err.contains("gpt-5.5"));
+        let err = effort_support_error(GPT_FLAGSHIP, ReasoningEffort::Max)
+            .expect("max on an OpenAI model should be rejected");
+        assert!(err.contains(GPT_FLAGSHIP));
         assert!(err.contains("`max`"));
         let listed = err
             .split("Supported levels: ")
@@ -610,15 +659,15 @@ mod tests {
         for label in ["off", "low", "medium", "high", "xhigh"] {
             assert!(listed.contains(label), "expected {label} in {listed}");
         }
-        // gpt-5.5 doesn't accept `max`, so the supported-list tail
+        // OpenAI models don't accept `max`, so the supported-list tail
         // must not mention it.
         assert!(!listed.contains("max"));
 
-        let err = effort_support_error("claude-sonnet-4-6", ReasoningEffort::XHigh)
-            .expect("xhigh on sonnet-4-6 should be rejected");
-        assert!(err.contains("claude-sonnet-4-6"));
+        let err = effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh)
+            .expect("xhigh on the default Anthropic model should be rejected");
+        assert!(err.contains(CLAUDE_SONNET));
         assert!(err.contains("`xhigh`"));
-        // Sonnet 4.6 supports `max` but not `xhigh`.
+        // The default Anthropic model supports `max` but not `xhigh`.
         let listed = err
             .split("Supported levels: ")
             .nth(1)
@@ -627,8 +676,8 @@ mod tests {
         assert!(!listed.contains("xhigh"));
 
         // Supported combinations: no error.
-        assert!(effort_support_error("claude-opus-4-7", ReasoningEffort::Max).is_none());
-        assert!(effort_support_error("gpt-5.5", ReasoningEffort::XHigh).is_none());
-        assert!(effort_support_error("claude-haiku-4-5", ReasoningEffort::High).is_none());
+        assert!(effort_support_error(CLAUDE_OPUS, ReasoningEffort::Max).is_none());
+        assert!(effort_support_error(GPT_FLAGSHIP, ReasoningEffort::XHigh).is_none());
+        assert!(effort_support_error(CLAUDE_HAIKU, ReasoningEffort::High).is_none());
     }
 }

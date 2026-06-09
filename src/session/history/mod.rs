@@ -168,7 +168,7 @@ mod tests {
     /// Every persisted token counter must survive save/load. Without
     /// this, a `--resume` would reset the displayed cost (totals stay
     /// at 0 until the next API call replenishes them) and the cliff
-    /// detector would forget that gpt-5.5 had already crossed 272K.
+    /// detector would forget that a premium-tier model had already crossed 272K.
     #[test]
     fn all_token_counters_survive_save_and_load() {
         let temp_dir = TempDir::new().unwrap();
@@ -181,7 +181,7 @@ mod tests {
             total_output_tokens: 7_890,
             total_cache_read_tokens: 65_000,
             total_cache_creation_tokens: 4_321,
-            // > 272K — the gpt-5.5 premium-tier cliff.
+            // > 272K — the premium-tier cliff.
             peak_single_turn_input_tokens: 300_000,
         };
 
@@ -341,13 +341,16 @@ mod tests {
                 &[],
                 std::slice::from_ref(&system_prompt),
                 SessionTokenCounters::default(),
-                "claude-opus-4-7",
+                crate::api::model_info::CLAUDE_OPUS,
                 true,
             )
             .unwrap();
 
         let loaded = manager.load_session(&session_id).unwrap();
-        assert_eq!(loaded.model.as_deref(), Some("claude-opus-4-7"));
+        assert_eq!(
+            loaded.model.as_deref(),
+            Some(crate::api::model_info::CLAUDE_OPUS)
+        );
         assert_eq!(loaded.safe_mode, Some(true));
     }
 

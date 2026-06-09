@@ -109,8 +109,8 @@ impl UI {
 
         // Surface the per-prompt cliff when premium pricing kicked in
         // — users otherwise have no way to tell that crossing the
-        // GPT-5.5 / GPT-5.4 input-token threshold doubled the rate
-        // for every later turn in this session.
+        // premium-tier input-token threshold doubled the rate for
+        // every later turn in this session.
         let info = crate::api::model_info::lookup(model);
         if let Some(tier) = info.premium_tier {
             if peak_single_turn_input_tokens > tier.input_threshold {
@@ -158,11 +158,12 @@ impl UI {
         peak_single_turn_input_tokens: u32,
     ) -> f64 {
         let info = crate::api::model_info::lookup(model);
-        // Tiered pricing: gpt-5.4/5.5 flip the entire session to a
-        // premium rate once any single prompt's input crosses the
-        // documented threshold. Compare the per-call high-water mark
-        // (not the cumulative session total) against the threshold,
-        // because the cliff is per-prompt, not per-session-cumulative.
+        // Tiered pricing: a model with a premium tier flips the entire
+        // session to a premium rate once any single prompt's input
+        // crosses the documented threshold. Compare the per-call
+        // high-water mark (not the cumulative session total) against
+        // the threshold, because the cliff is per-prompt, not
+        // per-session-cumulative.
         let (input_price, output_price) = match info.premium_tier {
             Some(tier) if peak_single_turn_input_tokens > tier.input_threshold => {
                 (tier.price_input_per_m, tier.price_output_per_m)
@@ -240,20 +241,41 @@ mod tests {
     fn openai_cost_uses_full_rate_when_no_cache() {
         // 100k input @ $5/M, 5k output @ $30/M, no cache. Peak below
         // the 272K cliff so standard pricing applies.
-        let cost = UI::calculate_cost("gpt-5.5", 100_000, 5_000, 0, 0, 100_000);
+        let cost = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            100_000,
+            5_000,
+            0,
+            0,
+            100_000,
+        );
         approx(cost, 100_000.0 / 1e6 * 5.0 + 5_000.0 / 1e6 * 30.0);
     }
 
     #[test]
     fn openai_cost_discounts_cache_reads_at_10pct() {
-        let cost = UI::calculate_cost("gpt-5.5", 100_000, 5_000, 75_000, 0, 100_000);
+        let cost = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            100_000,
+            5_000,
+            75_000,
+            0,
+            100_000,
+        );
         approx(cost, 0.1625 + 0.15);
     }
 
     #[test]
     fn openai_cost_3x_lower_than_pre_fix_at_75pct_hit_input_only() {
         let pre_fix_input = 100_000.0 / 1e6 * 5.0;
-        let post_fix_input = UI::calculate_cost("gpt-5.5", 100_000, 0, 75_000, 0, 100_000);
+        let post_fix_input = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            100_000,
+            0,
+            75_000,
+            0,
+            100_000,
+        );
         let ratio = pre_fix_input / post_fix_input;
         assert!(
             (2.9..=3.2).contains(&ratio),
@@ -264,32 +286,61 @@ mod tests {
 
     #[test]
     fn anthropic_cost_input_tokens_already_excludes_cache() {
-        let cost = UI::calculate_cost("claude-opus-4-7", 25_000, 5_000, 75_000, 0, 100_000);
+        let cost = UI::calculate_cost(
+            crate::api::model_info::CLAUDE_OPUS,
+            25_000,
+            5_000,
+            75_000,
+            0,
+            100_000,
+        );
         approx(cost, 0.1625 + 0.125);
     }
 
     #[test]
     fn anthropic_cost_charges_creation_at_125pct() {
-        let cost = UI::calculate_cost("claude-opus-4-7", 0, 0, 0, 50_000, 0);
+        let cost = UI::calculate_cost(crate::api::model_info::CLAUDE_OPUS, 0, 0, 0, 50_000, 0);
         approx(cost, 50_000.0 / 1e6 * 5.0 * 1.25);
     }
 
     #[test]
     fn cache_hit_does_not_underflow_when_read_exceeds_input() {
-        let cost = UI::calculate_cost("gpt-5.5", 50_000, 0, 100_000, 0, 100_000);
+        let cost = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            50_000,
+            0,
+            100_000,
+            0,
+            100_000,
+        );
         approx(cost, 100_000.0 / 1e6 * 5.0 * 0.10);
     }
 
     #[test]
-    fn cliff_crossing_doubles_input_rate_for_gpt_5_5() {
+    fn cliff_crossing_doubles_input_rate_for_the_flagship() {
         // Below cliff: standard rate ($5/M input). 100K input × $5/M = $0.50.
-        let standard = UI::calculate_cost("gpt-5.5", 100_000, 0, 0, 0, 200_000);
+        let standard = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            100_000,
+            0,
+            0,
+            0,
+            200_000,
+        );
         approx(standard, 100_000.0 / 1e6 * 5.0);
 
         // Above cliff (peak observed > 272K): premium rate ($10/M input
-        // for gpt-5.5). 100K × $10/M = $1.00. Same input/cache numbers,
-        // double the bill — that's the user-visible effect of the cliff.
-        let premium = UI::calculate_cost("gpt-5.5", 100_000, 0, 0, 0, 300_000);
+        // for the flagship). 100K × $10/M = $1.00. Same input/cache
+        // numbers, double the bill — that's the user-visible effect of
+        // the cliff.
+        let premium = UI::calculate_cost(
+            crate::api::model_info::GPT_FLAGSHIP,
+            100_000,
+            0,
+            0,
+            0,
+            300_000,
+        );
         approx(premium, 100_000.0 / 1e6 * 10.0);
         assert!((premium / standard - 2.0).abs() < 0.01);
     }
@@ -321,9 +372,9 @@ mod tests {
 
     #[test]
     fn unknown_model_falls_back_without_panic() {
-        // Default fallback uses the application-default model
-        // (`claude-sonnet-4-6`) pricing ($3 / $15) and the Anthropic
-        // semantics branch (input_tokens is uncached).
+        // Default fallback uses the application-default model's pricing
+        // ($3 / $15) and the Anthropic semantics branch (input_tokens
+        // is uncached).
         let cost = UI::calculate_cost("some-future-model", 1_000, 1_000, 0, 0, 1_000);
         approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
     }

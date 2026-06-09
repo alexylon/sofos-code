@@ -227,8 +227,8 @@ impl Thinking {
         }
     }
 
-    /// Opus 4.7+ uses adaptive thinking: the server picks the budget based
-    /// on the prompt, and the caller expresses intent via
+    /// Adaptive-thinking models let the server pick the budget based on
+    /// the prompt; the caller expresses intent via
     /// [`OutputConfig::effort`] on the request instead of a token count.
     pub fn adaptive() -> Self {
         Self {
@@ -239,7 +239,7 @@ impl Thinking {
 }
 
 /// Top-level `output_config` block on the Messages API. Currently used to
-/// set the `effort` level that pairs with adaptive thinking on Opus 4.7+.
+/// set the `effort` level that pairs with adaptive thinking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     pub effort: String,

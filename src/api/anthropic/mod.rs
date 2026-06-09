@@ -54,32 +54,38 @@ mod tests {
         let thinking = Thinking::adaptive();
         let json = serde_json::to_value(&thinking).unwrap();
         assert_eq!(json["type"], "adaptive");
-        // `budget_tokens` must be omitted for adaptive — Opus 4.7 rejects it.
+        // `budget_tokens` must be omitted for adaptive — adaptive models reject it.
         assert!(json.get("budget_tokens").is_none());
     }
 
     #[test]
     fn requires_adaptive_thinking_covers_supported_anthropic_models() {
-        // Opus 4.7 requires adaptive (legacy shape 400s); Sonnet 4.6
-        // accepts both shapes but Anthropic recommends adaptive, so
-        // sofos opts it in too. Haiku 4.5 stays on the legacy
-        // `budget_tokens` shape.
-        assert!(requires_adaptive_thinking("claude-opus-4-7"));
-        assert!(requires_adaptive_thinking("claude-sonnet-4-6"));
-        assert!(!requires_adaptive_thinking("claude-haiku-4-5"));
+        // Some adaptive models require the adaptive shape (the legacy
+        // shape 400s); others accept both but Anthropic recommends
+        // adaptive, so sofos opts them in too. The fastest model stays
+        // on the legacy `budget_tokens` shape.
+        assert!(requires_adaptive_thinking(
+            crate::api::model_info::CLAUDE_OPUS
+        ));
+        assert!(requires_adaptive_thinking(
+            crate::api::model_info::CLAUDE_SONNET
+        ));
+        assert!(!requires_adaptive_thinking(
+            crate::api::model_info::CLAUDE_HAIKU
+        ));
     }
 
     #[test]
     fn anthropic_beta_for_gates_compaction_to_supported_models() {
-        // Opus 4.7 is on the compaction-supported list — both betas ship.
-        let with_compact = anthropic_beta_for("claude-opus-4-7");
+        // A compaction-supported model ships both betas.
+        let with_compact = anthropic_beta_for(crate::api::model_info::CLAUDE_OPUS);
         assert!(with_compact.contains(BETA_TOKEN_EFFICIENT));
         assert!(with_compact.contains(BETA_COMPACT));
 
-        // Haiku 4.5 isn't — only the universal beta should appear so
-        // we don't depend on Anthropic's "ignore unknown beta tokens"
-        // policy if validation ever tightens.
-        let without = anthropic_beta_for("claude-haiku-4-5");
+        // A model that isn't on the list only sends the universal
+        // beta, so we don't depend on Anthropic's "ignore unknown beta
+        // tokens" policy if validation ever tightens.
+        let without = anthropic_beta_for(crate::api::model_info::CLAUDE_HAIKU);
         assert!(without.contains(BETA_TOKEN_EFFICIENT));
         assert!(!without.contains(BETA_COMPACT));
     }
@@ -171,7 +177,7 @@ mod tests {
     #[test]
     fn adaptive_request_sends_output_config_and_omits_budget() {
         let request = CreateMessageRequest {
-            model: "claude-opus-4-7".to_string(),
+            model: crate::api::model_info::CLAUDE_OPUS.to_string(),
             max_tokens: 8192,
             messages: vec![],
             system: None,
@@ -194,7 +200,7 @@ mod tests {
     fn test_request_with_thinking() {
         let thinking = Some(Thinking::enabled(3000));
         let request = CreateMessageRequest {
-            model: "claude-sonnet-4-6".to_string(),
+            model: crate::api::model_info::CLAUDE_SONNET.to_string(),
             max_tokens: 8192,
             messages: vec![],
             system: None,
@@ -216,7 +222,7 @@ mod tests {
     #[test]
     fn prepare_request_strips_prompt_cache_key() {
         let request = CreateMessageRequest {
-            model: "claude-sonnet-4-6".to_string(),
+            model: crate::api::model_info::CLAUDE_SONNET.to_string(),
             max_tokens: 8192,
             messages: vec![],
             system: None,
@@ -281,7 +287,7 @@ mod tests {
                     "type": "message_start",
                     "message": {
                         "id": "msg_test",
-                        "model": "claude-sonnet-4-6",
+                        "model": crate::api::model_info::CLAUDE_SONNET,
                         "usage": {"input_tokens": 12, "cache_read_input_tokens": 3}
                     }
                 }),
@@ -332,7 +338,7 @@ mod tests {
             // parser drops thinking blocks without one because echoing
             // unsigned thinking back to the server 400s the next turn.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_t", "model": "claude-opus-4-7", "usage": {"input_tokens": 5}}}),
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": crate::api::model_info::CLAUDE_OPUS, "usage": {"input_tokens": 5}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "let me think..."}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc123sig"}}),
@@ -372,7 +378,7 @@ mod tests {
             // echoed back on the next turn, so the parser must not
             // include it in the response.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_t", "model": "claude-opus-4-7", "usage": {"input_tokens": 5}}}),
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": crate::api::model_info::CLAUDE_OPUS, "usage": {"input_tokens": 5}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "unsigned"}}),
                 json!({"type": "content_block_stop", "index": 0}),
@@ -393,7 +399,7 @@ mod tests {
         #[tokio::test]
         async fn error_event_returns_api_error() {
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_e", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}}),
                 json!({"type": "error", "error": {"message": "overloaded"}}),
             ];
 
@@ -412,7 +418,7 @@ mod tests {
             // A mid-stream error must keep the reply text already
             // streamed to the screen so the next turn is not blind to it.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_e", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}}),
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Here is the fix: "}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "rename the field"}}),
@@ -470,7 +476,7 @@ mod tests {
                 "data: {}\n",
                 serde_json::to_string(&json!({
                     "type": "message_start",
-                    "message": {"id": "msg_mb", "model": "claude-sonnet-4-6", "usage": {"input_tokens": 1}}
+                    "message": {"id": "msg_mb", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}
                 }))
                 .unwrap()
             )
@@ -542,7 +548,7 @@ mod tests {
                     "type": "message_start",
                     "message": {
                         "id": "msg_big",
-                        "model": "claude-sonnet-4-6",
+                        "model": crate::api::model_info::CLAUDE_SONNET,
                         "usage": {"input_tokens": 9_999_999_999u64}
                     }
                 }),

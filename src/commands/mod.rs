@@ -153,8 +153,8 @@ mod tests {
 
     #[test]
     fn slash_model_with_name_parses_to_model_set() {
-        match Command::from_str("/model claude-opus-4-7") {
-            Some(Command::ModelSet(name)) => assert_eq!(name, "claude-opus-4-7"),
+        match Command::from_str(&format!("/model {}", crate::api::model_info::CLAUDE_OPUS)) {
+            Some(Command::ModelSet(name)) => assert_eq!(name, crate::api::model_info::CLAUDE_OPUS),
             other => panic!("expected ModelSet, got {other:?}"),
         }
     }
@@ -165,8 +165,11 @@ mod tests {
         // before reaching the handler. Validation against the
         // whitelist still happens in `handle_model_set` so the user
         // sees the same error there as on `--model`.
-        match Command::from_str("/model Claude-Opus-4-7") {
-            Some(Command::ModelSet(name)) => assert_eq!(name, "claude-opus-4-7"),
+        match Command::from_str(&format!(
+            "/model {}",
+            crate::api::model_info::CLAUDE_OPUS.to_uppercase()
+        )) {
+            Some(Command::ModelSet(name)) => assert_eq!(name, crate::api::model_info::CLAUDE_OPUS),
             other => panic!("expected ModelSet, got {other:?}"),
         }
     }

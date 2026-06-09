@@ -9,7 +9,7 @@ use std::time::Duration;
 /// Client-level ceiling for the main LLM providers (Anthropic, OpenAI).
 /// reqwest's `.timeout()` is a total-operation deadline (not an idle one),
 /// so this has to cover the whole response — including minutes of silent
-/// adaptive thinking on Opus 4.7+ at high effort before any tokens arrive.
+/// adaptive thinking at high effort before any tokens arrive.
 /// 30 min fits every practical request we've seen; anything longer is
 /// almost certainly a stuck connection rather than a legitimately-thinking
 /// model.

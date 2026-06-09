@@ -154,9 +154,9 @@ impl Repl {
         }
 
         // Reject `(model, effort)` pairs the active provider won't
-        // accept, e.g. `xhigh` on Sonnet 4.6 or `max` on any OpenAI
-        // model. Catching it here turns a runtime 400 into a clear
-        // startup error.
+        // accept, e.g. `xhigh` on a model that tops out at `high`, or
+        // `max` on any OpenAI model. Catching it here turns a runtime
+        // 400 into a clear startup error.
         if let Some(msg) =
             crate::api::model_info::effort_support_error(&config.model, config.reasoning_effort)
         {
@@ -268,9 +268,9 @@ impl Repl {
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
         let effort = self.model_config.reasoning_effort;
         let reasoning = if self.uses_adaptive_thinking() {
-            // Opus 4.7 picks its own budget; showing a fixed token count
-            // would be misleading, so render the `output_config.effort`
-            // value we actually send instead.
+            // Adaptive models pick their own budget; showing a fixed
+            // token count would be misleading, so render the
+            // `output_config.effort` value we actually send instead.
             format!("effort: {}", crate::api::anthropic::effort_label(effort))
         } else if matches!(self.client, Anthropic(_)) {
             if effort.is_enabled() {
@@ -378,8 +378,7 @@ impl Repl {
         Ok(())
     }
 
-    /// True when the active model uses adaptive thinking (Opus 4.7,
-    /// Sonnet 4.6).
+    /// True when the active model uses adaptive thinking.
     fn uses_adaptive_thinking(&self) -> bool {
         matches!(self.client, Anthropic(_))
             && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
