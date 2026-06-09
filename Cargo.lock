@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "sofos"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "ansi-to-tui",
  "arboard",

@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-06-09
+
 ### Added
 
 - **Claude Fable 5 is now available.** Anthropic's most capable model can be selected with `--model claude-fable-5` or from the `/model` picker, where it appears at the top of the list. The default model is unchanged.
