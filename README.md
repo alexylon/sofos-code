@@ -155,7 +155,7 @@ Use a different model:
 
 ```bash
 sofos --model gpt-5.5
-sofos --model claude-opus-4-7 -e high
+sofos --model claude-opus-4-8 -e high
 ```
 
 Run a single prompt and exit:
@@ -264,16 +264,16 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 
 Sofos supports eight models, in `/model` picker order:
 
-| Model | Provider |
-|---|---|
-| `claude-fable-5` | Anthropic |
-| `claude-opus-4-7` | Anthropic |
+| Model                         | Provider |
+|-------------------------------|---|
+| `claude-fable-5`              | Anthropic |
+| `claude-opus-4-8`             | Anthropic |
 | `claude-sonnet-4-6` (default) | Anthropic |
-| `claude-haiku-4-5` | Anthropic |
-| `gpt-5.5` | OpenAI |
-| `gpt-5.4` | OpenAI |
-| `gpt-5.4-mini` | OpenAI |
-| `gpt-5.3-codex` | OpenAI |
+| `claude-haiku-4-5`            | Anthropic |
+| `gpt-5.5`                     | OpenAI |
+| `gpt-5.4`                     | OpenAI |
+| `gpt-5.4-mini`                | OpenAI |
+| `gpt-5.3-codex`               | OpenAI |
 
 `--model <name>` accepts only the values above; any other slug is refused at startup with the supported list. The same whitelist drives the inline `/model` picker, so the two surfaces never disagree about which models exist.
 
@@ -291,25 +291,25 @@ Examples:
 sofos -e medium                       # Default balance.
 sofos -e off                          # Lowest-cost path.
 sofos -e high                         # More reasoning for hard tasks.
-sofos -e max --model claude-opus-4-7  # Highest Anthropic adaptive level.
+sofos -e max --model claude-opus-4-8  # Highest Anthropic adaptive level.
 sofos -e xhigh --model gpt-5.5        # Highest OpenAI gpt-5 reasoning level.
 ```
 
 Support matrix:
 
-| Effort | Fable 5 | Opus 4.7 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
-|---|:---:|:---:|:---:|:---:|:---:|
-| `off` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ | ✓ | ✗ | ✗ | ✓ |
-| `max` | ✓ | ✓ | ✓ | ✗ | ✗ |
+| Effort | Fable 5 | Opus 4.8 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
+|---|:---:|:--------:|:---:|:---:|:---:|
+| `off` | ✓ |    ✓     | ✓ | ✓ | ✓ |
+| `low` | ✓ |    ✓     | ✓ | ✓ | ✓ |
+| `medium` | ✓ |    ✓     | ✓ | ✓ | ✓ |
+| `high` | ✓ |    ✓     | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ |    ✓     | ✗ | ✗ | ✓ |
+| `max` | ✓ |    ✓     | ✓ | ✗ | ✗ |
 
 Provider mapping:
 
 - **OpenAI** sends `reasoning.effort`; `off` maps to minimal reasoning and suppresses reasoning summaries.
-- **Claude Fable 5, Opus 4.7, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
+- **Claude Fable 5, Opus 4.8, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
 
 ---

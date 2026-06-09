@@ -1739,14 +1739,21 @@ async fn test_glob_files_symlink_not_followed_by_default() {
     // A regular file (so default-disabled excludes don't hide it).
     std::fs::write(workspace.path().join("anchor.txt"), "").unwrap();
 
-    // A real directory outside the symlink we'll reach only via follow.
+    // A real directory inside the workspace, always reached directly.
     let hidden = workspace.path().join("real_hidden");
     std::fs::create_dir_all(&hidden).unwrap();
     std::fs::write(hidden.join("through_symlink.txt"), "").unwrap();
 
-    // Symlink pointing at the hidden directory. Default walk won't
-    // descend through it; `follow_symlinks: true` will.
-    symlink(&hidden, workspace.path().join("alias")).unwrap();
+    // A separate directory reached only through the symlink. Keeping it
+    // distinct from `real_hidden` stops the cycle-breaking dedup from
+    // collapsing the two into one canonical path, so the aliased path
+    // surfaces whatever order the directory entries come back in.
+    let external = tempdir().unwrap();
+    std::fs::write(external.path().join("through_symlink.txt"), "").unwrap();
+
+    // Workspace-internal symlink to that external directory. The default
+    // walk won't descend through it; `follow_symlinks: true` will.
+    symlink(external.path(), workspace.path().join("alias")).unwrap();
 
     let executor =
         ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
