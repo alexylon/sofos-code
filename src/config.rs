@@ -146,6 +146,12 @@ impl SandboxMode {
     pub fn is_read_only(self) -> bool {
         matches!(self, Self::ReadOnly)
     }
+
+    /// Whether shell commands should be confined to the workspace by the
+    /// operating-system sandbox. True only for [`SandboxMode::Workspace`].
+    pub fn is_sandboxed(self) -> bool {
+        matches!(self, Self::Workspace)
+    }
 }
 
 #[cfg(test)]

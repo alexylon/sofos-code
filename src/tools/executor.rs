@@ -303,10 +303,13 @@ impl ToolExecutor {
             Arc::clone(&read_path_session_denied),
         );
 
+        let mut bash_executor = BashExecutor::new(workspace.clone(), interactive, has_morph)?;
+        bash_executor.set_sandbox_mode(mode);
+
         Ok(Self {
             fs_tool: FileSystemTool::new(workspace.clone())?,
             code_search_tool,
-            bash_executor: BashExecutor::new(workspace, interactive, has_morph)?,
+            bash_executor,
             morph_client,
             mcp_manager,
             image_loader: Arc::new(image_loader),

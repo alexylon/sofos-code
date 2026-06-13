@@ -5,6 +5,7 @@
 //! per-stream output caps from [`super::output`], and renders the
 //! result string the model sees.
 
+use crate::config::SandboxMode;
 use crate::error::{Result, SofosError};
 use crate::tools::bash::BashExecutor;
 #[cfg(unix)]
@@ -13,6 +14,7 @@ use crate::tools::bash::output::{
     BASH_COMMAND_TIMEOUT, BASH_READ_CHUNK_BYTES, MAX_BASH_OUTPUT_BYTES, SUPERVISOR_POLL_INTERVAL,
     TerminationReason,
 };
+use crate::tools::bash::sandbox::{self, SandboxPolicy};
 use crate::tools::bash::validate::command_contains_op;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
@@ -105,6 +107,7 @@ impl BashExecutor {
             workspace,
             interactive,
             has_morph,
+            mode: SandboxMode::Full,
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
             bash_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
@@ -147,6 +150,12 @@ impl BashExecutor {
                 ));
             }
             CommandPermission::Ask => {
+                if self.mode.is_sandboxed() && sandbox::is_available() {
+                    // The sandbox confines the command to the workspace,
+                    // so run it instead of prompting — the kernel is the
+                    // boundary.
+                    return self.run_and_shape(command, true);
+                }
                 let (allowed, remember) = permission_manager.ask_user_permission(command)?;
                 if !allowed {
                     if !remember {
@@ -201,7 +210,15 @@ impl BashExecutor {
         // Check external paths in command — ask user for paths not covered by Bash path grants
         self.check_bash_external_paths(command, permission_manager)?;
 
-        let outcome = self.spawn_supervised(command)?;
+        self.run_and_shape(command, false)
+    }
+
+    /// Run a command (optionally confined to the workspace) and turn the
+    /// supervised outcome into the string the model sees. The command is
+    /// assumed to have already cleared whatever permission and structural
+    /// checks apply to it.
+    fn run_and_shape(&self, command: &str, confine: bool) -> Result<String> {
+        let outcome = self.spawn_supervised(command, confine)?;
 
         if let Some(reason) = outcome.terminated_for {
             return match reason {
@@ -287,11 +304,33 @@ impl BashExecutor {
         ))
     }
 
-    fn spawn_supervised(&self, command: &str) -> Result<SupervisedOutput> {
+    /// Resolve the program and arguments to spawn: the bare shell, or
+    /// the shell wrapped by the operating-system sandbox when `confine`
+    /// is set and a sandbox is available on this machine.
+    fn shell_invocation(
+        &self,
+        shell: &ResolvedShell,
+        command: &str,
+        confine: bool,
+    ) -> (OsString, Vec<OsString>) {
+        if confine {
+            let policy = SandboxPolicy::for_workspace(&self.workspace);
+            if let Some(invocation) = sandbox::confined_invocation(&shell.program, command, &policy)
+            {
+                return invocation;
+            }
+        }
+        (
+            shell.program.clone(),
+            vec![OsString::from("-c"), OsString::from(command)],
+        )
+    }
+
+    fn spawn_supervised(&self, command: &str, confine: bool) -> Result<SupervisedOutput> {
         let shell = resolve_shell();
-        let mut cmd = Command::new(&shell.program);
-        cmd.arg("-c")
-            .arg(command)
+        let (program, args) = self.shell_invocation(&shell, command, confine);
+        let mut cmd = Command::new(&program);
+        cmd.args(&args)
             .current_dir(&self.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

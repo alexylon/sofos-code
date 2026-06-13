@@ -11,8 +11,10 @@
 
 pub mod executor;
 pub mod output;
+pub mod sandbox;
 pub mod validate;
 
+use crate::config::SandboxMode;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -25,6 +27,9 @@ pub struct BashExecutor {
     pub(super) interactive: bool,
     /// Whether `morph_edit_file` is exposed (drives error-message hints)
     pub(super) has_morph: bool,
+    /// Access mode in effect. In workspace mode, commands the permission
+    /// gate would otherwise refuse are run confined by the sandbox.
+    pub(super) mode: SandboxMode,
     /// Session-scoped temporary permissions (not persisted to config)
     pub(super) session_allowed: Arc<Mutex<HashSet<String>>>,
     pub(super) session_denied: Arc<Mutex<HashSet<String>>>,
@@ -42,6 +47,10 @@ pub struct BashExecutor {
 impl BashExecutor {
     pub fn install_interrupt_flag(&mut self, flag: Arc<AtomicBool>) {
         self.interrupt_flag = flag;
+    }
+
+    pub fn set_sandbox_mode(&mut self, mode: SandboxMode) {
+        self.mode = mode;
     }
 }
 
@@ -662,5 +671,29 @@ ask = []
         let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
         assert!(executor.is_safe_command_structure("ls ~/Documents"));
         assert!(executor.is_safe_command_structure("ls ~"));
+    }
+
+    /// In workspace mode a command the permission gate would otherwise
+    /// prompt for runs confined instead — no prompt — and can write
+    /// inside the workspace. This is the friction fix: unknown commands
+    /// just run, bounded by the sandbox. The trailing redirection also
+    /// shows the structural check is skipped on the confined path.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_runs_unknown_command_confined() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let result = executor.execute("notarealtool 2>/dev/null; echo confined > inside.txt");
+
+        assert!(
+            result.is_ok(),
+            "expected the confined run to succeed, got {result:?}"
+        );
+        assert!(
+            path.join("inside.txt").is_file(),
+            "the command should be able to write inside the workspace"
+        );
     }
 }
