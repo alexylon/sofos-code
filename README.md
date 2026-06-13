@@ -607,7 +607,7 @@ See [`RELEASE.md`](RELEASE.md) for the full process.
 
 ## License
 
-MIT License. See [`LICENSE`](LICENSE).
+Apache License 2.0. See [`LICENSE`](LICENSE).
 
 ---
 
