@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::SandboxMode;
 use crate::error::SofosError;
 use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
 use crate::tools::executor::{cap_mcp_images, cap_mcp_response};
@@ -62,8 +63,14 @@ async fn update_plan_dispatcher_returns_compact_model_result_and_styled_display(
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "update_plan",
@@ -237,7 +244,7 @@ async fn test_read_file_blocks_relative_escape() {
     )
     .unwrap();
 
-    let executor = ToolExecutor::new(workspace, None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(workspace, None, None, SandboxMode::Workspace, false).unwrap();
 
     let result = executor
         .execute("read_file", &json!({"path": "../sibling/secret.txt"}))
@@ -279,8 +286,14 @@ async fn test_resolve_for_write_canonicalizes_through_missing_ancestors() {
     let alias = workspace.path().join("alias");
     symlink(&real_target_canonical, &alias).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let resolved = executor
         .resolve_for_write("alias/missing/dir/file.txt")
@@ -333,8 +346,14 @@ async fn test_read_file_allows_explicit_outside_path_with_glob() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // Should allow access via glob pattern
     let result = executor
@@ -363,8 +382,14 @@ async fn test_edit_file_replaces_string() {
     .unwrap();
     std::fs::write(workspace.path().join("test.txt"), "hello world").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "edit_file",
@@ -406,8 +431,14 @@ async fn test_edit_file_preserves_content_past_truncation_cap() {
     let original = format!("{head}{middle}{tail}");
     std::fs::write(workspace.path().join("big.txt"), &original).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "edit_file",
@@ -453,8 +484,14 @@ async fn test_edit_file_not_found_string() {
     .unwrap();
     std::fs::write(workspace.path().join("test.txt"), "hello world").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "edit_file",
@@ -479,8 +516,14 @@ async fn test_edit_file_replace_all() {
     .unwrap();
     std::fs::write(workspace.path().join("test.txt"), "aaa bbb aaa").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "edit_file",
@@ -511,8 +554,14 @@ async fn test_edit_file_returns_compact_summary_to_model_and_diff_to_display() {
     .unwrap();
     std::fs::write(workspace.path().join("greet.txt"), "hello world").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "edit_file",
@@ -557,8 +606,14 @@ async fn test_write_file_overwrite_returns_compact_summary_to_model() {
     .unwrap();
     std::fs::write(workspace.path().join("notes.txt"), "old body").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "write_file",
@@ -595,8 +650,14 @@ async fn test_glob_files_finds_matches() {
     std::fs::write(src.join("lib.rs"), "").unwrap();
     std::fs::write(workspace.path().join("README.md"), "").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute("glob_files", &json!({"pattern": "**/*.rs"}))
         .await;
@@ -628,8 +689,14 @@ async fn glob_files_star_does_not_cross_path_separator() {
     std::fs::create_dir_all(&nested).unwrap();
     std::fs::write(nested.join("deep.rs"), "").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("glob_files", &json!({"pattern": "*.rs"}))
@@ -683,8 +750,14 @@ async fn test_glob_files_skips_default_excludes() {
     std::fs::create_dir_all(&node_dep).unwrap();
     std::fs::write(node_dep.join("index.rs"), "").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("glob_files", &json!({"pattern": "**/*.rs"}))
@@ -742,8 +815,14 @@ async fn test_glob_files_gates_external_path_through_permissions() {
     let outside = tempdir().unwrap();
     std::fs::write(outside.path().join("SECRET_MARKER"), "leak").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // Parent-directory escape — no grant, non-interactive mode → denied
     // with the "outside workspace" hint.
@@ -787,8 +866,14 @@ async fn test_glob_files_gates_external_path_through_permissions() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "glob_files",
@@ -819,8 +904,14 @@ async fn test_glob_files_no_matches() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute("glob_files", &json!({"pattern": "**/*.xyz"}))
         .await;
@@ -851,8 +942,14 @@ async fn test_write_file_to_external_path_blocked_without_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -888,8 +985,14 @@ async fn test_write_file_to_external_path_allowed_with_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -931,8 +1034,14 @@ async fn test_edit_file_external_path_allowed_with_read_and_write_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -979,8 +1088,14 @@ async fn test_edit_file_external_write_only_grant_denied() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1025,8 +1140,14 @@ async fn test_read_grant_does_not_allow_write() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // Read should work
     let read_result = executor
@@ -1079,8 +1200,14 @@ async fn test_list_directory_external_with_read_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1129,8 +1256,14 @@ async fn test_symlink_does_not_bypass_write_permission() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // Editing via symlink should be blocked — canonical resolves to secret_dir
     let result = executor
@@ -1165,8 +1298,14 @@ async fn test_bash_external_path_blocked_without_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("execute_bash", &json!({"command": "cat /etc/hosts"}))
@@ -1201,8 +1340,14 @@ async fn test_bash_external_path_allowed_with_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1235,8 +1380,14 @@ async fn test_edit_file_external_blocked_without_any_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1274,8 +1425,14 @@ async fn test_bash_grant_does_not_allow_read_or_write() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // read_file should be blocked (Bash grant doesn't imply Read)
     let read_result = executor
@@ -1328,8 +1485,14 @@ async fn test_write_deny_overrides_allow() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1366,8 +1529,14 @@ async fn test_read_external_absolute_path_blocked_without_grant() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1414,8 +1583,14 @@ async fn test_write_new_file_to_external_path() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1458,8 +1633,14 @@ async fn test_bash_partial_path_grant_blocks_ungranated_path() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     // Command with both paths — denied path should block entire command
     let result = executor
@@ -1504,8 +1685,14 @@ async fn test_bash_deny_overrides_allow() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let secret_file = canonical_sub.join("file.txt");
     let result = executor
@@ -1549,8 +1736,14 @@ async fn test_create_directory_external_requires_write_grant() {
         "[permissions]\nallow = []\ndeny = []\nask = []\n",
     )
     .unwrap();
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "create_directory",
@@ -1573,8 +1766,14 @@ async fn test_create_directory_external_requires_write_grant() {
         ),
     )
     .unwrap();
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "create_directory",
@@ -1613,8 +1812,14 @@ async fn test_copy_file_external_source_and_destination() {
         ),
     )
     .unwrap();
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1659,8 +1864,14 @@ async fn test_move_file_external_requires_write_on_source() {
         ),
     )
     .unwrap();
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let dest_in_workspace = workspace.path().join("moved.txt");
     let result = executor
@@ -1695,8 +1906,14 @@ async fn test_move_file_external_requires_write_on_source() {
         ),
     )
     .unwrap();
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
     let result = executor
         .execute(
             "move_file",
@@ -1755,8 +1972,14 @@ async fn test_glob_files_symlink_not_followed_by_default() {
     // walk won't descend through it; `follow_symlinks: true` will.
     symlink(external.path(), workspace.path().join("alias")).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("glob_files", &json!({"pattern": "**/through_symlink.txt"}))
@@ -1818,8 +2041,14 @@ async fn view_image_loads_local_file_as_base64() {
     .unwrap();
     std::fs::write(workspace.path().join("pixel.png"), tiny_png_bytes()).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("view_image", &json!({"path": "pixel.png"}))
@@ -1852,8 +2081,14 @@ async fn view_image_passes_http_url_through() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute(
@@ -1884,8 +2119,14 @@ async fn view_image_rejects_directory_with_chaining_hint() {
     .unwrap();
     std::fs::create_dir_all(workspace.path().join("assets")).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("view_image", &json!({"path": "assets"}))
@@ -1910,8 +2151,14 @@ async fn view_image_rejects_missing_file_clearly() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("view_image", &json!({"path": "does-not-exist.png"}))
@@ -1937,8 +2184,14 @@ async fn view_image_rejects_non_image_extension() {
     .unwrap();
     std::fs::write(workspace.path().join("notes.txt"), b"not an image").unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("view_image", &json!({"path": "notes.txt"}))
@@ -1965,8 +2218,14 @@ async fn view_image_rejects_empty_path() {
     )
     .unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor.execute("view_image", &json!({"path": ""})).await;
 
@@ -1993,8 +2252,14 @@ async fn view_image_resizes_oversized_local_file_end_to_end() {
         [10, 20, 30, 255],
     );
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let result = executor
         .execute("view_image", &json!({"path": "big.png"}))
@@ -2030,8 +2295,14 @@ async fn view_image_rejects_file_exceeding_size_cap() {
     let oversized = vec![0u8; (crate::tools::image::MAX_IMAGE_SIZE_BYTES as usize) + 1];
     std::fs::write(workspace.path().join("huge.png"), oversized).unwrap();
 
-    let executor =
-        ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false).unwrap();
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
 
     let err = executor
         .execute("view_image", &json!({"path": "huge.png"}))

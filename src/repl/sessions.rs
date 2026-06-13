@@ -5,6 +5,7 @@
 //! the thin REPL-side adapter that translates between
 //! [`crate::session::SessionState`] and the persisted form.
 
+use crate::config::SandboxMode;
 use crate::error::{Result, SofosError};
 use crate::repl::Repl;
 use crate::session::{SessionMetadata, SessionTokenCounters};
@@ -40,7 +41,7 @@ impl Repl {
                 peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
             },
             &self.model_config.model,
-            self.safe_mode,
+            self.mode.is_read_only(),
         )?;
 
         Ok(())
@@ -186,9 +187,13 @@ impl Repl {
         // (`None`) keep the CLI value, so a `--safe-mode --resume`
         // against a pre-persistence file still honours the flag.
         if let Some(saved_safe_mode) = session.safe_mode {
-            if saved_safe_mode != self.safe_mode {
-                self.safe_mode = saved_safe_mode;
-                self.tool_executor.set_safe_mode(saved_safe_mode);
+            if saved_safe_mode != self.mode.is_read_only() {
+                self.mode = if saved_safe_mode {
+                    SandboxMode::ReadOnly
+                } else {
+                    SandboxMode::Workspace
+                };
+                self.tool_executor.set_mode(self.mode);
                 self.refresh_available_tools();
             }
         }

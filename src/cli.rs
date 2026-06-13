@@ -86,6 +86,11 @@ pub struct Cli {
     /// Enable read-only mode
     #[arg(short, long)]
     pub safe_mode: bool,
+
+    /// Run shell commands without operating-system confinement (full
+    /// access). Overridden by `--safe-mode` when both are given.
+    #[arg(long)]
+    pub unrestricted: bool,
 }
 
 impl Cli {

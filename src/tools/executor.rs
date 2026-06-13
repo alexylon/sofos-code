@@ -1,4 +1,5 @@
 use crate::api::MorphClient;
+use crate::config::SandboxMode;
 use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
 use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
@@ -145,7 +146,7 @@ pub struct ToolExecutor {
     morph_client: Option<MorphClient>,
     mcp_manager: Option<McpManager>,
     image_loader: Arc<ImageLoader>,
-    safe_mode: bool,
+    mode: SandboxMode,
     /// Whether interactive prompts (stdin) are available (false in tests/pipes)
     interactive: bool,
     // Not persisted across sessions.
@@ -279,7 +280,7 @@ impl ToolExecutor {
         workspace: std::path::PathBuf,
         morph_client: Option<MorphClient>,
         mcp_manager: Option<McpManager>,
-        safe_mode: bool,
+        mode: SandboxMode,
         interactive: bool,
     ) -> Result<Self> {
         let code_search_tool = match CodeSearchTool::new(workspace.clone()) {
@@ -309,7 +310,7 @@ impl ToolExecutor {
             morph_client,
             mcp_manager,
             image_loader: Arc::new(image_loader),
-            safe_mode,
+            mode,
             interactive,
             read_path_session_allowed,
             read_path_session_denied,
@@ -326,8 +327,8 @@ impl ToolExecutor {
         self.code_search_tool.is_some()
     }
 
-    pub fn set_safe_mode(&mut self, safe_mode: bool) {
-        self.safe_mode = safe_mode;
+    pub fn set_mode(&mut self, mode: SandboxMode) {
+        self.mode = mode;
     }
 
     /// Names of MCP servers whose tools would be filtered out if safe
@@ -499,7 +500,7 @@ impl ToolExecutor {
     }
 
     pub async fn get_available_tools(&self) -> Vec<crate::api::Tool> {
-        let mut tools = if self.safe_mode {
+        let mut tools = if self.mode.is_read_only() {
             get_read_only_tools()
         } else if self.has_morph() {
             get_all_tools_with_morph()
@@ -512,7 +513,7 @@ impl ToolExecutor {
         }
 
         if let Some(mcp_manager) = &self.mcp_manager {
-            let mcp_tools = if self.safe_mode {
+            let mcp_tools = if self.mode.is_read_only() {
                 mcp_manager.get_safe_mode_tools().await
             } else {
                 mcp_manager.get_all_tools().await
@@ -529,7 +530,7 @@ impl ToolExecutor {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name) {
-                if self.safe_mode {
+                if self.mode.is_read_only() {
                     if let Some(server) = mcp_manager.server_for_tool(tool_name) {
                         if !mcp_manager.is_server_available_in_safe_mode(server) {
                             return Err(SofosError::ToolExecution(format!(

@@ -108,9 +108,60 @@ pub const NORMAL_MODE_MESSAGE: &str = "[SYSTEM: Normal (unrestricted) mode has b
                                        File modifications and bash commands are now allowed.\
                                        All tools are available]";
 
+/// How much access the assistant has to the workspace and the shell.
+///
+/// Chosen at startup from the command line (`--safe-mode`,
+/// `--unrestricted`, or neither) and switchable during a session with
+/// the `/safe` and `/normal` commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxMode {
+    /// Only read-only tools are offered. No file writes and no shell
+    /// commands.
+    ReadOnly,
+    /// Read and write within the workspace, with shell commands confined
+    /// to the workspace directory by the operating system. This is the
+    /// default when neither switch is given.
+    Workspace,
+    /// Full access: shell commands run without operating-system
+    /// confinement. Intended for trusted environments only.
+    Full,
+}
+
+impl SandboxMode {
+    /// Resolve the mode from the two command-line switches. `--safe-mode`
+    /// wins over `--unrestricted` when both are given, so the most
+    /// restrictive choice always takes effect.
+    pub fn from_flags(safe: bool, unrestricted: bool) -> Self {
+        if safe {
+            Self::ReadOnly
+        } else if unrestricted {
+            Self::Full
+        } else {
+            Self::Workspace
+        }
+    }
+
+    /// Whether only read-only tools are offered. Drives tool selection
+    /// and the read-only banner.
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sandbox_mode_from_flags_prefers_safe_then_unrestricted() {
+        assert_eq!(
+            SandboxMode::from_flags(false, false),
+            SandboxMode::Workspace
+        );
+        assert_eq!(SandboxMode::from_flags(false, true), SandboxMode::Full);
+        assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::ReadOnly);
+        assert_eq!(SandboxMode::from_flags(true, true), SandboxMode::ReadOnly);
+    }
 
     #[test]
     fn test_default_config_matches_fallback_model_info() {

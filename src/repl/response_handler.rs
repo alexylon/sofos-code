@@ -729,9 +729,14 @@ mod truncation_tests {
         let client = LlmClient::Anthropic(
             AnthropicClient::new("test-key".to_string()).expect("anthropic client"),
         );
-        let tool_executor =
-            ToolExecutor::new(workspace.path().to_path_buf(), None, None, false, false)
-                .expect("tool executor");
+        let tool_executor = ToolExecutor::new(
+            workspace.path().to_path_buf(),
+            None,
+            None,
+            crate::config::SandboxMode::Workspace,
+            false,
+        )
+        .expect("tool executor");
         let conversation = ConversationHistory::new();
         let interrupt = Arc::new(AtomicBool::new(false));
         let steer = Arc::new(std::sync::Mutex::new(Vec::new()));

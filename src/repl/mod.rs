@@ -14,7 +14,7 @@ use std::io::IsTerminal;
 
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
-use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE};
+use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE, SandboxMode};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
@@ -37,7 +37,7 @@ pub struct ReplConfig {
     pub model: String,
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
-    pub safe_mode: bool,
+    pub mode: SandboxMode,
 }
 
 impl ReplConfig {
@@ -45,13 +45,13 @@ impl ReplConfig {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
-        safe_mode: bool,
+        mode: SandboxMode,
     ) -> Self {
         Self {
             model,
             max_tokens,
             reasoning_effort,
-            safe_mode,
+            mode,
         }
     }
 }
@@ -63,7 +63,7 @@ pub struct Repl {
     pub(super) ui: UI,
     pub(super) model_config: ModelConfig,
     pub(super) session_state: SessionState,
-    pub(super) safe_mode: bool,
+    pub(super) mode: SandboxMode,
     pub(super) available_tools: Vec<crate::api::Tool>,
     /// Interrupt flag shared with the TUI. Set to `true` when the user presses
     /// ESC/Ctrl+C during an AI turn; checked by the API request loop.
@@ -119,7 +119,7 @@ impl Repl {
             workspace.clone(),
             morph_client,
             mcp_manager,
-            config.safe_mode,
+            config.mode,
             std::io::stdin().is_terminal(),
         )?;
 
@@ -170,7 +170,7 @@ impl Repl {
             &config.model,
         ));
 
-        let safe_mode_mcp_note = if config.safe_mode {
+        let safe_mode_mcp_note = if config.mode.is_read_only() {
             conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
             set_safe_mode_cursor_style()?;
             format_mcp_safe_mode_summary(
@@ -209,7 +209,7 @@ impl Repl {
             ui,
             model_config,
             session_state,
-            safe_mode: config.safe_mode,
+            mode: config.mode,
             available_tools,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             steer_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -289,7 +289,7 @@ impl Repl {
 
         tui::event::StatusSnapshot {
             model: self.model_config.model.clone(),
-            mode: if self.safe_mode {
+            mode: if self.mode.is_read_only() {
                 tui::event::Mode::Safe
             } else {
                 tui::event::Mode::Normal
@@ -317,7 +317,7 @@ impl Repl {
     }
 
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
-        let symbol = if self.safe_mode { ":" } else { ">" };
+        let symbol = if self.mode.is_read_only() { ":" } else { ">" };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
         // Capture the turn result so we can persist the session even
@@ -366,7 +366,7 @@ impl Repl {
         self.session_state.clear(new_session_id);
         // Safe mode survives `/clear`, so the preamble has to ride
         // along too — otherwise the model proposes blocked tools.
-        if self.safe_mode {
+        if self.mode.is_read_only() {
             self.session_state
                 .conversation
                 .add_user_message(SAFE_MODE_MESSAGE.to_string());
@@ -579,12 +579,12 @@ impl Repl {
     }
 
     pub fn enable_safe_mode(&mut self) {
-        if self.safe_mode {
+        if self.mode.is_read_only() {
             println!("\n{}\n", "Safe mode: already enabled".dimmed());
             return;
         }
-        self.safe_mode = true;
-        self.tool_executor.set_safe_mode(true);
+        self.mode = SandboxMode::ReadOnly;
+        self.tool_executor.set_mode(SandboxMode::ReadOnly);
         self.refresh_available_tools();
         // Switch the cursor to the safe-mode shape so the visual
         // affordance matches the new mode. Best-effort: a failed
@@ -613,12 +613,12 @@ impl Repl {
     }
 
     pub fn disable_safe_mode(&mut self) {
-        if !self.safe_mode {
+        if !self.mode.is_read_only() {
             println!("\n{}\n", "Safe mode: already disabled".dimmed());
             return;
         }
-        self.safe_mode = false;
-        self.tool_executor.set_safe_mode(false);
+        self.mode = SandboxMode::Workspace;
+        self.tool_executor.set_mode(SandboxMode::Workspace);
         self.refresh_available_tools();
         // Restore the default cursor shape so the visual affordance
         // matches the new mode.
