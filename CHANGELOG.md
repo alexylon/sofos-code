@@ -4,6 +4,11 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The assistant can now run unfamiliar shell commands without stopping to ask.** By default, a command Sofos does not already recognise as safe runs confined by the operating system — it can only write inside the project folder and cannot use the network — instead of pausing for your approval. Commands recognised as safe, and ones blocked as destructive, are unchanged. Available on macOS and Linux; on Windows these commands still ask for approval.
+- **New `--unrestricted` option** runs shell commands without that confinement, for trusted environments. Unfamiliar commands ask for approval as before.
+
 ## [0.3.5] - 2026-06-09
 
 ### Added

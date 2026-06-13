@@ -245,6 +245,7 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 ```text
 -p, --prompt <TEXT>          Run one prompt and exit.
 -s, --safe-mode              Start with read-only native tools.
+    --unrestricted           Run shell commands without operating-system confinement.
 -r, --resume                 Resume a previous session.
     --check-connection       Check provider connectivity and exit.
     --api-key <KEY>          Anthropic API key; overrides ANTHROPIC_API_KEY.
@@ -386,19 +387,25 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 
 ### Bash command permissions
 
-Bash commands pass through three layers:
+Sofos runs in one of three access modes:
 
-1. **Command tier** — known safe commands may run automatically; dangerous commands are blocked; unknown commands prompt.
-2. **Structural checks** — parent traversal, file output redirection, here-documents, and dangerous git operations are blocked regardless of command tier.
-3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission.
+- **Workspace** (default) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command.
+- **Read-only** (`--safe-mode`, or `/safe` during a session) — only read-only tools; no writes and no shell commands.
+- **Full** (`--unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead.
 
-Default behaviour:
+Operating-system confinement uses the macOS Seatbelt sandbox and the Linux Bubblewrap sandbox. On Windows there is no confinement yet, so unfamiliar commands prompt for approval.
+
+Bash commands pass through these layers:
+
+1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode, or prompts in full mode.
+2. **Structural checks** — parent traversal, file output redirection, here-documents, and dangerous git operations are blocked for commands that run unconfined; a command running inside the sandbox relies on the sandbox boundary instead.
+3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission when they run unconfined.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
 | Allowed | Runs automatically after structural checks. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
 | Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
-| Ask | Prompts the user. | Unknown commands, external paths, `cp`, `mv`, `mkdir`, selected git checkout forms |
+| Other | Workspace mode: runs confined to the project. Full mode: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
 
 ### Destructive operations
 
