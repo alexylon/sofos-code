@@ -35,6 +35,7 @@ Tested on macOS, Linux, and Windows. On Windows the bash executor runs commands 
   - [MCP tools](#mcp-tools)
 - [Security model](#security-model)
   - [Workspace and external paths](#workspace-and-external-paths)
+  - [Access modes](#access-modes)
   - [Bash command permissions](#bash-command-permissions)
   - [Destructive operations](#destructive-operations)
 - [Configuration](#configuration)
@@ -80,7 +81,7 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
 - **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
-- **Safe mode** — read-only native tools for review-only sessions.
+- **Access modes** — safe (read-only), workspace (the default; unfamiliar shell commands run confined to the project by the operating-system sandbox on macOS and Linux), and unrestricted; switchable mid-session.
 - **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
 - **Session persistence** — saved conversations, resume picker, restored safe mode, restored model where compatible, and persisted cost counters.
@@ -385,15 +386,17 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 - Tools that both read and write external files, such as `edit_file` and `morph_edit_file`, require both Read and Write grants.
 - External access can be allowed for the current session or remembered in configuration.
 
-### Bash command permissions
+### Access modes
 
-Sofos runs in one of three access modes:
+Sofos starts in one of three access modes. The current mode is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
 
-- **Workspace** (default) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command.
-- **Read-only** (`--safe-mode`, or `/safe` during a session) — only read-only tools; no writes and no shell commands.
+- **Safe** (`--safe-mode`, or `/safe`) — read-only tools only; no writes and no shell commands. Prompt shows `:`.
+- **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command. Prompt shows `>`.
 - **Unrestricted** (`--unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead.
 
 Operating-system confinement uses the macOS Seatbelt sandbox and the Linux Bubblewrap sandbox. On Windows there is no confinement yet, so unfamiliar commands prompt for approval.
+
+### Bash command permissions
 
 Bash commands pass through these layers:
 
