@@ -229,10 +229,7 @@ impl App {
     /// from the latest status snapshot so `/safe` and `/workspace` take effect
     /// immediately without a stale per-session flag.
     pub fn is_safe_mode(&self) -> bool {
-        matches!(
-            self.status.as_ref().map(|s| s.mode),
-            Some(super::event::Mode::Safe)
-        )
+        self.status.as_ref().is_some_and(|s| s.mode.is_read_only())
     }
 
     /// Push a successfully-submitted line into the input-history ring.
@@ -504,12 +501,13 @@ mod tests {
 
     #[test]
     fn is_safe_mode_reads_from_status_snapshot() {
-        use crate::repl::tui::event::{Mode, StatusSnapshot};
+        use crate::config::SandboxMode;
+        use crate::repl::tui::event::StatusSnapshot;
         let mut a = app();
         assert!(!a.is_safe_mode(), "defaults to non-safe when status unset");
         a.status = Some(StatusSnapshot {
             model: "m".into(),
-            mode: Mode::Safe,
+            mode: SandboxMode::ReadOnly,
             reasoning: String::new(),
             input_tokens: 0,
             output_tokens: 0,
@@ -517,7 +515,7 @@ mod tests {
             cache_creation_tokens: 0,
         });
         assert!(a.is_safe_mode());
-        a.status.as_mut().unwrap().mode = Mode::Normal;
+        a.status.as_mut().unwrap().mode = SandboxMode::Workspace;
         assert!(!a.is_safe_mode());
     }
 
@@ -752,12 +750,13 @@ mod tests {
 
     #[test]
     fn status_snapshot_roundtrip() {
-        use crate::repl::tui::event::{Mode, StatusSnapshot};
+        use crate::config::SandboxMode;
+        use crate::repl::tui::event::StatusSnapshot;
         let mut a = app();
         assert!(a.status.is_none());
         a.status = Some(StatusSnapshot {
             model: crate::api::model_info::CLAUDE_OPUS.into(),
-            mode: Mode::Safe,
+            mode: SandboxMode::ReadOnly,
             reasoning: "thinking: 10000 tok".into(),
             input_tokens: 123,
             output_tokens: 456,

@@ -8,9 +8,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 
 use super::app::{App, ConfirmationPrompt, EffortPicker, ModelPicker, Picker};
-use super::event::Mode;
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
+use crate::config::SandboxMode;
 use crate::tools::utils::ConfirmationType;
 
 const ACCENT: Color = Color::Rgb(0xFF, 0x99, 0x33);
@@ -22,6 +22,7 @@ const MODEL_FG: Color = Color::Rgb(110, 110, 110);
 const STATUS_KEY: Color = Color::Rgb(150, 150, 150);
 const STATUS_VAL: Color = Color::Rgb(200, 200, 200);
 const SAFE_MODE_FG: Color = Color::Rgb(0xFF, 0xA5, 0x00);
+const UNRESTRICTED_MODE_FG: Color = Color::Rgb(0xFF, 0x55, 0x55);
 const PICKER_BORDER: Color = Color::Rgb(140, 140, 140);
 const SLASH_POPUP_BORDER: Color = Color::Rgb(120, 120, 120);
 const SLASH_POPUP_NAME_FG: Color = Color::Rgb(200, 200, 200);
@@ -339,7 +340,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         ),
         None => (
             app.model_label.as_str(),
-            Mode::Normal,
+            SandboxMode::Workspace,
             "",
             0u32,
             0u32,
@@ -349,10 +350,13 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let mode_style = match mode {
-        Mode::Safe => Style::default()
+        SandboxMode::ReadOnly => Style::default()
             .fg(SAFE_MODE_FG)
             .add_modifier(Modifier::BOLD),
-        Mode::Normal => Style::default().fg(STATUS_VAL),
+        SandboxMode::Workspace => Style::default().fg(STATUS_VAL),
+        SandboxMode::Unrestricted => Style::default()
+            .fg(UNRESTRICTED_MODE_FG)
+            .add_modifier(Modifier::BOLD),
     };
     let mut spans: Vec<Span> = vec![
         Span::styled(" model: ", Style::default().fg(STATUS_KEY)),

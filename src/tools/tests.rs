@@ -2315,7 +2315,7 @@ async fn view_image_rejects_file_exceeding_size_cap() {
     );
 }
 
-/// Switching from full to workspace mode at runtime must reach the bash
+/// Switching from unrestricted to workspace mode at runtime must reach the bash
 /// executor, so an unknown command then runs confined instead of
 /// prompting. Guards against the mode being held in two places and
 /// getting out of sync.
@@ -2327,7 +2327,7 @@ async fn set_mode_propagates_to_bash_sandbox() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Full,
+        SandboxMode::Unrestricted,
         false,
     )
     .unwrap();

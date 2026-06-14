@@ -948,7 +948,7 @@ It contains:
 Rules:
 
 - Bash commands pass through the 3-tier permission system: Allowed, Denied, or Ask.
-- In workspace mode (the default), an Ask command runs confined by the operating-system sandbox instead of prompting; Allowed and Denied commands are unaffected. In full mode (`--unrestricted`), and on platforms without a sandbox, an Ask command prompts as before.
+- In workspace mode (the default), an Ask command runs confined by the operating-system sandbox instead of prompting; Allowed and Denied commands are unaffected. In unrestricted mode (`--unrestricted`), and on platforms without a sandbox, an Ask command prompts as before.
 - Structural checks still run even when a command is otherwise allowed.
 - Parent-directory traversal as a path component is blocked.
 - Output redirection to files is blocked; `2>&1` is allowed.

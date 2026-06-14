@@ -109,7 +109,7 @@ impl BashExecutor {
             workspace,
             interactive,
             has_morph,
-            mode: SandboxMode::Full,
+            mode: SandboxMode::Unrestricted,
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
             bash_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),

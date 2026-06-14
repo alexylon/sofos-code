@@ -125,9 +125,9 @@ pub enum SandboxMode {
     /// to the workspace directory by the operating system. This is the
     /// default when neither switch is given.
     Workspace,
-    /// Full access: shell commands run without operating-system
+    /// Unrestricted: shell commands run without operating-system
     /// confinement. Intended for trusted environments only.
-    Full,
+    Unrestricted,
 }
 
 impl SandboxMode {
@@ -138,7 +138,7 @@ impl SandboxMode {
         if safe {
             Self::ReadOnly
         } else if unrestricted {
-            Self::Full
+            Self::Unrestricted
         } else {
             Self::Workspace
         }
@@ -155,6 +155,15 @@ impl SandboxMode {
     pub fn is_sandboxed(self) -> bool {
         matches!(self, Self::Workspace)
     }
+
+    /// Short label shown in the status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "safe",
+            Self::Workspace => "workspace",
+            Self::Unrestricted => "unrestricted",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -167,7 +176,10 @@ mod tests {
             SandboxMode::from_flags(false, false),
             SandboxMode::Workspace
         );
-        assert_eq!(SandboxMode::from_flags(false, true), SandboxMode::Full);
+        assert_eq!(
+            SandboxMode::from_flags(false, true),
+            SandboxMode::Unrestricted
+        );
         assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::ReadOnly);
         assert_eq!(SandboxMode::from_flags(true, true), SandboxMode::ReadOnly);
     }

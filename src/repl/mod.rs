@@ -19,7 +19,7 @@ use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
-use crate::ui::{UI, set_normal_mode_cursor_style, set_safe_mode_cursor_style};
+use crate::ui::{UI, set_default_cursor_style, set_safe_mode_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -289,11 +289,7 @@ impl Repl {
 
         tui::event::StatusSnapshot {
             model: self.model_config.model.clone(),
-            mode: if self.mode.is_read_only() {
-                tui::event::Mode::Safe
-            } else {
-                tui::event::Mode::Normal
-            },
+            mode: self.mode,
             reasoning,
             input_tokens: self.session_state.total_input_tokens,
             output_tokens: self.session_state.total_output_tokens,
@@ -622,7 +618,7 @@ impl Repl {
         self.refresh_available_tools();
         // Restore the default cursor shape so the visual affordance
         // matches the new mode.
-        let _ = set_normal_mode_cursor_style();
+        let _ = set_default_cursor_style();
 
         self.session_state
             .conversation

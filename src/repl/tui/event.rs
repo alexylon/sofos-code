@@ -27,28 +27,12 @@ pub struct ExitSummary {
     pub panicked: bool,
 }
 
-/// Tool access mode shown in the status line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    Normal,
-    Safe,
-}
-
-impl Mode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Normal => "normal",
-            Mode::Safe => "safe",
-        }
-    }
-}
-
 /// Human-readable snapshot of the `Repl`'s live state, pushed to the UI so
 /// the status line can reflect it without sharing the `Repl` across threads.
 #[derive(Debug, Clone)]
 pub struct StatusSnapshot {
     pub model: String,
-    pub mode: Mode,
+    pub mode: crate::config::SandboxMode,
     /// Human label for the reasoning config (e.g. "thinking: 10k tok",
     /// "thinking: off", "effort: high"). Empty string hides the field.
     pub reasoning: String,

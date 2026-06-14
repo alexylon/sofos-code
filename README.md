@@ -391,13 +391,13 @@ Sofos runs in one of three access modes:
 
 - **Workspace** (default) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command.
 - **Read-only** (`--safe-mode`, or `/safe` during a session) — only read-only tools; no writes and no shell commands.
-- **Full** (`--unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead.
+- **Unrestricted** (`--unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead.
 
 Operating-system confinement uses the macOS Seatbelt sandbox and the Linux Bubblewrap sandbox. On Windows there is no confinement yet, so unfamiliar commands prompt for approval.
 
 Bash commands pass through these layers:
 
-1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode, or prompts in full mode.
+1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode, or prompts in unrestricted mode.
 2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined, but in workspace mode a command whose only such issue is writing to a file runs confined instead.
 3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission when they run unconfined.
 
@@ -405,7 +405,7 @@ Bash commands pass through these layers:
 |---|---|---|
 | Allowed | Runs automatically after structural checks. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
 | Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
-| Other | Workspace mode: runs confined to the project. Full mode: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
+| Other | Workspace mode: runs confined to the project. Unrestricted mode: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
 
 ### Destructive operations
 
