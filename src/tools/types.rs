@@ -116,7 +116,7 @@ fn openai_web_search_tool() -> Tool {
 fn execute_bash_tool() -> Tool {
     Tool::Regular {
         name: "execute_bash".to_string(),
-        description: "Execute a bash command in the workspace. Commands can reference external absolute or ~/ paths — the user will be prompted for Bash path access. Parent directory traversal (..) is always blocked. Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services). Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.".to_string(),
+        description: "Execute a bash command in the workspace. Use the shell freely for project work — builds, tests, scripts, and creating, overwriting, or editing files inside the workspace are all expected and safe. In the default mode commands run confined by the operating system: their writes cannot leave the workspace and they have no network access. Commands may reference external absolute or ~/ paths (the user is prompted for access). Parent directory traversal (..) is always blocked. Do not run irreversible or system-wide commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services); if one seems genuinely necessary, stop and request explicit confirmation first.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {

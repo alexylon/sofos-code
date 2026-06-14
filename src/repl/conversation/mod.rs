@@ -51,7 +51,7 @@ impl ConversationHistory {
             "3. List directory contents",
             "4. Create directories",
             "5. Search the web for information",
-            "6. Execute read-only bash commands (for testing code)",
+            "6. Run shell commands for project work (builds, tests, scripts, file edits)",
             "7. View images (user includes image path or URL in their message)",
             "8. Update a visible task plan for multi-step work",
         ];
@@ -83,13 +83,12 @@ When helping users:
 - Use your tools to read files before suggesting changes
 {}
 - Search the web when you need current information or documentation
-- Execute bash commands safely with 3-tier permission system:
-  * Tier 1 (Allowed): Build tools (cargo, npm, python), read-only ops (ls, cat, grep) execute automatically
-  * Tier 2 (Forbidden): Destructive commands (rm, chmod, sudo) are always blocked
-  * Tier 3 (Ask): Unknown commands prompt user for permission
-  * Parent directory traversal (..) is always blocked in bash commands
-- Never run destructive or irreversible shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services).
-Prefer read-only commands and dry-runs; if a potentially destructive action seems necessary, stop and request explicit confirmation before proceeding.
+- Use bash for project work — builds, tests, scripts, and creating or editing files inside the workspace are all expected; use the shell freely for them:
+  * Commands that stay inside the workspace run without interrupting the user. In the default mode they run confined by the operating system, so their writes cannot leave the workspace and they have no network access.
+  * Commands that are irreversible or system-wide (rm, chmod, sudo, dd, mkfs, ...) are blocked.
+  * Commands that reference paths outside the workspace are gated separately (see Outside Workspace Access below).
+  * Parent directory traversal (..) is always blocked in bash commands.
+- Do not run irreversible or system-wide shell commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services); if one seems genuinely necessary, stop and request explicit confirmation first.
 - Explain your reasoning when using tools
 - Use update_plan for complex or multi-step tasks, and keep exactly one step in_progress when work is underway
 
