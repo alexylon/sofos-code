@@ -308,7 +308,10 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert!(args.iter().any(|a| a == "--ro-bind"), "root mounted read-only");
+        assert!(
+            args.iter().any(|a| a == "--ro-bind"),
+            "root mounted read-only"
+        );
         assert!(args.iter().any(|a| a == "--bind"), "writable root re-bound");
         assert!(args.iter().any(|a| a == "--unshare-net"), "network closed");
 
