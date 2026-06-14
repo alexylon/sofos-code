@@ -2314,3 +2314,39 @@ async fn view_image_rejects_file_exceeding_size_cap() {
         "error should mention the size cap; got: {msg}"
     );
 }
+
+/// Switching from full to workspace mode at runtime must reach the bash
+/// executor, so an unknown command then runs confined instead of
+/// prompting. Guards against the mode being held in two places and
+/// getting out of sync.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn set_mode_propagates_to_bash_sandbox() {
+    let workspace = tempdir().unwrap();
+    let mut executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Full,
+        false,
+    )
+    .unwrap();
+
+    executor.set_mode(SandboxMode::Workspace);
+
+    let result = executor
+        .execute(
+            "execute_bash",
+            &json!({"command": "notarealtool 2>/dev/null; echo confined > out.txt"}),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "after switching to workspace mode the unknown command should run confined, got {result:?}"
+    );
+    assert!(
+        workspace.path().join("out.txt").is_file(),
+        "the confined command should write inside the workspace"
+    );
+}
