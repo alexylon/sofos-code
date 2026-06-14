@@ -92,33 +92,125 @@ pub fn auto_compact_token_limit_for(model: &str) -> usize {
     crate::api::model_info::lookup(model).auto_compact_at() as usize
 }
 
-/// Read-only mode message shown to user and AI. Must stay in sync with the
-/// tool set returned by `tools::get_read_only_tools()` (+ the optional
-/// `search_code` tool wired in when ripgrep is on PATH).
-pub const READONLY_MODE_MESSAGE: &str = "[SYSTEM: Read-only mode enabled. \
-                                     No file modifications or bash commands are allowed. \
-                                     Available native tools: list_directory, read_file, glob_files, \
-                                     search_code (when ripgrep is installed), update_plan, \
-                                     web_fetch, web_search. MCP tools are filtered out unless \
-                                     their server is marked readonly = \"read_only\" or \"allow\" \
-                                     in the configuration.]";
+/// Read-only mode preamble shown to the assistant. Must stay in sync
+/// with the tool set returned by `tools::get_read_only_tools()` (+ the
+/// optional `search_code` tool wired in when ripgrep is on PATH).
+pub fn readonly_mode_message() -> String {
+    "[SYSTEM: Read-only mode is active.\n\
+     \n\
+     Shell commands: not available in this mode.\n\
+     File edits: blocked (write_file, edit_file, delete_file, create_directory, \
+     move_file, copy_file all unavailable).\n\
+     External paths: not reachable.\n\
+     \n\
+     Available native tools: list_directory, read_file, glob_files, search_code \
+     (when ripgrep is installed), update_plan, web_fetch, web_search. MCP tools \
+     are filtered out unless their server is marked readonly = \"read_only\" or \
+     \"allow\" in the configuration.\n\
+     \n\
+     Switch with /workspace (default) or /unrestricted.]"
+        .to_string()
+}
 
-/// Workspace mode message shown to the assistant when switching out of
-/// read-only mode.
-pub const WORKSPACE_MODE_MESSAGE: &str = "[SYSTEM: Workspace mode enabled. \
-                                          File edits and shell commands are allowed. \
-                                          On supported systems, shell commands run confined \
-                                          to the project: writes cannot leave the workspace \
-                                          and there is no network access. All tools are available.]";
+/// Workspace mode preamble shown to the assistant. Names the three
+/// command tiers, the structural rules that stay enforced, and the
+/// per-operating-system caveats around network closure.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub fn workspace_mode_message() -> String {
+    let mut message = String::from(
+        "[SYSTEM: Workspace mode is active (the default).\n\
+         \n\
+         Shell commands run through a three-tier model:\n\
+         - Familiar commands (cargo, npm, go, ls, cat, grep, rg, git status, git log, \
+         git diff, ...) run automatically.\n\
+         - Destructive commands (rm, rmdir, chmod, chown, sudo, dd, mkfs, systemctl, \
+         kill, destructive git operations) are always refused.\n\
+         - Any other command runs confined by the operating-system sandbox without a \
+         prompt: writes are limited to the workspace and the temporary directories. \
+         File redirection (echo hi > file) and here-documents also run confined, so \
+         they succeed when targeting paths inside the workspace.\n\
+         \n\
+         Always refused, even confined: parent traversal (..), hidden subcommands \
+         ($(...), backticks, <(...), >(...)), and dangerous git operations.\n\
+         \n\
+         Network: closed for confined commands.\n\
+         \n\
+         Switch with /readonly or /unrestricted. All tools are available.]",
+    );
+    message
+}
 
-/// Unrestricted mode message shown to the assistant when switching to
-/// that mode.
-pub const UNRESTRICTED_MODE_MESSAGE: &str = "[SYSTEM: Unrestricted mode enabled. \
-                                             Shell commands run without operating-system \
-                                             confinement. Unfamiliar commands will ask the user \
-                                             for approval before running, and the \
-                                             destructive-command guardrails still apply. \
-                                             All tools are available.]";
+/// Workspace mode preamble on Windows. The restricted-token backend is
+/// not engaged on this platform (the default Git for Windows `sh.exe`
+/// cannot start under it), so workspace mode currently behaves like
+/// unrestricted mode for shell commands. The message tells the
+/// assistant the truth so it does not assume confinement is in effect.
+#[cfg(target_os = "windows")]
+pub fn workspace_mode_message() -> String {
+    "[SYSTEM: Workspace mode is active (the default).\n\
+     \n\
+     Shell commands run through a three-tier model:\n\
+     - Familiar commands (cargo, npm, go, ls, cat, grep, rg, git status, git log, \
+     git diff, ...) run automatically.\n\
+     - Destructive commands (rm, rmdir, chmod, chown, sudo, dd, mkfs, systemctl, \
+     kill, destructive git operations) are always refused.\n\
+     - Any other command prompts the user for approval before running.\n\
+     \n\
+     Always refused: parent traversal (..), hidden subcommands ($(...), backticks, \
+     <(...), >(...)), file redirection (>, >>) and here-documents (use write_file or \
+     edit_file instead; 2>&1 is allowed), and dangerous git operations.\n\
+     \n\
+     Operating-system confinement is NOT engaged on Windows in this release: the \
+     default shell cannot start under the restricted access token. Workspace mode \
+     therefore behaves the same as unrestricted mode on this platform; the network \
+     is not closed for shell commands. The destructive-command blocklist, the \
+     read-deny rules, and the external-path prompts still apply.\n\
+     \n\
+     Switch with /readonly or /unrestricted. All tools are available.]"
+        .to_string()
+}
+
+/// Workspace mode preamble on platforms without a sandbox backend.
+/// Treated like the Windows path until a backend is added.
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+pub fn workspace_mode_message() -> String {
+    "[SYSTEM: Workspace mode is active (the default).\n\
+     \n\
+     Shell commands run through a three-tier model:\n\
+     - Familiar commands run automatically.\n\
+     - Destructive commands are always refused.\n\
+     - Any other command prompts the user for approval before running.\n\
+     \n\
+     Operating-system confinement is not available on this platform. Workspace mode \
+     therefore behaves the same as unrestricted mode for shell commands.\n\
+     \n\
+     Switch with /readonly or /unrestricted. All tools are available.]"
+        .to_string()
+}
+
+/// Unrestricted mode preamble shown to the assistant. Names the same
+/// three-tier model and the structural rules, and points out that no
+/// operating-system confinement is applied.
+pub fn unrestricted_mode_message() -> String {
+    "[SYSTEM: Unrestricted mode is active.\n\
+     \n\
+     Shell commands run through the same three-tier model as workspace mode, but \
+     without operating-system confinement:\n\
+     - Familiar commands run automatically.\n\
+     - Destructive commands (rm, rmdir, chmod, chown, sudo, dd, mkfs, systemctl, \
+     kill, destructive git operations) are always refused.\n\
+     - Any other command prompts the user for approval before running.\n\
+     \n\
+     Structural rules still apply: parent traversal (..), hidden subcommands \
+     ($(...), backticks, <(...), >(...)), file redirection (>, >>) and here-documents \
+     (use write_file or edit_file instead; 2>&1 is allowed), and dangerous git \
+     operations are refused outright.\n\
+     \n\
+     No operating-system confinement is applied; intended for trusted environments only.\n\
+     \n\
+     Switch with /readonly or /workspace. All tools are available.]"
+        .to_string()
+}
 
 /// How much access the assistant has to the workspace and the shell.
 ///
@@ -165,11 +257,22 @@ impl SandboxMode {
         matches!(self, Self::Workspace)
     }
 
-    /// Short label shown in the status line.
+    /// Short label shown in the status line. On Windows the workspace
+    /// label is suffixed with "(no sandbox)" because operating-system
+    /// confinement is not engaged on that platform in this release.
     pub fn label(self) -> &'static str {
         match self {
             Self::ReadOnly => "readonly",
-            Self::Workspace => "workspace",
+            Self::Workspace => {
+                #[cfg(target_os = "windows")]
+                {
+                    "workspace (no sandbox)"
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    "workspace"
+                }
+            }
             Self::Unrestricted => "unrestricted",
         }
     }

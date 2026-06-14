@@ -52,5 +52,12 @@ these files except in compliance with the License. A copy of the License is in
 Derived portions currently include:
   - src/repl/tui/inline_terminal.rs (from codex-rs/tui/src/custom_terminal.rs;
     itself derived from ratatui, see the MIT notice above)
-
-(Extend the list above as the command-execution sandbox backends are ported.)
+  - src/tools/bash/sandbox/macos.rs (Seatbelt profile builder derived from
+    codex-rs/sandboxing/src/seatbelt.rs)
+  - src/tools/bash/sandbox/linux.rs (Bubblewrap argument builder derived from
+    codex-rs/sandboxing/src/bwrap.rs)
+  - src/tools/bash/sandbox/windows/ (the WRITE_RESTRICTED token, capability
+    SID, workspace allow-write ACE, CreateProcessAsUserW wrapper, and process
+    thread attribute helpers are derived from
+    codex-rs/windows-sandbox-rs/src/token.rs, cap.rs, acl.rs, process.rs,
+    proc_thread_attr.rs, and winutil.rs)

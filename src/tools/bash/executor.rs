@@ -354,6 +354,11 @@ impl BashExecutor {
     }
 
     fn spawn_supervised(&self, command: &str, confine: bool) -> Result<SupervisedOutput> {
+        #[cfg(windows)]
+        if confine && sandbox::is_available() {
+            return self.spawn_supervised_windows(command);
+        }
+
         let shell = resolve_shell();
         let (program, args) = self.shell_invocation(&shell, command, confine);
         let mut cmd = Command::new(&program);
@@ -489,6 +494,33 @@ impl BashExecutor {
             stderr,
             status,
             terminated_for: termination,
+        })
+    }
+
+    /// Spawn the shell under the Windows workspace sandbox and produce
+    /// the same [`SupervisedOutput`] the Unix branch returns.
+    #[cfg(windows)]
+    fn spawn_supervised_windows(&self, command: &str) -> Result<SupervisedOutput> {
+        use std::os::windows::process::ExitStatusExt;
+
+        let shell = resolve_shell();
+        let policy = SandboxPolicy::for_workspace(&self.workspace);
+        let extra_path = shell.extra_path_dir.as_deref();
+        let outcome = sandbox::windows::run_confined(
+            &shell.program,
+            command,
+            &self.workspace,
+            extra_path,
+            &policy,
+            &self.interrupt_flag,
+        )
+        .map_err(|e| SofosError::ToolExecution(format!("Failed to execute command: {}", e)))?;
+        let status = ExitStatus::from_raw(outcome.exit_code.unwrap_or(1) as u32);
+        Ok(SupervisedOutput {
+            stdout: outcome.stdout,
+            stderr: outcome.stderr,
+            status,
+            terminated_for: outcome.terminated_for,
         })
     }
 

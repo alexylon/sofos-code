@@ -15,8 +15,8 @@ use std::io::IsTerminal;
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{
-    ModelConfig, READONLY_MODE_MESSAGE, SandboxMode, UNRESTRICTED_MODE_MESSAGE,
-    WORKSPACE_MODE_MESSAGE,
+    ModelConfig, SandboxMode, readonly_mode_message, unrestricted_mode_message,
+    workspace_mode_message,
 };
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
@@ -35,6 +35,35 @@ use tokio::time::sleep;
 /// in [`ResponseHandler`] drains it between tool-call iterations and merges
 /// the accumulated text into the user turn that carries the tool results.
 pub type SteerBuffer = Arc<Mutex<Vec<String>>>;
+
+/// Build the assistant-facing preamble for `mode`. Centralised so the
+/// startup path, slash-command path, and `/clear` path all show the
+/// same text.
+fn mode_preamble_for(mode: SandboxMode) -> String {
+    match mode {
+        SandboxMode::ReadOnly => readonly_mode_message(),
+        SandboxMode::Workspace => workspace_mode_message(),
+        SandboxMode::Unrestricted => unrestricted_mode_message(),
+    }
+}
+
+/// One-line user-facing notice printed when entering workspace mode.
+/// Differs by operating system because the macOS/Linux backend actually
+/// confines the shell while the Windows backend does not yet.
+fn workspace_switch_notice() -> colored::ColoredString {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        "Workspace mode: read and write; shell confined to the project".bright_green()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Workspace mode: read and write; OS confinement not engaged on Windows".bright_green()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        "Workspace mode: read and write; OS confinement unavailable".bright_green()
+    }
+}
 
 pub struct ReplConfig {
     pub model: String,
@@ -173,8 +202,11 @@ impl Repl {
             &config.model,
         ));
 
+        // Every mode gets a startup preamble so the assistant knows from
+        // turn 1 which tier rules and platform caveats apply, not just
+        // when the mode is switched mid-session.
+        conversation.add_user_message(mode_preamble_for(config.mode));
         let readonly_mcp_note = if config.mode.is_readonly() {
-            conversation.add_user_message(READONLY_MODE_MESSAGE.to_string());
             set_readonly_cursor_style()?;
             format_mcp_readonly_summary(
                 &tool_executor.mcp_servers_excluded_from_readonly(),
@@ -367,13 +399,12 @@ impl Repl {
         let new_session_id = self.history_manager.generate_unique_session_id();
         self.session_state.conversation.clear();
         self.session_state.clear(new_session_id);
-        // Read-only mode survives `/clear`, so the preamble has to ride
-        // along too — otherwise the model proposes blocked tools.
-        if self.mode.is_readonly() {
-            self.session_state
-                .conversation
-                .add_user_message(READONLY_MODE_MESSAGE.to_string());
-        }
+        // The active mode survives `/clear`, so the preamble has to ride
+        // along too — otherwise the model proposes blocked tools (in
+        // readonly mode) or assumes a different policy than is in effect.
+        self.session_state
+            .conversation
+            .add_user_message(mode_preamble_for(self.mode));
         self.session_state
             .conversation
             .add_user_message("The session history has been cleared".to_string());
@@ -603,23 +634,18 @@ impl Repl {
             set_default_cursor_style()
         };
 
-        let (preamble, notice) = match target {
-            SandboxMode::ReadOnly => (
-                READONLY_MODE_MESSAGE,
-                "Read-only mode: read-only tools only; no writes or shell".bright_yellow(),
-            ),
-            SandboxMode::Workspace => (
-                WORKSPACE_MODE_MESSAGE,
-                "Workspace mode: read and write; shell confined to the project".bright_green(),
-            ),
-            SandboxMode::Unrestricted => (
-                UNRESTRICTED_MODE_MESSAGE,
-                "Unrestricted mode: shell runs without sandbox confinement".bright_red(),
-            ),
+        let notice = match target {
+            SandboxMode::ReadOnly => {
+                "Read-only mode: read-only tools only; no writes or shell".bright_yellow()
+            }
+            SandboxMode::Workspace => workspace_switch_notice(),
+            SandboxMode::Unrestricted => {
+                "Unrestricted mode: shell runs without sandbox confinement".bright_red()
+            }
         };
         self.session_state
             .conversation
-            .add_user_message(preamble.to_string());
+            .add_user_message(mode_preamble_for(target));
         println!("\n{}\n", notice);
         if target.is_readonly() {
             self.print_mcp_readonly_summary();

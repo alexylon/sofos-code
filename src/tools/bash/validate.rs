@@ -130,6 +130,10 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
 /// `~user`, or glob metacharacters (`?`, `*`, `[`, `{`). Plain `~/`
 /// and bare `~` are allowed because they expand to a known prefix and
 /// are handled by the tilde-expansion helper.
+///
+/// The Windows verbatim-path prefixes `\\?\` and `\\.\` are stripped
+/// before the glob check so a canonical Windows path is not mistaken
+/// for a glob just because the prefix contains `?`.
 pub(super) fn path_token_shell_meta(tok: &str) -> Option<&'static str> {
     if tok.contains('$') {
         return Some("$ variable expansion");
@@ -140,10 +144,24 @@ pub(super) fn path_token_shell_meta(tok: &str) -> Option<&'static str> {
     if tok.starts_with('~') && tok != "~" && !tok.starts_with("~/") {
         return Some("~user home expansion");
     }
-    if tok.contains('?') || tok.contains('*') || tok.contains('[') || tok.contains('{') {
+    let body = strip_windows_verbatim_prefix(tok);
+    if body.contains('?') || body.contains('*') || body.contains('[') || body.contains('{') {
         return Some("glob expansion");
     }
     None
+}
+
+/// Strip the Windows verbatim-path prefix (`\\?\`, `\\.\`, or the
+/// forward-slash equivalents) when present so the remainder can be
+/// inspected without the prefix's `?` or `.` being read as shell
+/// metacharacters.
+fn strip_windows_verbatim_prefix(tok: &str) -> &str {
+    for prefix in [r"\\?\", r"\\.\", "//?/", "//./"] {
+        if let Some(rest) = tok.strip_prefix(prefix) {
+            return rest;
+        }
+    }
+    tok
 }
 
 /// True for tokens that look like a path the shell will resolve at
@@ -363,8 +381,13 @@ impl BashExecutor {
                 continue;
             }
 
-            let path_shaped =
-                cleaned.contains('/') || cleaned.starts_with('.') || cleaned.starts_with('~');
+            // A canonical Windows path like `\\?\C:\file.txt` is absolute
+            // but does not start with `/`, `.` or `~`; treat it as path-
+            // shaped so the read-deny check fires on it too.
+            let path_shaped = cleaned.contains('/')
+                || cleaned.starts_with('.')
+                || cleaned.starts_with('~')
+                || is_absolute_path(cleaned);
 
             if path_shaped {
                 if let Some(kind) = path_token_shell_meta(cleaned) {

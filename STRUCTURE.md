@@ -941,7 +941,11 @@ It contains:
 
 - `mod.rs` — module façade and exports;
 - `executor.rs` — command execution, permission-manager integration, session-scoped Bash path grants, process spawning, and capture limits;
-- `sandbox.rs` — operating-system confinement (macOS Seatbelt, Linux Bubblewrap) that runs unfamiliar commands inside the workspace in workspace mode;
+- `sandbox/` — operating-system confinement that runs unfamiliar commands inside the workspace in workspace mode:
+  - `mod.rs` — shared `SandboxPolicy`, sandbox availability check, and Unix `confined_invocation` returning the `(program, args)` to spawn;
+  - `macos.rs` — Seatbelt profile builder used with `/usr/bin/sandbox-exec`;
+  - `linux.rs` — Bubblewrap argument builder used with `bwrap`;
+  - `windows/` — restricted-token backend (submodules `winutil`, `proc_thread_attr`, `cap`, `token`, `acl`, `process`) that would spawn the shell through `CreateProcessAsUserW`. The parent `mod.rs` reports `is_available` as `false` on Windows in this release because the default Git for Windows `sh.exe` cannot start under the restricted token; the modules stay in the tree as the foundation for future re-enabling;
 - `validate.rs` — structural command checks, external Bash path checks, read-deny enforcement, git-operation restrictions, and rejection messages;
 - `output.rs` — output formatting, display caps, and model-facing output preparation.
 
@@ -1389,7 +1393,7 @@ Rules:
 - Permission tiers: `tools/permissions/manager.rs`.
 - Structural command checks: `tools/bash/validate.rs`.
 - Process execution and output capture: `tools/bash/executor.rs`.
-- Operating-system confinement (workspace mode): `tools/bash/sandbox.rs`.
+- Operating-system confinement (workspace mode): `tools/bash/sandbox/`.
 - Output formatting: `tools/bash/output.rs`.
 
 Rules:
@@ -1515,7 +1519,7 @@ Rules:
 | Path resolution and workspace classification | `tools/resolve.rs` |
 | Low-level filesystem operations | `tools/filesystem.rs` |
 | Bash execution | `tools/bash/executor.rs` |
-| Bash sandbox confinement | `tools/bash/sandbox.rs` |
+| Bash sandbox confinement | `tools/bash/sandbox/` |
 | Bash structural validation | `tools/bash/validate.rs` |
 | Permission settings and prompts | `tools/permissions/manager.rs` |
 | Permission rule parsing | `tools/permissions/pattern.rs` |

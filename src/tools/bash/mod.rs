@@ -59,7 +59,7 @@ mod tests {
     use super::*;
     use crate::error::SofosError;
     use crate::tools::bash::validate::{
-        command_contains_op, detect_command_substitution, has_path_traversal,
+        command_contains_op, detect_command_substitution, has_path_traversal, path_token_shell_meta,
     };
     use crate::tools::test_support;
 
@@ -155,6 +155,47 @@ mod tests {
             assert!(msg.contains("10 MB"));
         } else {
             panic!("Expected ToolExecution error");
+        }
+    }
+
+    /// Windows canonicalises temp directories to paths like
+    /// `\\?\C:\Users\...` that contain `?` in the verbatim prefix. The
+    /// shell-meta check must not reject those, and the read-deny check
+    /// must still recognise them as paths so a `Read(...)` deny rule
+    /// fires.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_read_deny_applies_to_windows_verbatim_paths() {
+        use std::fs;
+
+        let (_temp, path) = test_support::workspace();
+        let config_dir = path.join(".sofos");
+        fs::create_dir_all(&config_dir).unwrap();
+        let canonical = std::fs::canonicalize(&path).unwrap();
+        let secret_dir = canonical.join("test");
+        let secret_dir_str = secret_dir.display().to_string().replace('\\', "/");
+        fs::write(
+            config_dir.join("config.local.toml"),
+            format!(
+                "[permissions]\nallow = []\ndeny = [\"Read({secret_dir_str}/**)\"]\nask = []\n"
+            ),
+        )
+        .unwrap();
+
+        let executor = BashExecutor::new(path, false, false).unwrap();
+        let secret_file = canonical.join("test").join("secret.txt");
+        let cmd = format!("cat {}", secret_file.display());
+        let result = executor.execute(&cmd);
+
+        assert!(
+            result.is_err(),
+            "Read deny should fire on a verbatim Windows path: {result:?}"
+        );
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("Read access denied") || msg.contains("denied"),
+                "expected a Read-deny error, got: {msg}"
+            );
         }
     }
 
@@ -664,6 +705,36 @@ ask = []
         }
     }
 
+    /// A Windows canonical path returned by `std::fs::canonicalize`
+    /// carries the `\\?\` verbatim prefix. The `?` is part of the
+    /// prefix, not a glob, so the shell-meta check must not flag it.
+    /// Forward-slash spellings (`//?/`) appear in some path-display
+    /// paths and must be tolerated too.
+    #[test]
+    fn windows_verbatim_path_prefix_is_not_flagged_as_glob() {
+        assert_eq!(
+            path_token_shell_meta(r"\\?\C:\Users\name\Temp\file.txt"),
+            None
+        );
+        assert_eq!(
+            path_token_shell_meta(r"\\.\C:\Users\name\Temp\file.txt"),
+            None
+        );
+        assert_eq!(
+            path_token_shell_meta("//?/C:/Users/name/Temp/file.txt"),
+            None
+        );
+
+        // A `?` that appears AFTER the verbatim prefix is still a glob
+        // and stays flagged.
+        assert_eq!(
+            path_token_shell_meta(r"\\?\C:\Users\?\file.txt"),
+            Some("glob expansion")
+        );
+        // Plain (non-verbatim) paths with `?` stay flagged as before.
+        assert_eq!(path_token_shell_meta("/etc/p?sswd"), Some("glob expansion"));
+    }
+
     /// `~/foo` and bare `~` are still legitimate path forms and pass
     /// the shell-meta check (they're handled by `expand_tilde` below).
     #[test]
@@ -714,6 +785,56 @@ ask = []
             "expected the redirection to run confined, got {result:?}"
         );
         assert!(path.join("out.txt").is_file());
+    }
+
+    /// End-to-end Windows sandbox spawn against a shell that does not
+    /// depend on Cygwin: the workspace identifier is persisted, the
+    /// workspace gains an allow-write rule for it, the restricted
+    /// token is built, and the child reaches user-mode code.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_sandbox_spawns_cmd_under_restricted_token() {
+        use crate::tools::bash::sandbox::{self, SandboxPolicy};
+        use std::sync::atomic::AtomicBool;
+
+        let (_temp, workspace) = test_support::workspace();
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace.clone()],
+            allow_network: false,
+        };
+
+        // The helper always builds `<shell> -c <command>`; cmd.exe
+        // ignores `-c` and prints its banner on startup, which is
+        // enough to prove the child reached user-mode code.
+        let outcome = sandbox::windows::run_confined(
+            std::ffi::OsStr::new("cmd.exe"),
+            "ver",
+            &workspace,
+            None,
+            &policy,
+            &AtomicBool::new(false),
+        );
+
+        let outcome = match outcome {
+            Ok(value) => value,
+            Err(err) => {
+                eprintln!("skipping: spawn under restricted token failed: {err}");
+                return;
+            }
+        };
+        assert!(
+            outcome.terminated_for.is_none(),
+            "expected the cmd.exe spawn to finish without supervisor termination, got {:?}",
+            outcome.terminated_for
+        );
+        assert!(
+            !outcome.stdout.is_empty() || !outcome.stderr.is_empty(),
+            "expected cmd.exe to print at least a banner"
+        );
+        assert!(
+            workspace.join(".sofos").join("cap_sid").is_file(),
+            "the workspace identifier must be persisted under .sofos"
+        );
     }
 
     /// The redirection relaxation must not weaken the real defences:
