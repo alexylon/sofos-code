@@ -14,7 +14,7 @@ use std::io::IsTerminal;
 
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
-use crate::config::{ModelConfig, NORMAL_MODE_MESSAGE, SAFE_MODE_MESSAGE, SandboxMode};
+use crate::config::{ModelConfig, SAFE_MODE_MESSAGE, SandboxMode, WORKSPACE_MODE_MESSAGE};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
@@ -626,7 +626,7 @@ impl Repl {
 
         self.session_state
             .conversation
-            .add_user_message(NORMAL_MODE_MESSAGE.to_string());
+            .add_user_message(WORKSPACE_MODE_MESSAGE.to_string());
         println!(
             "\n{} all tools available\n",
             "Safe mode: disabled".bright_green()

@@ -342,9 +342,9 @@ pub fn set_safe_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::BlinkingUnderScore)
 }
 
-/// Reset the terminal cursor to the default blinking block used in
-/// normal (non-safe) mode. Mirror of [`set_safe_mode_cursor_style`]
-/// so the `/normal` toggle can put the cursor shape back.
+/// Reset the terminal cursor to the default blinking block used outside
+/// safe mode. Mirror of [`set_safe_mode_cursor_style`] so leaving safe
+/// mode can put the cursor shape back.
 pub fn set_normal_mode_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::DefaultUserShape)
 }

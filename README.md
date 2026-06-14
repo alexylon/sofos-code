@@ -192,7 +192,7 @@ sofos --resume
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
 | `/safe`                                     | Enable safe mode: read-only native tools. Prompt changes to `:`. |
-| `/normal`                                   | Return to normal mode. Prompt changes to `>`. |
+| `/workspace`                                | Leave safe mode: read and write, with shell commands confined to the project. Prompt changes to `>`. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 

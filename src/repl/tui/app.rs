@@ -226,7 +226,7 @@ impl App {
     }
 
     /// Whether the UI should render as safe mode — reads the live mode
-    /// from the latest status snapshot so `/safe` and `/normal` take effect
+    /// from the latest status snapshot so `/safe` and `/workspace` take effect
     /// immediately without a stale per-session flag.
     pub fn is_safe_mode(&self) -> bool {
         matches!(

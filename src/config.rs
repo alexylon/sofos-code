@@ -103,16 +103,19 @@ pub const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been ena
                                      their server is marked safe_mode = \"read_only\" or \"allow\" \
                                      in the configuration.]";
 
-/// Normal mode message shown when switching from safe mode
-pub const NORMAL_MODE_MESSAGE: &str = "[SYSTEM: Normal (unrestricted) mode has been enabled. \
-                                       File modifications and bash commands are now allowed.\
-                                       All tools are available]";
+/// Workspace mode message shown to the assistant when switching out of
+/// safe mode.
+pub const WORKSPACE_MODE_MESSAGE: &str = "[SYSTEM: Workspace mode enabled. \
+                                          File edits and shell commands are allowed. \
+                                          On supported systems, shell commands run confined \
+                                          to the project: writes cannot leave the workspace \
+                                          and there is no network access. All tools are available.]";
 
 /// How much access the assistant has to the workspace and the shell.
 ///
 /// Chosen at startup from the command line (`--safe-mode`,
 /// `--unrestricted`, or neither) and switchable during a session with
-/// the `/safe` and `/normal` commands.
+/// the `/safe` and `/workspace` commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
     /// Only read-only tools are offered. No file writes and no shell

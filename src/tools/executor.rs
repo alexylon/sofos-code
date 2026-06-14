@@ -334,7 +334,7 @@ impl ToolExecutor {
         self.mode = mode;
         // The bash executor keeps its own copy of the mode to drive
         // sandbox confinement, so a runtime switch (for example `/safe`
-        // then `/normal`) must reach it too.
+        // then `/workspace`) must reach it too.
         self.bash_executor.set_sandbox_mode(mode);
     }
 

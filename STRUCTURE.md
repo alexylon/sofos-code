@@ -612,7 +612,7 @@ It contains:
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/effort`, `/safe`, `/normal`, and `/clear` state handlers;
+- `/effort`, `/safe`, `/workspace`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
@@ -1311,7 +1311,7 @@ Built-in commands include:
 - `/effort`;
 - `/model`;
 - `/safe`;
-- `/normal`;
+- `/workspace`;
 - `/exit`, `/quit`, `/q`.
 
 Rules:

@@ -43,7 +43,7 @@ pub fn safe_mode_command(repl: &mut Repl) -> Result<CommandResult> {
     Ok(CommandResult::Continue)
 }
 
-pub fn normal_mode_command(repl: &mut Repl) -> Result<CommandResult> {
+pub fn workspace_mode_command(repl: &mut Repl) -> Result<CommandResult> {
     repl.disable_safe_mode();
     Ok(CommandResult::Continue)
 }

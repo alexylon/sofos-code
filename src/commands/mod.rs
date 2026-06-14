@@ -24,7 +24,7 @@ pub enum Command {
     /// validation matches `--reasoning-effort`.
     EffortSet(crate::api::ReasoningEffort),
     SafeMode,
-    NormalMode,
+    WorkspaceMode,
     Compact,
     /// `/model` with no argument — open the model picker.
     ModelPicker,
@@ -44,7 +44,7 @@ impl Command {
             "/resume" => Some(Command::Resume),
             "/effort" => Some(Command::EffortPicker),
             "/safe" => Some(Command::SafeMode),
-            "/normal" => Some(Command::NormalMode),
+            "/workspace" => Some(Command::WorkspaceMode),
             "/compact" => Some(Command::Compact),
             "/model" => Some(Command::ModelPicker),
             _ => {
@@ -77,7 +77,7 @@ impl Command {
             Command::EffortPicker => builtin::effort_picker_command(repl),
             Command::EffortSet(effort) => builtin::effort_set_command(repl, *effort),
             Command::SafeMode => builtin::safe_mode_command(repl),
-            Command::NormalMode => builtin::normal_mode_command(repl),
+            Command::WorkspaceMode => builtin::workspace_mode_command(repl),
             Command::Compact => builtin::compact_command(repl),
             Command::ModelPicker => builtin::model_picker_command(repl),
             Command::ModelSet(name) => builtin::model_set_command(repl, name),
@@ -124,8 +124,8 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
         description: "enter safe mode (only read-only tools are allowed)",
     },
     CommandEntry {
-        name: "/normal",
-        description: "leave safe mode and resume normal mode",
+        name: "/workspace",
+        description: "leave safe mode and return to workspace mode",
     },
     CommandEntry {
         name: "/exit",
