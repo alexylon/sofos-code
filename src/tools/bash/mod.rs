@@ -696,4 +696,44 @@ ask = []
             "the command should be able to write inside the workspace"
         );
     }
+
+    /// A known-safe command rejected only for file redirection runs
+    /// confined in workspace mode and writes inside the project, instead
+    /// of being refused outright.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_runs_redirection_confined() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let result = executor.execute("echo confined > out.txt");
+
+        assert!(
+            result.is_ok(),
+            "expected the redirection to run confined, got {result:?}"
+        );
+        assert!(path.join("out.txt").is_file());
+    }
+
+    /// The redirection relaxation must not weaken the real defences:
+    /// traversal, hidden subcommands, and dangerous git stay refused in
+    /// workspace mode even when the command also redirects to a file.
+    #[test]
+    fn workspace_mode_still_refuses_dangerous_structures() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        for cmd in [
+            "cat ../secret > out.txt",
+            "echo $(whoami) > out.txt",
+            "git push origin main > out.txt",
+        ] {
+            assert!(
+                executor.execute(cmd).is_err(),
+                "workspace mode must still refuse `{cmd}`"
+            );
+        }
+    }
 }

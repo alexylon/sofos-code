@@ -15,7 +15,9 @@ use crate::tools::bash::output::{
     TerminationReason,
 };
 use crate::tools::bash::sandbox::{self, SandboxPolicy};
-use crate::tools::bash::validate::command_contains_op;
+use crate::tools::bash::validate::{
+    command_contains_op, detect_command_substitution, has_path_traversal,
+};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
     MAX_TOOL_OUTPUT_TOKENS, TruncationKind, normalize_command_whitespace, truncate_for_context,
@@ -191,12 +193,24 @@ impl BashExecutor {
         // Enforce read permissions on paths referenced in the command
         self.enforce_read_permissions(permission_manager, command)?;
 
-        // Non-path structural safety checks (parent traversal, redirection, git restrictions)
-        if !self.is_safe_command_structure(command) {
+        // Structural safety checks (parent traversal, redirection,
+        // substitution, git restrictions). In workspace mode a command
+        // rejected only for writing to a file — redirection or a
+        // here-document — can still run confined, since the sandbox keeps
+        // the write inside the workspace. Traversal, hidden subcommands,
+        // and dangerous git operations are never relaxed.
+        let confine = if self.is_safe_command_structure(command) {
+            false
+        } else if self.mode.is_sandboxed()
+            && sandbox::is_available()
+            && self.is_confinement_safe(command)
+        {
+            true
+        } else {
             return Err(SofosError::ToolExecution(
                 self.get_rejection_reason(command),
             ));
-        }
+        };
 
         // Commands that aren't destructive enough to hard-deny but
         // mutate working-tree state in a way the user should see before
@@ -210,7 +224,20 @@ impl BashExecutor {
         // Check external paths in command — ask user for paths not covered by Bash path grants
         self.check_bash_external_paths(command, permission_manager)?;
 
-        self.run_and_shape(command, false)
+        self.run_and_shape(command, confine)
+    }
+
+    /// Whether a command that failed [`Self::is_safe_command_structure`]
+    /// is safe to run confined. The only structural problems allowed here
+    /// are file output redirection and here-documents, both of which the
+    /// sandbox keeps inside the workspace. Parent-directory traversal,
+    /// hidden subcommands, and dangerous git operations are never relaxed.
+    fn is_confinement_safe(&self, command: &str) -> bool {
+        if has_path_traversal(command) || detect_command_substitution(command).is_some() {
+            return false;
+        }
+        let matcher_input = normalize_command_whitespace(command).to_lowercase();
+        self.is_safe_git_command(&matcher_input)
     }
 
     /// Run a command (optionally confined to the workspace) and turn the

@@ -398,7 +398,7 @@ Operating-system confinement uses the macOS Seatbelt sandbox and the Linux Bubbl
 Bash commands pass through these layers:
 
 1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode, or prompts in full mode.
-2. **Structural checks** — parent traversal, file output redirection, here-documents, and dangerous git operations are blocked for commands that run unconfined; a command running inside the sandbox relies on the sandbox boundary instead.
+2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined, but in workspace mode a command whose only such issue is writing to a file runs confined instead.
 3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission when they run unconfined.
 
 | Tier | Behaviour | Examples |
