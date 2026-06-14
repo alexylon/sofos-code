@@ -25,6 +25,7 @@ pub enum Command {
     EffortSet(crate::api::ReasoningEffort),
     SafeMode,
     WorkspaceMode,
+    UnrestrictedMode,
     Compact,
     /// `/model` with no argument — open the model picker.
     ModelPicker,
@@ -45,6 +46,7 @@ impl Command {
             "/effort" => Some(Command::EffortPicker),
             "/safe" => Some(Command::SafeMode),
             "/workspace" => Some(Command::WorkspaceMode),
+            "/unrestricted" => Some(Command::UnrestrictedMode),
             "/compact" => Some(Command::Compact),
             "/model" => Some(Command::ModelPicker),
             _ => {
@@ -78,6 +80,7 @@ impl Command {
             Command::EffortSet(effort) => builtin::effort_set_command(repl, *effort),
             Command::SafeMode => builtin::safe_mode_command(repl),
             Command::WorkspaceMode => builtin::workspace_mode_command(repl),
+            Command::UnrestrictedMode => builtin::unrestricted_mode_command(repl),
             Command::Compact => builtin::compact_command(repl),
             Command::ModelPicker => builtin::model_picker_command(repl),
             Command::ModelSet(name) => builtin::model_set_command(repl, name),
@@ -121,11 +124,15 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
     },
     CommandEntry {
         name: "/safe",
-        description: "enter safe mode (only read-only tools are allowed)",
+        description: "switch to safe mode (read-only tools only)",
     },
     CommandEntry {
         name: "/workspace",
-        description: "leave safe mode and return to workspace mode",
+        description: "switch to workspace mode (read/write, shell confined to the project)",
+    },
+    CommandEntry {
+        name: "/unrestricted",
+        description: "switch to unrestricted mode (shell without sandbox confinement)",
     },
     CommandEntry {
         name: "/exit",

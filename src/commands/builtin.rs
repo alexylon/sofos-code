@@ -1,4 +1,5 @@
 use super::CommandResult;
+use crate::config::SandboxMode;
 use crate::error::Result;
 use crate::repl::Repl;
 use crate::ui::UI;
@@ -39,12 +40,17 @@ pub fn effort_set_command(
 }
 
 pub fn safe_mode_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.enable_safe_mode();
+    repl.switch_mode(SandboxMode::ReadOnly);
     Ok(CommandResult::Continue)
 }
 
 pub fn workspace_mode_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.disable_safe_mode();
+    repl.switch_mode(SandboxMode::Workspace);
+    Ok(CommandResult::Continue)
+}
+
+pub fn unrestricted_mode_command(repl: &mut Repl) -> Result<CommandResult> {
+    repl.switch_mode(SandboxMode::Unrestricted);
     Ok(CommandResult::Continue)
 }
 

@@ -192,8 +192,9 @@ sofos --resume
 | `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a named level. Validation matches the picker — unsupported levels print a clear error. |
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
-| `/safe`                                     | Enable safe mode: read-only native tools. Prompt changes to `:`. |
-| `/workspace`                                | Leave safe mode: read and write, with shell commands confined to the project. Prompt changes to `>`. |
+| `/safe`                                     | Switch to safe mode: read-only tools. Prompt shows `:`. |
+| `/workspace`                                | Switch to workspace mode (the default): read and write, shell confined to the project. Prompt shows `>`. |
+| `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 
@@ -392,7 +393,7 @@ Sofos starts in one of three access modes. The current mode is shown in the stat
 
 - **Safe** (`--safe-mode`, or `/safe`) — read-only tools only; no writes and no shell commands. Prompt shows `:`.
 - **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command. Prompt shows `>`.
-- **Unrestricted** (`--unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead.
+- **Unrestricted** (`--unrestricted`, or `/unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
 
 Operating-system confinement uses the macOS Seatbelt sandbox and the Linux Bubblewrap sandbox. On Windows there is no confinement yet, so unfamiliar commands prompt for approval.
 

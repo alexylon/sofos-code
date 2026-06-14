@@ -170,8 +170,12 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
         BORDER_IDLE
     };
 
-    let safe = app.is_safe_mode();
-    let prompt_glyph = if safe { " : " } else { " > " };
+    let mode = app.mode();
+    let (prompt_glyph, prompt_color) = match mode {
+        SandboxMode::ReadOnly => (" : ", Color::Yellow),
+        SandboxMode::Workspace => (" > ", TITLE_FG),
+        SandboxMode::Unrestricted => (" # ", UNRESTRICTED_MODE_FG),
+    };
     let content_width = area.width.saturating_sub(2);
 
     let mut textarea = app.textarea.clone();
@@ -181,7 +185,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     let mut title_spans = vec![Span::styled(
         prompt_glyph,
         Style::default()
-            .fg(if safe { Color::Yellow } else { TITLE_FG })
+            .fg(prompt_color)
             .add_modifier(Modifier::BOLD),
     )];
     if overflow_rows > 0 {
@@ -196,16 +200,19 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     }
     let title = Line::from(title_spans);
 
-    // Yellow underline in safe mode, default reversed block otherwise.
-    if safe {
-        textarea.set_cursor_style(
-            Style::default()
-                .fg(SAFE_MODE_FG)
-                .add_modifier(Modifier::UNDERLINED),
-        );
-    } else {
-        textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    }
+    // Cursor styling tracks the access mode: an orange underline in safe
+    // mode, a plain reversed block in workspace mode, and a red reversed
+    // block in unrestricted mode.
+    let cursor_style = match mode {
+        SandboxMode::ReadOnly => Style::default()
+            .fg(SAFE_MODE_FG)
+            .add_modifier(Modifier::UNDERLINED),
+        SandboxMode::Workspace => Style::default().add_modifier(Modifier::REVERSED),
+        SandboxMode::Unrestricted => Style::default()
+            .fg(UNRESTRICTED_MODE_FG)
+            .add_modifier(Modifier::REVERSED),
+    };
+    textarea.set_cursor_style(cursor_style);
     textarea.set_block(
         Block::default()
             .borders(Borders::ALL)

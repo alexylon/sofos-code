@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use tui_textarea::{Input, Key, TextArea, WrapMode};
 
 use crate::clipboard::PastedImage;
+use crate::config::SandboxMode;
 use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
@@ -225,11 +226,19 @@ impl App {
         self.slash_popup.sync(&text);
     }
 
-    /// Whether the UI should render as safe mode — reads the live mode
-    /// from the latest status snapshot so `/safe` and `/workspace` take effect
-    /// immediately without a stale per-session flag.
+    /// The live access mode from the latest status snapshot, defaulting
+    /// to workspace before the first snapshot arrives. Reading from the
+    /// snapshot (not a per-session flag) means `/safe`, `/workspace`, and
+    /// `/unrestricted` take effect immediately.
+    pub fn mode(&self) -> SandboxMode {
+        self.status
+            .as_ref()
+            .map(|s| s.mode)
+            .unwrap_or(SandboxMode::Workspace)
+    }
+
     pub fn is_safe_mode(&self) -> bool {
-        self.status.as_ref().is_some_and(|s| s.mode.is_read_only())
+        self.mode().is_read_only()
     }
 
     /// Push a successfully-submitted line into the input-history ring.

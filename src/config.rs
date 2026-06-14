@@ -111,6 +111,15 @@ pub const WORKSPACE_MODE_MESSAGE: &str = "[SYSTEM: Workspace mode enabled. \
                                           to the project: writes cannot leave the workspace \
                                           and there is no network access. All tools are available.]";
 
+/// Unrestricted mode message shown to the assistant when switching to
+/// that mode.
+pub const UNRESTRICTED_MODE_MESSAGE: &str = "[SYSTEM: Unrestricted mode enabled. \
+                                             Shell commands run without operating-system \
+                                             confinement. Unfamiliar commands will ask the user \
+                                             for approval before running, and the \
+                                             destructive-command guardrails still apply. \
+                                             All tools are available.]";
+
 /// How much access the assistant has to the workspace and the shell.
 ///
 /// Chosen at startup from the command line (`--safe-mode`,

@@ -14,7 +14,9 @@ use std::io::IsTerminal;
 
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
-use crate::config::{ModelConfig, SAFE_MODE_MESSAGE, SandboxMode, WORKSPACE_MODE_MESSAGE};
+use crate::config::{
+    ModelConfig, SAFE_MODE_MESSAGE, SandboxMode, UNRESTRICTED_MODE_MESSAGE, WORKSPACE_MODE_MESSAGE,
+};
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
@@ -313,7 +315,11 @@ impl Repl {
     }
 
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
-        let symbol = if self.mode.is_read_only() { ":" } else { ">" };
+        let symbol = match self.mode {
+            SandboxMode::ReadOnly => ":",
+            SandboxMode::Workspace => ">",
+            SandboxMode::Unrestricted => "#",
+        };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
         // Capture the turn result so we can persist the session even
@@ -574,27 +580,49 @@ impl Repl {
         println!();
     }
 
-    pub fn enable_safe_mode(&mut self) {
-        if self.mode.is_read_only() {
-            println!("\n{}\n", "Safe mode: already enabled".dimmed());
+    /// Switch to `target` access mode at runtime, syncing the offered
+    /// tools, the cursor shape, and the mode preamble the assistant sees.
+    /// A no-op (with a dimmed notice) when already in that mode.
+    pub fn switch_mode(&mut self, target: SandboxMode) {
+        if self.mode == target {
+            println!(
+                "\n{}\n",
+                format!("Already in {} mode", target.label()).dimmed()
+            );
             return;
         }
-        self.mode = SandboxMode::ReadOnly;
-        self.tool_executor.set_mode(SandboxMode::ReadOnly);
+        self.mode = target;
+        self.tool_executor.set_mode(target);
         self.refresh_available_tools();
-        // Switch the cursor to the safe-mode shape so the visual
-        // affordance matches the new mode. Best-effort: a failed
-        // SGR write here is purely cosmetic.
-        let _ = set_safe_mode_cursor_style();
+        // Match the terminal cursor shape to the mode. Best-effort: a
+        // failed SGR write here is purely cosmetic.
+        let _ = if target.is_read_only() {
+            set_safe_mode_cursor_style()
+        } else {
+            set_default_cursor_style()
+        };
 
+        let (preamble, notice) = match target {
+            SandboxMode::ReadOnly => (
+                SAFE_MODE_MESSAGE,
+                "Safe mode: read-only tools only; no writes or shell".bright_yellow(),
+            ),
+            SandboxMode::Workspace => (
+                WORKSPACE_MODE_MESSAGE,
+                "Workspace mode: read and write; shell confined to the project".bright_green(),
+            ),
+            SandboxMode::Unrestricted => (
+                UNRESTRICTED_MODE_MESSAGE,
+                "Unrestricted mode: shell runs without sandbox confinement".bright_red(),
+            ),
+        };
         self.session_state
             .conversation
-            .add_user_message(SAFE_MODE_MESSAGE.to_string());
-        println!(
-            "\n{} read-only native tools; no writes or bash\n",
-            "Safe mode: enabled".bright_yellow()
-        );
-        self.print_mcp_safe_mode_summary();
+            .add_user_message(preamble.to_string());
+        println!("\n{}\n", notice);
+        if target.is_read_only() {
+            self.print_mcp_safe_mode_summary();
+        }
     }
 
     fn print_mcp_safe_mode_summary(&self) {
@@ -606,27 +634,6 @@ impl Repl {
             print!("{}", summary);
             println!();
         }
-    }
-
-    pub fn disable_safe_mode(&mut self) {
-        if !self.mode.is_read_only() {
-            println!("\n{}\n", "Safe mode: already disabled".dimmed());
-            return;
-        }
-        self.mode = SandboxMode::Workspace;
-        self.tool_executor.set_mode(SandboxMode::Workspace);
-        self.refresh_available_tools();
-        // Restore the default cursor shape so the visual affordance
-        // matches the new mode.
-        let _ = set_default_cursor_style();
-
-        self.session_state
-            .conversation
-            .add_user_message(WORKSPACE_MODE_MESSAGE.to_string());
-        println!(
-            "\n{} all tools available\n",
-            "Safe mode: disabled".bright_green()
-        );
     }
 
     fn refresh_available_tools(&mut self) {
