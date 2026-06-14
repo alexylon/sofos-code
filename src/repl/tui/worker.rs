@@ -160,7 +160,7 @@ fn run(
                     }
                 }
                 // Slash commands can mutate the conversation (`/compact`
-                // rewrites the history, `/clear` resets it, `/safe` /
+                // rewrites the history, `/clear` resets it, `/readonly` /
                 // `/workspace` toggle the mode preamble). Persist after the
                 // command runs so a `/exit` or Ctrl+C before the next
                 // prompt doesn't lose the change.

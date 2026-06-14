@@ -1,6 +1,6 @@
 use crate::error::{Result, SofosError};
 use crate::mcp::client::McpClient;
-use crate::mcp::config::{SafeModeAccess, load_mcp_config};
+use crate::mcp::config::{ReadOnlyAccess, load_mcp_config};
 use crate::mcp::protocol::{CallToolResult, McpTool, ToolContent};
 use colored::Colorize;
 use std::collections::HashMap;
@@ -59,7 +59,7 @@ pub struct McpManager {
     clients: Arc<Mutex<HashMap<String, Arc<McpClient>>>>,
     tools_by_server: Arc<HashMap<String, Vec<McpTool>>>,
     tool_to_server: Arc<HashMap<String, String>>,
-    safe_mode_by_server: Arc<HashMap<String, SafeModeAccess>>,
+    readonly_by_server: Arc<HashMap<String, ReadOnlyAccess>>,
 }
 
 /// Reject server and tool names that contain the prefix separator or
@@ -111,7 +111,7 @@ impl McpManager {
         let mut clients: HashMap<String, Arc<McpClient>> = HashMap::new();
         let mut tools_by_server: HashMap<String, Vec<McpTool>> = HashMap::new();
         let mut tool_to_server: HashMap<String, String> = HashMap::new();
-        let mut safe_mode_by_server: HashMap<String, SafeModeAccess> = HashMap::new();
+        let mut readonly_by_server: HashMap<String, ReadOnlyAccess> = HashMap::new();
         let mut bullets = String::new();
 
         for (server_name, config) in server_configs {
@@ -119,7 +119,7 @@ impl McpManager {
                 tracing::warn!(server = %server_name, error = %e, "skipping MCP server");
                 continue;
             }
-            let server_safe_mode = config.safe_mode;
+            let server_readonly = config.readonly;
             match McpClient::connect(server_name.clone(), config).await {
                 Ok(client) => match client.list_tools().await {
                     Ok(tools) => {
@@ -150,7 +150,7 @@ impl McpManager {
                         let tool_count = accepted.len();
                         tools_by_server.insert(server_name.clone(), accepted);
                         clients.insert(server_name.clone(), Arc::new(client));
-                        safe_mode_by_server.insert(server_name.clone(), server_safe_mode);
+                        readonly_by_server.insert(server_name.clone(), server_readonly);
                         bullets.push_str(&format!(
                             "  {} {} ({} tools)\n",
                             "✓".bright_green(),
@@ -180,7 +180,7 @@ impl McpManager {
             clients: Arc::new(Mutex::new(clients)),
             tools_by_server: Arc::new(tools_by_server),
             tool_to_server: Arc::new(tool_to_server),
-            safe_mode_by_server: Arc::new(safe_mode_by_server),
+            readonly_by_server: Arc::new(readonly_by_server),
         };
         let init_block = if bullets.is_empty() {
             String::new()
@@ -191,27 +191,27 @@ impl McpManager {
     }
 
     /// Names of servers that have at least one tool registered. The
-    /// caller can use these to compose a startup warning when safe
+    /// caller can use these to compose a startup warning when read-only
     /// mode is on but no server has opted in. The output is sorted so
     /// the banner stays stable across runs — HashMap iteration order
     /// is not deterministic.
-    pub fn server_names_for_safe_mode(&self, included: bool) -> Vec<String> {
+    pub fn server_names_for_readonly(&self, included: bool) -> Vec<String> {
         let mut names: Vec<String> = self
-            .safe_mode_by_server
+            .readonly_by_server
             .iter()
-            .filter(|(_, access)| access.is_available_in_safe_mode() == included)
+            .filter(|(_, access)| access.is_available_in_readonly() == included)
             .map(|(name, _)| name.clone())
             .collect();
         names.sort();
         names
     }
 
-    pub fn is_server_available_in_safe_mode(&self, server: &str) -> bool {
-        self.safe_mode_by_server
+    pub fn is_server_available_in_readonly(&self, server: &str) -> bool {
+        self.readonly_by_server
             .get(server)
             .copied()
             .unwrap_or_default()
-            .is_available_in_safe_mode()
+            .is_available_in_readonly()
     }
 
     /// Get all available MCP tools from all connected servers.
@@ -224,17 +224,17 @@ impl McpManager {
         Ok(self.collect_tools(false))
     }
 
-    /// Get only the MCP tools whose servers opted into safe mode. Used
+    /// Get only the MCP tools whose servers opted into read-only mode. Used
     /// by the tool executor to filter the tool list shown to the model
-    /// when the user is in safe mode.
-    pub async fn get_safe_mode_tools(&self) -> Result<Vec<crate::api::Tool>> {
+    /// when the user is in read-only mode.
+    pub async fn get_readonly_tools(&self) -> Result<Vec<crate::api::Tool>> {
         Ok(self.collect_tools(true))
     }
 
-    fn collect_tools(&self, safe_mode: bool) -> Vec<crate::api::Tool> {
+    fn collect_tools(&self, readonly: bool) -> Vec<crate::api::Tool> {
         let mut all_tools = Vec::new();
         for (server_name, tools) in self.tools_by_server.iter() {
-            if safe_mode && !self.is_server_available_in_safe_mode(server_name) {
+            if readonly && !self.is_server_available_in_readonly(server_name) {
                 continue;
             }
             for mcp_tool in tools {
@@ -344,7 +344,7 @@ impl Clone for McpManager {
             clients: Arc::clone(&self.clients),
             tools_by_server: Arc::clone(&self.tools_by_server),
             tool_to_server: Arc::clone(&self.tool_to_server),
-            safe_mode_by_server: Arc::clone(&self.safe_mode_by_server),
+            readonly_by_server: Arc::clone(&self.readonly_by_server),
         }
     }
 }

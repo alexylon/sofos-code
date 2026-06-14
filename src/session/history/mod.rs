@@ -323,12 +323,12 @@ mod tests {
         );
     }
 
-    /// `model` and `safe_mode` must round-trip through save/load so the
+    /// `model` and `readonly` must round-trip through save/load so the
     /// resumed session stays on the same provider and tool grant. The
     /// flatten on `token_counters` lives at the same JSON level, so this
     /// test also pins that there's no name collision.
     #[test]
-    fn model_and_safe_mode_survive_save_and_load() {
+    fn model_and_readonly_survive_save_and_load() {
         let temp_dir = TempDir::new().unwrap();
         let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
         let session_id = HistoryManager::generate_session_id();
@@ -351,15 +351,15 @@ mod tests {
             loaded.model.as_deref(),
             Some(crate::api::model_info::CLAUDE_OPUS)
         );
-        assert_eq!(loaded.safe_mode, Some(true));
+        assert_eq!(loaded.readonly, Some(true));
     }
 
-    /// Older session files written before `model` and `safe_mode` existed
+    /// Older session files written before `model` and `readonly` existed
     /// must still load, with both fields defaulting to their empty values
     /// so the in-memory state on `--resume` falls back to whatever the
     /// CLI selected.
     #[test]
-    fn legacy_session_without_model_or_safe_mode_loads_with_defaults() {
+    fn legacy_session_without_model_or_readonly_loads_with_defaults() {
         let temp_dir = TempDir::new().unwrap();
         let manager = HistoryManager::new(temp_dir.path().to_path_buf()).unwrap();
         let session_id = "session_pre_model";
@@ -375,7 +375,7 @@ mod tests {
 
         let loaded = manager.load_session(session_id).unwrap();
         assert!(loaded.model.is_none());
-        assert!(loaded.safe_mode.is_none());
+        assert!(loaded.readonly.is_none());
     }
 
     /// `save_session` / `load_session` must refuse session ids that would

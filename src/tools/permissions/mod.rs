@@ -1060,7 +1060,7 @@ ask = []
         let manager = create_test_manager(settings, &temp_dir);
 
         assert_eq!(
-            manager.check_write_permission("/tmp/safe/file.txt"),
+            manager.check_write_permission("/tmp/readonly/file.txt"),
             CommandPermission::Allowed
         );
         assert_eq!(

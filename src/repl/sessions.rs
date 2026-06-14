@@ -41,7 +41,7 @@ impl Repl {
                 peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
             },
             &self.model_config.model,
-            self.mode.is_read_only(),
+            self.mode.is_readonly(),
         )?;
 
         Ok(())
@@ -180,15 +180,15 @@ impl Repl {
             }
         }
 
-        // Restore safe-mode silently when the file records it. The
+        // Restore read-only silently when the file records it. The
         // saved conversation already reflects whichever tool grant was
         // active, so we just sync the in-memory flag and the tool
-        // executor's allow-list. Older files with no `safe_mode` field
-        // (`None`) keep the CLI value, so a `--safe-mode --resume`
+        // executor's allow-list. Older files with no `readonly` field
+        // (`None`) keep the CLI value, so a `--readonly --resume`
         // against a pre-persistence file still honours the flag.
-        if let Some(saved_safe_mode) = session.safe_mode {
-            if saved_safe_mode != self.mode.is_read_only() {
-                self.mode = if saved_safe_mode {
+        if let Some(saved_readonly) = session.readonly {
+            if saved_readonly != self.mode.is_readonly() {
+                self.mode = if saved_readonly {
                     SandboxMode::ReadOnly
                 } else {
                     SandboxMode::Workspace

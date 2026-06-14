@@ -83,12 +83,12 @@ pub struct Cli {
     #[arg(long, default_value_t = THINKING_BUDGET_DEFAULT, hide = true)]
     pub thinking_budget: u32,
 
-    /// Enable read-only mode
-    #[arg(short, long)]
-    pub safe_mode: bool,
+    /// Start in read-only mode: only inspection tools, no writes or shell.
+    #[arg(long)]
+    pub readonly: bool,
 
     /// Run shell commands without operating-system confinement.
-    /// Overridden by `--safe-mode` when both are given.
+    /// Overridden by `--readonly` when both are given.
     #[arg(long)]
     pub unrestricted: bool,
 }

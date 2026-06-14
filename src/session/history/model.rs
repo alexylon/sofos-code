@@ -80,11 +80,11 @@ pub struct Session {
     /// value in that case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Whether the session was in safe (read-only) mode at save
-    /// time. Restored on `--resume` so the tool grant matches what
-    /// the user had configured. `None` in files written before this
-    /// field existed — falls back to the CLI value in that case.
-    /// (`bool` has no natural "unset" sentinel, hence `Option`.)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub safe_mode: Option<bool>,
+    /// Whether the session was in read-only mode at save time. Restored
+    /// on `--resume` so the tool grant matches what the user had
+    /// configured. `None` in files written before this field existed —
+    /// falls back to the CLI value in that case. (`bool` has no natural
+    /// "unset" sentinel, hence `Option`.)
+    #[serde(default, alias = "safe_mode", skip_serializing_if = "Option::is_none")]
+    pub readonly: Option<bool>,
 }

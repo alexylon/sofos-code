@@ -422,7 +422,7 @@ fn submit_input(app: &mut App, job_tx: &std_mpsc::Sender<Job>, steer_buffer: &St
     use colored::Colorize;
     let glyph = if will_steer {
         "↑"
-    } else if app.is_safe_mode() {
+    } else if app.is_readonly() {
         ":"
     } else {
         ">"

@@ -157,7 +157,7 @@ impl HistoryManager {
         system_prompt: &[SystemPrompt],
         token_counters: SessionTokenCounters,
         model: &str,
-        safe_mode: bool,
+        readonly: bool,
     ) -> Result<()> {
         Self::validate_session_id(session_id)?;
         let _lock = self.acquire_save_lock()?;
@@ -197,7 +197,7 @@ impl HistoryManager {
             updated_at: now,
             token_counters,
             model: Some(model.to_string()),
-            safe_mode: Some(safe_mode),
+            readonly: Some(readonly),
         };
 
         let content = serde_json::to_string_pretty(&session)?;

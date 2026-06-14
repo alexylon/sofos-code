@@ -8,11 +8,12 @@ All notable changes to Sofos are documented in this file.
 
 - **The assistant can now run more shell commands without stopping to ask.** By default, a command the checks would otherwise refuse or prompt for — an unfamiliar command, or a familiar one that only writes its output to a file — now runs confined by the operating system instead: it can only write inside the project folder and cannot use the network. Clearly destructive commands, parent-directory access, and hidden subcommands are still refused. Available on macOS and Linux; on Windows these commands still ask for approval.
 - **New `--unrestricted` option** runs shell commands without that confinement, for trusted environments. Unfamiliar commands ask for approval as before.
-- **The access mode is now visible and switchable at any time.** The prompt symbol, input cursor, and status line show the current mode — `:` (safe), `>` (workspace), or `#` (unrestricted) — and `/safe`, `/workspace`, and `/unrestricted` switch between them during a session.
+- **The access mode is now visible and switchable at any time.** The prompt symbol, input cursor, and status line show the current mode — `:` (read-only), `>` (workspace), or `#` (unrestricted) — and `/readonly`, `/workspace`, and `/unrestricted` switch between them during a session.
 
 ### Changed
 
-- **The `/normal` command is now `/workspace`.** It leaves read-only (safe) mode and returns to the default mode, where the assistant can read, write, and run shell commands. The previous `/normal` name has been removed.
+- **Read-only mode is now selected with `--readonly` and `/readonly`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
+- **The `/normal` command is now `/workspace`.** It leaves read-only mode and returns to the default mode, where the assistant can read, write, and run shell commands. The previous `/normal` name has been removed.
 
 ## [0.3.5] - 2026-06-09
 

@@ -92,19 +92,19 @@ pub fn auto_compact_token_limit_for(model: &str) -> usize {
     crate::api::model_info::lookup(model).auto_compact_at() as usize
 }
 
-/// Safe mode message shown to user and AI. Must stay in sync with the
+/// Read-only mode message shown to user and AI. Must stay in sync with the
 /// tool set returned by `tools::get_read_only_tools()` (+ the optional
 /// `search_code` tool wired in when ripgrep is on PATH).
-pub const SAFE_MODE_MESSAGE: &str = "[SYSTEM: Safe (read-only) mode has been enabled. \
+pub const READONLY_MODE_MESSAGE: &str = "[SYSTEM: Read-only mode enabled. \
                                      No file modifications or bash commands are allowed. \
                                      Available native tools: list_directory, read_file, glob_files, \
                                      search_code (when ripgrep is installed), update_plan, \
                                      web_fetch, web_search. MCP tools are filtered out unless \
-                                     their server is marked safe_mode = \"read_only\" or \"allow\" \
+                                     their server is marked readonly = \"read_only\" or \"allow\" \
                                      in the configuration.]";
 
 /// Workspace mode message shown to the assistant when switching out of
-/// safe mode.
+/// read-only mode.
 pub const WORKSPACE_MODE_MESSAGE: &str = "[SYSTEM: Workspace mode enabled. \
                                           File edits and shell commands are allowed. \
                                           On supported systems, shell commands run confined \
@@ -122,9 +122,9 @@ pub const UNRESTRICTED_MODE_MESSAGE: &str = "[SYSTEM: Unrestricted mode enabled.
 
 /// How much access the assistant has to the workspace and the shell.
 ///
-/// Chosen at startup from the command line (`--safe-mode`,
+/// Chosen at startup from the command line (`--readonly`,
 /// `--unrestricted`, or neither) and switchable during a session with
-/// the `/safe` and `/workspace` commands.
+/// the `/readonly` and `/workspace` commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
     /// Only read-only tools are offered. No file writes and no shell
@@ -140,11 +140,11 @@ pub enum SandboxMode {
 }
 
 impl SandboxMode {
-    /// Resolve the mode from the two command-line switches. `--safe-mode`
+    /// Resolve the mode from the two command-line switches. `--readonly`
     /// wins over `--unrestricted` when both are given, so the most
     /// restrictive choice always takes effect.
-    pub fn from_flags(safe: bool, unrestricted: bool) -> Self {
-        if safe {
+    pub fn from_flags(readonly: bool, unrestricted: bool) -> Self {
+        if readonly {
             Self::ReadOnly
         } else if unrestricted {
             Self::Unrestricted
@@ -155,7 +155,7 @@ impl SandboxMode {
 
     /// Whether only read-only tools are offered. Drives tool selection
     /// and the read-only banner.
-    pub fn is_read_only(self) -> bool {
+    pub fn is_readonly(self) -> bool {
         matches!(self, Self::ReadOnly)
     }
 
@@ -168,7 +168,7 @@ impl SandboxMode {
     /// Short label shown in the status line.
     pub fn label(self) -> &'static str {
         match self {
-            Self::ReadOnly => "safe",
+            Self::ReadOnly => "readonly",
             Self::Workspace => "workspace",
             Self::Unrestricted => "unrestricted",
         }
@@ -180,7 +180,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sandbox_mode_from_flags_prefers_safe_then_unrestricted() {
+    fn sandbox_mode_from_flags_prefers_readonly_then_unrestricted() {
         assert_eq!(
             SandboxMode::from_flags(false, false),
             SandboxMode::Workspace

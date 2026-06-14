@@ -228,7 +228,7 @@ impl App {
 
     /// The live access mode from the latest status snapshot, defaulting
     /// to workspace before the first snapshot arrives. Reading from the
-    /// snapshot (not a per-session flag) means `/safe`, `/workspace`, and
+    /// snapshot (not a per-session flag) means `/readonly`, `/workspace`, and
     /// `/unrestricted` take effect immediately.
     pub fn mode(&self) -> SandboxMode {
         self.status
@@ -237,8 +237,8 @@ impl App {
             .unwrap_or(SandboxMode::Workspace)
     }
 
-    pub fn is_safe_mode(&self) -> bool {
-        self.mode().is_read_only()
+    pub fn is_readonly(&self) -> bool {
+        self.mode().is_readonly()
     }
 
     /// Push a successfully-submitted line into the input-history ring.
@@ -509,11 +509,14 @@ mod tests {
     }
 
     #[test]
-    fn is_safe_mode_reads_from_status_snapshot() {
+    fn is_readonly_reads_from_status_snapshot() {
         use crate::config::SandboxMode;
         use crate::repl::tui::event::StatusSnapshot;
         let mut a = app();
-        assert!(!a.is_safe_mode(), "defaults to non-safe when status unset");
+        assert!(
+            !a.is_readonly(),
+            "defaults to non-read-only when status unset"
+        );
         a.status = Some(StatusSnapshot {
             model: "m".into(),
             mode: SandboxMode::ReadOnly,
@@ -523,9 +526,9 @@ mod tests {
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
         });
-        assert!(a.is_safe_mode());
+        assert!(a.is_readonly());
         a.status.as_mut().unwrap().mode = SandboxMode::Workspace;
-        assert!(!a.is_safe_mode());
+        assert!(!a.is_readonly());
     }
 
     #[test]
@@ -773,7 +776,7 @@ mod tests {
             cache_creation_tokens: 0,
         });
         let s = a.status.as_ref().unwrap();
-        assert_eq!(s.mode.label(), "safe");
+        assert_eq!(s.mode.label(), "readonly");
         assert_eq!(s.model, crate::api::model_info::CLAUDE_OPUS);
         assert_eq!(s.input_tokens, 123);
     }

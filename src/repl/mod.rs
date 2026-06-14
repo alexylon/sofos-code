@@ -15,13 +15,14 @@ use std::io::IsTerminal;
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{
-    ModelConfig, SAFE_MODE_MESSAGE, SandboxMode, UNRESTRICTED_MODE_MESSAGE, WORKSPACE_MODE_MESSAGE,
+    ModelConfig, READONLY_MODE_MESSAGE, SandboxMode, UNRESTRICTED_MODE_MESSAGE,
+    WORKSPACE_MODE_MESSAGE,
 };
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
 use crate::session::{HistoryManager, SessionState};
 use crate::tools::ToolExecutor;
-use crate::ui::{UI, set_default_cursor_style, set_safe_mode_cursor_style};
+use crate::ui::{UI, set_default_cursor_style, set_readonly_cursor_style};
 use colored::Colorize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -172,23 +173,23 @@ impl Repl {
             &config.model,
         ));
 
-        let safe_mode_mcp_note = if config.mode.is_read_only() {
-            conversation.add_user_message(SAFE_MODE_MESSAGE.to_string());
-            set_safe_mode_cursor_style()?;
-            format_mcp_safe_mode_summary(
-                &tool_executor.mcp_servers_excluded_from_safe_mode(),
-                &tool_executor.mcp_servers_included_in_safe_mode(),
+        let readonly_mcp_note = if config.mode.is_readonly() {
+            conversation.add_user_message(READONLY_MODE_MESSAGE.to_string());
+            set_readonly_cursor_style()?;
+            format_mcp_readonly_summary(
+                &tool_executor.mcp_servers_excluded_from_readonly(),
+                &tool_executor.mcp_servers_included_in_readonly(),
             )
         } else {
             String::new()
         };
 
-        let mcp_init_lines = if safe_mode_mcp_note.is_empty() {
+        let mcp_init_lines = if readonly_mcp_note.is_empty() {
             mcp_init_lines
         } else if mcp_init_lines.is_empty() {
-            safe_mode_mcp_note
+            readonly_mcp_note
         } else {
-            format!("{}{}", mcp_init_lines, safe_mode_mcp_note)
+            format!("{}{}", mcp_init_lines, readonly_mcp_note)
         };
 
         let session_id = history_manager.generate_unique_session_id();
@@ -366,12 +367,12 @@ impl Repl {
         let new_session_id = self.history_manager.generate_unique_session_id();
         self.session_state.conversation.clear();
         self.session_state.clear(new_session_id);
-        // Safe mode survives `/clear`, so the preamble has to ride
+        // Read-only mode survives `/clear`, so the preamble has to ride
         // along too — otherwise the model proposes blocked tools.
-        if self.mode.is_read_only() {
+        if self.mode.is_readonly() {
             self.session_state
                 .conversation
-                .add_user_message(SAFE_MODE_MESSAGE.to_string());
+                .add_user_message(READONLY_MODE_MESSAGE.to_string());
         }
         self.session_state
             .conversation
@@ -596,16 +597,16 @@ impl Repl {
         self.refresh_available_tools();
         // Match the terminal cursor shape to the mode. Best-effort: a
         // failed SGR write here is purely cosmetic.
-        let _ = if target.is_read_only() {
-            set_safe_mode_cursor_style()
+        let _ = if target.is_readonly() {
+            set_readonly_cursor_style()
         } else {
             set_default_cursor_style()
         };
 
         let (preamble, notice) = match target {
             SandboxMode::ReadOnly => (
-                SAFE_MODE_MESSAGE,
-                "Safe mode: read-only tools only; no writes or shell".bright_yellow(),
+                READONLY_MODE_MESSAGE,
+                "Read-only mode: read-only tools only; no writes or shell".bright_yellow(),
             ),
             SandboxMode::Workspace => (
                 WORKSPACE_MODE_MESSAGE,
@@ -620,15 +621,15 @@ impl Repl {
             .conversation
             .add_user_message(preamble.to_string());
         println!("\n{}\n", notice);
-        if target.is_read_only() {
-            self.print_mcp_safe_mode_summary();
+        if target.is_readonly() {
+            self.print_mcp_readonly_summary();
         }
     }
 
-    fn print_mcp_safe_mode_summary(&self) {
-        let summary = format_mcp_safe_mode_summary(
-            &self.tool_executor.mcp_servers_excluded_from_safe_mode(),
-            &self.tool_executor.mcp_servers_included_in_safe_mode(),
+    fn print_mcp_readonly_summary(&self) {
+        let summary = format_mcp_readonly_summary(
+            &self.tool_executor.mcp_servers_excluded_from_readonly(),
+            &self.tool_executor.mcp_servers_included_in_readonly(),
         );
         if !summary.is_empty() {
             print!("{}", summary);
@@ -659,28 +660,28 @@ impl Repl {
     }
 }
 
-/// Format the per-server safe-mode summary for the startup banner. The
+/// Format the per-server read-only summary for the startup banner. The
 /// terminal renders this right after the `MCP servers:` block so the
 /// user can immediately see which servers were filtered out and which
 /// were opted in.
-fn format_mcp_safe_mode_summary(excluded: &[String], included: &[String]) -> String {
+fn format_mcp_readonly_summary(excluded: &[String], included: &[String]) -> String {
     if excluded.is_empty() && included.is_empty() {
         return String::new();
     }
     let mut out = String::new();
     if !excluded.is_empty() {
         out.push_str(&format!(
-            "  {} Safe mode hides MCP servers: {}\n",
+            "  {} Read-only mode hides MCP servers: {}\n",
             "•".bright_yellow(),
             excluded.join(", ")
         ));
         out.push_str(
-            "    Set `safe_mode = \"read_only\"` on a server to make its tools available.\n",
+            "    Set `readonly = \"read_only\"` on a server to make its tools available.\n",
         );
     }
     if !included.is_empty() {
         out.push_str(&format!(
-            "  {} Safe mode allows MCP servers: {}\n",
+            "  {} Read-only mode allows MCP servers: {}\n",
             "•".bright_green(),
             included.join(", ")
         ));

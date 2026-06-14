@@ -31,7 +31,7 @@ Tested on macOS, Linux, and Windows. On Windows the bash executor runs commands 
 - [Models and reasoning effort](#models-and-reasoning-effort)
 - [Tools](#tools)
   - [Native tools](#native-tools)
-  - [Safe mode tools](#safe-mode-tools)
+  - [Read-only mode tools](#read-only-mode-tools)
   - [MCP tools](#mcp-tools)
 - [Security model](#security-model)
   - [Workspace and external paths](#workspace-and-external-paths)
@@ -81,10 +81,10 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
 - **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
-- **Access modes** — safe (read-only), workspace (the default; unfamiliar shell commands run confined to the project by the operating-system sandbox on macOS and Linux), and unrestricted; switchable mid-session.
+- **Access modes** — read-only, workspace (the default; unfamiliar shell commands run confined to the project by the operating-system sandbox on macOS and Linux), and unrestricted; switchable mid-session.
 - **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
-- **Session persistence** — saved conversations, resume picker, restored safe mode, restored model where compatible, and persisted cost counters.
+- **Session persistence** — saved conversations, resume picker, restored read-only mode, restored model where compatible, and persisted cost counters.
 - **Cost visibility** — token totals, cache hit reporting, and provider-specific price estimates.
 - **Context compaction** — local and provider-supported compaction to keep long sessions usable.
 
@@ -168,7 +168,7 @@ sofos -p "Review the error handling in src/error.rs"
 Start in read-only native-tool mode:
 
 ```bash
-sofos --safe-mode
+sofos --readonly
 ```
 
 Resume a saved session:
@@ -192,7 +192,7 @@ sofos --resume
 | `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a named level. Validation matches the picker — unsupported levels print a clear error. |
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
-| `/safe`                                     | Switch to safe mode: read-only tools. Prompt shows `:`. |
+| `/readonly`                                 | Switch to read-only mode: inspection tools only. Prompt shows `:`. |
 | `/workspace`                                | Switch to workspace mode (the default): read and write, shell confined to the project. Prompt shows `>`. |
 | `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
@@ -216,7 +216,7 @@ One-shot mode sends a prompt, runs the assistant turn, saves the session, prints
 
 ```bash
 sofos -p "Find the likely cause of the failing tests"
-sofos -p "Create a high-level summary of this crate" --safe-mode
+sofos -p "Create a high-level summary of this crate" --readonly
 ```
 
 ### Image vision
@@ -246,7 +246,7 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 
 ```text
 -p, --prompt <TEXT>          Run one prompt and exit.
--s, --safe-mode              Start with read-only native tools.
+    --readonly               Start in read-only mode (inspection tools only).
     --unrestricted           Run shell commands without operating-system confinement.
 -r, --resume                 Resume a previous session.
     --check-connection       Check provider connectivity and exit.
@@ -343,9 +343,9 @@ Provider mapping:
 
 Clipboard pastes are not routed through a tool: pressing Ctrl-V in the prompt attaches the image directly to the message.
 
-### Safe mode tools
+### Read-only mode tools
 
-Safe mode is enabled with `--safe-mode` or `/safe`. It restricts the native tool set to:
+Read-only mode is enabled with `--readonly` or `/readonly`. It restricts the native tool set to:
 
 - `list_directory`;
 - `read_file`;
@@ -356,7 +356,7 @@ Safe mode is enabled with `--safe-mode` or `/safe`. It restricts the native tool
 - `web_fetch`;
 - `web_search`.
 
-MCP tools are filtered out in safe mode by default. To make a particular server's tools available in safe mode, add `safe_mode = "read_only"` (server is known to expose only read operations) or `safe_mode = "allow"` (explicit opt-in even when the server may mutate) to its entry in `~/.sofos/config.toml` or `.sofos/config.local.toml`. Sofos lists which servers are filtered out and which are opted in on the startup banner whenever safe mode is on.
+MCP tools are filtered out in read-only mode by default. To make a particular server's tools available in read-only mode, add `readonly = "read_only"` (server is known to expose only read operations) or `readonly = "allow"` (explicit opt-in even when the server may mutate) to its entry in `~/.sofos/config.toml` or `.sofos/config.local.toml`. Sofos lists which servers are filtered out and which are opted in on the startup banner whenever read-only mode is on.
 
 ### MCP tools
 
@@ -391,7 +391,7 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 
 Sofos starts in one of three access modes. The current mode is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
 
-- **Safe** (`--safe-mode`, or `/safe`) — read-only tools only; no writes and no shell commands. Prompt shows `:`.
+- **Read-only** (`--readonly`, or `/readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
 - **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. A command Sofos does not already recognise as safe runs confined by the operating system: it can only write inside the project directory and cannot reach the network, so the assistant can use the shell freely without a prompt for every unfamiliar command. Prompt shows `>`.
 - **Unrestricted** (`--unrestricted`, or `/unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
 
@@ -528,7 +528,7 @@ A saved session includes:
 - display history for replay;
 - system prompt;
 - model name where available;
-- safe-mode state;
+- read-only mode state;
 - token counters and cache counters.
 
 Resume with:

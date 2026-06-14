@@ -115,7 +115,7 @@ repl/ orchestration
 The core structural rules are:
 
 1. **`repl/` owns the turn lifecycle.**
-   It builds requests, streams provider responses, executes tool loops, handles interruption, saves sessions, and coordinates safe mode.
+   It builds requests, streams provider responses, executes tool loops, handles interruption, saves sessions, and coordinates read-only mode.
 
 2. **`api/` owns provider translation.**
    Anthropic, OpenAI, and Morph have separate clients and wire modules. Shared in-memory message and tool types live in `api/types.rs`.
@@ -152,7 +152,7 @@ src/
 ├── cli.rs
 │   # Command-line argument definitions, API-key lookup, and startup option parsing.
 ├── config.rs
-│   # Runtime defaults, model configuration, safe-mode messages, and context-budget helpers.
+│   # Runtime defaults, model configuration, read-only messages, and context-budget helpers.
 ├── error.rs
 │   # Application error taxonomy, result alias, conversions, and blocked-operation classification.
 ├── clipboard.rs
@@ -192,7 +192,7 @@ src/
 │
 ├── repl/
 │   ├── mod.rs
-│   │   # Main REPL state, initialization, safe-mode handling, status snapshots, and command-facing state changes.
+│   │   # Main REPL state, initialization, read-only handling, status snapshots, and command-facing state changes.
 │   ├── turn.rs
 │   │   # Per-user-message driver: image loading, first request, streaming response, errors, counters, and save handoff.
 │   ├── request_builder.rs
@@ -285,7 +285,7 @@ src/
 │   ├── tool_name.rs
 │   │   # Type-safe native tool-name enum and string conversion logic.
 │   ├── types.rs
-│   │   # Provider-facing native tool schemas and safe-mode / Morph-enabled tool lists.
+│   │   # Provider-facing native tool schemas and read-only / Morph-enabled tool lists.
 │   ├── utils.rs
 │   │   # Tool confirmations, HTML-to-text conversion, path predicates, and truncation helpers.
 │   ├── test_support.rs
@@ -405,7 +405,7 @@ It contains:
 - API-key options and environment-variable fallbacks;
 - model and token options;
 - reasoning-effort CLI input;
-- safe-mode, resume, prompt, and connectivity flags;
+- read-only, resume, prompt, and connectivity flags;
 - deprecated option compatibility where applicable.
 
 It does not validate provider wire compatibility beyond what can be expressed as CLI shape. Model-specific policy is checked by `main.rs` and `api/model_info.rs`.
@@ -417,7 +417,7 @@ It does not validate provider wire compatibility beyond what can be expressed as
 It contains:
 
 - model configuration values passed into request building;
-- safe-mode and normal-mode system messages;
+- read-only and normal-mode system messages;
 - context and auto-compaction thresholds derived from model information;
 - global defaults for the response-handler loop.
 
@@ -608,18 +608,18 @@ It contains:
 - MCP manager initialization;
 - tool executor initialization;
 - custom instruction loading;
-- safe-mode setup;
+- read-only setup;
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/effort`, `/safe`, `/workspace`, `/unrestricted`, and `/clear` state handlers;
+- `/effort`, `/readonly`, `/workspace`, `/unrestricted`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
 
 - `Repl` owns one Tokio runtime for its lifetime.
-- Available tools are refreshed when safe mode changes.
-- Safe mode changes update both the tool executor and the conversation context.
+- Available tools are refreshed when read-only mode changes.
+- Read-only mode changes update both the tool executor and the conversation context.
 - The TUI is the interactive front end; `Repl::run` delegates to `repl/tui`.
 
 ### 5.2 `repl/turn.rs`
@@ -715,7 +715,7 @@ It coordinates:
 - saving the current session through `HistoryManager`;
 - loading a selected session by id;
 - restoring message history;
-- restoring model and safe-mode state where valid;
+- restoring model and read-only state where valid;
 - rejecting incompatible provider resumes.
 
 Rules:
@@ -867,7 +867,7 @@ It contains:
 - `ToolExecutor`;
 - `ToolExecutionResult`;
 - available-tool list selection;
-- safe-mode tool filtering;
+- read-only tool filtering;
 - MCP tool detection and execution;
 - Read and Write external-path permission checks;
 - session-scoped path grants and denials;
@@ -1070,7 +1070,7 @@ It contains:
 
 Rules:
 
-- Safe mode must expose only read-only native tools.
+- Read-only mode must expose only read-only native tools.
 - Tool definitions should match dispatcher parameter names and accepted aliases where possible.
 - Provider-specific server-side tools should be represented in shared `api/types.rs` but selected here where appropriate.
 
@@ -1112,7 +1112,7 @@ Rules:
 
 `mcp/` owns Model Context Protocol integration. It discovers external MCP servers, connects to them, caches their tools, and routes MCP tool calls.
 
-`mcp/` does not implement native Sofos tools or enforce native safe-mode filtering. MCP server trust is configured by the user.
+`mcp/` does not implement native Sofos tools or enforce native read-only filtering. MCP server trust is configured by the user.
 
 ### 8.1 `mcp/config.rs`
 
@@ -1180,7 +1180,7 @@ Rules:
 
 - MCP tools are prefixed with their server name using a triple underscore separator. Server and tool names that contain the separator are rejected at registration, so the prefixed name unambiguously identifies the originating server.
 - Tool registrations whose prefixed name collides with an earlier registration are skipped with a warning instead of overwriting.
-- Each MCP server has a safe-mode policy (`disabled`, `read_only`, or `allow`). When safe mode is on, only tools from servers whose policy is `read_only` or `allow` are exposed; everything else is filtered out so a configured MCP server cannot quietly mutate state in a safe-mode session.
+- Each MCP server has a read-only policy (`disabled`, `read_only`, or `allow`). When read-only mode is on, only tools from servers whose policy is `read_only` or `allow` are exposed; everything else is filtered out so a configured MCP server cannot quietly mutate state in a read-only session.
 - Tool listings are cached for the session.
 - Calls to different servers should not serialize unnecessarily.
 
@@ -1310,7 +1310,7 @@ Built-in commands include:
 - `/compact`;
 - `/effort`;
 - `/model`;
-- `/safe`;
+- `/readonly`;
 - `/workspace`;
 - `/unrestricted`;
 - `/exit`, `/quit`, `/q`.
@@ -1449,7 +1449,7 @@ Session
 ├── system_prompt      saved prompt context
 ├── token counters     persisted usage totals
 ├── model              saved model where available
-├── safe_mode          saved tool-grant mode where available
+├── readonly          saved tool-grant mode where available
 ├── created_at
 └── updated_at
 ```
@@ -1614,7 +1614,7 @@ Sofos does not expose:
 - unrestricted shell execution;
 - hidden tool execution;
 - provider-specific wire objects throughout the REPL;
-- MCP safe-mode filtering guarantees for third-party servers;
+- MCP read-only filtering guarantees for third-party servers;
 - a library API separate from the terminal binary.
 
 ---
@@ -1634,7 +1634,7 @@ The following invariants define the long-term structure of Sofos:
 - Every assistant tool use must receive a matching tool result.
 - Tool loops are bounded.
 - Interruptions must keep conversation history provider-valid.
-- Session resume must preserve provider compatibility, safe mode, system prompt, and token counters.
+- Session resume must preserve provider compatibility, read-only mode, system prompt, and token counters.
 - Provider-specific reasoning and cache features are selected from model capabilities.
 - MCP tools are external extensions and are isolated behind the MCP manager.
 - User-facing display concerns stay in `ui/` and `repl/tui/`.

@@ -23,7 +23,7 @@ pub enum Command {
     /// `/effort <level>` — set the level directly. Per-model
     /// validation matches `--reasoning-effort`.
     EffortSet(crate::api::ReasoningEffort),
-    SafeMode,
+    ReadOnlyMode,
     WorkspaceMode,
     UnrestrictedMode,
     Compact,
@@ -36,19 +36,33 @@ pub enum Command {
     ModelSet(String),
 }
 
+/// Slash-command names, defined once so the parser and the catalog (and
+/// any future rename) share a single source of truth.
+const CMD_EXIT: &str = "/exit";
+const CMD_QUIT: &str = "/quit";
+const CMD_QUIT_SHORT: &str = "/q";
+const CMD_CLEAR: &str = "/clear";
+const CMD_RESUME: &str = "/resume";
+const CMD_EFFORT: &str = "/effort";
+const CMD_MODEL: &str = "/model";
+const CMD_COMPACT: &str = "/compact";
+const CMD_READONLY: &str = "/readonly";
+const CMD_WORKSPACE: &str = "/workspace";
+const CMD_UNRESTRICTED: &str = "/unrestricted";
+
 impl Command {
     pub fn from_str(s: &str) -> Option<Self> {
         let lower = s.to_lowercase();
         match lower.as_str() {
-            "/exit" | "/quit" | "/q" => Some(Command::Exit),
-            "/clear" => Some(Command::Clear),
-            "/resume" => Some(Command::Resume),
-            "/effort" => Some(Command::EffortPicker),
-            "/safe" => Some(Command::SafeMode),
-            "/workspace" => Some(Command::WorkspaceMode),
-            "/unrestricted" => Some(Command::UnrestrictedMode),
-            "/compact" => Some(Command::Compact),
-            "/model" => Some(Command::ModelPicker),
+            CMD_EXIT | CMD_QUIT | CMD_QUIT_SHORT => Some(Command::Exit),
+            CMD_CLEAR => Some(Command::Clear),
+            CMD_RESUME => Some(Command::Resume),
+            CMD_EFFORT => Some(Command::EffortPicker),
+            CMD_READONLY => Some(Command::ReadOnlyMode),
+            CMD_WORKSPACE => Some(Command::WorkspaceMode),
+            CMD_UNRESTRICTED => Some(Command::UnrestrictedMode),
+            CMD_COMPACT => Some(Command::Compact),
+            CMD_MODEL => Some(Command::ModelPicker),
             _ => {
                 if let Some(arg) = lower.strip_prefix("/effort ") {
                     let trimmed = arg.trim();
@@ -78,7 +92,7 @@ impl Command {
             Command::Resume => builtin::resume_command(repl),
             Command::EffortPicker => builtin::effort_picker_command(repl),
             Command::EffortSet(effort) => builtin::effort_set_command(repl, *effort),
-            Command::SafeMode => builtin::safe_mode_command(repl),
+            Command::ReadOnlyMode => builtin::readonly_mode_command(repl),
             Command::WorkspaceMode => builtin::workspace_mode_command(repl),
             Command::UnrestrictedMode => builtin::unrestricted_mode_command(repl),
             Command::Compact => builtin::compact_command(repl),
@@ -103,43 +117,43 @@ pub struct CommandEntry {
 /// in the popup, so put the most useful entries first.
 pub static COMMAND_CATALOG: &[CommandEntry] = &[
     CommandEntry {
-        name: "/compact",
+        name: CMD_COMPACT,
         description: "summarize the conversation to free up context",
     },
     CommandEntry {
-        name: "/clear",
+        name: CMD_CLEAR,
         description: "clear the conversation and start fresh",
     },
     CommandEntry {
-        name: "/model",
+        name: CMD_MODEL,
         description: "switch the active model (opens a picker)",
     },
     CommandEntry {
-        name: "/effort",
+        name: CMD_EFFORT,
         description: "switch the reasoning effort (opens a picker)",
     },
     CommandEntry {
-        name: "/resume",
+        name: CMD_RESUME,
         description: "resume a previously saved session",
     },
     CommandEntry {
-        name: "/safe",
-        description: "switch to safe mode (read-only tools only)",
+        name: CMD_READONLY,
+        description: "switch to read-only mode (no writes or shell)",
     },
     CommandEntry {
-        name: "/workspace",
+        name: CMD_WORKSPACE,
         description: "switch to workspace mode (read/write, shell confined to the project)",
     },
     CommandEntry {
-        name: "/unrestricted",
+        name: CMD_UNRESTRICTED,
         description: "switch to unrestricted mode (shell without sandbox confinement)",
     },
     CommandEntry {
-        name: "/exit",
+        name: CMD_EXIT,
         description: "save the session and quit",
     },
     CommandEntry {
-        name: "/quit",
+        name: CMD_QUIT,
         description: "alias of /exit",
     },
 ];

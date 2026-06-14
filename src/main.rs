@@ -205,7 +205,7 @@ fn main() -> Result<()> {
         print!("{}", startup_banner);
     }
 
-    let mode = crate::config::SandboxMode::from_flags(cli.safe_mode, cli.unrestricted);
+    let mode = crate::config::SandboxMode::from_flags(cli.readonly, cli.unrestricted);
     let config = ReplConfig::new(cli.model, cli.max_tokens, reasoning_effort, mode);
 
     let mut repl = Repl::new(client, config, workspace.clone(), morph_client).unwrap_or_else(|e| {

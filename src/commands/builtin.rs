@@ -39,7 +39,7 @@ pub fn effort_set_command(
     Ok(CommandResult::Continue)
 }
 
-pub fn safe_mode_command(repl: &mut Repl) -> Result<CommandResult> {
+pub fn readonly_mode_command(repl: &mut Repl) -> Result<CommandResult> {
     repl.switch_mode(SandboxMode::ReadOnly);
     Ok(CommandResult::Continue)
 }

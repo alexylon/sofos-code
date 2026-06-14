@@ -21,7 +21,7 @@ const QUEUE_FG: Color = Color::Rgb(0xCC, 0xCC, 0x66);
 const MODEL_FG: Color = Color::Rgb(110, 110, 110);
 const STATUS_KEY: Color = Color::Rgb(150, 150, 150);
 const STATUS_VAL: Color = Color::Rgb(200, 200, 200);
-const SAFE_MODE_FG: Color = Color::Rgb(0xFF, 0xA5, 0x00);
+const READONLY_MODE_FG: Color = Color::Rgb(0xFF, 0xA5, 0x00);
 const UNRESTRICTED_MODE_FG: Color = Color::Rgb(0xFF, 0x55, 0x55);
 const PICKER_BORDER: Color = Color::Rgb(140, 140, 140);
 const SLASH_POPUP_BORDER: Color = Color::Rgb(120, 120, 120);
@@ -200,12 +200,12 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     }
     let title = Line::from(title_spans);
 
-    // Cursor styling tracks the access mode: an orange underline in safe
-    // mode, a plain reversed block in workspace mode, and a red reversed
-    // block in unrestricted mode.
+    // Cursor styling tracks the access mode: an orange underline in
+    // read-only mode, a plain reversed block in workspace mode, and a
+    // red reversed block in unrestricted mode.
     let cursor_style = match mode {
         SandboxMode::ReadOnly => Style::default()
-            .fg(SAFE_MODE_FG)
+            .fg(READONLY_MODE_FG)
             .add_modifier(Modifier::UNDERLINED),
         SandboxMode::Workspace => Style::default().add_modifier(Modifier::REVERSED),
         SandboxMode::Unrestricted => Style::default()
@@ -358,7 +358,7 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
 
     let mode_style = match mode {
         SandboxMode::ReadOnly => Style::default()
-            .fg(SAFE_MODE_FG)
+            .fg(READONLY_MODE_FG)
             .add_modifier(Modifier::BOLD),
         SandboxMode::Workspace => Style::default().fg(STATUS_VAL),
         SandboxMode::Unrestricted => Style::default()

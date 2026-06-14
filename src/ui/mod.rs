@@ -338,13 +338,13 @@ fn set_cursor_style(style: SetCursorStyle) -> io::Result<()> {
     Ok(())
 }
 
-pub fn set_safe_mode_cursor_style() -> io::Result<()> {
+pub fn set_readonly_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::BlinkingUnderScore)
 }
 
 /// Reset the terminal cursor to the default blinking block used outside
-/// safe mode. Mirror of [`set_safe_mode_cursor_style`] so leaving safe
-/// mode can put the cursor shape back.
+/// read-only mode. Mirror of [`set_readonly_cursor_style`] so leaving
+/// read-only mode can put the cursor shape back.
 pub fn set_default_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::DefaultUserShape)
 }

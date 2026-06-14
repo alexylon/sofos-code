@@ -333,27 +333,27 @@ impl ToolExecutor {
     pub fn set_mode(&mut self, mode: SandboxMode) {
         self.mode = mode;
         // The bash executor keeps its own copy of the mode to drive
-        // sandbox confinement, so a runtime switch (for example `/safe`
+        // sandbox confinement, so a runtime switch (for example `/readonly`
         // then `/workspace`) must reach it too.
         self.bash_executor.set_sandbox_mode(mode);
     }
 
-    /// Names of MCP servers whose tools would be filtered out if safe
-    /// mode were on. Returned regardless of the current safe-mode state
+    /// Names of MCP servers whose tools would be filtered out when
+    /// read-only mode is on. Returned regardless of the current mode
     /// so the REPL can decide what to print at startup.
-    pub fn mcp_servers_excluded_from_safe_mode(&self) -> Vec<String> {
+    pub fn mcp_servers_excluded_from_readonly(&self) -> Vec<String> {
         self.mcp_manager
             .as_ref()
-            .map(|m| m.server_names_for_safe_mode(false))
+            .map(|m| m.server_names_for_readonly(false))
             .unwrap_or_default()
     }
 
-    /// Names of MCP servers that opted into safe mode through their
+    /// Names of MCP servers that opted into read-only mode through their
     /// configuration.
-    pub fn mcp_servers_included_in_safe_mode(&self) -> Vec<String> {
+    pub fn mcp_servers_included_in_readonly(&self) -> Vec<String> {
         self.mcp_manager
             .as_ref()
-            .map(|m| m.server_names_for_safe_mode(true))
+            .map(|m| m.server_names_for_readonly(true))
             .unwrap_or_default()
     }
 
@@ -507,7 +507,7 @@ impl ToolExecutor {
     }
 
     pub async fn get_available_tools(&self) -> Vec<crate::api::Tool> {
-        let mut tools = if self.mode.is_read_only() {
+        let mut tools = if self.mode.is_readonly() {
             get_read_only_tools()
         } else if self.has_morph() {
             get_all_tools_with_morph()
@@ -520,8 +520,8 @@ impl ToolExecutor {
         }
 
         if let Some(mcp_manager) = &self.mcp_manager {
-            let mcp_tools = if self.mode.is_read_only() {
-                mcp_manager.get_safe_mode_tools().await
+            let mcp_tools = if self.mode.is_readonly() {
+                mcp_manager.get_readonly_tools().await
             } else {
                 mcp_manager.get_all_tools().await
             };
@@ -537,11 +537,11 @@ impl ToolExecutor {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name) {
-                if self.mode.is_read_only() {
+                if self.mode.is_readonly() {
                     if let Some(server) = mcp_manager.server_for_tool(tool_name) {
-                        if !mcp_manager.is_server_available_in_safe_mode(server) {
+                        if !mcp_manager.is_server_available_in_readonly(server) {
                             return Err(SofosError::ToolExecution(format!(
-                                "MCP tool '{}' is filtered out in safe mode because its server is not marked safe.",
+                                "MCP tool '{}' is filtered out in read-only mode because its server is not marked for read-only access.",
                                 tool_name
                             )));
                         }
