@@ -407,7 +407,7 @@ Bash commands pass through these layers:
 
 1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode on macOS and Linux, or prompts for approval on Windows and in unrestricted mode on any platform.
 2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. In workspace mode on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
-3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission when they run unconfined. On Windows that applies to every external path, because no command runs confined.
+3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes and the network but not reads, so reaching a path outside the project still needs a grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|

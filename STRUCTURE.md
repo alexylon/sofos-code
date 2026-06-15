@@ -417,7 +417,7 @@ It does not validate provider wire compatibility beyond what can be expressed as
 It contains:
 
 - model configuration values passed into request building;
-- read-only and normal-mode system messages;
+- read-only, workspace, and unrestricted mode system messages;
 - context and auto-compaction thresholds derived from model information;
 - global defaults for the response-handler loop.
 
@@ -1453,7 +1453,7 @@ Session
 ├── system_prompt      saved prompt context
 ├── token counters     persisted usage totals
 ├── model              saved model where available
-├── readonly          saved tool-grant mode where available
+├── readonly           saved tool-grant mode where available
 ├── created_at
 └── updated_at
 ```

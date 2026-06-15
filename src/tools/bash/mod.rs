@@ -857,4 +857,107 @@ ask = []
             );
         }
     }
+
+    /// The unknown-command path (an Ask-tier base command) runs confined
+    /// without a prompt, but the same defences must hold there: the
+    /// sandbox bounds writes and the network, not reads, so traversal and
+    /// hidden subcommands stay refused instead of leaking through a read.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_confined_unknown_command_still_refuses_dangerous_structures() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        for cmd in [
+            "notarealtool ../secret",
+            "notarealtool $(whoami)",
+            "notarealtool `id`",
+            "notarealtool && git push origin main",
+        ] {
+            assert!(
+                executor.execute(cmd).is_err(),
+                "the confined unknown-command path must still refuse `{cmd}`"
+            );
+        }
+    }
+
+    /// The friction fix must survive the gate routing: a real unknown
+    /// command that only writes inside the workspace still runs confined
+    /// without a prompt. `mkdir` is not on the allow-list, so it reaches
+    /// the Ask tier.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_confined_unknown_command_writes_inside_workspace() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let result = executor.execute("mkdir created_dir");
+
+        assert!(
+            result.is_ok(),
+            "expected the confined mkdir to succeed, got {result:?}"
+        );
+        assert!(
+            path.join("created_dir").is_dir(),
+            "the unknown command should still write inside the workspace"
+        );
+    }
+
+    /// External absolute paths stay gated on the confined unknown-command
+    /// path. Reads are open inside the sandbox, so reaching outside the
+    /// workspace needs a grant; a non-interactive run rejects it instead
+    /// of silently reading the file.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_confined_unknown_command_gates_external_path() {
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let result = executor.execute("notarealtool /etc/hosts");
+
+        assert!(
+            result.is_err(),
+            "an external path must be gated even when confined"
+        );
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("outside workspace"),
+                "expected an external-path rejection, got: {msg}"
+            );
+        }
+    }
+
+    /// Read-deny rules must hold on the confined unknown-command path.
+    /// Reads are open inside the sandbox, so without the read check an
+    /// unfamiliar command could read a denied path and echo it back.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn workspace_mode_confined_unknown_command_honours_read_deny() {
+        use std::fs;
+
+        let (_temp, path) = test_support::workspace();
+        let config_dir = path.join(".sofos");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.local.toml"),
+            "[permissions]\nallow = []\ndeny = [\"Read(./test/**)\"]\nask = []\n",
+        )
+        .unwrap();
+
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let result = executor.execute("notarealtool ./test/secret.txt");
+
+        assert!(
+            result.is_err(),
+            "read-deny must block the confined unknown-command path"
+        );
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(msg.contains("Read access denied") || msg.contains("denied"));
+        }
+    }
 }

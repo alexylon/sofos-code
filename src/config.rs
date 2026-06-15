@@ -117,7 +117,7 @@ pub fn readonly_mode_message() -> String {
 /// per-operating-system caveats around network closure.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn workspace_mode_message() -> String {
-    let mut message = String::from(
+    String::from(
         "[SYSTEM: Workspace mode is active (the default).\n\
          \n\
          Shell commands run through a three-tier model:\n\
@@ -136,8 +136,7 @@ pub fn workspace_mode_message() -> String {
          Network: closed for confined commands.\n\
          \n\
          Switch with /readonly or /unrestricted. All tools are available.]",
-    );
-    message
+    )
 }
 
 /// Workspace mode preamble on Windows. The restricted-token backend is

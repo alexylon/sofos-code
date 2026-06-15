@@ -126,7 +126,7 @@ impl BashExecutor {
         if let Ok(allowed) = self.session_allowed.lock() {
             if allowed.contains(&normalized) {
                 // Previously allowed this session, skip permission check
-                return self.execute_after_permission_check(command, &mut permission_manager);
+                return self.execute_after_permission_check(command, &mut permission_manager, false);
             }
         }
         if let Ok(denied) = self.session_denied.lock() {
@@ -152,11 +152,15 @@ impl BashExecutor {
                 ));
             }
             CommandPermission::Ask => {
-                if self.mode.is_sandboxed() && sandbox::is_available() {
-                    // The sandbox confines the command to the workspace,
-                    // so run it instead of prompting — the kernel is the
-                    // boundary.
-                    return self.run_and_shape(command, true);
+                if self.sandbox_active() {
+                    // Run it confined instead of prompting. The sandbox
+                    // bounds writes and the network but not reads, so the
+                    // gates in execute_after_permission_check still run.
+                    return self.execute_after_permission_check(
+                        command,
+                        &mut permission_manager,
+                        true,
+                    );
                 }
                 let (allowed, remember) = permission_manager.ask_user_permission(command)?;
                 if !allowed {
@@ -182,13 +186,23 @@ impl BashExecutor {
             }
         }
 
-        self.execute_after_permission_check(command, &mut permission_manager)
+        self.execute_after_permission_check(command, &mut permission_manager, false)
     }
 
+    /// True when shell commands are confined here: workspace mode plus a
+    /// usable OS sandbox on this machine.
+    fn sandbox_active(&self) -> bool {
+        self.mode.is_sandboxed() && sandbox::is_available()
+    }
+
+    /// Run the read, structural, and external-path gates, then spawn the
+    /// command. `force_confine` skips the unconfined fast path so an
+    /// unknown command always runs inside the sandbox.
     fn execute_after_permission_check(
         &self,
         command: &str,
         permission_manager: &mut PermissionManager,
+        force_confine: bool,
     ) -> Result<String> {
         // Enforce read permissions on paths referenced in the command
         self.enforce_read_permissions(permission_manager, command)?;
@@ -199,12 +213,9 @@ impl BashExecutor {
         // here-document — can still run confined, since the sandbox keeps
         // the write inside the workspace. Traversal, hidden subcommands,
         // and dangerous git operations are never relaxed.
-        let confine = if self.is_safe_command_structure(command) {
+        let confine = if !force_confine && self.is_safe_command_structure(command) {
             false
-        } else if self.mode.is_sandboxed()
-            && sandbox::is_available()
-            && self.is_confinement_safe(command)
-        {
+        } else if self.sandbox_active() && self.is_confinement_safe(command) {
             true
         } else {
             return Err(SofosError::ToolExecution(
