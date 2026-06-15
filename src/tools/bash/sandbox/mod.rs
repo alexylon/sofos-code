@@ -96,8 +96,9 @@ impl SandboxPolicy {
 /// dropped because a subpath rule already covers the whole tree;
 /// otherwise (and for any other glob metacharacter) the pattern is left
 /// out so the per-argument read check stays its only boundary. `.` and
-/// `..` are resolved lexically so the rule matches the path the kernel
-/// sees even for a target that does not exist yet.
+/// `..` are folded and the existing prefix is canonicalized — resolving
+/// symlinks like macOS `/tmp` -> `/private/tmp` — so the rule matches the
+/// path the kernel enforces on even when the target does not exist yet.
 fn resolve_read_subpath(pattern: &str, workspace: &Path, strip_subtree: bool) -> Option<PathBuf> {
     let core = if strip_subtree {
         pattern.strip_suffix("/**").unwrap_or(pattern)
@@ -118,7 +119,32 @@ fn resolve_read_subpath(pattern: &str, workspace: &Path, strip_subtree: bool) ->
         workspace.join(core.strip_prefix("./").unwrap_or(core))
     };
     let normalized = crate::tools::utils::lexically_normalize(&expanded);
-    Some(std::fs::canonicalize(&normalized).unwrap_or(normalized))
+    Some(canonicalize_existing_prefix(&normalized))
+}
+
+/// Canonicalize `path`, resolving symlinks even when the leaf does not
+/// exist yet: canonicalize the longest existing ancestor and re-append
+/// the missing trailing components. Plain `canonicalize` fails outright
+/// on a missing target, which would leave a symlinked prefix (macOS
+/// `/tmp` -> `/private/tmp`) unresolved and the rule unmatched by the
+/// kernel.
+fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let mut trailing: Vec<&OsStr> = Vec::new();
+    let mut current = path;
+    while let Some(parent) = current.parent() {
+        if let Some(name) = current.file_name() {
+            trailing.push(name);
+        }
+        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
+            canonical.extend(trailing.iter().rev());
+            return canonical;
+        }
+        current = parent;
+    }
+    path.to_path_buf()
 }
 
 /// System temporary directories that stay writable inside the sandbox.
@@ -308,8 +334,9 @@ mod tests {
     #[test]
     fn read_rules_keep_only_exceptions_inside_a_deny() {
         let dir = tempfile::tempdir().unwrap();
-        let policy = SandboxPolicy::for_workspace(dir.path()).with_read_rules(
-            dir.path(),
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
             &["./secret/**".to_string()],
             &[
                 "./**".to_string(),
@@ -317,7 +344,7 @@ mod tests {
                 "./secret/ok.txt".to_string(),
             ],
         );
-        let secret = dir.path().join("secret");
+        let secret = workspace.join("secret");
         assert_eq!(policy.read_deny_subpaths, vec![secret.clone()]);
         assert_eq!(policy.read_allow_subpaths, vec![secret.join("ok.txt")]);
     }
@@ -327,12 +354,35 @@ mod tests {
     #[test]
     fn read_rule_normalizes_parent_segments() {
         let dir = tempfile::tempdir().unwrap();
-        let policy = SandboxPolicy::for_workspace(dir.path()).with_read_rules(
-            dir.path(),
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
             &["./secret/../private".to_string()],
             &[],
         );
-        assert_eq!(policy.read_deny_subpaths, vec![dir.path().join("private")]);
+        assert_eq!(policy.read_deny_subpaths, vec![workspace.join("private")]);
+    }
+
+    /// A deny on a path that does not exist yet still resolves through a
+    /// symlinked prefix to the real directory, so the kernel — which sees
+    /// the resolved inode — matches the rule. Without this, a create-then
+    /// -read inside the command could reach the secret.
+    #[cfg(unix)]
+    #[test]
+    fn read_rule_resolves_symlinked_prefix_for_missing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let real = workspace.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = workspace.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &[format!("{}/missing/**", link.display())],
+            &[],
+        );
+        assert_eq!(policy.read_deny_subpaths, vec![real.join("missing")]);
     }
 
     #[cfg(target_os = "windows")]

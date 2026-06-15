@@ -19,9 +19,13 @@ const BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Build the Bubblewrap arguments that confine writes to `policy`'s
 /// roots: mount the whole filesystem read-only, re-bind each writable
 /// root read-write, expose `/dev` and `/proc`, and close the network
-/// unless the policy opens it. The confined process runs in fresh user
-/// and process namespaces (`--unshare-user`, `--unshare-pid`) so it
-/// cannot see or signal host processes, and it dies with sofos
+/// unless the policy opens it. Denied read subpaths are masked —
+/// `/dev/null` over a file, an empty tmpfs over a directory or over a
+/// not-yet-created path inside a writable root where a secret could
+/// appear later — and allow exceptions are re-bound on top. The confined
+/// process runs in fresh user and process namespaces (`--unshare-user`,
+/// `--unshare-pid`) so it cannot see or signal host processes, and it
+/// dies with sofos
 /// (`--die-with-parent`). The caller appends `-- <shell> -c <command>`.
 pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
@@ -42,6 +46,36 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
             args.push(OsString::from("--bind"));
             args.push(root.clone().into_os_string());
             args.push(root.clone().into_os_string());
+        }
+    }
+
+    // Read confinement: hide each denied subpath, then re-expose the
+    // allow exceptions on top so a specific allow overrides a broader
+    // deny. A file is masked with `/dev/null`; a directory — or a path
+    // not created yet but inside a writable root, where a secret could
+    // appear later — is masked with an empty tmpfs. A missing path
+    // outside the writable roots is left alone: a tmpfs there would have
+    // to create its mount point on the read-only base, which bwrap cannot.
+    for path in &policy.read_deny_subpaths {
+        if path.is_file() {
+            args.push(OsString::from("--ro-bind"));
+            args.push(OsString::from("/dev/null"));
+            args.push(path.clone().into_os_string());
+        } else if path.is_dir()
+            || policy
+                .writable_roots
+                .iter()
+                .any(|root| path.starts_with(root))
+        {
+            args.push(OsString::from("--tmpfs"));
+            args.push(path.clone().into_os_string());
+        }
+    }
+    for path in &policy.read_allow_subpaths {
+        if path.exists() {
+            args.push(OsString::from("--ro-bind"));
+            args.push(path.clone().into_os_string());
+            args.push(path.clone().into_os_string());
         }
     }
 
@@ -255,6 +289,82 @@ mod tests {
         assert!(
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
             "a confined process must keep AF_UNIX and AF_NETLINK but lose AF_INET"
+        );
+    }
+
+    /// A denied read directory is masked with a tmpfs, a denied file with
+    /// `/dev/null`, and an allow exception is re-bound on top.
+    #[test]
+    fn bwrap_masks_denied_read_subpaths() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret_dir = dir.path().join("secret");
+        std::fs::create_dir(&secret_dir).unwrap();
+        let secret_file = dir.path().join("token");
+        std::fs::write(&secret_file, "x").unwrap();
+        let allowed = dir.path().join("secret-ok");
+        std::fs::write(&allowed, "y").unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![dir.path().to_path_buf()],
+            allow_network: false,
+            read_deny_subpaths: vec![secret_dir.clone(), secret_file.clone()],
+            read_allow_subpaths: vec![allowed.clone()],
+        };
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let secret_dir = secret_dir.to_string_lossy().into_owned();
+        let secret_file = secret_file.to_string_lossy().into_owned();
+        let allowed = allowed.to_string_lossy().into_owned();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--tmpfs" && w[1] == secret_dir),
+            "denied directory masked with tmpfs"
+        );
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == secret_file),
+            "denied file masked with /dev/null"
+        );
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == allowed && w[2] == allowed),
+            "allow exception re-bound"
+        );
+    }
+
+    /// A denied path that does not exist yet is still masked with a tmpfs
+    /// when it lies inside a writable root, so a secret created there
+    /// during the command cannot be read. One outside every writable root
+    /// is left alone, since a tmpfs cannot be mounted over the read-only
+    /// base.
+    #[test]
+    fn bwrap_masks_missing_denied_subpath_only_inside_writable_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let inside = dir.path().join("not-created-yet");
+        let outside = std::path::PathBuf::from("/var/empty/sofos-not-created-yet");
+        let policy = SandboxPolicy {
+            writable_roots: vec![dir.path().to_path_buf()],
+            allow_network: false,
+            read_deny_subpaths: vec![inside.clone(), outside.clone()],
+            read_allow_subpaths: Vec::new(),
+        };
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let inside = inside.to_string_lossy().into_owned();
+        let outside = outside.to_string_lossy().into_owned();
+        assert!(
+            args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == inside),
+            "a missing deny target inside a writable root is masked"
+        );
+        assert!(
+            !args.contains(&outside),
+            "a missing deny target outside the writable roots is not masked"
         );
     }
 }
