@@ -397,8 +397,8 @@ Sofos starts in one of three access modes. The current mode is shown in the stat
 
 Operating-system confinement uses a different primitive on each platform:
 
-- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and the system temporary directories, and the network is closed for the confined command.
-- **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS: writes inside the workspace and `/tmp`, network closed. The `bubblewrap` package must be installed.
+- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and the system temporary directories, the network is closed, and any file you have blocked from reading stays unreadable even when a command reaches it through a wide search rather than naming it directly.
+- **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS — writes inside the workspace and `/tmp`, the network closed down to local sockets such as the Docker daemon, and blocked files kept unreadable. The `bubblewrap` package must be installed; where the sandbox cannot start, an unfamiliar command falls back to asking for approval.
 - **Windows**: operating-system confinement is not engaged in this release. Workspace mode therefore behaves the same as unrestricted mode for shell commands: familiar commands run automatically, destructive commands are always refused, and any other command prompts the user for approval before running. The destructive-command blocklist, the read-deny rules, and the external-path prompts still apply. The restricted-token framework is in the tree as a foundation; the default Windows shell is Git for Windows `sh.exe`, which cannot start under a restricted access token because of how its Cygwin-derived runtime sets up session-shared-memory, and the alternatives (a different shell, or a dedicated sandbox user account that needs administrator setup) are larger product decisions left for a future release.
 
 ### Bash command permissions
@@ -407,7 +407,7 @@ Bash commands pass through these layers:
 
 1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode on macOS and Linux, or prompts for approval on Windows and in unrestricted mode on any platform.
 2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. In workspace mode on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
-3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes and the network but not reads, so reaching a path outside the project still needs a grant.
+3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your read-deny rules, but otherwise leaves reads open — so reaching an external path that isn't denied still needs a grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
