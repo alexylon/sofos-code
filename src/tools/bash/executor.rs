@@ -126,7 +126,11 @@ impl BashExecutor {
         if let Ok(allowed) = self.session_allowed.lock() {
             if allowed.contains(&normalized) {
                 // Previously allowed this session, skip permission check
-                return self.execute_after_permission_check(command, &mut permission_manager, false);
+                return self.execute_after_permission_check(
+                    command,
+                    &mut permission_manager,
+                    false,
+                );
             }
         }
         if let Ok(denied) = self.session_denied.lock() {

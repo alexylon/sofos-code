@@ -65,7 +65,7 @@ impl HistoryManager {
 
         index
             .sessions
-            .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            .sort_by_key(|b| std::cmp::Reverse(b.updated_at));
 
         let content = serde_json::to_string_pretty(&index)?;
         atomic_write(&index_path, &content)?;

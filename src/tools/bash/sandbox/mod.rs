@@ -104,10 +104,17 @@ pub fn is_available() -> bool {
     Path::new(macos::SANDBOX_EXEC_PATH).is_file()
 }
 
-/// Linux: Bubblewrap is an optional package, so confirm it is installed.
+/// Linux: Bubblewrap is an optional package, so confirm it is installed
+/// and can actually create user namespaces. On hardened kernels, inside
+/// containers, and on WSL1, `bwrap` is present but cannot unshare the
+/// user namespace; reporting it unavailable there makes the caller fall
+/// back to the permission prompt instead of failing every command with a
+/// bwrap error. The probe is cached for the process lifetime.
 #[cfg(target_os = "linux")]
 pub fn is_available() -> bool {
-    program_on_path(linux::BWRAP_PROGRAM)
+    use std::sync::OnceLock;
+    static USABLE: OnceLock<bool> = OnceLock::new();
+    *USABLE.get_or_init(|| program_on_path(linux::BWRAP_PROGRAM) && linux::bwrap_can_unshare_user())
 }
 
 /// Windows: the restricted-token backend is present but not yet engaged.

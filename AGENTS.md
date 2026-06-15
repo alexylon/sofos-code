@@ -455,6 +455,17 @@ Gitignored scratchpad for helper files the user asks to be created there — typ
       installed on this machine.
         - `cargo check --package sofos --target x86_64-pc-windows-gnu`
         - `cargo clippy --package sofos --target x86_64-pc-windows-gnu --all-targets`
+    - Linux cross-check (only when the change touches a `cfg(target_os = "linux")`
+      arm — the Bubblewrap argument builder and user-namespace probe in
+      `src/tools/bash/sandbox/linux.rs`, and the Linux `is_available` in
+      `src/tools/bash/sandbox/mod.rs`). The Linux build links OpenSSL through the
+      network stack, so a direct cross-compile from macOS
+      (`cargo check --target x86_64-unknown-linux-gnu`, or `aarch64-unknown-linux-gnu`)
+      stops at `openssl-sys` and only works where a Linux OpenSSL is installed,
+      such as Linux CI. On macOS, run it as a native Linux build in Docker — the
+      repo is mounted read-only and every build artifact stays inside the
+      container, so the host `target/` and `Cargo.lock` are left untouched:
+        - `docker run --rm -v "$PWD":/work:ro -w /work -e CARGO_TARGET_DIR=/tmp/ct -e CARGO_HOME=/tmp/cargo rust:latest bash -c 'rustup component add clippy && apt-get update -qq && apt-get install -y -qq libssl-dev pkg-config bubblewrap && cargo clippy --all-targets -- -D warnings && cargo test --bin sofos tools::bash'`
 - Before finishing, review the change for bugs and corner cases.
 - Use international English. Avoid regional idioms (whether American or British), clever shorthand, and compressed phrases; prefer wording that a non-native English reader can understand on the first read. This applies to chat replies, commit messages, code comments, documentation, and error messages.
 - After you finish cross-checking against the Non-Negotiable Rules and fixing the code, do another pass for bugs and regressions.
