@@ -175,6 +175,8 @@ mod tests {
         let closed = SandboxPolicy {
             writable_roots: vec![root.clone()],
             allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
         };
         let args: Vec<String> = bwrap_arguments(&closed)
             .iter()
@@ -202,6 +204,8 @@ mod tests {
         let open = SandboxPolicy {
             writable_roots: vec![root],
             allow_network: true,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
         };
         let open_args: Vec<String> = bwrap_arguments(&open)
             .iter()

@@ -356,7 +356,7 @@ impl BashExecutor {
         confine: bool,
     ) -> (OsString, Vec<OsString>) {
         if confine {
-            let policy = SandboxPolicy::for_workspace(&self.workspace);
+            let policy = self.confined_policy();
             if let Some(invocation) = sandbox::confined_invocation(&shell.program, command, &policy)
             {
                 return invocation;
@@ -366,6 +366,20 @@ impl BashExecutor {
             shell.program.clone(),
             vec![OsString::from("-c"), OsString::from(command)],
         )
+    }
+
+    /// The sandbox policy for a confined command: writes bounded to the
+    /// workspace, the network closed, and the workspace's `Read(...)` deny
+    /// rules enforced by the kernel.
+    fn confined_policy(&self) -> SandboxPolicy {
+        let policy = SandboxPolicy::for_workspace(&self.workspace);
+        match PermissionManager::new(self.workspace.clone()) {
+            Ok(manager) => {
+                let (deny, allow) = manager.sandbox_read_rules();
+                policy.with_read_rules(&self.workspace, &deny, &allow)
+            }
+            Err(_) => policy,
+        }
     }
 
     fn spawn_supervised(&self, command: &str, confine: bool) -> Result<SupervisedOutput> {

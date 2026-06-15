@@ -801,6 +801,8 @@ ask = []
         let policy = SandboxPolicy {
             writable_roots: vec![workspace.clone()],
             allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
         };
 
         // The helper always builds `<shell> -c <command>`; cmd.exe

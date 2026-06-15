@@ -44,7 +44,28 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> String {
         "  (require-all (regex #\"^/dev/ttys[0-9]+\") (extension \"com.apple.sandbox.pty\"))\n",
     );
     profile.push_str(")\n");
+
+    // Read confinement: deny the configured subpaths, then re-open the
+    // explicit exceptions. The allow rules come last so a specific allow
+    // overrides a broader deny.
+    for path in &policy.read_deny_subpaths {
+        push_file_read_rule(&mut profile, "deny", path);
+    }
+    for path in &policy.read_allow_subpaths {
+        push_file_read_rule(&mut profile, "allow", path);
+    }
+
     profile
+}
+
+/// Append a `file-read*` rule (`deny` or `allow`) for `path`, scoped to
+/// the whole subtree under it.
+fn push_file_read_rule(profile: &mut String, verb: &str, path: &std::path::Path) {
+    profile.push('(');
+    profile.push_str(verb);
+    profile.push_str(" file-read* (subpath ");
+    profile.push_str(&quote(&path.to_string_lossy()));
+    profile.push_str("))\n");
 }
 
 /// Render a path as a Seatbelt double-quoted string literal,
@@ -87,6 +108,8 @@ mod tests {
         let policy = SandboxPolicy {
             writable_roots: vec![workspace.clone()],
             allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
         };
 
         let run = |target: &Path| {
@@ -148,6 +171,101 @@ mod tests {
             output.status.success(),
             "a confined command must be able to allocate a PTY; stderr: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A read-deny pattern becomes a `file-read*` deny rule, and a read
+    /// allow becomes a following allow rule that overrides it.
+    #[test]
+    fn seatbelt_profile_denies_configured_read_subpaths() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path()).with_read_rules(
+            dir.path(),
+            &["./secret/**".to_string()],
+            &["./secret/ok.txt".to_string()],
+        );
+        let profile = seatbelt_profile(&policy);
+        assert!(profile.contains("(deny file-read* (subpath"));
+        assert!(profile.contains("(allow file-read* (subpath"));
+    }
+
+    /// End-to-end proof that the macOS sandbox confines reads: a file in a
+    /// denied subpath cannot be read by a confined command, while a
+    /// specific allow exception under the same subpath stays readable.
+    #[test]
+    fn seatbelt_blocks_reads_of_denied_subpaths() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let secret_dir = workspace.join("secret");
+        std::fs::create_dir(&secret_dir).unwrap();
+        let secret = secret_dir.join("key.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+        let public = secret_dir.join("public.txt");
+        std::fs::write(&public, "fine to read").unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace.clone()],
+            allow_network: false,
+            read_deny_subpaths: vec![secret_dir.clone()],
+            read_allow_subpaths: vec![public.clone()],
+        };
+
+        let read = |target: &Path| {
+            let command = format!("cat {}", target.display());
+            let (program, args) =
+                super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn sandbox-exec")
+        };
+
+        let denied = read(&secret);
+        assert!(
+            !denied.status.success(),
+            "a read of a denied subpath must be blocked"
+        );
+
+        let allowed = read(&public);
+        assert!(
+            allowed.status.success(),
+            "a read of an allow exception must succeed; stderr: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&allowed.stdout).trim(),
+            "fine to read"
+        );
+    }
+
+    /// A broad read-allow over the whole workspace must not re-open a
+    /// denied secret. The allow is dropped because it is not a specific
+    /// exception strictly inside the denied subtree.
+    #[test]
+    fn seatbelt_broad_read_allow_does_not_reopen_denied_subpath() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let secret_dir = workspace.join("secret");
+        std::fs::create_dir(&secret_dir).unwrap();
+        let secret = secret_dir.join("key.txt");
+        std::fs::write(&secret, "top secret").unwrap();
+
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &[format!("{}/**", secret_dir.display())],
+            &[format!("{}/**", workspace.display())],
+        );
+        let command = format!("cat {}", secret.display());
+        let (program, args) =
+            super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy).unwrap();
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .expect("spawn sandbox-exec");
+        assert!(
+            !output.status.success(),
+            "a broad allow must not re-open the denied secret"
         );
     }
 }

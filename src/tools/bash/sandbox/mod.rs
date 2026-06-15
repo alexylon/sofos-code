@@ -29,14 +29,21 @@ mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-/// Locations a confined command may write to, plus whether it may
-/// reach the network. Reads stay open; only writes and the network are
-/// narrowed. `allow_network` is consulted by the macOS and Linux
-/// backends only; the Windows backend leaves the network open.
+/// Locations a confined command may write to, whether it may reach the
+/// network, and which paths it may not read. `allow_network` and the
+/// read lists are consulted by the macOS and Linux backends only; the
+/// Windows backend leaves the network open and reads unrestricted.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct SandboxPolicy {
     pub writable_roots: Vec<PathBuf>,
     pub allow_network: bool,
+    /// Directory subtrees and files the confined command may not read,
+    /// enforced by the kernel so a denied path cannot be reached even
+    /// when its name never appears as a command argument.
+    pub read_deny_subpaths: Vec<PathBuf>,
+    /// Subpaths that stay readable even when a broader entry denies them,
+    /// so a specific allow can carve an exception out of a denied tree.
+    pub read_allow_subpaths: Vec<PathBuf>,
 }
 
 impl SandboxPolicy {
@@ -53,8 +60,65 @@ impl SandboxPolicy {
         Self {
             writable_roots,
             allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
         }
     }
+
+    /// Add the kernel-enforced read rules from the workspace's `Read(...)`
+    /// deny and allow patterns. A deny pattern becomes a subpath the
+    /// command may not read. An allow is kept only when it carves an
+    /// exception out of a denied subtree — an exact path strictly inside a
+    /// deny — so a broad or glob allow cannot re-open a denied path, which
+    /// matches the per-argument check where an exact allow outranks a glob
+    /// deny but a broad allow does not. Patterns that are not a plain
+    /// directory subtree or file are skipped and stay covered by the
+    /// per-argument read check alone.
+    pub fn with_read_rules(mut self, workspace: &Path, deny: &[String], allow: &[String]) -> Self {
+        let deny_subpaths: Vec<PathBuf> = deny
+            .iter()
+            .filter_map(|p| resolve_read_subpath(p, workspace, true))
+            .collect();
+        self.read_allow_subpaths = allow
+            .iter()
+            .filter_map(|p| resolve_read_subpath(p, workspace, false))
+            .filter(|a| {
+                !deny_subpaths.contains(a) && deny_subpaths.iter().any(|d| a.starts_with(d))
+            })
+            .collect();
+        self.read_deny_subpaths = deny_subpaths;
+        self
+    }
+}
+
+/// Resolve a `Read(...)` pattern to one absolute subpath, or `None` when
+/// it is not a plain path. With `strip_subtree`, a trailing `/**` is
+/// dropped because a subpath rule already covers the whole tree;
+/// otherwise (and for any other glob metacharacter) the pattern is left
+/// out so the per-argument read check stays its only boundary. `.` and
+/// `..` are resolved lexically so the rule matches the path the kernel
+/// sees even for a target that does not exist yet.
+fn resolve_read_subpath(pattern: &str, workspace: &Path, strip_subtree: bool) -> Option<PathBuf> {
+    let core = if strip_subtree {
+        pattern.strip_suffix("/**").unwrap_or(pattern)
+    } else {
+        pattern
+    }
+    .trim();
+    if core.is_empty() || core.contains(['*', '?', '[', ']', '{', '}']) {
+        return None;
+    }
+    let expanded = if core == "~" {
+        PathBuf::from(std::env::var_os("HOME")?)
+    } else if let Some(rest) = core.strip_prefix("~/") {
+        PathBuf::from(std::env::var_os("HOME")?).join(rest)
+    } else if Path::new(core).is_absolute() {
+        PathBuf::from(core)
+    } else {
+        workspace.join(core.strip_prefix("./").unwrap_or(core))
+    };
+    let normalized = crate::tools::utils::lexically_normalize(&expanded);
+    Some(std::fs::canonicalize(&normalized).unwrap_or(normalized))
 }
 
 /// System temporary directories that stay writable inside the sandbox.
@@ -236,6 +300,39 @@ mod tests {
             policy.writable_roots.contains(&canonical)
                 || policy.writable_roots.contains(&dir.path().to_path_buf())
         );
+    }
+
+    /// An allow is kept only as an exact exception strictly inside a
+    /// denied subtree; a broad or glob allow, or an allow outside the
+    /// deny, is dropped so it cannot re-open a denied path.
+    #[test]
+    fn read_rules_keep_only_exceptions_inside_a_deny() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path()).with_read_rules(
+            dir.path(),
+            &["./secret/**".to_string()],
+            &[
+                "./**".to_string(),
+                "./other".to_string(),
+                "./secret/ok.txt".to_string(),
+            ],
+        );
+        let secret = dir.path().join("secret");
+        assert_eq!(policy.read_deny_subpaths, vec![secret.clone()]);
+        assert_eq!(policy.read_allow_subpaths, vec![secret.join("ok.txt")]);
+    }
+
+    /// A `..` segment is collapsed so the rule matches the path the kernel
+    /// sees rather than a literal `..` path that would match nothing.
+    #[test]
+    fn read_rule_normalizes_parent_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path()).with_read_rules(
+            dir.path(),
+            &["./secret/../private".to_string()],
+            &[],
+        );
+        assert_eq!(policy.read_deny_subpaths, vec![dir.path().join("private")]);
     }
 
     #[cfg(target_os = "windows")]

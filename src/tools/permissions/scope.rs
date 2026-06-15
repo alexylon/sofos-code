@@ -130,6 +130,22 @@ impl PermissionManager {
         )
     }
 
+    /// The configured `Read(...)` deny and allow patterns, for translating
+    /// into kernel-level sandbox read rules.
+    pub fn sandbox_read_rules(&self) -> (Vec<String>, Vec<String>) {
+        let patterns = |entries: &[String]| -> Vec<String> {
+            entries
+                .iter()
+                .filter_map(|e| Self::extract_read_pattern(e))
+                .map(str::to_string)
+                .collect()
+        };
+        (
+            patterns(&self.settings.permissions.deny),
+            patterns(&self.settings.permissions.allow),
+        )
+    }
+
     pub fn check_write_permission(&self, path: &str) -> CommandPermission {
         self.check_scope_permission(
             path,
