@@ -14,12 +14,15 @@ const BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// Build the Bubblewrap arguments that confine writes to `policy`'s
 /// roots: mount the whole filesystem read-only, re-bind each writable
 /// root read-write, expose `/dev` and `/proc`, and close the network
-/// unless the policy opens it. `--die-with-parent` ties the confined
-/// process to sofos so it cannot outlive an abrupt parent exit. The
-/// caller appends `-- <shell> -c <command>`.
+/// unless the policy opens it. The confined process runs in fresh user
+/// and process namespaces (`--unshare-user`, `--unshare-pid`) so it
+/// cannot see or signal host processes, and it dies with sofos
+/// (`--die-with-parent`). The caller appends `-- <shell> -c <command>`.
 pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         OsString::from("--die-with-parent"),
+        OsString::from("--unshare-user"),
+        OsString::from("--unshare-pid"),
         OsString::from("--ro-bind"),
         OsString::from("/"),
         OsString::from("/"),
@@ -110,6 +113,14 @@ mod tests {
         assert!(
             args.iter().any(|a| a == "--die-with-parent"),
             "confined process tied to the parent's lifetime"
+        );
+        assert!(
+            args.iter().any(|a| a == "--unshare-user"),
+            "fresh user namespace"
+        );
+        assert!(
+            args.iter().any(|a| a == "--unshare-pid"),
+            "fresh process namespace"
         );
         assert!(
             args.iter().any(|a| a == "--ro-bind"),
