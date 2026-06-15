@@ -23,12 +23,26 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> String {
         profile.push_str(&quote(&root.to_string_lossy()));
         profile.push_str(")\n");
     }
-    // Character devices a normal shell pipeline needs to write to.
-    for device in ["/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"] {
+    // Character devices a normal shell pipeline needs to write to. The
+    // pseudo-terminal master is included so a tool can allocate a PTY.
+    for device in [
+        "/dev/null",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/tty",
+        "/dev/ptmx",
+    ] {
         profile.push_str("  (literal ");
         profile.push_str(&quote(device));
         profile.push_str(")\n");
     }
+    // Pseudo-terminal slaves (`/dev/ttysNNN`), restricted to those the
+    // command allocates inside the sandbox: the kernel tags those with
+    // this extension, so a confined command can drive its own PTY without
+    // reaching another terminal.
+    profile.push_str(
+        "  (require-all (regex #\"^/dev/ttys[0-9]+\") (extension \"com.apple.sandbox.pty\"))\n",
+    );
     profile.push_str(")\n");
     profile
 }
@@ -47,7 +61,7 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn seatbelt_profile_denies_writes_and_network_then_reopens_roots() {
@@ -98,6 +112,42 @@ mod tests {
         assert!(
             !outside_file.exists(),
             "a write outside the writable root must be blocked by the sandbox"
+        );
+    }
+
+    /// The profile reopens the pseudo-terminal master and the in-sandbox
+    /// slave devices after the blanket file-write deny, so allocating a
+    /// PTY is not blocked.
+    #[test]
+    fn seatbelt_profile_reopens_pty_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let profile = seatbelt_profile(&policy);
+        assert!(profile.contains("(literal \"/dev/ptmx\")"));
+        assert!(profile.contains("com.apple.sandbox.pty"));
+    }
+
+    /// End-to-end proof that a confined command can allocate a
+    /// pseudo-terminal. macOS PTY setup writes to `/dev/ptmx` and a
+    /// `/dev/ttys*` slave, both reopened after the blanket file-write
+    /// deny. `script` allocates a PTY to run its command, so the run
+    /// fails if that write is blocked.
+    #[test]
+    fn seatbelt_allows_pty_allocation() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let command = "/usr/bin/script -q /dev/null /usr/bin/true";
+        let (program, args) =
+            super::super::confined_invocation(OsStr::new("/bin/sh"), command, &policy).unwrap();
+        let output = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn sandbox-exec");
+        assert!(
+            output.status.success(),
+            "a confined command must be able to allocate a PTY; stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
