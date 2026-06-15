@@ -109,12 +109,34 @@ pub fn is_available() -> bool {
 /// containers, and on WSL1, `bwrap` is present but cannot unshare the
 /// user namespace; reporting it unavailable there makes the caller fall
 /// back to the permission prompt instead of failing every command with a
-/// bwrap error. The probe is cached for the process lifetime.
+/// bwrap error. The network seccomp filter must also build, since it
+/// closes the unix-socket hole `--unshare-net` leaves open; without it
+/// the prompt is the safer boundary. The probe is cached for the process
+/// lifetime.
 #[cfg(target_os = "linux")]
 pub fn is_available() -> bool {
     use std::sync::OnceLock;
     static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE.get_or_init(|| program_on_path(linux::BWRAP_PROGRAM) && linux::bwrap_can_unshare_user())
+    *USABLE.get_or_init(|| {
+        program_on_path(linux::BWRAP_PROGRAM)
+            && linux::bwrap_can_unshare_user()
+            && linux::network_seccomp_program().is_some()
+    })
+}
+
+/// Build the network seccomp program for a confined Linux command, or
+/// `None` if it cannot be built on this architecture.
+#[cfg(target_os = "linux")]
+pub fn network_seccomp_program() -> Option<seccompiler::BpfProgram> {
+    linux::network_seccomp_program()
+}
+
+/// Install a network seccomp program on the current thread. The caller
+/// runs this in the child between `fork` and `exec` so the confined
+/// command inherits the filter.
+#[cfg(target_os = "linux")]
+pub fn apply_network_seccomp(program: &seccompiler::BpfProgram) -> std::io::Result<()> {
+    seccompiler::apply_filter(program).map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))
 }
 
 /// Windows: the restricted-token backend is present but not yet engaged.

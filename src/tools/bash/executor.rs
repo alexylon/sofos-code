@@ -395,10 +395,20 @@ impl BashExecutor {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
+            // A confined Linux command also gets the network seccomp
+            // filter, installed in the child so bubblewrap and everything
+            // it spawns inherit it. The program is built here in the
+            // parent because the child must not allocate after `fork`.
+            #[cfg(target_os = "linux")]
+            let seccomp = confine.then(sandbox::network_seccomp_program).flatten();
             unsafe {
-                cmd.pre_exec(|| {
+                cmd.pre_exec(move || {
                     if libc::setsid() == -1 {
                         return Err(std::io::Error::last_os_error());
+                    }
+                    #[cfg(target_os = "linux")]
+                    if let Some(program) = &seccomp {
+                        sandbox::apply_network_seccomp(program)?;
                     }
                     Ok(())
                 });

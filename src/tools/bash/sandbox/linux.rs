@@ -1,6 +1,11 @@
 //! Linux confinement via Bubblewrap.
 
 use super::SandboxPolicy;
+use seccompiler::{
+    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+    SeccompRule, TargetArch,
+};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::time::{Duration, Instant};
 
@@ -93,6 +98,71 @@ pub fn bwrap_can_unshare_user() -> bool {
     }
 }
 
+/// Build a seccomp program that finishes closing the network for a
+/// confined command. `--unshare-net` isolates IP networking, but it does
+/// not stop a `connect()` to a filesystem unix socket such as
+/// `/var/run/docker.sock`, a root-equivalent endpoint. This denies
+/// `connect`, blocks creating network sockets (every family except
+/// `AF_UNIX` and `AF_NETLINK`, which bubblewrap's loopback setup and
+/// local name resolution need and which cannot reach the network), and
+/// blocks the `io_uring` setup calls that could otherwise reach the
+/// network without the filtered syscalls. The caller installs the
+/// program in the child before `exec`, so bubblewrap and everything it
+/// spawns inherit it. Returns `None` on an architecture the filter does
+/// not target.
+pub fn network_seccomp_program() -> Option<BpfProgram> {
+    let arch = if cfg!(target_arch = "x86_64") {
+        TargetArch::x86_64
+    } else if cfg!(target_arch = "aarch64") {
+        TargetArch::aarch64
+    } else {
+        return None;
+    };
+
+    let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
+    for nr in [
+        libc::SYS_connect,
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
+    ] {
+        // An empty rule list matches the syscall unconditionally.
+        rules.insert(nr, Vec::new());
+    }
+    // Deny network-capable socket domains, but keep AF_UNIX (local IPC)
+    // and AF_NETLINK (kernel routing info that bubblewrap's loopback
+    // setup and local name resolution need; it cannot reach the network).
+    // The rule matches — and denies — only a domain that is neither.
+    let blocked_socket = SeccompRule::new(vec![
+        SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Ne,
+            libc::AF_UNIX as u64,
+        )
+        .ok()?,
+        SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Ne,
+            libc::AF_NETLINK as u64,
+        )
+        .ok()?,
+    ])
+    .ok()?;
+    rules.insert(libc::SYS_socket, vec![blocked_socket]);
+
+    let filter = SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        arch,
+    )
+    .ok()?;
+    let program: BpfProgram = filter.try_into().ok()?;
+    Some(program)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +219,38 @@ mod tests {
     #[test]
     fn bwrap_probe_yields_a_bool() {
         let _ = bwrap_can_unshare_user();
+    }
+
+    /// The network filter fires correctly: a child that installs it is
+    /// refused an `AF_INET` socket while `AF_UNIX` and `AF_NETLINK` — the
+    /// families bubblewrap's loopback setup and name resolution need —
+    /// still work. Forking keeps the filter off the test harness's own
+    /// threads.
+    #[test]
+    fn network_seccomp_denies_inet_keeps_unix_and_netlink() {
+        let program = network_seccomp_program().expect("filter builds on this architecture");
+        let status = unsafe {
+            match libc::fork() {
+                0 => {
+                    let applied = seccompiler::apply_filter(&program).is_ok();
+                    let inet = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+                    let unix = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                    let netlink =
+                        libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE);
+                    let ok = applied && inet < 0 && unix >= 0 && netlink >= 0;
+                    libc::_exit(if ok { 0 } else { 1 });
+                }
+                child if child > 0 => {
+                    let mut status = 0;
+                    libc::waitpid(child, &mut status, 0);
+                    status
+                }
+                _ => panic!("fork failed"),
+            }
+        };
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "a confined process must keep AF_UNIX and AF_NETLINK but lose AF_INET"
+        );
     }
 }
