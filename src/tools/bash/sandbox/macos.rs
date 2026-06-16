@@ -321,4 +321,47 @@ mod tests {
             "a broad allow must not re-open the denied secret"
         );
     }
+
+    /// End-to-end proof that the macOS sandbox denies the network: a
+    /// confined command cannot open a TCP connection that the same
+    /// command makes successfully when unconfined. The target is a local
+    /// listener so the unconfined control does not depend on outside
+    /// network, and `(deny network*)` covers loopback too.
+    #[test]
+    fn seatbelt_blocks_outbound_network() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep accepting so an allowed connection completes; the thread
+        // ends when the listener is dropped at the end of the test.
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                drop(stream);
+            }
+        });
+
+        let command = format!("/usr/bin/nc -z -w 1 127.0.0.1 {port}");
+
+        let unconfined = Command::new("/bin/sh")
+            .args(["-c", &command])
+            .output()
+            .expect("spawn nc");
+        assert!(
+            unconfined.status.success(),
+            "the unconfined control connection must succeed; stderr: {}",
+            String::from_utf8_lossy(&unconfined.stderr)
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let (program, args) =
+            super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy).unwrap();
+        let confined = Command::new(program)
+            .args(args)
+            .output()
+            .expect("spawn sandbox-exec");
+        assert!(
+            !confined.status.success(),
+            "a confined command must not be able to open an outbound socket"
+        );
+    }
 }

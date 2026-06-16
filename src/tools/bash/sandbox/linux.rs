@@ -498,4 +498,60 @@ mod tests {
             "a missing deny target outside the writable roots is not masked"
         );
     }
+
+    /// End-to-end proof on a live bubblewrap that read confinement masks a
+    /// denied directory with a tmpfs while a specific allow exception
+    /// below it stays readable — the case the argument-only tests cannot
+    /// prove. Skipped where bubblewrap cannot create user namespaces
+    /// (hardened kernels, unprivileged containers, WSL1).
+    #[test]
+    fn bwrap_keeps_allow_exception_readable_below_a_masked_directory() {
+        if !bwrap_can_unshare_namespaces() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let secret_dir = workspace.join("secret");
+        std::fs::create_dir(&secret_dir).unwrap();
+        let hidden = secret_dir.join("key.txt");
+        std::fs::write(&hidden, "top secret").unwrap();
+        let allowed = secret_dir.join("ok.txt");
+        std::fs::write(&allowed, "fine to read").unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace.clone()],
+            allow_network: false,
+            read_deny_subpaths: vec![secret_dir.clone()],
+            read_allow_subpaths: vec![allowed.clone()],
+        };
+
+        let read = |path: &std::path::Path| {
+            let command = format!("cat {}", path.display());
+            let (program, args) = super::super::confined_invocation(
+                std::ffi::OsStr::new("/bin/sh"),
+                &command,
+                &policy,
+            )
+            .unwrap();
+            std::process::Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn bwrap")
+        };
+
+        let denied = read(&hidden);
+        assert!(
+            !denied.status.success(),
+            "a file under a tmpfs-masked deny directory must be unreadable"
+        );
+
+        let exception = read(&allowed);
+        assert!(
+            exception.status.success(),
+            "the allow exception below the masked directory must stay readable; stderr: {}",
+            String::from_utf8_lossy(&exception.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&exception.stdout), "fine to read");
+    }
 }
