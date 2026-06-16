@@ -505,6 +505,70 @@ async fn test_edit_file_not_found_string() {
 }
 
 #[tokio::test]
+async fn test_edit_file_rejects_empty_old_string() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("test.txt"), "hello world").unwrap();
+
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
+    let result = executor
+        .execute(
+            "edit_file",
+            &json!({"path": "test.txt", "old_string": "", "new_string": "prefix"}),
+        )
+        .await;
+
+    assert!(result.is_err());
+    let content = std::fs::read_to_string(workspace.path().join("test.txt")).unwrap();
+    assert_eq!(content, "hello world");
+}
+
+#[tokio::test]
+async fn test_edit_file_rejects_ambiguous_single_replace() {
+    let workspace = tempdir().unwrap();
+    let config_dir = workspace.path().join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.path().join("test.txt"), "aaa bbb aaa").unwrap();
+
+    let executor = ToolExecutor::new(
+        workspace.path().to_path_buf(),
+        None,
+        None,
+        SandboxMode::Workspace,
+        false,
+    )
+    .unwrap();
+    let result = executor
+        .execute(
+            "edit_file",
+            &json!({"path": "test.txt", "old_string": "aaa", "new_string": "ccc"}),
+        )
+        .await;
+
+    assert!(result.is_err());
+    let content = std::fs::read_to_string(workspace.path().join("test.txt")).unwrap();
+    assert_eq!(content, "aaa bbb aaa");
+}
+
+#[tokio::test]
 async fn test_edit_file_replace_all() {
     let workspace = tempdir().unwrap();
     let config_dir = workspace.path().join(".sofos");

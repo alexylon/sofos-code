@@ -953,6 +953,13 @@ impl ToolExecutor {
                 })?;
                 let replace_all = input["replace_all"].as_bool().unwrap_or(false);
 
+                if old_string.is_empty() {
+                    return Err(SofosError::ToolExecution(format!(
+                        "old_string cannot be empty for '{}'. Use read_file to copy the exact current text you want to replace.",
+                        path
+                    )));
+                }
+
                 // Guard against truncation markers from conversation history compaction.
                 // Catches every comment style we've seen the model emit:
                 // C-family line/block, shell/Python, HTML/XML, and the
@@ -1021,11 +1028,18 @@ impl ToolExecutor {
                         .read_file_with_outside_access(&resolved.canonical_str)?
                 };
 
-                if !original.contains(old_string) {
+                let match_count = original.matches(old_string).count();
+                if match_count == 0 {
                     return Err(SofosError::ToolExecution(format!(
                         "old_string not found in '{}'. Make sure it matches the file content exactly, \
                          including whitespace and indentation. Use read_file first to see the current content.",
                         path
+                    )));
+                }
+                if !replace_all && match_count > 1 {
+                    return Err(SofosError::ToolExecution(format!(
+                        "old_string appears {} times in '{}'. Non-global edit_file calls require a unique match so the wrong occurrence is not changed. Include more surrounding context in old_string, or set replace_all to true if every occurrence should change.",
+                        match_count, path
                     )));
                 }
 

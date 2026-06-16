@@ -884,6 +884,7 @@ Rules:
 - Every filesystem-touching tool resolves paths through `tools/resolve.rs`.
 - External files require the correct scope: Read, Write, or both.
 - `edit_file` and `morph_edit_file` require both Read and Write for external paths.
+- `edit_file` rejects empty old text and requires a unique old-text match unless `replace_all` is true.
 - `copy_file` requires Read on external source and Write on external destination.
 - `move_file` requires Write on any external source or destination.
 - Delete operations require explicit confirmation even after permission checks.

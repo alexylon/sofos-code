@@ -13,6 +13,7 @@ All notable changes to Sofos are documented in this file.
 
 ### Changed
 
+- **`edit_file` now rejects ambiguous single replacements.** When the old text appears more than once, the assistant must include more surrounding context or set `replace_all` for an intentional global replacement. Empty old text is also rejected.
 - **Read-only mode is now selected with `--readonly` and `/readonly`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
 - **The `/normal` command is now `/workspace`.** It leaves read-only mode and returns to the default mode, where the assistant can read, write, and run shell commands. The previous `/normal` name has been removed.
 

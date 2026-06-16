@@ -328,7 +328,7 @@ Provider mapping:
 | `glob_files` | Find files recursively with glob patterns. Skips build and vendor directories by default. |
 | `search_code` | Search code with ripgrep when `rg` is installed. |
 | `write_file` | Create, overwrite, or append to a file. External paths require Write permission. |
-| `edit_file` | Replace exact text in an existing file. External paths require both Read and Write permission. |
+| `edit_file` | Replace exact text in an existing file. Non-global edits require one unique match; use `replace_all` only for intentional global replacement. External paths require both Read and Write permission. |
 | `morph_edit_file` | Apply fast Morph edits when `MORPH_API_KEY` is configured. External paths require both Read and Write permission. |
 | `create_directory` | Create directories. External paths require Write permission. |
 | `move_file` | Move or rename files or directories. External paths require Write permission. |

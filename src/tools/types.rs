@@ -224,7 +224,8 @@ fn edit_file_tool() -> Tool {
                 },
                 "old_string": {
                     "type": "string",
-                    "description": "The exact text to find and replace. Must match the file content exactly, including whitespace and indentation."
+                    "minLength": 1,
+                    "description": "The exact text to find and replace. Must match the file content exactly, including whitespace and indentation. Must be unique unless replace_all is true."
                 },
                 "new_string": {
                     "type": "string",
@@ -232,7 +233,7 @@ fn edit_file_tool() -> Tool {
                 },
                 "replace_all": {
                     "type": "boolean",
-                    "description": "If true, replace all occurrences. Default: false (replace first match only)."
+                    "description": "If true, replace all occurrences. Default: false; when false, old_string must match exactly one occurrence."
                 }
             },
             "required": ["path", "old_string", "new_string"]
