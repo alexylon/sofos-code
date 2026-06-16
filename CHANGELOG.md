@@ -16,6 +16,10 @@ All notable changes to Sofos are documented in this file.
 - **Read-only mode is now selected with `--readonly` and `/readonly`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
 - **The `/normal` command is now `/workspace`.** It leaves read-only mode and returns to the default mode, where the assistant can read, write, and run shell commands. The previous `/normal` name has been removed.
 
+### Security
+
+- **Git global options can no longer hide blocked Git operations.** Commands such as `git -C . push`, `git --git-dir=.git fetch`, and Git config options that can redirect Git into aliases, included config, pagers, or external helper commands are now rejected before they run.
+
 ## [0.3.5] - 2026-06-09
 
 ### Added

@@ -421,6 +421,8 @@ ask = []
             "git checkout main",
             "git checkout HEAD~3",
             "git checkout -- src/lib.rs",
+            "git -C . checkout main",
+            "\\git checkout main",
         ] {
             let result = executor.execute(cmd);
             assert!(
@@ -712,6 +714,55 @@ ask = []
         assert!(executor.is_safe_command_structure("\\git status"));
         assert!(executor.is_safe_command_structure("'git' log"));
         assert!(executor.is_safe_command_structure("g\\it status"));
+    }
+
+    /// Git global options must not hide the real subcommand from the
+    /// dangerous-operation gate. Git accepts these options before the
+    /// subcommand, so every form below runs a remote or destructive
+    /// operation unless the matcher skips the global-option prefix.
+    #[test]
+    fn dangerous_git_with_global_options_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git -C . push origin main"));
+        assert!(
+            !executor
+                .is_safe_command_structure("git -c protocol.ext.allow=always push origin main")
+        );
+        assert!(!executor.is_safe_command_structure("git --git-dir=.git push origin main"));
+        assert!(!executor.is_safe_command_structure("git --git-dir .git --work-tree . pull"));
+        assert!(!executor.is_safe_command_structure("git -C. reset --hard"));
+        assert!(!executor.is_safe_command_structure("git -C . clean -fd"));
+        assert!(
+            !executor
+                .is_safe_command_structure("git -c protocol.ext.allow=always submodule update")
+        );
+        assert!(!executor.is_safe_command_structure("git -c alias.p=push p"));
+        assert!(!executor.is_safe_command_structure("git --config-env=alias.p=GIT_ALIAS p"));
+        assert!(!executor.is_safe_command_structure("\\git -c alias.p=push p"));
+        assert!(!executor.is_safe_command_structure("git -c include.path=evil.conf p"));
+        assert!(
+            !executor.is_safe_command_structure("git -c includeIf.onbranch:main.path=evil.conf p")
+        );
+        assert!(!executor.is_safe_command_structure("git -c core.pager=sh --paginate log"));
+        assert!(!executor.is_safe_command_structure("git -c diff.external=sh diff"));
+        assert!(!executor.is_safe_command_structure("git -c filter.x.process=sh status"));
+
+        assert!(executor.is_safe_command_structure("git -C . status"));
+        assert!(executor.is_safe_command_structure("git --git-dir=.git status"));
+        assert!(executor.is_safe_command_structure("git -c color.ui=never diff"));
+    }
+
+    /// `git stash list` and `git stash show` are read-only, but their
+    /// presence must not make a later dangerous git command safe.
+    #[test]
+    fn stash_allowance_is_per_git_invocation() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(executor.is_safe_command_structure("git stash list"));
+        assert!(executor.is_safe_command_structure("git -C . stash show"));
+        assert!(!executor.is_safe_command_structure("git -C . stash pop"));
+        assert!(!executor.is_safe_command_structure("git stash list && git push"));
     }
 
     /// A git subcommand that appears inside a quoted string or a path

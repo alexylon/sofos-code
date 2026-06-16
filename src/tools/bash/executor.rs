@@ -16,7 +16,7 @@ use crate::tools::bash::output::{
 };
 use crate::tools::bash::sandbox::{self, SandboxPolicy};
 use crate::tools::bash::validate::{
-    command_contains_op, detect_command_substitution, has_path_traversal,
+    command_contains_askable_git_checkout, detect_command_substitution, has_path_traversal,
 };
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
@@ -611,14 +611,11 @@ impl BashExecutor {
     /// checkout` explicitly, matching `confirm_destructive`'s policy of
     /// "no remember button for working-tree mutations".
     fn confirm_askable_command(&self, command: &str) -> Result<()> {
-        const ASKABLE_PREFIXES: &[&str] = &["git checkout"];
-
-        // Match against normalized input so tab / `$IFS` / backslash-newline
-        // between `git` and the subcommand don't dodge the prompt.
-        let matcher_input = normalize_command_whitespace(command).to_lowercase();
-        let matches = ASKABLE_PREFIXES
-            .iter()
-            .any(|prefix| command_contains_op(&matcher_input, prefix));
+        // Normalise before semantic Git matching so whitespace tricks,
+        // spelling tricks, and Git global options do not skip the prompt.
+        let matches = command_contains_askable_git_checkout(
+            &normalize_command_whitespace(command).to_lowercase(),
+        );
         if !matches {
             return Ok(());
         }

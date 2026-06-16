@@ -125,17 +125,12 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
         .any(|sep| command.contains(&format!("{sep}{op}")))
 }
 
-/// Rewrite the program token of each shell segment to the bare name
-/// `git` whenever the shell would run the git binary, so the
-/// dangerous-git scan recognises a dangerous subcommand however the
-/// program is spelled — a leading or interior backslash (`\git`,
-/// `g\it`), quotes anywhere (`'git'`, `g""it`, `g'i't`), a path prefix
-/// (`/usr/bin/git`), or a subshell (`(git`). Only the command token of
-/// each segment is rewritten; arguments are left verbatim so a quoted or
-/// path-shaped argument such as `grep "git push"` or `cat ~/git` is
-/// never mistaken for a git invocation. Segments are rejoined with `;`
-/// so a wrapped `git` after a separator (`ls;\git push`) still surfaces
-/// at a recognised boundary.
+/// Rewrite each git invocation to `git <subcommand> ...` with Git
+/// global options removed, so the dangerous-operation scan sees the
+/// command Git will actually dispatch. Git accepts options before the
+/// subcommand (`git -C . push`, `git --git-dir=.git fetch`); leaving
+/// them in the argument stream hides the dangerous verb from a textual
+/// `git <verb>` matcher.
 fn canonicalize_git_tokens(command: &str) -> String {
     PermissionManager::split_compound_command(command)
         .iter()
@@ -143,6 +138,11 @@ fn canonicalize_git_tokens(command: &str) -> String {
             |segment| match PermissionManager::extract_segment_base_with_args(segment) {
                 Some((base, args)) => {
                     let head = if base_is_git(base) { "git" } else { base };
+                    let args = if base_is_git(base) {
+                        canonicalize_git_args(&args)
+                    } else {
+                        args.iter().map(|arg| (*arg).to_string()).collect()
+                    };
                     if args.is_empty() {
                         head.to_string()
                     } else {
@@ -154,6 +154,128 @@ fn canonicalize_git_tokens(command: &str) -> String {
         )
         .collect::<Vec<_>>()
         .join(" ; ")
+}
+
+fn canonicalize_git_args(args: &[&str]) -> Vec<String> {
+    let mut index = 0;
+    while index < args.len() {
+        let token = clean_git_arg_token(args[index]);
+        if token == "--" {
+            index += 1;
+            break;
+        }
+        if !token.starts_with('-') || token == "-" {
+            break;
+        }
+        let consumes_next = git_global_option_consumes_next(&token);
+        index += 1;
+        if consumes_next && index < args.len() {
+            index += 1;
+        }
+    }
+
+    args[index..]
+        .iter()
+        .map(|arg| clean_git_arg_token(arg))
+        .filter(|arg| !arg.is_empty())
+        .collect()
+}
+
+fn git_global_option_consumes_next(token: &str) -> bool {
+    if token.contains('=') {
+        return false;
+    }
+    matches!(
+        token,
+        "-C" | "-c"
+            | "--config-env"
+            | "--exec-path"
+            | "--git-dir"
+            | "--namespace"
+            | "--super-prefix"
+            | "--work-tree"
+    )
+}
+
+fn clean_git_arg_token(token: &str) -> String {
+    token
+        .trim_matches(|c: char| matches!(c, '\'' | '"' | '\\' | '(' | ')' | '{' | '}' | ';'))
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect()
+}
+
+fn command_contains_dangerous_git_global_config(command: &str) -> bool {
+    PermissionManager::split_compound_command(command)
+        .iter()
+        .filter_map(|segment| PermissionManager::extract_segment_base_with_args(segment))
+        .filter(|(base, _)| base_is_git(base))
+        .any(|(_, args)| git_args_use_dangerous_config(&args))
+}
+
+fn git_args_use_dangerous_config(args: &[&str]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        let token = clean_git_arg_token(args[index]);
+        if token == "--" || !token.starts_with('-') || token == "-" {
+            return false;
+        }
+        if git_config_option_is_dangerous(&token, args.get(index + 1).copied()) {
+            return true;
+        }
+        let consumes_next = git_global_option_consumes_next(&token);
+        index += 1;
+        if consumes_next && index < args.len() {
+            index += 1;
+        }
+    }
+    false
+}
+
+fn git_config_option_is_dangerous(token: &str, next: Option<&str>) -> bool {
+    if token == "-c" || token == "--config-env" {
+        return next.is_some_and(|value| git_config_key_is_dangerous(&clean_git_arg_token(value)));
+    }
+    token
+        .strip_prefix("-c")
+        .filter(|value| !value.is_empty())
+        .or_else(|| token.strip_prefix("--config-env="))
+        .is_some_and(git_config_key_is_dangerous)
+}
+
+fn git_config_key_is_dangerous(value: &str) -> bool {
+    let key = value.split_once('=').map(|(key, _)| key).unwrap_or(value);
+    let key = key.to_ascii_lowercase();
+    key == "alias"
+        || key.starts_with("alias.")
+        || key == "include.path"
+        || (key.starts_with("includeif.") && key.ends_with(".path"))
+        || key == "core.pager"
+        || key == "core.fsmonitor"
+        || key.starts_with("pager.")
+        || key == "diff.external"
+        || (key.starts_with("difftool.") && key.ends_with(".cmd"))
+        || (key.starts_with("mergetool.") && key.ends_with(".cmd"))
+        || (key.starts_with("filter.")
+            && (key.ends_with(".clean") || key.ends_with(".smudge") || key.ends_with(".process")))
+}
+
+fn command_contains_dangerous_git_stash(command: &str) -> bool {
+    PermissionManager::split_compound_command(command)
+        .iter()
+        .filter_map(|segment| PermissionManager::extract_segment_base_with_args(segment))
+        .filter(|(base, _)| base_is_git(base))
+        .any(|(_, args)| {
+            let args = canonicalize_git_args(&args);
+            if args.first().is_none_or(|subcommand| subcommand != "stash") {
+                return false;
+            }
+            !matches!(args.get(1).map(String::as_str), Some("list" | "show"))
+        })
+}
+
+pub(super) fn command_contains_askable_git_checkout(command: &str) -> bool {
+    command_contains_op(&canonicalize_git_tokens(command), "git checkout")
 }
 
 /// Whether `token` is the `git` program however bash would spell it. The
@@ -536,7 +658,8 @@ impl BashExecutor {
     /// and `/usr/bin/git push`, which run the real git binary but would
     /// otherwise slip past the textual scan.
     pub(super) fn is_safe_git_command(&self, command: &str) -> bool {
-        self.git_command_is_allowed(command)
+        !command_contains_dangerous_git_global_config(command)
+            && self.git_command_is_allowed(command)
             && self.git_command_is_allowed(&canonicalize_git_tokens(command))
     }
 
@@ -551,9 +674,8 @@ impl BashExecutor {
             return true;
         }
 
-        // Allow safe git stash read-only operations
-        if command.contains("git stash list") || command.contains("git stash show") {
-            return true;
+        if command_contains_dangerous_git_stash(command) {
+            return false;
         }
 
         // Dangerous git operations that are completely blocked.
@@ -597,7 +719,6 @@ impl BashExecutor {
             "git merge",
             "git rebase",
             "git tag -d",
-            "git stash",
             "git init",
             "git add",
             "git rm",
