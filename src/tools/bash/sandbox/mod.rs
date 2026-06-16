@@ -257,7 +257,7 @@ pub fn confined_invocation(
     command: &str,
     policy: &SandboxPolicy,
 ) -> Option<(OsString, Vec<OsString>)> {
-    let profile = macos::seatbelt_profile(policy);
+    let profile = macos::seatbelt_profile(policy)?;
     let mut args: Vec<OsString> = vec![OsString::from("-p"), OsString::from(profile)];
     args.push(shell.to_os_string());
     args.push(OsString::from("-c"));

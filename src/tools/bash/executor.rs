@@ -346,26 +346,37 @@ impl BashExecutor {
         ))
     }
 
-    /// Resolve the program and arguments to spawn: the bare shell, or
-    /// the shell wrapped by the operating-system sandbox when `confine`
-    /// is set and a sandbox is available on this machine.
+    /// Resolve the program and arguments to spawn: the bare shell, or the
+    /// shell wrapped by the operating-system sandbox when `confine` is
+    /// set. When a command must be confined but the sandbox cannot be
+    /// prepared for it — for example a protected path the profile cannot
+    /// express safely — this refuses the command rather than running it
+    /// unconfined.
     fn shell_invocation(
         &self,
         shell: &ResolvedShell,
         command: &str,
         confine: bool,
-    ) -> (OsString, Vec<OsString>) {
+    ) -> Result<(OsString, Vec<OsString>)> {
         if confine {
             let policy = self.confined_policy();
-            if let Some(invocation) = sandbox::confined_invocation(&shell.program, command, &policy)
-            {
-                return invocation;
-            }
+            return sandbox::confined_invocation(&shell.program, command, &policy).ok_or_else(
+                || {
+                    SofosError::ToolExecution(
+                        "This command must run confined to the workspace, but the sandbox \
+                     could not be prepared for it. This can happen when a path the \
+                     sandbox protects contains an unusual control character.\n\
+                     Hint: rename that path, or switch to unrestricted mode if you \
+                     trust the command."
+                            .to_string(),
+                    )
+                },
+            );
         }
-        (
+        Ok((
             shell.program.clone(),
             vec![OsString::from("-c"), OsString::from(command)],
-        )
+        ))
     }
 
     /// The sandbox policy for a confined command: writes bounded to the
@@ -389,7 +400,7 @@ impl BashExecutor {
         }
 
         let shell = resolve_shell();
-        let (program, args) = self.shell_invocation(&shell, command, confine);
+        let (program, args) = self.shell_invocation(&shell, command, confine)?;
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .current_dir(&self.workspace)

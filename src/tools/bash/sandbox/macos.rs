@@ -9,7 +9,24 @@ pub const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
 /// closes the two things the workspace boundary cares about: writes
 /// outside the writable roots, and the network. Reads and process
 /// execution stay open so ordinary tools keep working.
-pub fn seatbelt_profile(policy: &SandboxPolicy) -> String {
+///
+/// Returns `None` when any path interpolated into the profile contains a
+/// control character. `quote` escapes the backslash and double-quote
+/// that would break a string literal, but a newline or other control
+/// character could still break the profile's line structure and weaken a
+/// rule, so the caller is made to fall back to asking instead of
+/// confining with a malformed profile.
+pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
+    if policy
+        .writable_roots
+        .iter()
+        .chain(&policy.read_deny_subpaths)
+        .chain(&policy.read_allow_subpaths)
+        .any(|path| path.to_string_lossy().contains(|c: char| c.is_control()))
+    {
+        return None;
+    }
+
     let mut profile = String::from("(version 1)\n(allow default)\n");
 
     if !policy.allow_network {
@@ -55,7 +72,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> String {
         push_file_read_rule(&mut profile, "allow", path);
     }
 
-    profile
+    Some(profile)
 }
 
 /// Append a `file-read*` rule (`deny` or `allow`) for `path`, scoped to
@@ -81,17 +98,53 @@ mod tests {
     use super::super::SandboxPolicy;
     use super::*;
     use std::ffi::OsStr;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
 
     #[test]
     fn seatbelt_profile_denies_writes_and_network_then_reopens_roots() {
         let dir = tempfile::tempdir().unwrap();
         let policy = SandboxPolicy::for_workspace(dir.path());
-        let profile = seatbelt_profile(&policy);
+        let profile = seatbelt_profile(&policy).expect("clean policy paths build a profile");
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("(allow file-write*"));
+    }
+
+    /// A path with a control character cannot be expressed safely in the
+    /// profile, so building one is refused and the caller falls back to
+    /// asking instead of confining with a malformed profile.
+    #[test]
+    fn seatbelt_profile_refuses_paths_with_control_characters() {
+        let mut policy = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/workspace")],
+            allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_allow_subpaths: Vec::new(),
+        };
+        assert!(
+            seatbelt_profile(&policy).is_some(),
+            "an ordinary path builds a profile"
+        );
+
+        policy
+            .writable_roots
+            .push(PathBuf::from("/workspace/with\nnewline"));
+        assert!(
+            seatbelt_profile(&policy).is_none(),
+            "a writable root containing a newline refuses confinement"
+        );
+
+        let denied = SandboxPolicy {
+            writable_roots: vec![PathBuf::from("/workspace")],
+            allow_network: false,
+            read_deny_subpaths: vec![PathBuf::from("/workspace/secret\u{1}name")],
+            read_allow_subpaths: Vec::new(),
+        };
+        assert!(
+            seatbelt_profile(&denied).is_none(),
+            "a denied read path containing a control character refuses confinement"
+        );
     }
 
     /// End-to-end proof that the macOS sandbox actually confines writes:
@@ -145,7 +198,7 @@ mod tests {
     fn seatbelt_profile_reopens_pty_devices() {
         let dir = tempfile::tempdir().unwrap();
         let policy = SandboxPolicy::for_workspace(dir.path());
-        let profile = seatbelt_profile(&policy);
+        let profile = seatbelt_profile(&policy).expect("clean policy paths build a profile");
         assert!(profile.contains("(literal \"/dev/ptmx\")"));
         assert!(profile.contains("com.apple.sandbox.pty"));
     }
@@ -184,7 +237,7 @@ mod tests {
             &["./secret/**".to_string()],
             &["./secret/ok.txt".to_string()],
         );
-        let profile = seatbelt_profile(&policy);
+        let profile = seatbelt_profile(&policy).expect("clean policy paths build a profile");
         assert!(profile.contains("(deny file-read* (subpath"));
         assert!(profile.contains("(allow file-read* (subpath"));
     }
