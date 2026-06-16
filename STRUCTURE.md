@@ -963,6 +963,7 @@ Rules:
 - Commands referencing external paths require Bash-path grants. Workspace-relative path arguments are also canonicalised, so a symlink inside the workspace cannot route a read through an external file without the same prompt.
 - Read deny rules apply to command path arguments.
 - Each command runs under a supervisor that streams output, enforces per-stream byte caps while reading, applies a wall-clock timeout, and terminates the whole process group on user interrupt (ESC / Ctrl+C).
+- A confined command that exits unsuccessfully adds a short model-facing note explaining that workspace-mode sandbox limits can cause permission, network, socket, mount, or container engine failures and that `/unrestricted` is appropriate only when no workspace-safe alternative can finish the task.
 
 ### 7.6 `tools/permissions/`
 

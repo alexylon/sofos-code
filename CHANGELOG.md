@@ -13,6 +13,8 @@ All notable changes to Sofos are documented in this file.
 
 ### Changed
 
+- **Workspace-mode shell failures now explain likely sandbox limits more clearly** (macOS and Linux). When a confined command fails with permission, network, socket, mount, or container engine errors, the assistant is told that workspace mode may be the cause, to try a workspace-safe alternative, and to suggest `/unrestricted` only when the task cannot be completed within workspace mode.
+
 - **`edit_file` now rejects ambiguous single replacements.** When the old text appears more than once, the assistant must include more surrounding context or set `replace_all` for an intentional global replacement. Empty old text is also rejected.
 - **Read-only mode is now selected with `--readonly` and `/readonly`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
 - **The `/normal` command is now `/workspace`.** It leaves read-only mode and returns to the default mode, where the assistant can read, write, and run shell commands. The previous `/normal` name has been removed.

@@ -138,6 +138,14 @@ pub fn workspace_mode_message() -> String {
          \n\
          Network: closed for confined commands.\n\
          \n\
+         Confined-command failures: if a workspace-mode command fails with permission, \
+         network, socket, mount, or container engine errors, assume the operating-system \
+         sandbox may be the cause. Common examples include Docker and other container \
+         runtimes, tools that need network access, local daemon sockets, or writes outside \
+         the workspace and temporary directories. Explain this likely cause to the user, \
+         try a workspace-safe alternative when possible, and suggest /unrestricted only if \
+         the task cannot be completed within workspace mode.\n\
+         \n\
          Switch with /readonly or /unrestricted. All tools are available.]",
     )
 }
@@ -296,6 +304,15 @@ mod tests {
         );
         assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::ReadOnly);
         assert_eq!(SandboxMode::from_flags(true, true), SandboxMode::ReadOnly);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn workspace_mode_message_explains_confined_command_failures() {
+        let message = workspace_mode_message();
+        assert!(message.contains("Confined-command failures"));
+        assert!(message.contains("Docker"));
+        assert!(message.contains("/unrestricted"));
     }
 
     #[test]

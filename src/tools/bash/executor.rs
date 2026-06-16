@@ -311,10 +311,14 @@ impl BashExecutor {
                     }
                 }
             };
-            let error_output = format!(
+            let mut error_output = format!(
                 "Command failed with {}\nSTDOUT:\n{}\nSTDERR:\n{}",
                 exit_info, stdout, stderr
             );
+            if confine {
+                error_output.push_str("\n\n");
+                error_output.push_str(confined_command_failure_note());
+            }
             return Ok(truncate_for_context(
                 &error_output,
                 MAX_TOOL_OUTPUT_TOKENS,
@@ -648,6 +652,17 @@ struct SupervisedOutput {
     terminated_for: Option<TerminationReason>,
 }
 
+fn confined_command_failure_note() -> &'static str {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode: writes are limited to the workspace and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no workspace-safe alternative can finish the task, tell the user they can switch to /unrestricted for this trusted operation."
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode. If no workspace-safe alternative can finish the task, tell the user they can switch to /unrestricted for this trusted operation."
+    }
+}
+
 fn spawn_capped_reader<R>(
     reader: R,
     buf: Arc<Mutex<Vec<u8>>>,
@@ -725,4 +740,18 @@ fn terminate_child_tree(child: &mut Child) {
         .stderr(Stdio::null())
         .status();
     let _ = child.kill();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confined_command_failure_note_mentions_unrestricted_mode() {
+        let note = confined_command_failure_note();
+        assert!(note.contains("Workspace mode note"));
+        assert!(note.contains("/unrestricted"));
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(note.contains("Docker"));
+    }
 }
