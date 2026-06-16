@@ -208,7 +208,7 @@ pub fn is_available() -> bool {
     use std::sync::OnceLock;
     static USABLE: OnceLock<bool> = OnceLock::new();
     *USABLE.get_or_init(|| {
-        program_on_path(linux::BWRAP_PROGRAM)
+        linux::resolved_bwrap().is_some()
             && linux::bwrap_can_unshare_user()
             && linux::network_seccomp_program().is_some()
     })
@@ -247,14 +247,6 @@ pub fn is_available() -> bool {
     false
 }
 
-/// Whether `program` resolves to an executable file on the `PATH`.
-#[cfg(target_os = "linux")]
-fn program_on_path(program: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
-        .unwrap_or(false)
-}
-
 /// Build the program and arguments that run `<shell> -c <command>`
 /// confined by `policy`. Returns `None` when this platform has no
 /// supported sandbox, signalling the caller to run the shell directly
@@ -280,12 +272,13 @@ pub fn confined_invocation(
     command: &str,
     policy: &SandboxPolicy,
 ) -> Option<(OsString, Vec<OsString>)> {
+    let program = linux::resolved_bwrap()?;
     let mut args = linux::bwrap_arguments(policy);
     args.push(OsString::from("--"));
     args.push(shell.to_os_string());
     args.push(OsString::from("-c"));
     args.push(OsString::from(command));
-    Some((OsString::from(linux::BWRAP_PROGRAM), args))
+    Some((program.as_os_str().to_os_string(), args))
 }
 
 /// Windows does not fit the `(program, args)` shape because the spawn

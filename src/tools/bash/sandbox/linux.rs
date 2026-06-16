@@ -7,10 +7,50 @@ use seccompiler::{
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// The Bubblewrap binary, resolved from `PATH`.
-pub const BWRAP_PROGRAM: &str = "bwrap";
+/// The Bubblewrap binary name searched for on `PATH`.
+const BWRAP_PROGRAM: &str = "bwrap";
+
+/// Resolve `bwrap` to a trusted absolute path, cached for the process
+/// lifetime. The result is the first `PATH` entry that is an absolute
+/// directory holding a regular, executable `bwrap`, canonicalised so a
+/// symlink resolves to the real binary. Relative `PATH` entries (a bare
+/// `.` or `bin`) are skipped, because they resolve against the current
+/// directory — the workspace — where a planted `bwrap` could stand in
+/// for the sandbox wrapper. Resolving once and spawning by this absolute
+/// path keeps the binary the probe checks identical to the one the
+/// confined command runs. `None` when no such binary is found, which
+/// makes the caller fall back to the permission prompt.
+pub fn resolved_bwrap() -> Option<&'static Path> {
+    static RESOLVED: OnceLock<Option<PathBuf>> = OnceLock::new();
+    RESOLVED.get_or_init(find_trusted_bwrap).as_deref()
+}
+
+fn find_trusted_bwrap() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    first_trusted_program(std::env::split_paths(&path), BWRAP_PROGRAM)
+}
+
+/// First absolute directory in `dirs` that holds a regular, executable
+/// `program`, returned as its canonical absolute path. Relative
+/// directories are skipped so a binary reached through the current
+/// directory cannot be chosen.
+fn first_trusted_program(dirs: impl Iterator<Item = PathBuf>, program: &str) -> Option<PathBuf> {
+    dirs.filter(|dir| dir.is_absolute())
+        .find_map(|dir| trusted_executable(&dir.join(program)))
+}
+
+/// Canonicalise `candidate` and return it when it is a regular file with
+/// an execute bit set; `None` otherwise.
+fn trusted_executable(candidate: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let resolved = std::fs::canonicalize(candidate).ok()?;
+    let metadata = std::fs::metadata(&resolved).ok()?;
+    (metadata.is_file() && metadata.permissions().mode() & 0o111 != 0).then_some(resolved)
+}
 
 /// Treat bwrap as unusable if the probe has not exited within this window.
 const BWRAP_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -97,7 +137,10 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
 pub fn bwrap_can_unshare_user() -> bool {
     use std::process::{Command, Stdio};
 
-    let mut child = match Command::new(BWRAP_PROGRAM)
+    let Some(program) = resolved_bwrap() else {
+        return false;
+    };
+    let mut child = match Command::new(program)
         .args([
             "--unshare-user",
             "--unshare-net",
@@ -257,6 +300,72 @@ mod tests {
     #[test]
     fn bwrap_probe_yields_a_bool() {
         let _ = bwrap_can_unshare_user();
+    }
+
+    fn set_mode(path: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// Only a regular file with an execute bit counts as the sandbox
+    /// wrapper; a plain file or a directory is rejected.
+    #[test]
+    fn trusted_executable_accepts_only_executable_files() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let exe = dir.path().join("bwrap");
+        std::fs::write(&exe, "#!/bin/sh\n").unwrap();
+        set_mode(&exe, 0o755);
+        assert_eq!(
+            trusted_executable(&exe),
+            Some(std::fs::canonicalize(&exe).unwrap()),
+            "a regular executable file is accepted"
+        );
+
+        let plain = dir.path().join("not-exec");
+        std::fs::write(&plain, "x").unwrap();
+        set_mode(&plain, 0o644);
+        assert_eq!(
+            trusted_executable(&plain),
+            None,
+            "a non-executable file is rejected"
+        );
+
+        assert_eq!(
+            trusted_executable(dir.path()),
+            None,
+            "a directory is rejected"
+        );
+    }
+
+    /// The search skips a relative directory and a directory whose
+    /// `bwrap` is not executable, and returns the first absolute
+    /// directory holding an executable one.
+    #[test]
+    fn first_trusted_program_skips_relative_and_non_executable_dirs() {
+        let empty = tempfile::tempdir().unwrap();
+
+        let nonexec = tempfile::tempdir().unwrap();
+        let nonexec_bin = nonexec.path().join("bwrap");
+        std::fs::write(&nonexec_bin, "x").unwrap();
+        set_mode(&nonexec_bin, 0o644);
+
+        let good = tempfile::tempdir().unwrap();
+        let good_bin = good.path().join("bwrap");
+        std::fs::write(&good_bin, "#!/bin/sh\n").unwrap();
+        set_mode(&good_bin, 0o755);
+
+        let dirs = vec![
+            std::path::PathBuf::from("relative/bin"),
+            empty.path().to_path_buf(),
+            nonexec.path().to_path_buf(),
+            good.path().to_path_buf(),
+        ];
+        assert_eq!(
+            first_trusted_program(dirs.into_iter(), "bwrap"),
+            Some(std::fs::canonicalize(&good_bin).unwrap()),
+            "skips the relative, empty, and non-executable entries and picks the executable"
+        );
     }
 
     /// The network filter fires correctly: a child that installs it is
