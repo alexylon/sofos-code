@@ -209,7 +209,7 @@ pub fn is_available() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
     *USABLE.get_or_init(|| {
         linux::resolved_bwrap().is_some()
-            && linux::bwrap_can_unshare_user()
+            && linux::bwrap_can_unshare_namespaces()
             && linux::network_seccomp_program().is_some()
     })
 }

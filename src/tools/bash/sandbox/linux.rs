@@ -63,15 +63,19 @@ const BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// `/dev/null` over a file, an empty tmpfs over a directory or over a
 /// not-yet-created path inside a writable root where a secret could
 /// appear later — and allow exceptions are re-bound on top. The confined
-/// process runs in fresh user and process namespaces (`--unshare-user`,
-/// `--unshare-pid`) so it cannot see or signal host processes, and it
-/// dies with sofos
-/// (`--die-with-parent`). The caller appends `-- <shell> -c <command>`.
+/// process runs in fresh user, process, IPC, UTS, and — where the kernel
+/// supports it — cgroup namespaces, so it cannot see or signal host
+/// processes or reach host inter-process channels, and it dies with the
+/// parent process (`--die-with-parent`). The caller appends
+/// `-- <shell> -c <command>`.
 pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         OsString::from("--die-with-parent"),
         OsString::from("--unshare-user"),
         OsString::from("--unshare-pid"),
+        OsString::from("--unshare-ipc"),
+        OsString::from("--unshare-uts"),
+        OsString::from("--unshare-cgroup-try"),
         OsString::from("--ro-bind"),
         OsString::from("/"),
         OsString::from("/"),
@@ -126,15 +130,17 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
     args
 }
 
-/// Probe whether Bubblewrap can actually create the user namespace it
-/// relies on. `bwrap` may be installed yet unusable — user namespaces
-/// are restricted on some hardened kernels, inside containers, and on
-/// WSL1 — in which case it exits with a namespace error. Running a
-/// throwaway `bwrap … /bin/true` tells the caller whether confinement
-/// will work, so it can fall back to the permission prompt instead of
-/// failing every command with an unclear bwrap error. A short timeout
-/// guards against a bwrap that hangs.
-pub fn bwrap_can_unshare_user() -> bool {
+/// Probe whether Bubblewrap can actually create the namespaces the
+/// confined command relies on. `bwrap` may be installed yet unusable —
+/// user namespaces are restricted on some hardened kernels, inside
+/// containers, and on WSL1 — in which case it exits with a namespace
+/// error. An older `bwrap` may also not recognise every `--unshare-*`
+/// flag used below. Running a throwaway `bwrap … /bin/true` with the
+/// same unshare flags tells the caller whether confinement will work, so
+/// it can fall back to the permission prompt instead of failing every
+/// command with an unclear bwrap error. A short timeout guards against a
+/// bwrap that hangs.
+pub fn bwrap_can_unshare_namespaces() -> bool {
     use std::process::{Command, Stdio};
 
     let Some(program) = resolved_bwrap() else {
@@ -143,6 +149,10 @@ pub fn bwrap_can_unshare_user() -> bool {
     let mut child = match Command::new(program)
         .args([
             "--unshare-user",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
             "--unshare-net",
             "--ro-bind",
             "/",
@@ -272,6 +282,18 @@ mod tests {
             "fresh process namespace"
         );
         assert!(
+            args.iter().any(|a| a == "--unshare-ipc"),
+            "fresh IPC namespace"
+        );
+        assert!(
+            args.iter().any(|a| a == "--unshare-uts"),
+            "fresh UTS namespace"
+        );
+        assert!(
+            args.iter().any(|a| a == "--unshare-cgroup-try"),
+            "fresh cgroup namespace where the kernel supports it"
+        );
+        assert!(
             args.iter().any(|a| a == "--ro-bind"),
             "root mounted read-only"
         );
@@ -299,7 +321,7 @@ mod tests {
     /// must run to completion without panicking or hanging.
     #[test]
     fn bwrap_probe_yields_a_bool() {
-        let _ = bwrap_can_unshare_user();
+        let _ = bwrap_can_unshare_namespaces();
     }
 
     fn set_mode(path: &std::path::Path, mode: u32) {
