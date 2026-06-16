@@ -98,6 +98,27 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
         }
     }
 
+    // Keep project metadata read-only inside the writable workspace so a
+    // confined command can read it but not rewrite it. An existing path is
+    // re-bound read-only. One that does not exist yet is masked with an
+    // empty read-only tmpfs, so the command cannot create persistent
+    // content there (for example a `.sofos` config that would relax the
+    // next command's gate). bwrap applies mounts in order, so both override
+    // the writable bind. The tmpfs leaves an empty mount point on the
+    // workspace; the executor removes it after the run.
+    for path in &policy.write_protect_subpaths {
+        if path.exists() {
+            args.push(OsString::from("--ro-bind"));
+            args.push(path.clone().into_os_string());
+            args.push(path.clone().into_os_string());
+        } else {
+            args.push(OsString::from("--tmpfs"));
+            args.push(path.clone().into_os_string());
+            args.push(OsString::from("--remount-ro"));
+            args.push(path.clone().into_os_string());
+        }
+    }
+
     // Read confinement: hide each denied subpath, then re-expose the
     // allow exceptions on top so a specific allow overrides a broader
     // deny. A file is masked with `/dev/null`; a directory — or a path
@@ -259,6 +280,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
         let args: Vec<String> = bwrap_arguments(&closed)
             .iter()
@@ -300,6 +322,7 @@ mod tests {
             allow_network: true,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
         let open_args: Vec<String> = bwrap_arguments(&open)
             .iter()
@@ -435,6 +458,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone(), secret_file.clone()],
             read_allow_subpaths: vec![allowed.clone()],
+            write_protect_subpaths: Vec::new(),
         };
         let args: Vec<String> = bwrap_arguments(&policy)
             .iter()
@@ -476,6 +500,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: vec![inside.clone(), outside.clone()],
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
         let args: Vec<String> = bwrap_arguments(&policy)
             .iter()
@@ -519,6 +544,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone()],
             read_allow_subpaths: vec![allowed.clone()],
+            write_protect_subpaths: Vec::new(),
         };
 
         let read = |path: &std::path::Path| {
@@ -548,5 +574,93 @@ mod tests {
             String::from_utf8_lossy(&exception.stderr)
         );
         assert_eq!(String::from_utf8_lossy(&exception.stdout), "fine to read");
+    }
+
+    /// An existing metadata directory is re-bound read-only after the
+    /// writable workspace bind; a missing one is masked with a read-only
+    /// tmpfs so it cannot be created with persistent content.
+    #[test]
+    fn bwrap_write_protects_existing_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::fs::create_dir(&git).unwrap();
+        let sofos = dir.path().join(".sofos");
+
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let git = git.to_string_lossy().into_owned();
+        let robind = args
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind" && w[1] == git && w[2] == git)
+            .expect("existing .git re-bound read-only");
+        let bind = args.iter().position(|a| a == "--bind").unwrap();
+        assert!(
+            robind > bind,
+            "metadata ro-bind must follow the writable bind"
+        );
+
+        let sofos = sofos.to_string_lossy().into_owned();
+        assert!(
+            args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == sofos),
+            "a missing metadata dir is masked with a tmpfs"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--remount-ro" && w[1] == sofos),
+            "the tmpfs mask is remounted read-only"
+        );
+    }
+
+    /// On a live bubblewrap, a confined command writes inside the
+    /// workspace but cannot write into `.git`, which stays readable.
+    /// Skipped where bubblewrap cannot create user namespaces.
+    #[test]
+    fn bwrap_write_protects_metadata_end_to_end() {
+        if !bwrap_can_unshare_namespaces() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let git = workspace.join(".git");
+        std::fs::create_dir(&git).unwrap();
+        std::fs::write(git.join("config"), "[core]\n").unwrap();
+
+        let policy = SandboxPolicy::for_workspace(&workspace);
+        let run = |command: String| {
+            let (program, args) = super::super::confined_invocation(
+                std::ffi::OsStr::new("/bin/sh"),
+                &command,
+                &policy,
+            )
+            .unwrap();
+            std::process::Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn bwrap")
+        };
+
+        let _ = run(format!(
+            "echo ok > {}",
+            workspace.join("file.txt").display()
+        ));
+        assert!(
+            workspace.join("file.txt").is_file(),
+            "workspace write blocked"
+        );
+
+        let _ = run(format!("echo hacked >> {}", git.join("config").display()));
+        assert_eq!(
+            std::fs::read_to_string(git.join("config")).unwrap(),
+            "[core]\n",
+            ".git must stay read-only"
+        );
+
+        let read = run(format!("cat {}", git.join("config").display()));
+        assert!(read.status.success(), ".git must stay readable");
     }
 }

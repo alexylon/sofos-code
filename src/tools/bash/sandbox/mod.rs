@@ -30,9 +30,10 @@ mod macos;
 pub mod windows;
 
 /// Locations a confined command may write to, whether it may reach the
-/// network, and which paths it may not read. `allow_network` and the
-/// read lists are consulted by the macOS and Linux backends only; the
-/// Windows backend leaves the network open and reads unrestricted.
+/// network, and which paths it may not read. `allow_network`, the read
+/// lists, and `write_protect_subpaths` are consulted by the macOS and
+/// Linux backends only; the Windows backend leaves the network open and
+/// reads unrestricted.
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct SandboxPolicy {
     pub writable_roots: Vec<PathBuf>,
@@ -44,6 +45,11 @@ pub struct SandboxPolicy {
     /// Subpaths that stay readable even when a broader entry denies them,
     /// so a specific allow can carve an exception out of a denied tree.
     pub read_allow_subpaths: Vec<PathBuf>,
+    /// Subpaths that stay readable but never writable, even inside a
+    /// writable root: project metadata a confined command must not
+    /// rewrite, since doing so could plant a hook or relax the next
+    /// command's gate.
+    pub write_protect_subpaths: Vec<PathBuf>,
 }
 
 impl SandboxPolicy {
@@ -62,6 +68,7 @@ impl SandboxPolicy {
             allow_network: false,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: metadata_protect_subpaths(workspace),
         }
     }
 
@@ -145,6 +152,23 @@ fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
         current = parent;
     }
     path.to_path_buf()
+}
+
+/// Project metadata kept read-only inside the sandbox even though the
+/// workspace is writable. Each can run code or relax the command gate on
+/// a later turn — Git hooks/config, the `.sofos` permission rules
+/// (re-read every command), and agent settings — so a confined command
+/// must not rewrite them. Joined onto the workspace as-is so the path
+/// matches the writable-root bind.
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+const METADATA_PROTECT_DIRS: &[&str] = &[".git", ".sofos", ".agents", ".claude", ".codex"];
+
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn metadata_protect_subpaths(workspace: &Path) -> Vec<PathBuf> {
+    METADATA_PROTECT_DIRS
+        .iter()
+        .map(|name| workspace.join(name))
+        .collect()
 }
 
 /// System temporary directories that stay writable inside the sandbox.
@@ -307,6 +331,24 @@ pub fn confined_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The workspace policy marks the project's metadata directories as
+    /// write-protected so a confined command cannot plant a Git hook,
+    /// rewrite Git or `.sofos` config, or edit agent settings even though
+    /// the workspace around them is writable.
+    #[test]
+    fn workspace_policy_write_protects_metadata_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        for name in [".git", ".sofos", ".agents", ".claude", ".codex"] {
+            assert!(
+                policy
+                    .write_protect_subpaths
+                    .contains(&dir.path().join(name)),
+                "{name} must be write-protected"
+            );
+        }
+    }
 
     #[cfg(unix)]
     #[test]

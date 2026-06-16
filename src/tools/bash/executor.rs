@@ -401,6 +401,22 @@ impl BashExecutor {
 
         let shell = resolve_shell();
         let (program, args) = self.shell_invocation(&shell, command, confine)?;
+
+        // A confined Linux command masks any not-yet-existing metadata
+        // directory with a read-only tmpfs, which bwrap materialises as an
+        // empty mount point on the real workspace. Record the absent ones
+        // now so the empty leftovers can be removed once the command exits.
+        #[cfg(target_os = "linux")]
+        let metadata_cleanup: Vec<PathBuf> = if confine {
+            self.confined_policy()
+                .write_protect_subpaths
+                .into_iter()
+                .filter(|path| !path.exists())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .current_dir(&self.workspace)
@@ -538,6 +554,15 @@ impl BashExecutor {
 
         let stdout = drain_into_vec(stdout_buf);
         let stderr = drain_into_vec(stderr_buf);
+
+        // Remove the empty mount points the read-only tmpfs masks left for
+        // metadata directories that did not exist before the run. remove_dir
+        // deletes only an empty directory, so anything that already held
+        // content is left untouched.
+        #[cfg(target_os = "linux")]
+        for path in &metadata_cleanup {
+            let _ = std::fs::remove_dir(path);
+        }
 
         Ok(SupervisedOutput {
             stdout,

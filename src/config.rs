@@ -130,6 +130,9 @@ pub fn workspace_mode_message() -> String {
          File redirection (echo hi > file) and here-documents also run confined, so \
          they succeed when targeting paths inside the workspace.\n\
          \n\
+         The project's .git, .sofos, .agents, .claude, and .codex stay read-only even \
+         for confined commands; edit them with the file tools, not the shell.\n\
+         \n\
          Always refused, even confined: parent traversal (..), hidden subcommands \
          ($(...), backticks, <(...), >(...)), and dangerous git operations.\n\
          \n\

@@ -850,6 +850,7 @@ ask = []
             allow_network: false,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
 
         // The helper always builds `<shell> -c <command>`; cmd.exe
@@ -1008,5 +1009,38 @@ ask = []
         if let Err(SofosError::ToolExecution(msg)) = result {
             assert!(msg.contains("Read access denied") || msg.contains("denied"));
         }
+    }
+
+    /// A metadata directory that does not exist yet is masked read-only
+    /// while a confined command runs, so the command cannot create a
+    /// persistent `.sofos` config that would relax the next command's gate,
+    /// and the empty mount point is removed afterward. Linux only, where
+    /// the mask leaves a mount point to clean up.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_mode_blocks_creating_nonexistent_metadata() {
+        use crate::tools::bash::sandbox;
+
+        let (_temp, path) = test_support::workspace();
+        if !sandbox::is_available() {
+            return;
+        }
+        let workspace = std::fs::canonicalize(&path).unwrap();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+
+        let sofos = workspace.join(".sofos");
+        assert!(!sofos.exists(), "precondition: .sofos absent");
+
+        let _ = executor.execute("printf x > .sofos/config.local.toml");
+
+        assert!(
+            !sofos.join("config.local.toml").exists(),
+            "a confined command must not create a persistent .sofos config"
+        );
+        assert!(
+            !sofos.exists(),
+            "the empty .sofos mount point must be cleaned up after the run"
+        );
     }
 }

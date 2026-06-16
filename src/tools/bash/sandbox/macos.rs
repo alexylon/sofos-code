@@ -22,6 +22,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         .iter()
         .chain(&policy.read_deny_subpaths)
         .chain(&policy.read_allow_subpaths)
+        .chain(&policy.write_protect_subpaths)
         .any(|path| path.to_string_lossy().contains(|c: char| c.is_control()))
     {
         return None;
@@ -61,6 +62,15 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         "  (require-all (regex #\"^/dev/ttys[0-9]+\") (extension \"com.apple.sandbox.pty\"))\n",
     );
     profile.push_str(")\n");
+
+    // Keep project metadata read-only. Placed after the writable-root
+    // allow so Seatbelt's last-matching rule denies writes here, while
+    // reads and the rest of the workspace are untouched.
+    for path in &policy.write_protect_subpaths {
+        profile.push_str("(deny file-write* (subpath ");
+        profile.push_str(&quote(&path.to_string_lossy()));
+        profile.push_str("))\n");
+    }
 
     // Read confinement: deny the configured subpaths, then re-open the
     // explicit exceptions. The allow rules come last so a specific allow
@@ -121,6 +131,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
         assert!(
             seatbelt_profile(&policy).is_some(),
@@ -140,6 +151,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: vec![PathBuf::from("/workspace/secret\u{1}name")],
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
         assert!(
             seatbelt_profile(&denied).is_none(),
@@ -163,6 +175,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: Vec::new(),
             read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
         };
 
         let run = |target: &Path| {
@@ -261,6 +274,7 @@ mod tests {
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone()],
             read_allow_subpaths: vec![public.clone()],
+            write_protect_subpaths: Vec::new(),
         };
 
         let read = |target: &Path| {
@@ -378,6 +392,77 @@ mod tests {
         assert!(
             !run_confined(false).status.success(),
             "a confined command must not be able to open an outbound socket"
+        );
+    }
+
+    /// The metadata write-deny lands after the writable-root allow, so
+    /// the last-matching rule keeps `.git` read-only.
+    #[test]
+    fn seatbelt_profile_write_protects_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let profile = seatbelt_profile(&policy).expect("clean policy paths build a profile");
+        let git = dir.path().join(".git");
+        let deny = format!("(deny file-write* (subpath \"{}\"))", git.to_string_lossy());
+        assert!(profile.contains(&deny), "missing metadata write-deny");
+        assert!(
+            profile.find(&deny).unwrap() > profile.find("(allow file-write*").unwrap(),
+            "metadata deny must follow the writable-root allow"
+        );
+    }
+
+    /// A confined command writes inside the workspace but cannot touch
+    /// `.git` or `.sofos`, and `.git` stays readable.
+    #[test]
+    fn seatbelt_write_protects_metadata_end_to_end() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let git = workspace.join(".git");
+        std::fs::create_dir(&git).unwrap();
+        std::fs::write(git.join("config"), "[core]\n").unwrap();
+        let sofos = workspace.join(".sofos");
+        std::fs::create_dir(&sofos).unwrap();
+
+        let policy = SandboxPolicy::for_workspace(&workspace);
+        let run = |command: String| {
+            let (program, args) =
+                super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn sandbox-exec")
+        };
+
+        run(format!(
+            "echo ok > {}",
+            workspace.join("file.txt").display()
+        ));
+        assert!(
+            workspace.join("file.txt").is_file(),
+            "workspace write blocked"
+        );
+
+        run(format!("echo hacked >> {}", git.join("config").display()));
+        assert_eq!(
+            std::fs::read_to_string(git.join("config")).unwrap(),
+            "[core]\n",
+            ".git must stay read-only"
+        );
+
+        run(format!(
+            "printf x > {}",
+            sofos.join("config.local.toml").display()
+        ));
+        assert!(
+            !sofos.join("config.local.toml").exists(),
+            ".sofos must stay read-only"
+        );
+
+        let read = run(format!("cat {}", git.join("config").display()));
+        assert!(
+            read.status.success() && String::from_utf8_lossy(&read.stdout).contains("[core]"),
+            ".git must stay readable"
         );
     }
 }
