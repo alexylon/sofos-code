@@ -56,6 +56,19 @@ fn trusted_executable(candidate: &Path) -> Option<PathBuf> {
 const BWRAP_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// Namespaces every confined command is isolated into, regardless of
+/// policy. The network namespace is added separately because the policy
+/// can leave it open. The startup probe runs `bwrap` with these same
+/// flags, so an older `bwrap` that rejects one is detected before a
+/// command depends on it.
+const BWRAP_UNSHARE_FLAGS: &[&str] = &[
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--unshare-cgroup-try",
+];
+
 /// Build the Bubblewrap arguments that confine writes to `policy`'s
 /// roots: mount the whole filesystem read-only, re-bind each writable
 /// root read-write, expose `/dev` and `/proc`, and close the network
@@ -69,21 +82,13 @@ const BWRAP_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// parent process (`--die-with-parent`). The caller appends
 /// `-- <shell> -c <command>`.
 pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![
-        OsString::from("--die-with-parent"),
-        OsString::from("--unshare-user"),
-        OsString::from("--unshare-pid"),
-        OsString::from("--unshare-ipc"),
-        OsString::from("--unshare-uts"),
-        OsString::from("--unshare-cgroup-try"),
-        OsString::from("--ro-bind"),
-        OsString::from("/"),
-        OsString::from("/"),
-        OsString::from("--dev"),
-        OsString::from("/dev"),
-        OsString::from("--proc"),
-        OsString::from("/proc"),
-    ];
+    let mut args: Vec<OsString> = vec![OsString::from("--die-with-parent")];
+    args.extend(BWRAP_UNSHARE_FLAGS.iter().map(|flag| OsString::from(*flag)));
+    args.extend(
+        ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+            .iter()
+            .map(|arg| OsString::from(*arg)),
+    );
 
     for root in &policy.writable_roots {
         if root.is_dir() {
@@ -147,18 +152,8 @@ pub fn bwrap_can_unshare_namespaces() -> bool {
         return false;
     };
     let mut child = match Command::new(program)
-        .args([
-            "--unshare-user",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-            "--unshare-cgroup-try",
-            "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "/bin/true",
-        ])
+        .args(BWRAP_UNSHARE_FLAGS)
+        .args(["--unshare-net", "--ro-bind", "/", "/", "/bin/true"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -331,8 +331,8 @@ mod tests {
     fn seatbelt_blocks_outbound_network() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        // Keep accepting so an allowed connection completes; the thread
-        // ends when the listener is dropped at the end of the test.
+        // Keep accepting so the unconfined control connection completes;
+        // the listener lives in this thread until the test process exits.
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 drop(stream);
@@ -352,15 +352,31 @@ mod tests {
         );
 
         let dir = tempfile::tempdir().unwrap();
-        let policy = SandboxPolicy::for_workspace(dir.path());
-        let (program, args) =
-            super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy).unwrap();
-        let confined = Command::new(program)
-            .args(args)
-            .output()
-            .expect("spawn sandbox-exec");
+        let run_confined = |allow_network: bool| {
+            let policy = SandboxPolicy {
+                allow_network,
+                ..SandboxPolicy::for_workspace(dir.path())
+            };
+            let (program, args) =
+                super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn sandbox-exec")
+        };
+
+        // Positive control: with the network allowed the same confined
+        // command launches and connects, so the denial below can only be
+        // the network rule rather than the sandbox failing to start.
+        let allowed = run_confined(true);
         assert!(
-            !confined.status.success(),
+            allowed.status.success(),
+            "a confined command must connect when the policy allows the network; stderr: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+        assert!(
+            !run_confined(false).status.success(),
             "a confined command must not be able to open an outbound socket"
         );
     }

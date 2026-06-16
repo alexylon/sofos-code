@@ -126,31 +126,32 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
         .any(|sep| command.contains(&format!("{sep}{op}")))
 }
 
-/// Rewrite every token the shell would resolve to the `git` binary —
-/// `\git`, `'git'`, `"git"`, `/usr/bin/git`, `./git` — back to the bare
-/// name `git`, one shell segment at a time. This lets the textual
-/// dangerous-git scan recognise a dangerous subcommand however the
-/// program is spelled, because quoting, a leading backslash, and a path
-/// prefix all clean to the same base. Only tokens whose cleaned base is
-/// exactly `git` change; every other command and argument is left as
-/// written. Segments are rejoined with `;` so a wrapped `git` after a
+/// Rewrite the program token of each shell segment to the name the shell
+/// would run — `\git`, `'git'`, `"git"`, `/usr/bin/git`, `./git` all
+/// become the bare name `git` — so the dangerous-git scan recognises a
+/// dangerous subcommand however the program is spelled, because quoting,
+/// a leading backslash, and a path prefix all clean to the same base.
+/// Only the command token of each segment is rewritten; arguments are
+/// left verbatim so a quoted or path-shaped argument such as
+/// `grep "git push"` or `cat ~/git` is never mistaken for a git
+/// invocation. Segments are rejoined with `;` so a wrapped `git` after a
 /// separator (`ls;\git push`) still surfaces at a recognised boundary.
 fn canonicalize_git_tokens(command: &str) -> String {
     PermissionManager::split_compound_command(command)
         .iter()
-        .map(|segment| {
-            segment
-                .split_whitespace()
-                .map(|token| {
-                    if clean_base_token(token).eq_ignore_ascii_case("git") {
-                        "git"
+        .map(
+            |segment| match PermissionManager::extract_segment_base_with_args(segment) {
+                Some((base, args)) => {
+                    let base = clean_base_token(base);
+                    if args.is_empty() {
+                        base
                     } else {
-                        token
+                        format!("{base} {}", args.join(" "))
                     }
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+                }
+                None => segment.clone(),
+            },
+        )
         .collect::<Vec<_>>()
         .join(" ; ")
 }

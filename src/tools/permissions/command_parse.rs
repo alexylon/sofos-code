@@ -222,7 +222,7 @@ impl PermissionManager {
     /// segments that carry no command of their own — `for VAR in WORDS`
     /// loop headers, bare `done` / `fi` / `esac` closers, or shell
     /// comments (`# anything`).
-    pub(super) fn extract_segment_base_with_args(segment: &str) -> Option<(&str, Vec<&str>)> {
+    pub(crate) fn extract_segment_base_with_args(segment: &str) -> Option<(&str, Vec<&str>)> {
         let mut tokens = segment.split_whitespace().peekable();
         while let Some(&tok) = tokens.peek() {
             if COMPOUND_HEADERS_NO_BODY.contains(&tok) {

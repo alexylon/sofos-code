@@ -704,6 +704,21 @@ ask = []
         assert!(executor.is_safe_command_structure("'git' log"));
     }
 
+    /// A git subcommand that appears inside a quoted string or a path
+    /// argument is literal data, not a git invocation, so the command
+    /// must stay allowed rather than being mistaken for `git <subcommand>`.
+    #[test]
+    fn git_subcommand_inside_an_argument_is_allowed() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(executor.is_safe_command_structure("grep \"git push\" file.txt"));
+        assert!(executor.is_safe_command_structure("grep 'git push' file.txt"));
+        assert!(executor.is_safe_command_structure("rg -n \"git reset --hard\" ."));
+        assert!(executor.is_safe_command_structure("echo \"git commit\""));
+        assert!(executor.is_safe_command_structure("cat ./git push"));
+        assert!(executor.is_safe_command_structure("cat ~/git addresses.txt"));
+    }
+
     /// Path tokens with shell-meta that the shell would expand at
     /// run-time must be refused before they reach the deny-glob check.
     #[test]
