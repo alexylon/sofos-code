@@ -87,7 +87,7 @@ pub(super) fn is_env_assignment(tok: &str) -> bool {
 /// returned name can flow into user-configured wildcard rules like
 /// `Bash(MyTool:*)`; case-insensitive matching against the built-in
 /// command sets happens at the comparison site.
-pub(crate) fn clean_base_token(tok: &str) -> String {
+pub(super) fn clean_base_token(tok: &str) -> String {
     let stripped = tok.trim_start_matches(['(', '{', '\\', '\'', '"']);
     let stripped = stripped.trim_end_matches([')', '}', '\'', '"']);
     let after_unix = stripped.rsplit('/').next().unwrap_or(stripped);

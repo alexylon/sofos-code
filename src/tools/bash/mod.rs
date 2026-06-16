@@ -699,9 +699,19 @@ ask = []
         assert!(!executor.is_safe_command_structure("ls; \\git push"));
         assert!(!executor.is_safe_command_structure("ls;'git' push"));
 
+        // Interior backslashes and quotes that bash strips while expanding
+        // the word also resolve to the git binary, so they are caught too.
+        assert!(!executor.is_safe_command_structure("g\\it push"));
+        assert!(!executor.is_safe_command_structure("g\"\"it push"));
+        assert!(!executor.is_safe_command_structure("g''it push"));
+        assert!(!executor.is_safe_command_structure("g'i't push"));
+        assert!(!executor.is_safe_command_structure("\\g\\i\\t push"));
+        assert!(!executor.is_safe_command_structure("gi't' commit -m x"));
+
         // Read-only git stays allowed however it is spelled.
         assert!(executor.is_safe_command_structure("\\git status"));
         assert!(executor.is_safe_command_structure("'git' log"));
+        assert!(executor.is_safe_command_structure("g\\it status"));
     }
 
     /// A git subcommand that appears inside a quoted string or a path

@@ -9,7 +9,6 @@
 use crate::error::{Result, SofosError};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
-use crate::tools::permissions::command_parse::clean_base_token;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{is_absolute_path, lexically_normalize, normalize_command_whitespace};
 use std::path::PathBuf;
@@ -126,27 +125,28 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
         .any(|sep| command.contains(&format!("{sep}{op}")))
 }
 
-/// Rewrite the program token of each shell segment to the name the shell
-/// would run — `\git`, `'git'`, `"git"`, `/usr/bin/git`, `./git` all
-/// become the bare name `git` — so the dangerous-git scan recognises a
-/// dangerous subcommand however the program is spelled, because quoting,
-/// a leading backslash, and a path prefix all clean to the same base.
-/// Only the command token of each segment is rewritten; arguments are
-/// left verbatim so a quoted or path-shaped argument such as
-/// `grep "git push"` or `cat ~/git` is never mistaken for a git
-/// invocation. Segments are rejoined with `;` so a wrapped `git` after a
-/// separator (`ls;\git push`) still surfaces at a recognised boundary.
+/// Rewrite the program token of each shell segment to the bare name
+/// `git` whenever the shell would run the git binary, so the
+/// dangerous-git scan recognises a dangerous subcommand however the
+/// program is spelled — a leading or interior backslash (`\git`,
+/// `g\it`), quotes anywhere (`'git'`, `g""it`, `g'i't`), a path prefix
+/// (`/usr/bin/git`), or a subshell (`(git`). Only the command token of
+/// each segment is rewritten; arguments are left verbatim so a quoted or
+/// path-shaped argument such as `grep "git push"` or `cat ~/git` is
+/// never mistaken for a git invocation. Segments are rejoined with `;`
+/// so a wrapped `git` after a separator (`ls;\git push`) still surfaces
+/// at a recognised boundary.
 fn canonicalize_git_tokens(command: &str) -> String {
     PermissionManager::split_compound_command(command)
         .iter()
         .map(
             |segment| match PermissionManager::extract_segment_base_with_args(segment) {
                 Some((base, args)) => {
-                    let base = clean_base_token(base);
+                    let head = if base_is_git(base) { "git" } else { base };
                     if args.is_empty() {
-                        base
+                        head.to_string()
                     } else {
-                        format!("{base} {}", args.join(" "))
+                        format!("{head} {}", args.join(" "))
                     }
                 }
                 None => segment.clone(),
@@ -154,6 +154,25 @@ fn canonicalize_git_tokens(command: &str) -> String {
         )
         .collect::<Vec<_>>()
         .join(" ; ")
+}
+
+/// Whether `token` is the `git` program however bash would spell it. The
+/// quote and backslash characters bash strips while expanding a word are
+/// removed — so `g\it`, `g""it`, `g'i't`, `\git`, and `'git'` all reduce
+/// to `git` — subshell and group delimiters are dropped, and any
+/// directory prefix is removed before the comparison. Backslash is a
+/// bash escape here, not a path separator: the shell that runs these
+/// commands is sh or bash on every platform sofos supports, so a
+/// backslash is removed rather than split on.
+fn base_is_git(token: &str) -> bool {
+    let bare: String = token
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\' | '(' | ')' | '{' | '}'))
+        .collect();
+    bare.rsplit('/')
+        .next()
+        .unwrap_or(&bare)
+        .eq_ignore_ascii_case("git")
 }
 
 /// Returns the kind of expansion that would change the path between
