@@ -682,6 +682,28 @@ ask = []
         assert!(executor.is_safe_command_structure("git log"));
     }
 
+    /// `git push` smuggled behind a leading backslash, quotes, or a path
+    /// prefix runs the real git binary, so the dangerous-git matcher must
+    /// catch it however the program token is spelled.
+    #[test]
+    fn dangerous_git_with_spelling_obfuscation_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("\\git push origin main"));
+        assert!(!executor.is_safe_command_structure("'git' push origin main"));
+        assert!(!executor.is_safe_command_structure("\"git\" push origin main"));
+        assert!(!executor.is_safe_command_structure("/usr/bin/git push origin main"));
+        assert!(!executor.is_safe_command_structure("./git reset --hard"));
+
+        // A spelling trick after a shell separator is still caught.
+        assert!(!executor.is_safe_command_structure("ls; \\git push"));
+        assert!(!executor.is_safe_command_structure("ls;'git' push"));
+
+        // Read-only git stays allowed however it is spelled.
+        assert!(executor.is_safe_command_structure("\\git status"));
+        assert!(executor.is_safe_command_structure("'git' log"));
+    }
+
     /// Path tokens with shell-meta that the shell would expand at
     /// run-time must be refused before they reach the deny-glob check.
     #[test]

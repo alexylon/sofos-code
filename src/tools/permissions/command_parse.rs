@@ -87,7 +87,7 @@ pub(super) fn is_env_assignment(tok: &str) -> bool {
 /// returned name can flow into user-configured wildcard rules like
 /// `Bash(MyTool:*)`; case-insensitive matching against the built-in
 /// command sets happens at the comparison site.
-pub(super) fn clean_base_token(tok: &str) -> String {
+pub(crate) fn clean_base_token(tok: &str) -> String {
     let stripped = tok.trim_start_matches(['(', '{', '\\', '\'', '"']);
     let stripped = stripped.trim_end_matches([')', '}', '\'', '"']);
     let after_unix = stripped.rsplit('/').next().unwrap_or(stripped);
@@ -155,7 +155,7 @@ impl PermissionManager {
     /// system, both before and after this change). The structural
     /// check in `tools/bash/validate.rs::detect_command_substitution`
     /// rejects those constructs outright instead.
-    pub(super) fn split_compound_command(command: &str) -> Vec<String> {
+    pub(crate) fn split_compound_command(command: &str) -> Vec<String> {
         let mut segments: Vec<String> = Vec::new();
         let mut current = String::new();
         let mut chars = command.chars().peekable();

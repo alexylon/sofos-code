@@ -9,6 +9,7 @@
 use crate::error::{Result, SofosError};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
+use crate::tools::permissions::command_parse::clean_base_token;
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{is_absolute_path, lexically_normalize, normalize_command_whitespace};
 use std::path::PathBuf;
@@ -123,6 +124,35 @@ pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
     BOUNDARIES
         .iter()
         .any(|sep| command.contains(&format!("{sep}{op}")))
+}
+
+/// Rewrite every token the shell would resolve to the `git` binary —
+/// `\git`, `'git'`, `"git"`, `/usr/bin/git`, `./git` — back to the bare
+/// name `git`, one shell segment at a time. This lets the textual
+/// dangerous-git scan recognise a dangerous subcommand however the
+/// program is spelled, because quoting, a leading backslash, and a path
+/// prefix all clean to the same base. Only tokens whose cleaned base is
+/// exactly `git` change; every other command and argument is left as
+/// written. Segments are rejoined with `;` so a wrapped `git` after a
+/// separator (`ls;\git push`) still surfaces at a recognised boundary.
+fn canonicalize_git_tokens(command: &str) -> String {
+    PermissionManager::split_compound_command(command)
+        .iter()
+        .map(|segment| {
+            segment
+                .split_whitespace()
+                .map(|token| {
+                    if clean_base_token(token).eq_ignore_ascii_case("git") {
+                        "git"
+                    } else {
+                        token
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(" ; ")
 }
 
 /// Returns the kind of expansion that would change the path between
@@ -479,7 +509,18 @@ impl BashExecutor {
         true
     }
 
+    /// Whether `command` is free of dangerous git operations, recognised
+    /// however the `git` program token is spelled. The literal command
+    /// catches plainly-written invocations; the de-obfuscated form (see
+    /// [`canonicalize_git_tokens`]) catches `\git push`, `'git' push`,
+    /// and `/usr/bin/git push`, which run the real git binary but would
+    /// otherwise slip past the textual scan.
     pub(super) fn is_safe_git_command(&self, command: &str) -> bool {
+        self.git_command_is_allowed(command)
+            && self.git_command_is_allowed(&canonicalize_git_tokens(command))
+    }
+
+    fn git_command_is_allowed(&self, command: &str) -> bool {
         if !command.starts_with("git ")
             && !command.contains(" git ")
             && !command.contains(";git ")
@@ -613,9 +654,10 @@ impl BashExecutor {
     }
 
     pub(super) fn get_git_rejection_reason(&self, command: &str) -> String {
-        // Match against the same normalized input as `is_safe_git_command`
-        // so the reason picked here lines up with the rejection.
-        let command_lower = normalize_command_whitespace(command).to_lowercase();
+        // De-obfuscate the git token the same way `is_safe_git_command`
+        // does so the reason picked here lines up with the rejection.
+        let command_lower =
+            canonicalize_git_tokens(&normalize_command_whitespace(command).to_lowercase());
 
         if command_lower.contains("git push") {
             return format!(
