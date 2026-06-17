@@ -81,7 +81,7 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
 - **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
-- **Access modes** — read-only, workspace (the default; unfamiliar shell commands run confined to the project by the operating-system sandbox on macOS and Linux, or prompt the user on Windows), and unrestricted; switchable mid-session.
+- **Access modes** — read-only, workspace (the default; shell commands run confined to the project by the operating-system sandbox on macOS and Linux, or prompt the user on Windows), and unrestricted; switchable mid-session.
 - **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
 - **Session persistence** — saved conversations, resume picker, restored read-only mode, restored model where compatible, and persisted cost counters.
@@ -193,7 +193,7 @@ sofos --resume
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
 | `/readonly`                                 | Switch to read-only mode: inspection tools only. Prompt shows `:`. |
-| `/workspace`                                | Switch to workspace mode (the default): read and write, with unfamiliar shell commands confined to the project on macOS and Linux, or prompted for approval on Windows. Prompt shows `>`. |
+| `/workspace`                                | Switch to workspace mode (the default): read and write, with shell commands confined to the project on macOS and Linux, or unfamiliar ones prompted for approval on Windows. Prompt shows `>`. |
 | `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
@@ -392,7 +392,7 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 Sofos starts in one of three access modes. The current mode is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
 
 - **Read-only** (`--readonly`, or `/readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
-- **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. On macOS and Linux, a command Sofos does not already recognise as safe runs confined by the operating system: writes stay inside the project, and the assistant can use the shell freely without a prompt for every unfamiliar command. On Windows the same command prompts you for approval before running, because operating-system confinement is not engaged on Windows in this release. Prompt shows `>`.
+- **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. On macOS and Linux, shell commands run confined by the operating system: writes stay inside the project and the network is closed, for familiar build tools and interpreters just as for unfamiliar commands. Familiar commands run without interruption and unfamiliar ones run without a prompt. On Windows, operating-system confinement is not engaged in this release, so unfamiliar commands prompt you for approval before running instead. Prompt shows `>`.
 - **Unrestricted** (`--unrestricted`, or `/unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
 
 Operating-system confinement uses a different primitive on each platform:
@@ -400,20 +400,20 @@ Operating-system confinement uses a different primitive on each platform:
 - **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and the system temporary directories, the network is closed, and any file you have blocked from reading stays unreadable even when a command reaches it through a wide search rather than naming it directly.
 - **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS — writes inside the workspace and `/tmp`, the network closed down to local sockets such as the Docker daemon, and blocked files kept unreadable. The `bubblewrap` package must be installed; where the sandbox cannot start, an unfamiliar command falls back to asking for approval.
 
-On both platforms the project's `.git`, `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only even though the rest of the workspace is writable, so a confined command cannot plant a Git hook, change Git settings, or rewrite the rules that decide which commands are allowed. They remain readable.
+On both platforms the project's `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only even though the rest of the workspace is writable, so a confined command cannot rewrite the rules that decide which commands are allowed or change agent settings. The `.git` directory is read-only too for any command other than git itself, so a stray command cannot plant a Git hook; git's own commands can still update `.git`, so branch switches and local git config keep working. These directories remain readable.
 - **Windows**: operating-system confinement is not engaged in this release. Workspace mode therefore behaves the same as unrestricted mode for shell commands: familiar commands run automatically, destructive commands are always refused, and any other command prompts the user for approval before running. The destructive-command blocklist, the read-deny rules, and the external-path prompts still apply. The restricted-token framework is in the tree as a foundation; the default Windows shell is Git for Windows `sh.exe`, which cannot start under a restricted access token because of how its Cygwin-derived runtime sets up session-shared-memory, and the alternatives (a different shell, or a dedicated sandbox user account that needs administrator setup) are larger product decisions left for a future release.
 
 ### Bash command permissions
 
 Bash commands pass through these layers:
 
-1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs confined in workspace mode on macOS and Linux, or prompts for approval on Windows and in unrestricted mode on any platform.
+1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs without a prompt in workspace mode on macOS and Linux, or prompts for approval on Windows and in unrestricted mode on any platform. In workspace mode on macOS and Linux the safe commands are confined too, not only the unfamiliar ones.
 2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. In workspace mode on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
 3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your read-deny rules, but otherwise leaves reads open — so reaching an external path that isn't denied still needs a grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
-| Allowed | Runs automatically after structural checks. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
+| Allowed | Runs automatically after structural checks; confined by the operating system in workspace mode on macOS and Linux. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
 | Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
 | Other | Workspace mode on macOS and Linux: runs confined to the project. Workspace mode on Windows, or unrestricted mode anywhere: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
 

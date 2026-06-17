@@ -16,7 +16,8 @@ use crate::tools::bash::output::{
 };
 use crate::tools::bash::sandbox::{self, SandboxPolicy};
 use crate::tools::bash::validate::{
-    command_contains_askable_git_checkout, detect_command_substitution, has_path_traversal,
+    command_contains_askable_git_checkout, command_runs_only_git, detect_command_substitution,
+    has_path_traversal,
 };
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
@@ -126,11 +127,7 @@ impl BashExecutor {
         if let Ok(allowed) = self.session_allowed.lock() {
             if allowed.contains(&normalized) {
                 // Previously allowed this session, skip permission check
-                return self.execute_after_permission_check(
-                    command,
-                    &mut permission_manager,
-                    false,
-                );
+                return self.execute_after_permission_check(command, &mut permission_manager);
             }
         }
         if let Ok(denied) = self.session_denied.lock() {
@@ -160,11 +157,7 @@ impl BashExecutor {
                     // Run it confined instead of prompting. The sandbox
                     // bounds writes and the network but not reads, so the
                     // gates in execute_after_permission_check still run.
-                    return self.execute_after_permission_check(
-                        command,
-                        &mut permission_manager,
-                        true,
-                    );
+                    return self.execute_after_permission_check(command, &mut permission_manager);
                 }
                 let (allowed, remember) = permission_manager.ask_user_permission(command)?;
                 if !allowed {
@@ -190,7 +183,7 @@ impl BashExecutor {
             }
         }
 
-        self.execute_after_permission_check(command, &mut permission_manager, false)
+        self.execute_after_permission_check(command, &mut permission_manager)
     }
 
     /// True when shell commands are confined here: workspace mode plus a
@@ -200,32 +193,16 @@ impl BashExecutor {
     }
 
     /// Run the read, structural, and external-path gates, then spawn the
-    /// command. `force_confine` skips the unconfined fast path so an
-    /// unknown command always runs inside the sandbox.
+    /// command, confined to the workspace when a sandbox is engaged.
     fn execute_after_permission_check(
         &self,
         command: &str,
         permission_manager: &mut PermissionManager,
-        force_confine: bool,
     ) -> Result<String> {
         // Enforce read permissions on paths referenced in the command
         self.enforce_read_permissions(permission_manager, command)?;
 
-        // Structural safety checks (parent traversal, redirection,
-        // substitution, git restrictions). In workspace mode a command
-        // rejected only for writing to a file — redirection or a
-        // here-document — can still run confined, since the sandbox keeps
-        // the write inside the workspace. Traversal, hidden subcommands,
-        // and dangerous git operations are never relaxed.
-        let confine = if !force_confine && self.is_safe_command_structure(command) {
-            false
-        } else if self.sandbox_active() && self.is_confinement_safe(command) {
-            true
-        } else {
-            return Err(SofosError::ToolExecution(
-                self.get_rejection_reason(command),
-            ));
-        };
+        let confine = self.should_confine(command, self.sandbox_active())?;
 
         // Commands that aren't destructive enough to hard-deny but
         // mutate working-tree state in a way the user should see before
@@ -242,11 +219,37 @@ impl BashExecutor {
         self.run_and_shape(command, confine)
     }
 
-    /// Whether a command that failed [`Self::is_safe_command_structure`]
-    /// is safe to run confined. The only structural problems allowed here
-    /// are file output redirection and here-documents, both of which the
-    /// sandbox keeps inside the workspace. Parent-directory traversal,
-    /// hidden subcommands, and dangerous git operations are never relaxed.
+    /// Decide how a command runs: `Ok(true)` to confine it to the
+    /// workspace, `Ok(false)` to run it directly without the sandbox, and
+    /// `Err` to refuse it.
+    ///
+    /// When a sandbox is engaged (`sandbox_active`), every command runs
+    /// confined, so writes stay inside the workspace and temporary
+    /// directories and the network is closed — for familiar build tools
+    /// and interpreters just as for unfamiliar commands. Output
+    /// redirection and here-documents are accepted here because the
+    /// sandbox keeps the write inside the workspace. Without a sandbox
+    /// there is nothing to bound a command, so only structurally safe
+    /// commands run, unconfined, and the rest are refused. Parent
+    /// traversal, hidden subcommands, and dangerous git operations are
+    /// refused either way.
+    pub(super) fn should_confine(&self, command: &str, sandbox_active: bool) -> Result<bool> {
+        if sandbox_active {
+            if self.is_confinement_safe(command) {
+                return Ok(true);
+            }
+        } else if self.is_safe_command_structure(command) {
+            return Ok(false);
+        }
+        Err(SofosError::ToolExecution(
+            self.get_rejection_reason(command),
+        ))
+    }
+
+    /// Whether `command` is safe to run confined. File output redirection
+    /// and here-documents are allowed because the sandbox keeps the write
+    /// inside the workspace; parent-directory traversal, hidden
+    /// subcommands, and dangerous git operations are refused even confined.
     fn is_confinement_safe(&self, command: &str) -> bool {
         if has_path_traversal(command) || detect_command_substitution(command).is_some() {
             return false;
@@ -362,7 +365,7 @@ impl BashExecutor {
         confine: bool,
     ) -> Result<(OsString, Vec<OsString>)> {
         if confine {
-            let policy = self.confined_policy();
+            let policy = self.confined_policy(command);
             return sandbox::confined_invocation(&shell.program, command, &policy).ok_or_else(
                 || {
                     SofosError::ToolExecution(
@@ -385,8 +388,19 @@ impl BashExecutor {
     /// The sandbox policy for a confined command: writes bounded to the
     /// workspace, the network closed, and the workspace's `Read(...)` deny
     /// rules enforced by the kernel.
-    fn confined_policy(&self) -> SandboxPolicy {
-        let policy = SandboxPolicy::for_workspace(&self.workspace);
+    ///
+    /// A command that runs only git is allowed to write the project's
+    /// `.git` directory, which it needs for operations like `checkout` and
+    /// `config`; every other command keeps `.git` read-only so it cannot
+    /// plant a Git hook there.
+    fn confined_policy(&self, command: &str) -> SandboxPolicy {
+        let mut policy = SandboxPolicy::for_workspace(&self.workspace);
+        if command_runs_only_git(command) {
+            let git_dir = self.workspace.join(sandbox::GIT_METADATA_DIR);
+            policy
+                .write_protect_subpaths
+                .retain(|path| path != &git_dir);
+        }
         match PermissionManager::new(self.workspace.clone()) {
             Ok(manager) => {
                 let (deny, allow) = manager.sandbox_read_rules();
@@ -411,7 +425,7 @@ impl BashExecutor {
         // now so the empty leftovers can be removed once the command exits.
         #[cfg(target_os = "linux")]
         let metadata_cleanup: Vec<PathBuf> = if confine {
-            self.confined_policy()
+            self.confined_policy(command)
                 .write_protect_subpaths
                 .into_iter()
                 .filter(|path| !path.exists())

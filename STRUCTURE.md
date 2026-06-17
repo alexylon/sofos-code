@@ -942,7 +942,7 @@ It contains:
 
 - `mod.rs` — module façade and exports;
 - `executor.rs` — command execution, permission-manager integration, session-scoped Bash path grants, process spawning, and capture limits;
-- `sandbox/` — operating-system confinement that runs unfamiliar commands inside the workspace in workspace mode:
+- `sandbox/` — operating-system confinement that runs shell commands inside the workspace in workspace mode:
   - `mod.rs` — shared `SandboxPolicy`, sandbox availability check, and Unix `confined_invocation` returning the `(program, args)` to spawn;
   - `macos.rs` — Seatbelt profile builder used with `/usr/bin/sandbox-exec`;
   - `linux.rs` — Bubblewrap argument builder used with `bwrap`;
@@ -953,7 +953,7 @@ It contains:
 Rules:
 
 - Bash commands pass through the 3-tier permission system: Allowed, Denied, or Ask.
-- In workspace mode (the default), an Ask command runs confined by the operating-system sandbox instead of prompting; Allowed and Denied commands are unaffected. In unrestricted mode (`--unrestricted`), and on platforms without a sandbox, an Ask command prompts as before.
+- In workspace mode (the default) with an available sandbox, every Allowed and Ask command runs confined by the operating-system sandbox; an Ask command runs confined instead of prompting. Denied commands are refused. In unrestricted mode (`--unrestricted`), and on platforms without a sandbox, Allowed commands run unconfined and an Ask command prompts as before.
 - Structural checks still run even when a command is otherwise allowed.
 - Parent-directory traversal as a path component is blocked.
 - Output redirection to files is blocked; `2>&1` is allowed.

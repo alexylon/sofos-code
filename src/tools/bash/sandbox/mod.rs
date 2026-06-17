@@ -160,8 +160,14 @@ fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
 /// (re-read every command), and agent settings — so a confined command
 /// must not rewrite them. Joined onto the workspace as-is so the path
 /// matches the writable-root bind.
+/// The repository's Git directory. Write-protected like the other
+/// metadata directories, but lifted for commands that run only git, which
+/// need to write it for `checkout`, `config`, and similar.
+pub(super) const GIT_METADATA_DIR: &str = ".git";
+
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
-const METADATA_PROTECT_DIRS: &[&str] = &[".git", ".sofos", ".agents", ".claude", ".codex"];
+const METADATA_PROTECT_DIRS: &[&str] =
+    &[GIT_METADATA_DIR, ".sofos", ".agents", ".claude", ".codex"];
 
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 fn metadata_protect_subpaths(workspace: &Path) -> Vec<PathBuf> {

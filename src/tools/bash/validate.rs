@@ -547,6 +547,32 @@ fn git_invocations(command: &str) -> Vec<Vec<String>> {
     out
 }
 
+/// Whether every program the command runs is `git`. A confined command of
+/// this kind may write the project's `.git` directory: git needs that for
+/// `checkout`, `config`, `restore --staged`, and similar, and the git
+/// gate has already vetted the operation. A command that also runs
+/// anything else keeps `.git` read-only, so it cannot plant a hook there.
+///
+/// Fails closed: any segment whose base program is not plainly `git`,
+/// including launcher wrappers such as `env git`, makes this false. The
+/// caller only reaches it once the command is confinement-safe, so there
+/// are no hidden subcommands ($(...), backticks) for a non-git program to
+/// hide behind.
+pub(super) fn command_runs_only_git(command: &str) -> bool {
+    let mut saw_git = false;
+    for segment in PermissionManager::split_compound_command(command) {
+        let words = shell_words(&segment);
+        let Some(base) = command_base_index(&words) else {
+            continue;
+        };
+        if !base_is_git(&words[base]) {
+            return false;
+        }
+        saw_git = true;
+    }
+    saw_git
+}
+
 /// The subcommand verb (lower-cased) of the first dangerous git invocation
 /// in `command`, or `"config"` when the offence is an exec-capable inline
 /// config option. Drives the wording of the rejection message.

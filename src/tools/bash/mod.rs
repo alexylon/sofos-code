@@ -59,8 +59,8 @@ mod tests {
     use super::*;
     use crate::error::SofosError;
     use crate::tools::bash::validate::{
-        command_contains_askable_git_checkout, detect_command_substitution, has_path_traversal,
-        path_token_shell_meta,
+        command_contains_askable_git_checkout, command_runs_only_git, detect_command_substitution,
+        has_path_traversal, path_token_shell_meta,
     };
     use crate::tools::test_support;
 
@@ -144,6 +144,74 @@ mod tests {
         assert!(executor.is_safe_command_structure("cat /etc/passwd"));
         assert!(executor.is_safe_command_structure("ls /tmp"));
         assert!(executor.is_safe_command_structure("cat /home/user/file"));
+    }
+
+    #[test]
+    fn sandbox_confines_every_safe_command() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        // With a sandbox engaged, familiar read-only commands, build
+        // tools, and interpreters all run confined, not just unfamiliar
+        // ones. This is what closes the network and read-deny holes.
+        // Output redirection is accepted because the sandbox keeps the
+        // write inside the workspace.
+        for command in [
+            "ls -la",
+            "cat file.txt",
+            "cargo build",
+            "python3 -c 'import os'",
+            "grep -r pattern .",
+            "echo hi > out.txt",
+        ] {
+            assert!(
+                executor.should_confine(command, true).unwrap(),
+                "{command} should run confined when a sandbox is engaged"
+            );
+        }
+    }
+
+    #[test]
+    fn confinement_never_relaxes_the_hard_denials() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        // Parent traversal, hidden subcommands, and dangerous git stay
+        // refused even with a sandbox to bound writes and the network.
+        for command in ["cat ../../etc/passwd", "echo $(rm bad)", "git -C . push"] {
+            assert!(
+                executor.should_confine(command, true).is_err(),
+                "{command} must be refused even confined"
+            );
+        }
+    }
+
+    #[test]
+    fn command_runs_only_git_detects_pure_git_commands() {
+        // Pure git commands: the confined policy lets these write `.git`,
+        // which they need for checkout, config, and similar.
+        assert!(command_runs_only_git("git checkout other"));
+        assert!(command_runs_only_git("git -C . config user.name x"));
+        assert!(command_runs_only_git("git restore --staged file.txt"));
+        assert!(command_runs_only_git("git status && git log"));
+
+        // Anything that also runs a non-git program keeps `.git` read-only.
+        assert!(!command_runs_only_git("ls -la"));
+        assert!(!command_runs_only_git("python3 -c 'import os'"));
+        assert!(!command_runs_only_git("git status && cat .git/config"));
+        assert!(!command_runs_only_git("cat f && git checkout other"));
+        // A launcher-wrapped git is not plainly git, so it fails closed.
+        assert!(!command_runs_only_git("env git checkout other"));
+    }
+
+    #[test]
+    fn without_sandbox_only_safe_structure_runs_unconfined() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        // No sandbox to bound a command: structurally safe ones run
+        // unconfined, and anything that needs the sandbox to be safe, such
+        // as output redirection, is refused rather than run unprotected.
+        assert!(!executor.should_confine("ls -la", false).unwrap());
+        assert!(executor.should_confine("echo hi > out.txt", false).is_err());
+        assert!(executor.should_confine("cat ../secret", false).is_err());
     }
 
     #[test]

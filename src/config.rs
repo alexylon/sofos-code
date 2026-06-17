@@ -125,18 +125,22 @@ pub fn workspace_mode_message() -> String {
          git diff, ...) run automatically.\n\
          - Destructive commands (rm, rmdir, chmod, chown, sudo, dd, mkfs, systemctl, \
          kill, destructive git operations) are always refused.\n\
-         - Any other command runs confined by the operating-system sandbox without a \
-         prompt: writes are limited to the workspace and the temporary directories. \
-         File redirection (echo hi > file) and here-documents also run confined, so \
-         they succeed when targeting paths inside the workspace.\n\
+         - Any other command runs without a prompt.\n\
          \n\
-         The project's .git, .sofos, .agents, .claude, and .codex stay read-only even \
-         for confined commands; edit them with the file tools, not the shell.\n\
+         Every command that runs, familiar or not, is confined by the operating-system \
+         sandbox: writes are limited to the workspace and the temporary directories, and \
+         the network is closed. This includes build and network tools such as cargo, npm, \
+         and pip — in workspace mode they cannot fetch over the network or write outside \
+         the workspace. File redirection (echo hi > file) and here-documents also run \
+         confined, so they succeed when targeting paths inside the workspace.\n\
+         \n\
+         The project's .sofos, .agents, .claude, and .codex stay read-only for confined \
+         commands; edit them with the file tools, not the shell. The .git directory is \
+         read-only too, except for a command that runs only git, so git checkout and local \
+         git config still work.\n\
          \n\
          Always refused, even confined: parent traversal (..), hidden subcommands \
          ($(...), backticks, <(...), >(...)), and dangerous git operations.\n\
-         \n\
-         Network: closed for confined commands.\n\
          \n\
          Confined-command failures: if a workspace-mode command fails with permission, \
          network, socket, mount, or container engine errors, assume the operating-system \
