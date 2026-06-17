@@ -59,30 +59,34 @@ mod tests {
     use super::*;
     use crate::error::SofosError;
     use crate::tools::bash::validate::{
-        command_contains_op, detect_command_substitution, has_path_traversal, path_token_shell_meta,
+        command_contains_askable_git_checkout, detect_command_substitution, has_path_traversal,
+        path_token_shell_meta,
     };
     use crate::tools::test_support;
 
-    /// `command_contains_op` gates our forbidden-git detection. A miss
-    /// here is a real security bypass: the model could wrap `git push`
-    /// in a subshell or command substitution and slip past.
     #[test]
-    fn command_contains_op_catches_shell_boundaries() {
-        assert!(command_contains_op("git push", "git push"));
-        assert!(command_contains_op("ls; git push", "git push"));
-        assert!(command_contains_op("ls && git push", "git push"));
-        assert!(command_contains_op("ls || git push", "git push"));
-        assert!(command_contains_op("ls | git push", "git push"));
-
-        // Shell-substitution boundaries — the regressions from the audit.
-        assert!(command_contains_op("echo hi; `git push`", "git push"));
-        assert!(command_contains_op("echo $(git push)", "git push"));
-        assert!(command_contains_op("(git push)", "git push"));
-        assert!(command_contains_op("{ git push; }", "git push"));
-
-        // Genuinely unrelated commands shouldn't trigger.
-        assert!(!command_contains_op("rgit push", "git push")); // non-boundary prefix
-        assert!(!command_contains_op("ls", "git push"));
+    fn temp_fsmonitor_claim() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        eprintln!(
+            "fsmonitor=true status -> {}",
+            executor.is_safe_command_structure("git -c core.fsmonitor=true status")
+        );
+        eprintln!(
+            "fsmonitor=false status -> {}",
+            executor.is_safe_command_structure("git -c core.fsmonitor=false status")
+        );
+        eprintln!(
+            "pager=false log -> {}",
+            executor.is_safe_command_structure("git -c core.pager=false log")
+        );
+        eprintln!(
+            "fsmonitor=/path/hook status -> {}",
+            executor.is_safe_command_structure("git -c core.fsmonitor=/path/hook status")
+        );
+        eprintln!(
+            "core.pager=less log (non-bool) -> {}",
+            executor.is_safe_command_structure("git -c core.pager=less log")
+        );
     }
 
     #[test]
@@ -778,6 +782,204 @@ ask = []
         assert!(executor.is_safe_command_structure("echo \"git commit\""));
         assert!(executor.is_safe_command_structure("cat ./git push"));
         assert!(executor.is_safe_command_structure("cat ~/git addresses.txt"));
+    }
+
+    /// Git global options that take their value as a separate word — and
+    /// any future such option — must not push the real subcommand out of
+    /// view. `git --attr-source HEAD push` runs push; the matcher must see
+    /// it after skipping the option and its value.
+    #[test]
+    fn dangerous_git_behind_value_taking_global_option_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git --attr-source HEAD push origin main"));
+        assert!(!executor.is_safe_command_structure("git --shallow-file x push origin main"));
+        assert!(!executor.is_safe_command_structure("git --attr-source HEAD reset --hard"));
+        assert!(!executor.is_safe_command_structure("git --attr-source HEAD stash pop"));
+        // An unknown option is explored both ways, so it cannot hide the verb.
+        assert!(!executor.is_safe_command_structure("git --future-option x push"));
+        // Read-only stays allowed.
+        assert!(executor.is_safe_command_structure("git --attr-source HEAD log"));
+    }
+
+    /// A quoted option value containing a space is one shell word, so it
+    /// cannot split into a fake subcommand. `git -C 'a b' push` is push.
+    #[test]
+    fn dangerous_git_with_quoted_option_value_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git -C 'a b' push"));
+        assert!(!executor.is_safe_command_structure("git -C \"my dir\" reset --hard"));
+        assert!(!executor.is_safe_command_structure("git --git-dir 'a b' push"));
+        assert!(!executor.is_safe_command_structure("git -C 'a b' clean -fdx"));
+        assert!(executor.is_safe_command_structure("git -C 'a b' status"));
+    }
+
+    /// A dangerous git call hidden behind a launcher program (`env`,
+    /// `timeout`, `nice`, `xargs`, `command`) is still caught.
+    #[test]
+    fn dangerous_git_behind_a_launcher_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("env git -C . push origin main"));
+        assert!(!executor.is_safe_command_structure("env git -c alias.p=push p"));
+        assert!(!executor.is_safe_command_structure("timeout 5 git -C . push"));
+        assert!(!executor.is_safe_command_structure("nice git -C . reset --hard"));
+        assert!(!executor.is_safe_command_structure("xargs git -C . clean -fd"));
+        assert!(!executor.is_safe_command_structure("command git --git-dir=.git push"));
+        // `xargs -I {}` keeps the literal `{}` argument intact, so the
+        // global-option value is not mistaken for the subcommand.
+        assert!(!executor.is_safe_command_structure("xargs -I {} git -C {} reset --hard"));
+        // A launcher wrapping a read-only git stays allowed.
+        assert!(executor.is_safe_command_structure("env FOO=bar git status"));
+        assert!(executor.is_safe_command_structure("env git log --oneline"));
+    }
+
+    /// A dangerous git call inside `sh -c "..."` / `bash -c "..."` is read
+    /// by re-parsing the shell's command string.
+    #[test]
+    fn dangerous_git_inside_a_shell_wrapper_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("sh -c \"git push\""));
+        assert!(!executor.is_safe_command_structure("bash -c 'git reset --hard'"));
+        assert!(!executor.is_safe_command_structure("sh -c \"git -C . clean -fd\""));
+        assert!(!executor.is_safe_command_structure("env sh -c \"git push\""));
+        assert!(executor.is_safe_command_structure("sh -c \"git status\""));
+    }
+
+    /// A subshell or brace group does not hide a dangerous git call from
+    /// the matcher.
+    #[test]
+    fn dangerous_git_in_a_subshell_or_group_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("(git push)"));
+        assert!(!executor.is_safe_command_structure("( git push )"));
+        assert!(!executor.is_safe_command_structure("{ git push; }"));
+        assert!(!executor.is_safe_command_structure("(git -C . reset --hard)"));
+    }
+
+    /// Inline config whose value git runs as a command is blocked even on
+    /// an otherwise read-only subcommand; display-only config stays allowed.
+    #[test]
+    fn git_inline_exec_config_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure(
+            "git -c trailer.s.command=evil interpret-trailers --trailer s"
+        ));
+        assert!(!executor.is_safe_command_structure("git -c diff.x.command=evil diff"));
+        assert!(!executor.is_safe_command_structure("git -c diff.x.textconv=evil log -p"));
+        assert!(!executor.is_safe_command_structure("git -c core.editor=evil status"));
+        assert!(!executor.is_safe_command_structure("git -c credential.helper=evil status"));
+        // Display / formatting config carries no command.
+        assert!(executor.is_safe_command_structure("git -c color.ui=never diff"));
+        assert!(executor.is_safe_command_structure("git -c core.quotepath=false status"));
+    }
+
+    /// Regression fixes: disabling the pager is benign, and `-C` is a
+    /// directory change even when the directory name looks like a config key.
+    #[test]
+    fn benign_git_config_forms_stay_allowed() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(executor.is_safe_command_structure("git -c pager.log=false log"));
+        assert!(executor.is_safe_command_structure("git -c pager.diff=false diff"));
+        assert!(!executor.is_safe_command_structure("git -c pager.log=sh log"));
+
+        assert!(executor.is_safe_command_structure("git -C alias.foo status"));
+        assert!(executor.is_safe_command_structure("git -C core.pager log"));
+    }
+
+    /// The askable-checkout prompt sees through global options, quotes, and
+    /// launchers, and matches the exact `checkout` subcommand.
+    #[test]
+    fn askable_checkout_detection_is_robust() {
+        assert!(command_contains_askable_git_checkout("git checkout main"));
+        assert!(command_contains_askable_git_checkout(
+            "git -C 'a b' checkout main"
+        ));
+        assert!(command_contains_askable_git_checkout(
+            "git --attr-source HEAD checkout main"
+        ));
+        assert!(command_contains_askable_git_checkout(
+            "env git checkout main"
+        ));
+        // checkout-index is a separate plumbing command, not askable checkout.
+        assert!(!command_contains_askable_git_checkout(
+            "git checkout-index -a"
+        ));
+        assert!(!command_contains_askable_git_checkout("git status"));
+    }
+
+    /// A shell input redirection (`git <file push`) is stripped from the
+    /// word list the same way the shell strips it before running git, so
+    /// the real verb after it is still seen.
+    #[test]
+    fn dangerous_git_with_input_redirection_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git <existingfile push"));
+        assert!(!executor.is_safe_command_structure("git<existingfile push"));
+        assert!(!executor.is_safe_command_structure("git < input reset --hard"));
+        assert!(!executor.is_safe_command_structure("git 0<foo clean -fd"));
+        // A read-only verb with a redirection stays allowed (verb is seen).
+        assert!(executor.is_safe_command_structure("git <input log"));
+        assert!(executor.is_safe_command_structure("git status 2>&1"));
+    }
+
+    /// `env --split-string`/`-S` re-splits its argument into a command
+    /// line, so a dangerous git call packed into that string is caught.
+    #[test]
+    fn dangerous_git_behind_env_split_string_is_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("env -S \"git push origin HEAD\""));
+        assert!(!executor.is_safe_command_structure("env -S \"git reset --hard\""));
+        assert!(!executor.is_safe_command_structure("env --split-string=\"git clean -fd\""));
+        assert!(executor.is_safe_command_structure("env -S \"git status\""));
+    }
+
+    /// `git instaweb` and `git daemon` expose the repository over the
+    /// network, so they are blocked like the other networked verbs.
+    #[test]
+    fn git_server_verbs_are_rejected() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(!executor.is_safe_command_structure("git instaweb --start"));
+        assert!(!executor.is_safe_command_structure("git daemon --export-all"));
+        assert!(!executor.is_safe_command_structure("git -c instaweb.httpd=evil instaweb"));
+    }
+
+    /// A leading boolean global option must not push the verb scan into the
+    /// subcommand's own arguments and mistake a pathspec or ref named like
+    /// a verb for the subcommand.
+    #[test]
+    fn boolean_global_option_does_not_overblock_reads() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(executor.is_safe_command_structure("git --no-pager log -- rm"));
+        assert!(executor.is_safe_command_structure("git --no-pager log add"));
+        assert!(executor.is_safe_command_structure("git -p log switch"));
+        assert!(executor.is_safe_command_structure("git --no-optional-locks log clean"));
+        // The verb itself is still caught after a boolean option.
+        assert!(!executor.is_safe_command_structure("git --no-pager push"));
+        assert!(!executor.is_safe_command_structure("git -p reset --hard"));
+    }
+
+    /// A command-valued config key with a boolean or empty value only
+    /// toggles a setting; it runs nothing and must stay allowed.
+    #[test]
+    fn boolean_config_values_stay_allowed() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+
+        assert!(executor.is_safe_command_structure("git -c core.fsmonitor=true status"));
+        assert!(executor.is_safe_command_structure("git -c core.fsmonitor=false status"));
+        assert!(executor.is_safe_command_structure("git -c credential.helper= log"));
+        // A real command value is still blocked.
+        assert!(!executor.is_safe_command_structure("git -c core.fsmonitor=/evil status"));
+        assert!(!executor.is_safe_command_structure("git -c credential.helper=!sh log"));
     }
 
     /// Path tokens with shell-meta that the shell would expand at

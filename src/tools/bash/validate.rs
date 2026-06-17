@@ -9,6 +9,9 @@
 use crate::error::{Result, SofosError};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
+use crate::tools::permissions::command_parse::{
+    COMPOUND_HEADERS_NO_BODY, COMPOUND_HEADERS_WITH_BODY, COMPOUND_KEYWORDS, is_env_assignment,
+};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{is_absolute_path, lexically_normalize, normalize_command_whitespace};
 use std::path::PathBuf;
@@ -96,186 +99,484 @@ pub(super) fn detect_command_substitution(command: &str) -> Option<&'static str>
     None
 }
 
-/// Return true when `op` appears as a command-name prefix anywhere in
-/// `command` — at the start, or immediately after a shell
-/// command-boundary sequence. The set of boundaries must cover every
-/// place the shell can start executing a new command, because this
-/// function gates our forbidden-git detection: if we miss one, the
-/// model can wrap `git push` in that construct and bypass the check.
-///
-/// Covered: plain space, `;`, `&&`, `||`, `|`, backtick substitution
-/// (`` `git push` ``), `$(...)` command substitution, `(...)` subshell,
-/// `{...; }` group. False positives (e.g. `ls {git,svn}` brace
-/// expansion triggering `git` detection) are acceptable — the worst
-/// outcome is the user being prompted to confirm a benign command.
-///
-/// The caller is expected to pass `command` already routed through
-/// [`normalize_command_whitespace`] so non-space whitespace (`\t`,
-/// `\r`, `\v`, `\f`, backslash-newline) and the explicit `$IFS` /
-/// `${IFS}` shell expansion appear as plain single spaces — otherwise
-/// `git\tpush`, `git$IFS\tpush`, and `git\\\npush` would evade the
-/// boundary check while still running as `git push`.
-pub(super) fn command_contains_op(command: &str, op: &str) -> bool {
-    const BOUNDARIES: &[&str] = &[" ", ";", "&&", "||", "|", "`", "$(", "(", "{"];
-    if command.starts_with(op) {
+/// Programs that run one of their arguments as a command, so a dangerous
+/// `git` call can hide behind them — `env git push`, `timeout 5 git push`,
+/// `nice git push`, `xargs git push`. We look past the launcher to the git
+/// call rather than stopping at the wrapper's name.
+const GIT_LAUNCHERS: &[&str] = &[
+    "env", "nice", "time", "timeout", "command", "nohup", "setsid", "stdbuf", "xargs", "ionice",
+    "taskset", "chrt",
+];
+
+/// Shells that run the string after `-c` as a command, so `sh -c "git
+/// push"` is inspected by re-parsing that string.
+const GIT_SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh"];
+
+/// Git global options that take their value as the following word, so the
+/// real subcommand is the token after the value. Matched case-sensitively
+/// (`-C` changes directory, `-c` sets config) and only without `=`, since
+/// the `=` form keeps option and value in one token. Any other leading
+/// `-` token is treated as possibly value-taking too (see
+/// [`git_subcommand_candidates`]), so a future option cannot hide the verb.
+const GIT_GLOBAL_VALUE_OPTIONS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--super-prefix",
+    "--config-env",
+    "--attr-source",
+    "--shallow-file",
+];
+
+/// Git global options that take no value. Listed so the subcommand scan
+/// does not also explore the "consumes the next word" branch for them,
+/// which would step over the real subcommand into its arguments and
+/// mis-read a pathspec named like a verb (`git --no-pager log -- rm`).
+const GIT_GLOBAL_NOARG_OPTIONS: &[&str] = &[
+    "-p",
+    "-P",
+    "--paginate",
+    "--no-pager",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks",
+    "--no-advice",
+];
+
+/// Bound on how deep we follow `sh -c "..."` / launcher nesting.
+const GIT_NESTING_LIMIT: u8 = 8;
+
+/// Finish the current word: emit it, or drop it when it is a redirection
+/// target the shell would strip from the argument vector.
+fn flush_word(words: &mut Vec<String>, cur: &mut String, in_word: &mut bool, drop_next: &mut bool) {
+    if !*in_word {
+        return;
+    }
+    if *drop_next {
+        cur.clear();
+        *drop_next = false;
+    } else {
+        words.push(std::mem::take(cur));
+    }
+    *in_word = false;
+}
+
+/// Split a shell segment into words the way the shell would, honouring
+/// single quotes, double quotes, and backslash escapes and removing those
+/// quoting characters. Subshell parentheses end the current word so
+/// `(git push)` yields `git`/`push`; brace groups are handled separately
+/// because `{` is a standalone keyword token. Redirections (`< file`,
+/// `2> out`, `git<file`) are dropped, operator and target both, so the
+/// words match the argument vector the shell hands the program — otherwise
+/// `git <file push` would look like the subcommand was `<file`. Expansions
+/// are not performed — `$(...)` and backticks are rejected upstream by
+/// `detect_command_substitution` — so a `$` or backtick is kept literally.
+/// `git -C 'a b' push` yields four words with `a b` intact rather than
+/// splitting the quoted value.
+fn shell_words(segment: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    // The next finished word is a redirection target to drop.
+    let mut drop_next = false;
+    let mut chars = segment.chars().peekable();
+    let mut quote: Option<char> = None;
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            Some(_) => match c {
+                '"' => quote = None,
+                '\\' => match chars.peek() {
+                    Some(&n) if matches!(n, '"' | '\\' | '$' | '`') => {
+                        cur.push(n);
+                        chars.next();
+                    }
+                    _ => cur.push('\\'),
+                },
+                _ => cur.push(c),
+            },
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    in_word = true;
+                }
+                '\\' => {
+                    if let Some(n) = chars.next() {
+                        cur.push(n);
+                    }
+                    in_word = true;
+                }
+                '<' | '>' => {
+                    // A bare fd number right before the operator (`2>`,
+                    // `0<`) is part of the redirection, not a word.
+                    if in_word && cur.chars().all(|c| c.is_ascii_digit()) {
+                        cur.clear();
+                        in_word = false;
+                    } else {
+                        flush_word(&mut words, &mut cur, &mut in_word, &mut drop_next);
+                    }
+                    // Swallow the rest of the operator: >> << <> >& <& >|.
+                    while matches!(chars.peek(), Some('<' | '>' | '&' | '|')) {
+                        chars.next();
+                    }
+                    drop_next = true;
+                }
+                '(' | ')' => flush_word(&mut words, &mut cur, &mut in_word, &mut drop_next),
+                _ if c.is_whitespace() => {
+                    flush_word(&mut words, &mut cur, &mut in_word, &mut drop_next)
+                }
+                _ => {
+                    cur.push(c);
+                    in_word = true;
+                }
+            },
+        }
+    }
+    flush_word(&mut words, &mut cur, &mut in_word, &mut drop_next);
+    words
+}
+
+/// Index of the program token in `words`, past leading env-assignments and
+/// shell keywords (`FOO=bar`, `then`, `do`, `if`, …). `None` when the
+/// segment carries no command of its own — a `for VAR in …` header.
+fn command_base_index(words: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while let Some(tok) = words.get(i) {
+        if COMPOUND_HEADERS_NO_BODY.contains(&tok.as_str()) {
+            return None;
+        }
+        if is_env_assignment(tok)
+            || COMPOUND_KEYWORDS.contains(&tok.as_str())
+            || COMPOUND_HEADERS_WITH_BODY.contains(&tok.as_str())
+        {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    (i < words.len()).then_some(i)
+}
+
+/// Append the argument list (everything after the `git` program token) of
+/// every git invocation reachable in `words`, looking through leading
+/// env-assignments, launcher programs, and `sh -c "..."` wrappers.
+fn collect_git_invocations(words: &[String], depth: u8, out: &mut Vec<Vec<String>>) {
+    if depth == 0 {
+        return;
+    }
+    let Some(base) = command_base_index(words) else {
+        return;
+    };
+    let rest = &words[base + 1..];
+    if base_is_git(&words[base]) {
+        out.push(rest.to_vec());
+        return;
+    }
+    let name = program_name(&words[base]);
+    if GIT_SHELLS.contains(&name.as_str()) {
+        for payload in shell_c_payloads(rest) {
+            collect_git_invocations(&shell_words(&payload), depth - 1, out);
+        }
+        return;
+    }
+    if GIT_LAUNCHERS.contains(&name.as_str()) {
+        // `env -S "git push"` / `env --split-string=...` re-splits its
+        // string argument into a fresh command line, so re-parse it.
+        if name == "env" {
+            for payload in env_split_string_payloads(rest) {
+                collect_git_invocations(&shell_words(&payload), depth - 1, out);
+            }
+        }
+        for (i, tok) in rest.iter().enumerate() {
+            if base_is_git(tok) {
+                out.push(rest[i + 1..].to_vec());
+            } else if GIT_SHELLS.contains(&program_name(tok).as_str()) {
+                for payload in shell_c_payloads(&rest[i + 1..]) {
+                    collect_git_invocations(&shell_words(&payload), depth - 1, out);
+                }
+            }
+        }
+    }
+}
+
+/// The command strings `env` runs via `-S` / `--split-string`, in the
+/// separate-word, glued (`-S"git push"`), and `=`-joined forms. Each is a
+/// command line `env` re-splits and runs, so it is re-parsed like a shell.
+fn env_split_string_payloads(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(tok) = args.get(i) {
+        if tok == "-S" || tok == "--split-string" {
+            if let Some(payload) = args.get(i + 1) {
+                out.push(payload.clone());
+            }
+            i += 2;
+        } else if let Some(payload) = tok
+            .strip_prefix("--split-string=")
+            .or_else(|| tok.strip_prefix("-S").filter(|s| !s.is_empty()))
+        {
+            out.push(payload.to_string());
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Lower-cased program name with any directory prefix removed, so
+/// `/usr/bin/env` and `env` compare equal against the launcher sets.
+fn program_name(token: &str) -> String {
+    token
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(token)
+        .to_ascii_lowercase()
+}
+
+/// The command strings a shell runs via `-c`. `sh -c "git push"` yields
+/// `["git push"]`.
+fn shell_c_payloads(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-c" {
+            if let Some(payload) = args.get(i + 1) {
+                out.push(payload.clone());
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Indices into `args` that git could dispatch as the subcommand. A
+/// leading global option may or may not consume the next word as its
+/// value; known value-taking options consume it, the `=` form does not,
+/// and every other `-` token is explored both ways so a value-taking
+/// option we don't know about cannot push the real verb out of view.
+fn git_subcommand_candidates(args: &[String]) -> Vec<usize> {
+    let mut seen = vec![false; args.len()];
+    let mut out = Vec::new();
+    let mut stack = vec![0usize];
+    while let Some(i) = stack.pop() {
+        if i >= args.len() || seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        let tok = &args[i];
+        if tok == "--" {
+            stack.push(i + 1);
+        } else if !tok.starts_with('-') || tok == "-" {
+            out.push(i);
+        } else if tok.contains('=') {
+            stack.push(i + 1);
+        } else if GIT_GLOBAL_VALUE_OPTIONS.contains(&tok.as_str()) {
+            stack.push(i + 2);
+        } else if GIT_GLOBAL_NOARG_OPTIONS.contains(&tok.as_str()) {
+            stack.push(i + 1);
+        } else {
+            stack.push(i + 1);
+            stack.push(i + 2);
+        }
+    }
+    out
+}
+
+/// Whether one git invocation's argument list runs a destructive or
+/// networked operation, recognised regardless of leading global options.
+fn git_args_are_dangerous(args: &[String]) -> bool {
+    if git_args_use_exec_capable_config(args) {
         return true;
     }
-    BOUNDARIES
-        .iter()
-        .any(|sep| command.contains(&format!("{sep}{op}")))
+    git_subcommand_candidates(args)
+        .into_iter()
+        .any(|i| git_subcommand_is_dangerous(&args[i].to_ascii_lowercase(), &args[i + 1..]))
 }
 
-/// Rewrite each git invocation to `git <subcommand> ...` with Git
-/// global options removed, so the dangerous-operation scan sees the
-/// command Git will actually dispatch. Git accepts options before the
-/// subcommand (`git -C . push`, `git --git-dir=.git fetch`); leaving
-/// them in the argument stream hides the dangerous verb from a textual
-/// `git <verb>` matcher.
-fn canonicalize_git_tokens(command: &str) -> String {
-    PermissionManager::split_compound_command(command)
-        .iter()
-        .map(
-            |segment| match PermissionManager::extract_segment_base_with_args(segment) {
-                Some((base, args)) => {
-                    let head = if base_is_git(base) { "git" } else { base };
-                    let args = if base_is_git(base) {
-                        canonicalize_git_args(&args)
-                    } else {
-                        args.iter().map(|arg| (*arg).to_string()).collect()
-                    };
-                    if args.is_empty() {
-                        head.to_string()
-                    } else {
-                        format!("{head} {}", args.join(" "))
-                    }
-                }
-                None => segment.clone(),
-            },
-        )
-        .collect::<Vec<_>>()
-        .join(" ; ")
-}
-
-fn canonicalize_git_args(args: &[&str]) -> Vec<String> {
-    let mut index = 0;
-    while index < args.len() {
-        let token = clean_git_arg_token(args[index]);
-        if token == "--" {
-            index += 1;
-            break;
-        }
-        if !token.starts_with('-') || token == "-" {
-            break;
-        }
-        let consumes_next = git_global_option_consumes_next(&token);
-        index += 1;
-        if consumes_next && index < args.len() {
-            index += 1;
-        }
+/// Whether a git subcommand (lower-cased) with the arguments that follow it
+/// is one Sofos refuses to run for the model: it reaches the network,
+/// rewrites history, or destroys working-tree state. File-recovery forms
+/// (`git restore`, `git checkout -- <path>`) are intentionally absent so
+/// the model can roll back a botched edit.
+fn git_subcommand_is_dangerous(verb: &str, rest: &[String]) -> bool {
+    let has = |flags: &[&str]| {
+        rest.iter()
+            .any(|t| flags.contains(&t.to_ascii_lowercase().as_str()))
+    };
+    let first = || rest.first().map(|s| s.to_ascii_lowercase());
+    match verb {
+        "push" | "pull" | "fetch" | "clone" | "clean" | "filter-branch" | "gc" | "prune"
+        | "update-ref" | "send-email" | "apply" | "am" | "cherry-pick" | "revert" | "commit"
+        | "merge" | "rebase" | "init" | "add" | "rm" | "mv" | "switch" | "submodule" | "daemon"
+        | "instaweb" => true,
+        "reset" => has(&["--hard", "--mixed"]),
+        "checkout" => has(&["-f", "--force", "-b", "-B"]),
+        "branch" => has(&["-d", "-D", "-m", "-M", "--delete", "--move"]),
+        "tag" => has(&["-d", "--delete"]),
+        "remote" => matches!(
+            first().as_deref(),
+            Some("add" | "set-url" | "remove" | "rm")
+        ),
+        "stash" => !matches!(first().as_deref(), Some("list" | "show")),
+        _ => false,
     }
-
-    args[index..]
-        .iter()
-        .map(|arg| clean_git_arg_token(arg))
-        .filter(|arg| !arg.is_empty())
-        .collect()
 }
 
-fn git_global_option_consumes_next(token: &str) -> bool {
-    if token.contains('=') {
-        return false;
-    }
-    matches!(
-        token,
-        "-C" | "-c"
-            | "--config-env"
-            | "--exec-path"
-            | "--git-dir"
-            | "--namespace"
-            | "--super-prefix"
-            | "--work-tree"
-    )
-}
-
-fn clean_git_arg_token(token: &str) -> String {
-    token
-        .trim_matches(|c: char| matches!(c, '\'' | '"' | '\\' | '(' | ')' | '{' | '}' | ';'))
-        .chars()
-        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
-        .collect()
-}
-
-fn command_contains_dangerous_git_global_config(command: &str) -> bool {
-    PermissionManager::split_compound_command(command)
-        .iter()
-        .filter_map(|segment| PermissionManager::extract_segment_base_with_args(segment))
-        .filter(|(base, _)| base_is_git(base))
-        .any(|(_, args)| git_args_use_dangerous_config(&args))
-}
-
-fn git_args_use_dangerous_config(args: &[&str]) -> bool {
-    let mut index = 0;
-    while index < args.len() {
-        let token = clean_git_arg_token(args[index]);
-        if token == "--" || !token.starts_with('-') || token == "-" {
+/// Whether the leading global options set an inline config key whose value
+/// git executes as a command. Walks only the option run before the
+/// subcommand; `-c`/`--config-env` carry the key, in either the
+/// separate-word or `=`-joined form.
+fn git_args_use_exec_capable_config(args: &[String]) -> bool {
+    let mut i = 0;
+    while let Some(tok) = args.get(i) {
+        if tok == "--" || !tok.starts_with('-') || tok == "-" {
             return false;
         }
-        if git_config_option_is_dangerous(&token, args.get(index + 1).copied()) {
-            return true;
+        if tok == "-c" || tok == "--config-env" {
+            if args
+                .get(i + 1)
+                .is_some_and(|v| config_key_is_exec_capable(v))
+            {
+                return true;
+            }
+            i += 2;
+            continue;
         }
-        let consumes_next = git_global_option_consumes_next(&token);
-        index += 1;
-        if consumes_next && index < args.len() {
-            index += 1;
+        if let Some(key) = tok.strip_prefix("-c").filter(|k| !k.is_empty()) {
+            if config_key_is_exec_capable(key) {
+                return true;
+            }
+        }
+        if let Some(key) = tok.strip_prefix("--config-env=") {
+            if config_key_is_exec_capable(key) {
+                return true;
+            }
+        }
+        if !tok.contains('=') && GIT_GLOBAL_VALUE_OPTIONS.contains(&tok.as_str()) {
+            i += 2;
+        } else {
+            i += 1;
         }
     }
     false
 }
 
-fn git_config_option_is_dangerous(token: &str, next: Option<&str>) -> bool {
-    if token == "-c" || token == "--config-env" {
-        return next.is_some_and(|value| git_config_key_is_dangerous(&clean_git_arg_token(value)));
-    }
-    token
-        .strip_prefix("-c")
-        .filter(|value| !value.is_empty())
-        .or_else(|| token.strip_prefix("--config-env="))
-        .is_some_and(git_config_key_is_dangerous)
-}
-
-fn git_config_key_is_dangerous(value: &str) -> bool {
-    let key = value.split_once('=').map(|(key, _)| key).unwrap_or(value);
-    let key = key.to_ascii_lowercase();
-    key == "alias"
+/// Whether a git config setting (`key` or `key=value`) runs code: an alias
+/// or config include, a pager/editor/ssh/program/hook command, or any
+/// per-driver hook key (`diff.<d>.command`, `filter.<d>.process`,
+/// `trailer.<t>.command`, …). Matched by suffix so per-driver and
+/// per-tool variants and new sections reusing these conventions are all
+/// covered, rather than enumerating exact keys git keeps adding to.
+fn config_key_is_exec_capable(setting: &str) -> bool {
+    let (key, value) = match setting.split_once('=') {
+        Some((k, v)) => (k.to_ascii_lowercase(), Some(v)),
+        None => (setting.to_ascii_lowercase(), None),
+    };
+    // Config injection is dangerous whatever the value: it pulls in
+    // arbitrary config that can define any of the command keys below.
+    if key == "alias"
         || key.starts_with("alias.")
         || key == "include.path"
         || (key.starts_with("includeif.") && key.ends_with(".path"))
-        || key == "core.pager"
-        || key == "core.fsmonitor"
+    {
+        return true;
+    }
+    // The remaining keys name a command only when the value is a real
+    // string. A boolean or empty value just toggles a setting and runs
+    // nothing — `core.fsmonitor=true` selects git's built-in monitor,
+    // `credential.helper=` clears helpers, `pager.log=false` disables
+    // the pager — so those stay allowed.
+    if value.is_none_or(is_git_boolean) {
+        return false;
+    }
+    const EXEC_SUFFIXES: &[&str] = &[
+        ".command",
+        ".cmd",
+        ".process",
+        ".clean",
+        ".smudge",
+        ".textconv",
+        ".helper",
+        ".program",
+        ".editor",
+        ".sshcommand",
+        ".fsmonitor",
+        ".hookspath",
+        ".external",
+        ".askpass",
+        ".packobjectshook",
+        ".gitproxy",
+    ];
+    key == "core.pager"
         || key.starts_with("pager.")
-        || key == "diff.external"
-        || (key.starts_with("difftool.") && key.ends_with(".cmd"))
-        || (key.starts_with("mergetool.") && key.ends_with(".cmd"))
-        || (key.starts_with("filter.")
-            && (key.ends_with(".clean") || key.ends_with(".smudge") || key.ends_with(".process")))
+        || EXEC_SUFFIXES.iter().any(|suffix| key.ends_with(suffix))
 }
 
-fn command_contains_dangerous_git_stash(command: &str) -> bool {
-    PermissionManager::split_compound_command(command)
-        .iter()
-        .filter_map(|segment| PermissionManager::extract_segment_base_with_args(segment))
-        .filter(|(base, _)| base_is_git(base))
-        .any(|(_, args)| {
-            let args = canonicalize_git_args(&args);
-            if args.first().is_none_or(|subcommand| subcommand != "stash") {
-                return false;
+/// Whether a git config value is one of the boolean spellings, which only
+/// toggle a setting and never name a command.
+fn is_git_boolean(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "" | "true" | "false" | "yes" | "no" | "on" | "off" | "1" | "0"
+    )
+}
+
+/// Argument lists of every git invocation in `command`, across all
+/// compound-command segments. Each segment is tokenised quote-aware, then
+/// followed through launchers and `sh -c` wrappers.
+fn git_invocations(command: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    for segment in PermissionManager::split_compound_command(command) {
+        collect_git_invocations(&shell_words(&segment), GIT_NESTING_LIMIT, &mut out);
+    }
+    out
+}
+
+/// The subcommand verb (lower-cased) of the first dangerous git invocation
+/// in `command`, or `"config"` when the offence is an exec-capable inline
+/// config option. Drives the wording of the rejection message.
+fn first_dangerous_git_verb(command: &str) -> Option<String> {
+    for args in git_invocations(command) {
+        if git_args_use_exec_capable_config(&args) {
+            return Some("config".to_string());
+        }
+        for i in git_subcommand_candidates(&args) {
+            let verb = args[i].to_ascii_lowercase();
+            if git_subcommand_is_dangerous(&verb, &args[i + 1..]) {
+                return Some(verb);
             }
-            !matches!(args.get(1).map(String::as_str), Some("list" | "show"))
-        })
+        }
+    }
+    None
 }
 
+/// Whether `command` runs `git checkout` in a form that should prompt the
+/// user — branch switches and HEAD detaches that mutate the working tree
+/// without being destructive enough to hard-deny. Sees through global
+/// options, quotes, launchers, and `sh -c`, and matches the exact
+/// `checkout` subcommand so plumbing such as `git checkout-index` does not
+/// over-trigger the prompt.
 pub(super) fn command_contains_askable_git_checkout(command: &str) -> bool {
-    command_contains_op(&canonicalize_git_tokens(command), "git checkout")
+    git_invocations(command).iter().any(|args| {
+        git_subcommand_candidates(args)
+            .into_iter()
+            .any(|i| args[i].eq_ignore_ascii_case("checkout"))
+    })
 }
 
 /// Whether `token` is the `git` program however bash would spell it. The
@@ -642,101 +943,30 @@ impl BashExecutor {
         }
 
         // Normalise whitespace before matching so `git\tpush`,
-        // `git$IFS\tpush`, `git\\\npush` are seen as `git push`.
-        let matcher_input = normalize_command_whitespace(command).to_lowercase();
-        if !self.is_safe_git_command(&matcher_input) {
+        // `git$IFS\tpush`, `git\\\npush` are seen as `git push`. Case is
+        // preserved so the git scan can tell `-C` (change directory) from
+        // `-c` (set config).
+        if !self.is_safe_git_command(&normalize_command_whitespace(command)) {
             return false;
         }
 
         true
     }
 
-    /// Whether `command` is free of dangerous git operations, recognised
-    /// however the `git` program token is spelled. The literal command
-    /// catches plainly-written invocations; the de-obfuscated form (see
-    /// [`canonicalize_git_tokens`]) catches `\git push`, `'git' push`,
-    /// and `/usr/bin/git push`, which run the real git binary but would
-    /// otherwise slip past the textual scan.
+    /// Whether `command` is free of dangerous git operations. Every git
+    /// invocation it reaches — directly, behind a launcher such as `env` or
+    /// `timeout`, or inside `sh -c "..."` — is parsed into its real
+    /// subcommand (skipping leading global options however they are written)
+    /// and rejected if it pushes, rewrites history, destroys the working
+    /// tree, or sets an inline config value git would execute.
     pub(super) fn is_safe_git_command(&self, command: &str) -> bool {
-        !command_contains_dangerous_git_global_config(command)
-            && self.git_command_is_allowed(command)
-            && self.git_command_is_allowed(&canonicalize_git_tokens(command))
-    }
-
-    fn git_command_is_allowed(&self, command: &str) -> bool {
-        if !command.starts_with("git ")
-            && !command.contains(" git ")
-            && !command.contains(";git ")
-            && !command.contains("&&git ")
-            && !command.contains("||git ")
-            && !command.contains("|git ")
-        {
-            return true;
-        }
-
-        if command_contains_dangerous_git_stash(command) {
-            return false;
-        }
-
-        // Dangerous git operations that are completely blocked.
-        //
-        // File-recovery commands (`git restore <path>`, `git checkout --`)
-        // are intentionally NOT on this list any more: when `morph_edit_file`
-        // or `edit_file` corrupts a file, the model needs a way to roll back
-        // to HEAD without going through the write tools (which would just
-        // write whatever broken content the model already has). These
-        // commands only affect specified paths, so the blast radius is
-        // bounded by whichever path the model names.
-        let dangerous_git_ops = [
-            "git push",
-            "git pull",
-            "git fetch",
-            "git clone",
-            "git clean",
-            "git reset --hard",
-            "git reset --mixed",
-            "git checkout -f",
-            "git checkout -b",
-            "git branch -d",
-            "git branch -D",
-            "git branch -m",
-            "git branch -M",
-            "git remote add",
-            "git remote set-url",
-            "git remote remove",
-            "git remote rm",
-            "git submodule",
-            "git filter-branch",
-            "git gc",
-            "git prune",
-            "git update-ref",
-            "git send-email",
-            "git apply",
-            "git am",
-            "git cherry-pick",
-            "git revert",
-            "git commit",
-            "git merge",
-            "git rebase",
-            "git tag -d",
-            "git init",
-            "git add",
-            "git rm",
-            "git mv",
-            "git switch",
-        ];
-
-        for dangerous_op in &dangerous_git_ops {
-            if command_contains_op(command, dangerous_op) {
-                return false;
-            }
-        }
-
-        true
+        !git_invocations(command)
+            .iter()
+            .any(|args| git_args_are_dangerous(args))
     }
 
     pub(super) fn get_rejection_reason(&self, command: &str) -> String {
-        let matcher_input = normalize_command_whitespace(command).to_lowercase();
+        let matcher_input = normalize_command_whitespace(command);
 
         if has_path_traversal(command) {
             return format!(
@@ -795,124 +1025,59 @@ impl BashExecutor {
     }
 
     pub(super) fn get_git_rejection_reason(&self, command: &str) -> String {
-        // De-obfuscate the git token the same way `is_safe_git_command`
-        // does so the reason picked here lines up with the rejection.
-        let command_lower =
-            canonicalize_git_tokens(&normalize_command_whitespace(command).to_lowercase());
-
-        if command_lower.contains("git push") {
-            return format!(
-                "Command '{}' blocked: 'git push' sends data to remote repositories\n\
-                 Hint: Use 'git status', 'git log', 'git diff' to view changes.",
-                command
-            );
+        // Phrase the reason from the same subcommand the gate flagged, so
+        // the message lines up with the rejection however the command was
+        // written (global options, quotes, launchers, `sh -c`).
+        let verb = first_dangerous_git_verb(&normalize_command_whitespace(command));
+        match verb.as_deref() {
+            Some("push") => format!(
+                "Command '{command}' blocked: 'git push' sends data to remote repositories\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view changes."
+            ),
+            Some(op @ ("pull" | "fetch")) => format!(
+                "Command '{command}' blocked: 'git {op}' fetches data from remote repositories\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view local changes."
+            ),
+            Some("clone") => format!(
+                "Command '{command}' blocked: 'git clone' downloads repositories\n\
+                 Hint: Clone repositories manually outside of Sofos."
+            ),
+            Some(op @ ("commit" | "add")) => format!(
+                "Command '{command}' blocked: 'git {op}' modifies the git repository\n\
+                 Hint: Use 'git status', 'git diff' to view changes. Create commits manually."
+            ),
+            Some(op @ ("reset" | "clean")) => format!(
+                "Command '{command}' blocked: 'git {op}' is a destructive operation\n\
+                 Hint: Use 'git status', 'git log', 'git diff' to view repository state."
+            ),
+            Some(op @ ("checkout" | "switch")) => format!(
+                "Command '{command}' blocked: 'git {op}' changes branches or modifies the working directory\n\
+                 Hint: Use 'git branch' to list branches, 'git status' to see the current branch."
+            ),
+            Some(op @ ("merge" | "rebase")) => format!(
+                "Command '{command}' blocked: 'git {op}' modifies git history\n\
+                 Hint: Perform merges/rebases manually outside of Sofos."
+            ),
+            Some("stash") => format!(
+                "Command '{command}' blocked: 'git stash' modifies repository state\n\
+                 Hint: Use 'git stash list' or 'git stash show' to view stashed changes."
+            ),
+            Some("remote") => format!(
+                "Command '{command}' blocked: modifying git remotes is not allowed\n\
+                 Hint: Use 'git remote -v' to view configured remotes."
+            ),
+            Some("submodule") => format!(
+                "Command '{command}' blocked: 'git submodule' can fetch from remote repositories\n\
+                 Hint: Manage submodules manually outside of Sofos."
+            ),
+            Some("config") => format!(
+                "Command '{command}' blocked: a '-c'/'--config-env' option sets a git config value that runs an external command\n\
+                 Hint: Run the git command without the inline config override."
+            ),
+            _ => format!(
+                "Command '{command}' blocked: git operation modifies repository or accesses network\n\
+                 Hint: Allowed git commands: status, log, diff, show, branch, remote -v, grep, blame"
+            ),
         }
-
-        if command_lower.contains("git pull") || command_lower.contains("git fetch") {
-            let op = if command_lower.contains("git pull") {
-                "git pull"
-            } else {
-                "git fetch"
-            };
-            return format!(
-                "Command '{}' blocked: '{}' fetches data from remote repositories\n\
-                 Hint: Use 'git status', 'git log', 'git diff' to view local changes.",
-                command, op
-            );
-        }
-
-        if command_lower.contains("git clone") {
-            return format!(
-                "Command '{}' blocked: 'git clone' downloads repositories\n\
-                 Hint: Clone repositories manually outside of Sofos.",
-                command
-            );
-        }
-
-        if command_lower.contains("git commit") || command_lower.contains("git add") {
-            let op = if command_lower.contains("git commit") {
-                "git commit"
-            } else {
-                "git add"
-            };
-            return format!(
-                "Command '{}' blocked: '{}' modifies the git repository\n\
-                 Hint: Use 'git status', 'git diff' to view changes. Create commits manually.",
-                command, op
-            );
-        }
-
-        if command_lower.contains("git reset") || command_lower.contains("git clean") {
-            let op = if command_lower.contains("git reset") {
-                "git reset"
-            } else {
-                "git clean"
-            };
-            return format!(
-                "Command '{}' blocked: '{}' is a destructive operation\n\
-                 Hint: Use 'git status', 'git log', 'git diff' to view repository state.",
-                command, op
-            );
-        }
-
-        if command_lower.contains("git checkout") || command_lower.contains("git switch") {
-            let op = if command_lower.contains("git checkout") {
-                "git checkout"
-            } else {
-                "git switch"
-            };
-            return format!(
-                "Command '{}' blocked: '{}' changes branches or modifies working directory\n\
-                 Hint: Use 'git branch' to list branches, 'git status' to see current branch.",
-                command, op
-            );
-        }
-
-        if command_lower.contains("git merge") || command_lower.contains("git rebase") {
-            let op = if command_lower.contains("git merge") {
-                "git merge"
-            } else {
-                "git rebase"
-            };
-            return format!(
-                "Command '{}' blocked: '{}' modifies git history\n\
-                 Hint: Perform merges/rebases manually outside of Sofos.",
-                command, op
-            );
-        }
-
-        if command_lower.contains("git stash")
-            && !command_lower.contains("git stash list")
-            && !command_lower.contains("git stash show")
-        {
-            return format!(
-                "Command '{}' blocked: 'git stash' modifies repository state\n\
-                 Hint: Use 'git stash list' or 'git stash show' to view stashed changes.",
-                command
-            );
-        }
-
-        if command_lower.contains("git remote add") || command_lower.contains("git remote set-url")
-        {
-            return format!(
-                "Command '{}' blocked: Modifying git remotes is not allowed\n\
-                 Hint: Use 'git remote -v' to view configured remotes.",
-                command
-            );
-        }
-
-        if command_lower.contains("git submodule") {
-            return format!(
-                "Command '{}' blocked: 'git submodule' can fetch from remote repositories\n\
-                 Hint: Manage submodules manually outside of Sofos.",
-                command
-            );
-        }
-
-        format!(
-            "Command '{}' blocked: git operation modifies repository or accesses network\n\
-             Hint: Allowed git commands: status, log, diff, show, branch, remote -v, grep, blame",
-            command
-        )
     }
 }

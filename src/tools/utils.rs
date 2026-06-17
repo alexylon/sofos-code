@@ -124,8 +124,8 @@ pub fn lexically_normalize(p: &std::path::Path) -> std::path::PathBuf {
 /// Map every non-space whitespace byte and the explicit `$IFS` /
 /// `${IFS}` shell expansion to single spaces, join backslash-newline
 /// continuations, and collapse runs. Used by the dangerous-git matcher
-/// so `git\tpush`, `git$IFS\tpush`, and `git\\\npush` all read as
-/// `git push` and hit the boundary set in `command_contains_op`.
+/// so `git\tpush`, `git$IFS\tpush`, and `git\\\npush` all tokenise to the
+/// words `git` and `push`.
 pub fn normalize_command_whitespace(command: &str) -> String {
     let joined = command.replace("\\\n", " ");
     let mut spaced = String::with_capacity(joined.len());

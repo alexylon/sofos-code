@@ -251,8 +251,7 @@ impl BashExecutor {
         if has_path_traversal(command) || detect_command_substitution(command).is_some() {
             return false;
         }
-        let matcher_input = normalize_command_whitespace(command).to_lowercase();
-        self.is_safe_git_command(&matcher_input)
+        self.is_safe_git_command(&normalize_command_whitespace(command))
     }
 
     /// Run a command (optionally confined to the workspace) and turn the
@@ -615,11 +614,10 @@ impl BashExecutor {
     /// checkout` explicitly, matching `confirm_destructive`'s policy of
     /// "no remember button for working-tree mutations".
     fn confirm_askable_command(&self, command: &str) -> Result<()> {
-        // Normalise before semantic Git matching so whitespace tricks,
-        // spelling tricks, and Git global options do not skip the prompt.
-        let matches = command_contains_askable_git_checkout(
-            &normalize_command_whitespace(command).to_lowercase(),
-        );
+        // Normalise whitespace before matching so whitespace tricks,
+        // spelling tricks, quoted values, global options, and launchers do
+        // not skip the prompt. Case is kept so `-C` is not read as `-c`.
+        let matches = command_contains_askable_git_checkout(&normalize_command_whitespace(command));
         if !matches {
             return Ok(());
         }

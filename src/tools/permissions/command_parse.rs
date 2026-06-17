@@ -11,7 +11,7 @@ use crate::tools::permissions::PermissionManager;
 /// POSIX shell control keywords that punctuate compound commands but
 /// don't introduce one of their own. Stripped from segment heads so the
 /// next non-keyword token is the base command we actually want to inspect.
-pub(super) const COMPOUND_KEYWORDS: &[&str] = &[
+pub(crate) const COMPOUND_KEYWORDS: &[&str] = &[
     "do", "done", "then", "else", "elif", "fi", "case", "esac", "{", "}", "(",
 ];
 
@@ -19,12 +19,12 @@ pub(super) const COMPOUND_KEYWORDS: &[&str] = &[
 /// `while CMD; do ...`, `until CMD; do ...`, `if CMD; then ...`. The
 /// keyword itself is skipped, and the rest of the segment is parsed
 /// like any other command.
-pub(super) const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"];
+pub(crate) const COMPOUND_HEADERS_WITH_BODY: &[&str] = &["while", "until", "if"];
 
 /// Loop headers whose segment is a word list, *not* a command —
 /// `for VAR in WORDS`. Matching one means the segment carries no
 /// base command at all and should yield no entry.
-pub(super) const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
+pub(crate) const COMPOUND_HEADERS_NO_BODY: &[&str] = &["for"];
 
 /// Env-assignment keys whose value can swap the binary the shell ends
 /// up running, regardless of what base command follows. `PATH=. cargo
@@ -67,7 +67,7 @@ pub(super) fn leading_dangerous_env_prefix(segment: &str) -> Option<&'static str
 /// env prefixes so `FOO=bar rm -rf /` is classified as a `rm`
 /// invocation (and therefore caught by the forbidden-command set),
 /// not as a never-heard-of `FOO=bar` command.
-pub(super) fn is_env_assignment(tok: &str) -> bool {
+pub(crate) fn is_env_assignment(tok: &str) -> bool {
     let Some((key, _)) = tok.split_once('=') else {
         return false;
     };
@@ -87,7 +87,7 @@ pub(super) fn is_env_assignment(tok: &str) -> bool {
 /// returned name can flow into user-configured wildcard rules like
 /// `Bash(MyTool:*)`; case-insensitive matching against the built-in
 /// command sets happens at the comparison site.
-pub(super) fn clean_base_token(tok: &str) -> String {
+pub(crate) fn clean_base_token(tok: &str) -> String {
     let stripped = tok.trim_start_matches(['(', '{', '\\', '\'', '"']);
     let stripped = stripped.trim_end_matches([')', '}', '\'', '"']);
     let after_unix = stripped.rsplit('/').next().unwrap_or(stripped);
