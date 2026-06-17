@@ -33,6 +33,7 @@ pub struct ExitSummary {
 pub struct StatusSnapshot {
     pub model: String,
     pub mode: crate::config::SandboxMode,
+    pub approval: crate::config::ApprovalPolicy,
     /// Human label for the reasoning config (e.g. "thinking: 10k tok",
     /// "thinking: off", "effort: high"). Empty string hides the field.
     pub reasoning: String,
@@ -71,6 +72,8 @@ pub enum Job {
     ModelSelected(Option<&'static str>),
     /// User confirmed a level inside the `/effort` picker; `None` on cancel.
     EffortSelected(Option<ReasoningEffort>),
+    /// Approval policy chosen in the `/approval` picker (None on cancel).
+    ApprovalSelected(Option<crate::config::ApprovalPolicy>),
     /// Graceful shutdown — save session, print summary, exit worker loop.
     Shutdown,
 }
@@ -104,6 +107,14 @@ pub struct EffortPickerEntry {
     pub is_current: bool,
 }
 
+/// One row in the inline `/approval` picker. Each row is selectable.
+#[derive(Debug, Clone, Copy)]
+pub struct ApprovalPickerEntry {
+    pub policy: crate::config::ApprovalPolicy,
+    pub description: &'static str,
+    pub is_current: bool,
+}
+
 /// Event pushed to the UI thread. Sources: output readers, keyboard reader,
 /// worker thread, periodic tick.
 #[derive(Debug)]
@@ -133,6 +144,8 @@ pub enum UiEvent {
     ShowModelPicker { entries: Vec<ModelPickerEntry> },
     /// Worker wants the UI to show the reasoning-effort picker.
     ShowEffortPicker { entries: Vec<EffortPickerEntry> },
+    /// Worker wants the UI to show the approval-policy picker.
+    ShowApprovalPicker { entries: Vec<ApprovalPickerEntry> },
     /// Worker pushes a fresh status snapshot (model / mode / reasoning).
     Status(StatusSnapshot),
     /// A tool call needs user confirmation. The UI renders a modal list of

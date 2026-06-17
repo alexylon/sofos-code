@@ -954,6 +954,7 @@ Rules:
 
 - Bash commands pass through the 3-tier permission system: Allowed, Denied, or Ask.
 - In workspace mode (the default) with an available sandbox, every Allowed and Ask command runs confined by the operating-system sandbox; an Ask command runs confined instead of prompting. Denied commands are refused. In unrestricted mode (`--unrestricted`), and on platforms without a sandbox, Allowed commands run unconfined and an Ask command prompts as before.
+- The approval policy (`--ask-for-approval`, `/approval`) governs running a command outside the sandbox. With `on-request` (the default) the model can request it per command; with `on-failure` a confined command that looks blocked by the sandbox offers an unsandboxed retry; `never` does neither. The user approves before any command runs unsandboxed, and Denied commands stay refused.
 - Structural checks still run even when a command is otherwise allowed.
 - Parent-directory traversal as a path component is blocked.
 - Output redirection to files is blocked; `2>&1` is allowed.

@@ -338,6 +338,13 @@ impl ToolExecutor {
         self.bash_executor.set_sandbox_mode(mode);
     }
 
+    /// Push the approval policy down to the bash executor, which owns the
+    /// escalation behaviour. The REPL calls this at startup and whenever
+    /// `/approval` changes the policy mid-session.
+    pub fn set_approval_policy(&mut self, policy: crate::config::ApprovalPolicy) {
+        self.bash_executor.set_approval_policy(policy);
+    }
+
     /// Names of MCP servers whose tools would be filtered out when
     /// read-only mode is on. Returned regardless of the current mode
     /// so the REPL can decide what to print at startup.
@@ -1391,7 +1398,27 @@ impl ToolExecutor {
                     SofosError::ToolExecution("Missing 'command' parameter".to_string())
                 })?;
 
-                let result = self.bash_executor.execute(command)?;
+                // The model can ask to run a command outside the sandbox via
+                // `sandbox_permissions: "require_escalated"` (a bare bool
+                // `require_escalated` is also accepted), with an optional
+                // `justification` shown in the approval prompt.
+                let wants_escalation = input["sandbox_permissions"]
+                    .as_str()
+                    .map(|s| {
+                        s.eq_ignore_ascii_case("require_escalated")
+                            || s.eq_ignore_ascii_case("escalate")
+                    })
+                    .or_else(|| input["require_escalated"].as_bool())
+                    .unwrap_or(false);
+                let result = if wants_escalation {
+                    let escalation = crate::tools::bash::EscalationRequest {
+                        justification: input["justification"].as_str().map(|s| s.to_string()),
+                    };
+                    self.bash_executor
+                        .execute_with_escalation(command, Some(escalation))?
+                } else {
+                    self.bash_executor.execute(command)?
+                };
                 Ok(result)
             }
             ToolName::UpdatePlan => {

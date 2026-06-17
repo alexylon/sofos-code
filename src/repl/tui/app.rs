@@ -19,7 +19,9 @@ use crate::config::SandboxMode;
 use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
-use super::event::{EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, StatusSnapshot};
+use super::event::{
+    ApprovalPickerEntry, EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, StatusSnapshot,
+};
 use super::slash_popup::SlashPopup;
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -45,6 +47,7 @@ pub struct App {
     pub model_picker: Option<ModelPicker>,
     /// If Some, render the `/effort` picker overlay.
     pub effort_picker: Option<EffortPicker>,
+    pub approval_picker: Option<ApprovalPicker>,
     /// If Some, render a confirmation modal blocking the worker thread
     /// until the user answers. Used by destructive tool prompts like
     /// `delete_file`.
@@ -175,6 +178,36 @@ impl EffortPicker {
     }
 }
 
+/// Inline overlay shown by `/approval`. Holds the selectable policies
+/// plus the cursor; every row is selectable.
+pub struct ApprovalPicker {
+    pub entries: Vec<ApprovalPickerEntry>,
+    pub cursor: usize,
+}
+
+impl ApprovalPicker {
+    pub fn new(entries: Vec<ApprovalPickerEntry>) -> Self {
+        let cursor = entries.iter().position(|e| e.is_current).unwrap_or(0);
+        Self { entries, cursor }
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor + 1 < self.entries.len() {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn selected(&self) -> Option<&ApprovalPickerEntry> {
+        self.entries.get(self.cursor)
+    }
+}
+
 /// In-flight confirmation dialog driven by a synchronous tool (`delete_file`,
 /// `delete_directory`, permission grants). The worker thread is blocked on
 /// the receiving end of `responder`; when the user picks a choice (or
@@ -205,6 +238,7 @@ impl App {
             picker: None,
             model_picker: None,
             effort_picker: None,
+            approval_picker: None,
             model_label,
             should_quit: false,
             exit_summary: None,
@@ -520,6 +554,7 @@ mod tests {
         a.status = Some(StatusSnapshot {
             model: "m".into(),
             mode: SandboxMode::ReadOnly,
+            approval: crate::config::ApprovalPolicy::OnRequest,
             reasoning: String::new(),
             input_tokens: 0,
             output_tokens: 0,
@@ -739,6 +774,56 @@ mod tests {
     }
 
     #[test]
+    fn approval_picker_lands_cursor_on_current_policy() {
+        use crate::config::ApprovalPolicy::{Never, OnFailure, OnRequest};
+        let entries = vec![
+            ApprovalPickerEntry {
+                policy: OnRequest,
+                description: "",
+                is_current: false,
+            },
+            ApprovalPickerEntry {
+                policy: OnFailure,
+                description: "",
+                is_current: true,
+            },
+            ApprovalPickerEntry {
+                policy: Never,
+                description: "",
+                is_current: false,
+            },
+        ];
+        let p = ApprovalPicker::new(entries);
+        assert_eq!(p.cursor, 1);
+        assert_eq!(p.selected().unwrap().policy, OnFailure);
+    }
+
+    #[test]
+    fn approval_picker_navigation_clamps_at_edges() {
+        use crate::config::ApprovalPolicy::{OnFailure, OnRequest};
+        let entries = vec![
+            ApprovalPickerEntry {
+                policy: OnRequest,
+                description: "",
+                is_current: true,
+            },
+            ApprovalPickerEntry {
+                policy: OnFailure,
+                description: "",
+                is_current: false,
+            },
+        ];
+        let mut p = ApprovalPicker::new(entries);
+        assert_eq!(p.cursor, 0);
+        p.move_up();
+        assert_eq!(p.cursor, 0);
+        p.move_down();
+        assert_eq!(p.cursor, 1);
+        p.move_down();
+        assert_eq!(p.cursor, 1);
+    }
+
+    #[test]
     fn model_picker_with_all_rows_disabled_keeps_cursor_at_zero() {
         let entries = vec![
             ModelPickerEntry {
@@ -769,6 +854,7 @@ mod tests {
         a.status = Some(StatusSnapshot {
             model: crate::api::model_info::CLAUDE_OPUS.into(),
             mode: SandboxMode::ReadOnly,
+            approval: crate::config::ApprovalPolicy::OnRequest,
             reasoning: "thinking: 10000 tok".into(),
             input_tokens: 123,
             output_tokens: 456,

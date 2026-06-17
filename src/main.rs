@@ -206,7 +206,22 @@ fn main() -> Result<()> {
     }
 
     let mode = crate::config::SandboxMode::from_flags(cli.readonly, cli.unrestricted);
-    let config = ReplConfig::new(cli.model, cli.max_tokens, reasoning_effort, mode);
+    let approval_policy = crate::config::ApprovalPolicy::parse(&cli.ask_for_approval)
+        .unwrap_or_else(|| {
+            UI::print_error_with_hint(&crate::error::SofosError::Config(format!(
+                "Invalid --ask-for-approval value '{}'. Expected one of: \
+                 on-failure, on-request, never.",
+                cli.ask_for_approval
+            )));
+            std::process::exit(1);
+        });
+    let config = ReplConfig::new(
+        cli.model,
+        cli.max_tokens,
+        reasoning_effort,
+        mode,
+        approval_policy,
+    );
 
     let mut repl = Repl::new(client, config, workspace.clone(), morph_client).unwrap_or_else(|e| {
         UI::print_error_with_hint(&e);

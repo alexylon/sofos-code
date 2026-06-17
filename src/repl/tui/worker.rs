@@ -16,7 +16,9 @@ use crate::commands::{Command, CommandResult};
 use crate::repl::Repl;
 use crate::ui::UI;
 
-use super::event::{EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, UiEvent};
+use super::event::{
+    ApprovalPickerEntry, EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, UiEvent,
+};
 
 /// Flush both stdout and stderr before signalling a turn is over.
 /// Stdout is fully buffered when fd 1 is redirected to a pipe (our
@@ -213,6 +215,18 @@ fn run(
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
+            Job::ApprovalSelected(Some(policy)) => {
+                interrupt.store(false, Ordering::SeqCst);
+                let _ = ui_tx.send(UiEvent::WorkerBusy("switching approval policy".into()));
+                repl.set_approval_policy(policy);
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
+            Job::ApprovalSelected(None) => {
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
         }
     }
 
@@ -252,6 +266,11 @@ fn run_command(
             let _ = ui_tx.send(UiEvent::ShowEffortPicker { entries });
             Ok(CommandResult::Continue)
         }
+        Command::ApprovalPicker => {
+            let entries = build_approval_picker_entries(repl);
+            let _ = ui_tx.send(UiEvent::ShowApprovalPicker { entries });
+            Ok(CommandResult::Continue)
+        }
         _ => cmd.execute(repl),
     }
 }
@@ -267,6 +286,32 @@ fn build_effort_picker_entries(repl: &Repl) -> Vec<EffortPickerEntry> {
             is_current: *effort == current,
         })
         .collect()
+}
+
+fn build_approval_picker_entries(repl: &Repl) -> Vec<ApprovalPickerEntry> {
+    use crate::config::ApprovalPolicy;
+    let current = repl.approval_policy;
+    [
+        (
+            ApprovalPolicy::OnRequest,
+            "Assistant asks before running a command outside the sandbox",
+        ),
+        (
+            ApprovalPolicy::OnFailure,
+            "A sandbox-looking failure offers to retry outside the sandbox",
+        ),
+        (
+            ApprovalPolicy::Never,
+            "Never run a command outside the sandbox",
+        ),
+    ]
+    .into_iter()
+    .map(|(policy, description)| ApprovalPickerEntry {
+        policy,
+        description,
+        is_current: policy == current,
+    })
+    .collect()
 }
 
 fn build_model_picker_entries(repl: &Repl) -> Vec<ModelPickerEntry> {

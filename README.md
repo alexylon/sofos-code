@@ -195,6 +195,8 @@ sofos --resume
 | `/readonly`                                 | Switch to read-only mode: inspection tools only. Prompt shows `:`. |
 | `/workspace`                                | Switch to workspace mode (the default): read and write, with shell commands confined to the project on macOS and Linux, or unfamiliar ones prompted for approval on Windows. Prompt shows `>`. |
 | `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
+| `/approval`                                 | Open a picker to choose when you are asked to run a command outside the sandbox. |
+| `/approval <policy>`                         | Set it directly: `on-request` (default), `on-failure`, or `never`. Prompt shows the active policy next to the mode. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 
@@ -248,6 +250,7 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 -p, --prompt <TEXT>          Run one prompt and exit.
     --readonly               Start in read-only mode (inspection tools only).
     --unrestricted           Run shell commands without operating-system confinement.
+-a, --ask-for-approval <LV>  When to ask before running a command outside the sandbox: on-failure, on-request, or never. Default: on-request.
 -r, --resume                 Resume a previous session.
     --check-connection       Check provider connectivity and exit.
     --api-key <KEY>          Anthropic API key; overrides ANTHROPIC_API_KEY.
@@ -394,6 +397,8 @@ Sofos starts in one of three access modes. The current mode is shown in the stat
 - **Read-only** (`--readonly`, or `/readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
 - **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. On macOS and Linux, shell commands run confined by the operating system: writes stay inside the project and the network is closed, for familiar build tools and interpreters just as for unfamiliar commands. Familiar commands run without interruption and unfamiliar ones run without a prompt. On Windows, operating-system confinement is not engaged in this release, so unfamiliar commands prompt you for approval before running instead. Prompt shows `>`.
 - **Unrestricted** (`--unrestricted`, or `/unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
+
+Within workspace mode, a single command can still run outside the sandbox when one genuinely needs network access or to write outside the project. The `--ask-for-approval` option (short `-a`) and the `/approval` command decide when you are asked: with `on-request` (the default) the assistant asks before running such a command; with `on-failure` a command that fails in a way that looks caused by the sandbox offers to retry without it; and `never` turns both off. You always approve before anything runs outside the sandbox, and clearly destructive commands stay refused.
 
 Operating-system confinement uses a different primitive on each platform:
 

@@ -15,7 +15,7 @@ use std::io::IsTerminal;
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{
-    ModelConfig, SandboxMode, readonly_mode_message, unrestricted_mode_message,
+    ApprovalPolicy, ModelConfig, SandboxMode, readonly_mode_message, unrestricted_mode_message,
     workspace_mode_message,
 };
 use crate::error::{Result, SofosError};
@@ -70,6 +70,7 @@ pub struct ReplConfig {
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
     pub mode: SandboxMode,
+    pub approval_policy: ApprovalPolicy,
 }
 
 impl ReplConfig {
@@ -78,12 +79,14 @@ impl ReplConfig {
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
         mode: SandboxMode,
+        approval_policy: ApprovalPolicy,
     ) -> Self {
         Self {
             model,
             max_tokens,
             reasoning_effort,
             mode,
+            approval_policy,
         }
     }
 }
@@ -96,6 +99,7 @@ pub struct Repl {
     pub(super) model_config: ModelConfig,
     pub(super) session_state: SessionState,
     pub(super) mode: SandboxMode,
+    pub(super) approval_policy: ApprovalPolicy,
     pub(super) available_tools: Vec<crate::api::Tool>,
     /// Interrupt flag shared with the TUI. Set to `true` when the user presses
     /// ESC/Ctrl+C during an AI turn; checked by the API request loop.
@@ -147,13 +151,14 @@ impl Repl {
             }
         });
 
-        let tool_executor = ToolExecutor::new(
+        let mut tool_executor = ToolExecutor::new(
             workspace.clone(),
             morph_client,
             mcp_manager,
             config.mode,
             std::io::stdin().is_terminal(),
         )?;
+        tool_executor.set_approval_policy(config.approval_policy);
 
         let has_morph = tool_executor.has_morph();
         let has_code_search = tool_executor.has_code_search();
@@ -245,6 +250,7 @@ impl Repl {
             model_config,
             session_state,
             mode: config.mode,
+            approval_policy: config.approval_policy,
             available_tools,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
             steer_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -325,6 +331,7 @@ impl Repl {
         tui::event::StatusSnapshot {
             model: self.model_config.model.clone(),
             mode: self.mode,
+            approval: self.approval_policy,
             reasoning,
             input_tokens: self.session_state.total_input_tokens,
             output_tokens: self.session_state.total_output_tokens,
@@ -650,6 +657,59 @@ impl Repl {
         if target.is_readonly() {
             self.print_mcp_readonly_summary();
         }
+    }
+
+    /// Change the approval policy at runtime (`/approval <policy>`),
+    /// pushing it to the tool executor so the bash escalation behaviour
+    /// follows. A no-op with a dimmed notice when already set.
+    pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) {
+        if self.approval_policy == policy {
+            println!(
+                "\n{}\n",
+                format!("Approval policy already {}", policy.label()).dimmed()
+            );
+            return;
+        }
+        self.approval_policy = policy;
+        self.tool_executor.set_approval_policy(policy);
+        println!(
+            "\n{}\n",
+            format!("Approval policy: {}", policy.label()).bright_cyan()
+        );
+    }
+
+    /// Non-interactive fallback for `/approval`. The TUI opens the picker;
+    /// this path lists the policies in `--prompt` mode.
+    pub fn handle_approval_picker_fallback(&self) {
+        println!();
+        println!(
+            "{} {}",
+            "Current approval policy:".bright_green(),
+            self.approval_policy.label().bright_white()
+        );
+        println!("{}", "Available policies:".bright_cyan());
+        for policy in [
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::Never,
+        ] {
+            let marker = if policy == self.approval_policy {
+                "❯"
+            } else {
+                " "
+            };
+            println!(
+                "  {} {}",
+                marker.bright_green(),
+                policy.label().bright_white()
+            );
+        }
+        println!();
+        println!(
+            "{}",
+            "Use `/approval <policy>` to switch, or open an interactive session for the picker."
+                .dimmed()
+        );
     }
 
     fn print_mcp_readonly_summary(&self) {

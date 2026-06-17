@@ -91,6 +91,12 @@ pub struct Cli {
     /// Overridden by `--readonly` when both are given.
     #[arg(long)]
     pub unrestricted: bool,
+
+    /// When to ask before running a command outside the operating-system
+    /// sandbox: on-request (default, the model may ask), on-failure (a
+    /// sandbox-looking failure offers an unsandboxed retry), or never.
+    #[arg(short = 'a', long, default_value = "on-request")]
+    pub ask_for_approval: String,
 }
 
 impl Cli {

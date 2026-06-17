@@ -147,8 +147,10 @@ pub fn workspace_mode_message() -> String {
          sandbox may be the cause. Common examples include Docker and other container \
          runtimes, tools that need network access, local daemon sockets, or writes outside \
          the workspace and temporary directories. Explain this likely cause to the user, \
-         try a workspace-safe alternative when possible, and suggest /unrestricted only if \
-         the task cannot be completed within workspace mode.\n\
+         try a workspace-safe alternative when possible, and otherwise rerun the command \
+         with sandbox_permissions set to \"require_escalated\" so the user can approve \
+         running that one command outside the sandbox; suggest /unrestricted only if many \
+         commands need it.\n\
          \n\
          Switch with /readonly or /unrestricted. All tools are available.]",
     )
@@ -292,6 +294,73 @@ impl SandboxMode {
     }
 }
 
+/// When the user is asked before a command runs outside the
+/// operating-system sandbox. Independent of [`SandboxMode`]: the mode
+/// decides what the sandbox confines, this decides when an escalation out
+/// of that confinement is offered.
+///
+/// Two escalation paths are gated by different policies, so at most one is
+/// active at a time:
+/// - The model can mark a command as needing to run unsandboxed
+///   (`require_escalated`); honored only under [`ApprovalPolicy::OnRequest`].
+/// - A confined command that fails in a way that looks sandbox-caused is
+///   offered for an unsandboxed retry; only under
+///   [`ApprovalPolicy::OnFailure`].
+///
+/// Chosen at startup with `--ask-for-approval` / `-a` and switchable
+/// during a session with the `/approval` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApprovalPolicy {
+    /// No up-front model escalation requests, but a confined command that
+    /// looks blocked by the sandbox is offered for an unsandboxed retry.
+    OnFailure,
+    /// Default. The model may request that a command run outside the
+    /// sandbox; the user is asked before it runs. Failures are returned to
+    /// the model without a retry prompt.
+    #[default]
+    OnRequest,
+    /// Never offer to leave the sandbox: failures are returned as-is and
+    /// model escalation requests are refused.
+    Never,
+}
+
+impl ApprovalPolicy {
+    /// Resolve from the `--ask-for-approval` value or the `/approval`
+    /// argument. Accepts the kebab-case names case-insensitively and
+    /// tolerating underscores.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "on-failure" => Some(Self::OnFailure),
+            "on-request" => Some(Self::OnRequest),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+
+    /// Short label shown in the status line and echoed by `/approval`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OnFailure => "on-failure",
+            Self::OnRequest => "on-request",
+            Self::Never => "never",
+        }
+    }
+
+    /// Whether a confined command that looks blocked by the sandbox should
+    /// prompt the user to retry it unsandboxed (the reactive escalation
+    /// path). True only for [`ApprovalPolicy::OnFailure`].
+    pub fn wants_no_sandbox_approval(self) -> bool {
+        matches!(self, Self::OnFailure)
+    }
+
+    /// Whether the model may ask for a command to run outside the sandbox
+    /// up front (the proactive escalation path). True only for
+    /// [`ApprovalPolicy::OnRequest`].
+    pub fn allows_model_escalation_request(self) -> bool {
+        matches!(self, Self::OnRequest)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +401,43 @@ mod tests {
         );
         assert_eq!(config.compaction_preserve_recent, 20);
         assert_eq!(config.tool_result_truncate_threshold, 2000);
+    }
+
+    #[test]
+    fn approval_policy_default_is_on_request() {
+        assert_eq!(ApprovalPolicy::default(), ApprovalPolicy::OnRequest);
+    }
+
+    #[test]
+    fn approval_policy_parse_round_trips_labels() {
+        for policy in [
+            ApprovalPolicy::OnFailure,
+            ApprovalPolicy::OnRequest,
+            ApprovalPolicy::Never,
+        ] {
+            assert_eq!(ApprovalPolicy::parse(policy.label()), Some(policy));
+        }
+        // Lenient spellings.
+        assert_eq!(
+            ApprovalPolicy::parse("On-Failure"),
+            Some(ApprovalPolicy::OnFailure)
+        );
+        assert_eq!(
+            ApprovalPolicy::parse("on_request"),
+            Some(ApprovalPolicy::OnRequest)
+        );
+        assert_eq!(ApprovalPolicy::parse("bogus"), None);
+    }
+
+    #[test]
+    fn approval_policy_gates_each_escalation_path() {
+        // Reactive retry-on-failure path.
+        assert!(ApprovalPolicy::OnFailure.wants_no_sandbox_approval());
+        assert!(!ApprovalPolicy::OnRequest.wants_no_sandbox_approval());
+        assert!(!ApprovalPolicy::Never.wants_no_sandbox_approval());
+        // Proactive model-requested path.
+        assert!(ApprovalPolicy::OnRequest.allows_model_escalation_request());
+        assert!(!ApprovalPolicy::OnFailure.allows_model_escalation_request());
+        assert!(!ApprovalPolicy::Never.allows_model_escalation_request());
     }
 }

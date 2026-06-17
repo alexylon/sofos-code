@@ -26,6 +26,11 @@ pub enum Command {
     ReadOnlyMode,
     WorkspaceMode,
     UnrestrictedMode,
+    /// `/approval` — open the approval-policy picker.
+    ApprovalPicker,
+    /// `/approval <policy>` — set when the user is asked before a command
+    /// runs outside the sandbox (on-failure/on-request/never).
+    ApprovalSet(crate::config::ApprovalPolicy),
     Compact,
     /// `/model` with no argument — open the model picker.
     ModelPicker,
@@ -49,6 +54,7 @@ const CMD_COMPACT: &str = "/compact";
 const CMD_READONLY: &str = "/readonly";
 const CMD_WORKSPACE: &str = "/workspace";
 const CMD_UNRESTRICTED: &str = "/unrestricted";
+const CMD_APPROVAL: &str = "/approval";
 
 impl Command {
     pub fn from_str(s: &str) -> Option<Self> {
@@ -61,6 +67,7 @@ impl Command {
             CMD_READONLY => Some(Command::ReadOnlyMode),
             CMD_WORKSPACE => Some(Command::WorkspaceMode),
             CMD_UNRESTRICTED => Some(Command::UnrestrictedMode),
+            CMD_APPROVAL => Some(Command::ApprovalPicker),
             CMD_COMPACT => Some(Command::Compact),
             CMD_MODEL => Some(Command::ModelPicker),
             _ => {
@@ -77,6 +84,13 @@ impl Command {
                         Some(Command::ModelPicker)
                     } else {
                         Some(Command::ModelSet(trimmed.to_string()))
+                    }
+                } else if let Some(arg) = lower.strip_prefix("/approval ") {
+                    let trimmed = arg.trim();
+                    if trimmed.is_empty() {
+                        Some(Command::ApprovalPicker)
+                    } else {
+                        crate::config::ApprovalPolicy::parse(trimmed).map(Command::ApprovalSet)
                     }
                 } else {
                     None
@@ -95,6 +109,8 @@ impl Command {
             Command::ReadOnlyMode => builtin::readonly_mode_command(repl),
             Command::WorkspaceMode => builtin::workspace_mode_command(repl),
             Command::UnrestrictedMode => builtin::unrestricted_mode_command(repl),
+            Command::ApprovalPicker => builtin::approval_picker_command(repl),
+            Command::ApprovalSet(policy) => builtin::approval_set_command(repl, *policy),
             Command::Compact => builtin::compact_command(repl),
             Command::ModelPicker => builtin::model_picker_command(repl),
             Command::ModelSet(name) => builtin::model_set_command(repl, name),
@@ -147,6 +163,10 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
     CommandEntry {
         name: CMD_UNRESTRICTED,
         description: "switch to unrestricted mode (shell without sandbox confinement)",
+    },
+    CommandEntry {
+        name: CMD_APPROVAL,
+        description: "set when to run a command outside the sandbox",
     },
     CommandEntry {
         name: CMD_EXIT,
@@ -230,6 +250,39 @@ mod tests {
         // can't be turned into a `ReasoningEffort` so we surface the
         // generic "unknown command" message instead of guessing.
         assert!(Command::from_str("/effort turbo").is_none());
+    }
+
+    #[test]
+    fn bare_slash_approval_opens_picker() {
+        assert_eq!(
+            Command::from_str("/approval"),
+            Some(Command::ApprovalPicker)
+        );
+        assert_eq!(
+            Command::from_str("/approval   "),
+            Some(Command::ApprovalPicker)
+        );
+    }
+
+    #[test]
+    fn slash_approval_with_policy_parses_to_set() {
+        assert_eq!(
+            Command::from_str("/approval on-failure"),
+            Some(Command::ApprovalSet(
+                crate::config::ApprovalPolicy::OnFailure
+            ))
+        );
+        assert_eq!(
+            Command::from_str("/approval never"),
+            Some(Command::ApprovalSet(crate::config::ApprovalPolicy::Never))
+        );
+    }
+
+    #[test]
+    fn slash_approval_with_unknown_policy_returns_none() {
+        // Like `/effort`, the argument has a fixed alphabet; anything
+        // else surfaces the generic unknown-command message.
+        assert!(Command::from_str("/approval turbo").is_none());
     }
 
     /// Every catalog name must parse back into a known `Command`.

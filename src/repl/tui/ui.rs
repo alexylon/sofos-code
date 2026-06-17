@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 
-use super::app::{App, ConfirmationPrompt, EffortPicker, ModelPicker, Picker};
+use super::app::{App, ApprovalPicker, ConfirmationPrompt, EffortPicker, ModelPicker, Picker};
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
 use crate::config::SandboxMode;
@@ -82,6 +82,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(picker) = &app.effort_picker {
         draw_effort_picker(frame, area, picker);
     }
+    if let Some(picker) = &app.approval_picker {
+        draw_approval_picker(frame, area, picker);
+    }
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(frame, area, confirmation);
     }
@@ -129,6 +132,11 @@ pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
             .min(PICKER_MAX_VISIBLE_ENTRIES);
         PICKER_CHROME_ROWS.saturating_add(rows)
     } else if let Some(picker) = &app.effort_picker {
+        let rows = u16::try_from(picker.entries.len())
+            .unwrap_or(u16::MAX)
+            .min(PICKER_MAX_VISIBLE_ENTRIES);
+        PICKER_CHROME_ROWS.saturating_add(rows)
+    } else if let Some(picker) = &app.approval_picker {
         let rows = u16::try_from(picker.entries.len())
             .unwrap_or(u16::MAX)
             .min(PICKER_MAX_VISIBLE_ENTRIES);
@@ -257,11 +265,17 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 
     // Resume picker takes over input — hint bar should reflect that
     // instead of advertising the normal send / newline keys.
-    if app.picker.is_some() || app.model_picker.is_some() || app.effort_picker.is_some() {
+    if app.picker.is_some()
+        || app.model_picker.is_some()
+        || app.effort_picker.is_some()
+        || app.approval_picker.is_some()
+    {
         let label = if app.model_picker.is_some() {
             "pick a model"
         } else if app.effort_picker.is_some() {
             "pick an effort"
+        } else if app.approval_picker.is_some() {
+            "pick an approval policy"
         } else {
             "pick a session"
         };
@@ -335,26 +349,29 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     // Fall back to the model name we already know if the worker hasn't
     // pushed a full snapshot yet (e.g. very first frame).
-    let (model, mode, reasoning, in_tok, out_tok, cache_read, cache_create) = match &app.status {
-        Some(s) => (
-            s.model.as_str(),
-            s.mode,
-            s.reasoning.as_str(),
-            s.input_tokens,
-            s.output_tokens,
-            s.cache_read_tokens,
-            s.cache_creation_tokens,
-        ),
-        None => (
-            app.model_label.as_str(),
-            SandboxMode::Workspace,
-            "",
-            0u32,
-            0u32,
-            0u32,
-            0u32,
-        ),
-    };
+    let (model, mode, approval, reasoning, in_tok, out_tok, cache_read, cache_create) =
+        match &app.status {
+            Some(s) => (
+                s.model.as_str(),
+                s.mode,
+                s.approval,
+                s.reasoning.as_str(),
+                s.input_tokens,
+                s.output_tokens,
+                s.cache_read_tokens,
+                s.cache_creation_tokens,
+            ),
+            None => (
+                app.model_label.as_str(),
+                SandboxMode::Workspace,
+                crate::config::ApprovalPolicy::OnRequest,
+                "",
+                0u32,
+                0u32,
+                0u32,
+                0u32,
+            ),
+        };
 
     let mode_style = match mode {
         SandboxMode::ReadOnly => Style::default()
@@ -375,6 +392,17 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("mode: ", Style::default().fg(STATUS_KEY)),
         Span::styled(mode.label(), mode_style),
     ];
+
+    // The approval policy only governs escalation out of the workspace
+    // sandbox, so it is inert in read-only and unrestricted modes.
+    if mode == SandboxMode::Workspace {
+        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("approval: ", Style::default().fg(STATUS_KEY)));
+        spans.push(Span::styled(
+            approval.label(),
+            Style::default().fg(MODEL_FG),
+        ));
+    }
 
     if !reasoning.is_empty() {
         spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
@@ -862,6 +890,57 @@ fn draw_effort_picker(frame: &mut Frame, area: Rect, picker: &EffortPicker) {
         .collect();
 
     let list = List::new(items).block(picker_block(" Select effort "));
+    frame.render_widget(list, popup);
+}
+
+/// Inline overlay for `/approval`. Every row is selectable; the dimmed
+/// trailing text explains what each policy does.
+fn draw_approval_picker(frame: &mut Frame, area: Rect, picker: &ApprovalPicker) {
+    let popup = picker_popup_rect(area);
+    frame.render_widget(Clear, popup);
+
+    let (scroll, visible) =
+        picker_visible_window(popup.height, picker.cursor, picker.entries.len());
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, entry)| {
+            let selected = i == picker.cursor;
+            let marker = if selected {
+                ROW_MARKER_SELECTED
+            } else {
+                ROW_MARKER_PLAIN
+            };
+            let name_style = if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let mut spans: Vec<Span> = vec![
+                Span::raw(marker),
+                Span::styled(entry.policy.label(), name_style),
+                Span::styled(
+                    format!("  {}", entry.description),
+                    Style::default().fg(SLASH_POPUP_DESC_FG),
+                ),
+            ];
+            if entry.is_current {
+                spans.push(Span::styled(
+                    "  (current)",
+                    Style::default().fg(HINT_KEY).add_modifier(Modifier::ITALIC),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items).block(picker_block(" Select approval policy "));
     frame.render_widget(list, popup);
 }
 

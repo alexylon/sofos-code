@@ -333,6 +333,41 @@ pub(super) fn handle_effort_picker_key(
     }
 }
 
+/// Key handler used while the `/approval` picker overlay is open.
+/// Up/Down step through the policies; Enter sends the highlighted policy
+/// back to the worker; Esc / Ctrl+C cancel.
+pub(super) fn handle_approval_picker_key(
+    app: &mut App,
+    key: KeyEvent,
+    job_tx: &std_mpsc::Sender<Job>,
+) {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(picker) = app.approval_picker.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_up(),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_down(),
+        KeyCode::Enter => {
+            let policy = picker.selected().map(|e| e.policy);
+            app.approval_picker = None;
+            let _ = job_tx.send(Job::ApprovalSelected(policy));
+        }
+        KeyCode::Esc => {
+            app.approval_picker = None;
+            let _ = job_tx.send(Job::ApprovalSelected(None));
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.approval_picker = None;
+            let _ = job_tx.send(Job::ApprovalSelected(None));
+        }
+        _ => {}
+    }
+}
+
 /// Key handler used while the `/model` picker overlay is open.
 /// Up/Down skip disabled (other-provider) rows; Enter sends the
 /// highlighted model name back to the worker; Esc / Ctrl+C cancel.

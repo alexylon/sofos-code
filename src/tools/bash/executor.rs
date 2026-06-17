@@ -5,9 +5,8 @@
 //! per-stream output caps from [`super::output`], and renders the
 //! result string the model sees.
 
-use crate::config::SandboxMode;
+use crate::config::{ApprovalPolicy, SandboxMode};
 use crate::error::{Result, SofosError};
-use crate::tools::bash::BashExecutor;
 #[cfg(unix)]
 use crate::tools::bash::output::TERMINATION_GRACE_PERIOD;
 use crate::tools::bash::output::{
@@ -19,6 +18,7 @@ use crate::tools::bash::validate::{
     command_contains_askable_git_checkout, command_runs_only_git, detect_command_substitution,
     has_path_traversal,
 };
+use crate::tools::bash::{BashExecutor, EscalationRequest};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{
     MAX_TOOL_OUTPUT_TOKENS, TruncationKind, normalize_command_whitespace, truncate_for_context,
@@ -111,8 +111,10 @@ impl BashExecutor {
             interactive,
             has_morph,
             mode: SandboxMode::Unrestricted,
+            approval_policy: ApprovalPolicy::default(),
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
+            session_unsandboxed: Arc::new(Mutex::new(HashSet::new())),
             bash_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
             bash_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
             interrupt_flag: Arc::new(AtomicBool::new(false)),
@@ -120,6 +122,18 @@ impl BashExecutor {
     }
 
     pub fn execute(&self, command: &str) -> Result<String> {
+        self.execute_with_escalation(command, None)
+    }
+
+    /// Like [`Self::execute`], but `escalation` carries a model request to
+    /// run the command outside the sandbox. Forbidden commands are still
+    /// refused; a granted escalation runs this one command unsandboxed
+    /// after explicit user approval (see [`Self::run_model_escalation`]).
+    pub fn execute_with_escalation(
+        &self,
+        command: &str,
+        escalation: Option<EscalationRequest>,
+    ) -> Result<String> {
         let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
         let normalized = PermissionManager::normalize_command_key(command);
 
@@ -142,6 +156,29 @@ impl BashExecutor {
         }
 
         let permission = permission_manager.check_command_permission(command)?;
+
+        // Forbidden commands are refused regardless of any escalation request.
+        if matches!(permission, CommandPermission::Denied) {
+            return Err(SofosError::ToolExecution(
+                self.get_rejection_reason(command),
+            ));
+        }
+
+        // A model-driven escalation request runs this one command outside
+        // the sandbox after explicit user approval. There is only something
+        // to escalate out of when a sandbox is engaged; otherwise fall
+        // through to the normal flow, where the command already runs
+        // unconfined.
+        if let Some(escalation) = &escalation {
+            if self.sandbox_active() {
+                return self.run_model_escalation(
+                    command,
+                    &normalized,
+                    escalation,
+                    &mut permission_manager,
+                );
+            }
+        }
 
         match permission {
             CommandPermission::Allowed => {
@@ -216,7 +253,8 @@ impl BashExecutor {
         // Check external paths in command — ask user for paths not covered by Bash path grants
         self.check_bash_external_paths(command, permission_manager)?;
 
-        self.run_and_shape(command, confine)
+        let normalized = PermissionManager::normalize_command_key(command);
+        self.run_and_shape(command, confine, &normalized)
     }
 
     /// Decide how a command runs: `Ok(true)` to confine it to the
@@ -261,7 +299,7 @@ impl BashExecutor {
     /// supervised outcome into the string the model sees. The command is
     /// assumed to have already cleared whatever permission and structural
     /// checks apply to it.
-    fn run_and_shape(&self, command: &str, confine: bool) -> Result<String> {
+    fn run_and_shape(&self, command: &str, confine: bool, normalized: &str) -> Result<String> {
         let outcome = self.spawn_supervised(command, confine)?;
 
         if let Some(reason) = outcome.terminated_for {
@@ -318,6 +356,11 @@ impl BashExecutor {
                 exit_info, stdout, stderr
             );
             if confine {
+                if let Some(escalated) =
+                    self.maybe_escalate_unsandboxed(command, normalized, &outcome)?
+                {
+                    return Ok(escalated);
+                }
                 error_output.push_str("\n\n");
                 error_output.push_str(confined_command_failure_note());
             }
@@ -350,6 +393,133 @@ impl BashExecutor {
             MAX_TOOL_OUTPUT_TOKENS,
             TruncationKind::BashOutput,
         ))
+    }
+
+    /// On a confined failure that looks like a sandbox denial, offer to
+    /// retry the same command without the sandbox. Returns
+    /// `Ok(Some(output))` when the user approved (or a session grant
+    /// already applied) — `output` is the unsandboxed run's shaped result,
+    /// success or failure — and `Ok(None)` when escalation does not apply
+    /// or the user declined, leaving the caller to return the original
+    /// confined failure with its note.
+    fn maybe_escalate_unsandboxed(
+        &self,
+        command: &str,
+        normalized: &str,
+        output: &SupervisedOutput,
+    ) -> Result<Option<String>> {
+        if !should_prompt_unsandboxed(self.approval_policy, self.interactive, true, output) {
+            return Ok(None);
+        }
+
+        // Already approved for this session: rerun unsandboxed without
+        // asking again.
+        let cached = self
+            .session_unsandboxed
+            .lock()
+            .map(|set| set.contains(normalized))
+            .unwrap_or(false);
+        if cached {
+            return self.run_and_shape(command, false, normalized).map(Some);
+        }
+
+        let prompt = format!(
+            "Command failed under the workspace sandbox and looks like a sandbox \
+             denial (network, socket, or a protected write). Retry without the sandbox?\n  {command}"
+        );
+        let (approved, remember) = confirm_with_remember(&prompt)?;
+        if !approved {
+            return Ok(None);
+        }
+        if remember {
+            if let Ok(mut set) = self.session_unsandboxed.lock() {
+                set.insert(normalized.to_string());
+            }
+        }
+        self.run_and_shape(command, false, normalized).map(Some)
+    }
+
+    /// Handle a model-driven request to run `command` outside the sandbox.
+    /// The caller has already refused forbidden commands. Returns the
+    /// command's output when it runs (escalation approved, unsandboxed), or
+    /// an error the model can act on when the policy takes no escalation
+    /// requests, the session is non-interactive, the structure is unsafe,
+    /// or the user declines.
+    fn run_model_escalation(
+        &self,
+        command: &str,
+        normalized: &str,
+        escalation: &EscalationRequest,
+        permission_manager: &mut PermissionManager,
+    ) -> Result<String> {
+        if !self.approval_policy.allows_model_escalation_request() {
+            return Err(SofosError::ToolExecution(format!(
+                "Approval policy is '{}', which does not take escalation requests. \
+                 Reissue the command without requesting escalated permissions.",
+                self.approval_policy.label()
+            )));
+        }
+        if !self.interactive {
+            return Err(SofosError::ToolExecution(
+                "Cannot approve out-of-sandbox execution in a non-interactive session. \
+                 Rework the command to run inside the workspace, or ask the user to \
+                 run with /unrestricted."
+                    .to_string(),
+            ));
+        }
+
+        // Escalation lifts the sandbox, not the other gates: parent
+        // traversal, hidden subcommands, and dangerous git stay refused,
+        // and the read-deny, git-checkout, and external-path rules apply
+        // just as they would for a confined run.
+        if !self.is_confinement_safe(command) {
+            return Err(SofosError::ToolExecution(
+                self.get_rejection_reason(command),
+            ));
+        }
+        self.enforce_read_permissions(permission_manager, command)?;
+        self.confirm_askable_command(command)?;
+        self.check_bash_external_paths(command, permission_manager)?;
+
+        // Already approved for this session: run unsandboxed without asking.
+        let cached = self
+            .session_unsandboxed
+            .lock()
+            .map(|set| set.contains(normalized))
+            .unwrap_or(false);
+        if cached {
+            return self.run_and_shape(command, false, normalized);
+        }
+
+        let reason = escalation
+            .justification
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let prompt = match reason {
+            Some(reason) => format!(
+                "The model wants to run this command outside the workspace sandbox.\n  \
+                 {command}\n  Reason: {reason}\nAllow?"
+            ),
+            None => format!(
+                "The model wants to run this command outside the workspace sandbox.\n  \
+                 {command}\nAllow?"
+            ),
+        };
+        let (approved, remember) = confirm_with_remember(&prompt)?;
+        if !approved {
+            return Err(SofosError::ToolExecution(format!(
+                "User declined running '{}' outside the sandbox. Rework it to run inside \
+                 the workspace, or ask the user to switch to /unrestricted.",
+                command
+            )));
+        }
+        if remember {
+            if let Ok(mut set) = self.session_unsandboxed.lock() {
+                set.insert(normalized.to_string());
+            }
+        }
+        self.run_and_shape(command, false, normalized)
     }
 
     /// Resolve the program and arguments to spawn: the bare shell, or the
@@ -667,12 +837,105 @@ struct SupervisedOutput {
 fn confined_command_failure_note() -> &'static str {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode: writes are limited to the workspace and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no workspace-safe alternative can finish the task, tell the user they can switch to /unrestricted for this trusted operation."
+        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode: writes are limited to the workspace and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no workspace-safe alternative can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to /unrestricted for this trusted operation."
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode. If no workspace-safe alternative can finish the task, tell the user they can switch to /unrestricted for this trusted operation."
+        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode. If no workspace-safe alternative can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to /unrestricted for this trusted operation."
     }
+}
+
+/// Ask the user to approve an action with a three-way choice — Yes,
+/// Yes and remember (for the rest of the session), or No (the default).
+/// Returns `(approved, remember)`.
+fn confirm_with_remember(prompt: &str) -> Result<(bool, bool)> {
+    let idx = crate::tools::utils::confirm_multi_choice(
+        prompt,
+        &["Yes", "Yes and remember", "No"],
+        2,
+        crate::tools::utils::ConfirmationType::Permission,
+    )?;
+    Ok(match idx {
+        0 => (true, false),
+        1 => (true, true),
+        _ => (false, false),
+    })
+}
+
+/// Best-effort guess that a *confined* command failed because the
+/// operating-system sandbox denied it — a blocked network connection or
+/// socket, a write to a protected path, or a seccomp kill — rather than
+/// failing on its own merits. There is no deterministic signal (a command
+/// can print "permission denied" for unrelated reasons), so this matches
+/// well-known denial wording and, on Linux, a seccomp SIGSYS. Port of
+/// codex's `is_likely_sandbox_denied`.
+fn is_likely_sandbox_denied(confined: bool, output: &SupervisedOutput) -> bool {
+    if !confined || output.status.code() == Some(0) {
+        return false;
+    }
+
+    const SANDBOX_DENIED_KEYWORDS: [&str; 7] = [
+        "operation not permitted",
+        "permission denied",
+        "read-only file system",
+        "seccomp",
+        "sandbox",
+        "landlock",
+        "failed to write file",
+    ];
+    let has_keyword = [
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    ]
+    .iter()
+    .any(|section| {
+        let lower = section.to_lowercase();
+        SANDBOX_DENIED_KEYWORDS
+            .iter()
+            .any(|needle| lower.contains(needle))
+    });
+    if has_keyword {
+        return true;
+    }
+
+    // Well-known non-sandbox shell exit codes: 2 (builtin misuse),
+    // 126 (not executable), 127 (not found). Checked after the keyword
+    // scan, so a denial that happens to surface one of these codes with
+    // sandbox wording is still caught.
+    if matches!(output.status.code(), Some(2) | Some(126) | Some(127)) {
+        return false;
+    }
+
+    // A seccomp-blocked syscall kills the process with SIGSYS, which the
+    // shell reports either as the 128+signal exit convention or as a
+    // direct signal death. SIGSYS is sandbox-specific, so either form is
+    // a denial. Linux only — seccomp is engaged only when confined there.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        const EXIT_CODE_SIGNAL_BASE: i32 = 128;
+        if output.status.code() == Some(EXIT_CODE_SIGNAL_BASE + libc::SIGSYS)
+            || output.status.signal() == Some(libc::SIGSYS)
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Whether a confined-command failure should prompt the user to retry it
+/// outside the sandbox. Kept pure so the gating is unit-testable without a
+/// real sandbox: it fires only under a policy that wants on-failure
+/// escalation, in an interactive session, when the failure looks
+/// sandbox-caused.
+fn should_prompt_unsandboxed(
+    policy: ApprovalPolicy,
+    interactive: bool,
+    confined: bool,
+    output: &SupervisedOutput,
+) -> bool {
+    policy.wants_no_sandbox_approval() && interactive && is_likely_sandbox_denied(confined, output)
 }
 
 fn spawn_capped_reader<R>(
@@ -757,6 +1020,151 @@ fn terminate_child_tree(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn output_with(code: i32, stdout: &str, stderr: &str) -> SupervisedOutput {
+        use std::os::unix::process::ExitStatusExt;
+        SupervisedOutput {
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+            status: ExitStatus::from_raw(code << 8),
+            terminated_for: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_denial_needs_confinement_and_failure() {
+        // Not confined, or a clean exit, is never a sandbox denial.
+        assert!(!is_likely_sandbox_denied(
+            false,
+            &output_with(1, "", "operation not permitted")
+        ));
+        assert!(!is_likely_sandbox_denied(
+            true,
+            &output_with(0, "", "operation not permitted")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_denial_matches_known_keywords() {
+        for needle in [
+            "Operation not permitted",
+            "permission denied",
+            "read-only file system",
+            "seccomp",
+            "sandbox",
+            "landlock",
+            "failed to write file",
+        ] {
+            assert!(
+                is_likely_sandbox_denied(true, &output_with(1, "", needle)),
+                "stderr keyword `{needle}` should read as a sandbox denial"
+            );
+        }
+        // A keyword on stdout counts too.
+        assert!(is_likely_sandbox_denied(
+            true,
+            &output_with(1, "Operation not permitted", "")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_denial_ignores_plain_failures() {
+        // An ordinary failure with no denial wording is not a denial.
+        assert!(!is_likely_sandbox_denied(
+            true,
+            &output_with(1, "", "error: missing semicolon")
+        ));
+        // The well-known shell codes are rejected without a keyword.
+        for code in [2, 126, 127] {
+            assert!(!is_likely_sandbox_denied(
+                true,
+                &output_with(code, "", "boom")
+            ));
+        }
+        // But a denial keyword overrides the quick-reject codes.
+        assert!(is_likely_sandbox_denied(
+            true,
+            &output_with(126, "", "permission denied")
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sandbox_denial_catches_seccomp_sigsys() {
+        use std::os::unix::process::ExitStatusExt;
+        // The 128+signal exit convention.
+        let by_code = SupervisedOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_raw((128 + libc::SIGSYS) << 8),
+            terminated_for: None,
+        };
+        assert!(is_likely_sandbox_denied(true, &by_code));
+        // A direct SIGSYS signal death.
+        let by_signal = SupervisedOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: ExitStatus::from_raw(libc::SIGSYS),
+            terminated_for: None,
+        };
+        assert!(is_likely_sandbox_denied(true, &by_signal));
+    }
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn non_linux_ignores_sigsys_exit_code_without_keyword() {
+        // Off Linux there is no seccomp branch, so a 128+SIGSYS exit code
+        // with no denial wording is treated as an ordinary failure.
+        assert!(!is_likely_sandbox_denied(
+            true,
+            &output_with(128 + libc::SIGSYS, "", "boom")
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsandboxed_prompt_gated_by_policy_and_interactivity() {
+        let denial = output_with(1, "", "operation not permitted");
+        // Reactive policies prompt when interactive and the failure looks
+        // sandbox-caused.
+        assert!(should_prompt_unsandboxed(
+            ApprovalPolicy::OnFailure,
+            true,
+            true,
+            &denial
+        ));
+        // OnRequest/Never never take the reactive path.
+        assert!(!should_prompt_unsandboxed(
+            ApprovalPolicy::OnRequest,
+            true,
+            true,
+            &denial
+        ));
+        assert!(!should_prompt_unsandboxed(
+            ApprovalPolicy::Never,
+            true,
+            true,
+            &denial
+        ));
+        // Non-interactive never prompts.
+        assert!(!should_prompt_unsandboxed(
+            ApprovalPolicy::OnFailure,
+            false,
+            true,
+            &denial
+        ));
+        // A non-denial failure never prompts.
+        assert!(!should_prompt_unsandboxed(
+            ApprovalPolicy::OnFailure,
+            true,
+            true,
+            &output_with(1, "", "error")
+        ));
+    }
 
     #[test]
     fn confined_command_failure_note_mentions_unrestricted_mode() {

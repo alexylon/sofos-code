@@ -14,11 +14,20 @@ pub mod output;
 pub mod sandbox;
 pub mod validate;
 
-use crate::config::SandboxMode;
+use crate::config::{ApprovalPolicy, SandboxMode};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+
+/// A model-driven request to run a single command outside the
+/// operating-system sandbox (`sandbox_permissions: "require_escalated"`).
+/// Its presence means the model asked to escalate; `justification` is the
+/// reason shown to the user in the approval prompt.
+#[derive(Clone, Debug, Default)]
+pub struct EscalationRequest {
+    pub justification: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct BashExecutor {
@@ -30,9 +39,16 @@ pub struct BashExecutor {
     /// Access mode in effect. In workspace mode, commands the permission
     /// gate would otherwise refuse are run confined by the sandbox.
     pub(super) mode: SandboxMode,
+    /// When the user is asked before a command runs outside the sandbox.
+    /// Gates both escalation paths; see [`ApprovalPolicy`].
+    pub(super) approval_policy: ApprovalPolicy,
     /// Session-scoped temporary permissions (not persisted to config)
     pub(super) session_allowed: Arc<Mutex<HashSet<String>>>,
     pub(super) session_denied: Arc<Mutex<HashSet<String>>>,
+    /// Commands the user has approved to run outside the sandbox for the
+    /// rest of this session, so an escalation is not re-prompted for the
+    /// same command.
+    pub(super) session_unsandboxed: Arc<Mutex<HashSet<String>>>,
     /// Session-scoped Bash path grants for external directories
     pub(super) bash_path_session_allowed: Arc<Mutex<HashSet<String>>>,
     pub(super) bash_path_session_denied: Arc<Mutex<HashSet<String>>>,
@@ -51,6 +67,10 @@ impl BashExecutor {
 
     pub fn set_sandbox_mode(&mut self, mode: SandboxMode) {
         self.mode = mode;
+    }
+
+    pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) {
+        self.approval_policy = policy;
     }
 }
 
