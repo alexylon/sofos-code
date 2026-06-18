@@ -1457,6 +1457,7 @@ Session
 ├── token counters     persisted usage totals
 ├── model              saved model where available
 ├── readonly           saved tool-grant mode where available
+├── permission_preset  saved /permissions preset, restored on resume
 ├── created_at
 └── updated_at
 ```

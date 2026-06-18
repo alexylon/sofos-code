@@ -92,6 +92,7 @@ mod tests {
                 SessionTokenCounters::default(),
                 "",
                 false,
+                None,
             )
             .unwrap();
 
@@ -118,6 +119,7 @@ mod tests {
                 SessionTokenCounters::default(),
                 "",
                 false,
+                None,
             )
             .unwrap();
 
@@ -133,6 +135,7 @@ mod tests {
                 SessionTokenCounters::default(),
                 "",
                 false,
+                None,
             )
             .unwrap();
 
@@ -194,6 +197,7 @@ mod tests {
                 counters,
                 "",
                 false,
+                None,
             )
             .unwrap();
 
@@ -252,6 +256,7 @@ mod tests {
             SessionTokenCounters::default(),
             "",
             false,
+            None,
         );
         assert!(
             save_result.is_ok(),
@@ -303,6 +308,7 @@ mod tests {
                             SessionTokenCounters::default(),
                             "",
                             false,
+                            None,
                         )
                         .unwrap();
                 }
@@ -343,6 +349,7 @@ mod tests {
                 SessionTokenCounters::default(),
                 crate::api::model_info::CLAUDE_OPUS,
                 true,
+                Some("read-only"),
             )
             .unwrap();
 
@@ -352,6 +359,7 @@ mod tests {
             Some(crate::api::model_info::CLAUDE_OPUS)
         );
         assert_eq!(loaded.readonly, Some(true));
+        assert_eq!(loaded.permission_preset.as_deref(), Some("read-only"));
     }
 
     /// Older session files written before `model` and `readonly` existed
@@ -400,6 +408,7 @@ mod tests {
                     SessionTokenCounters::default(),
                     "",
                     false,
+                    None,
                 )
                 .err();
             assert!(save_err.is_some(), "save_session must reject '{}'", bad);

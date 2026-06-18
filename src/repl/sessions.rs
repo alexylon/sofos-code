@@ -5,7 +5,7 @@
 //! the thin REPL-side adapter that translates between
 //! [`crate::session::SessionState`] and the persisted form.
 
-use crate::config::SandboxMode;
+use crate::config::{ApprovalPolicy, PermissionPreset, SandboxMode};
 use crate::error::{Result, SofosError};
 use crate::repl::Repl;
 use crate::session::{SessionMetadata, SessionTokenCounters};
@@ -18,6 +18,42 @@ fn provider_of(model: &str) -> &'static str {
     crate::api::model_info::provider_for(model).label()
 }
 
+/// Decide which permissions preset a resumed session should restore to.
+/// Prefers the saved preset label; falls back to the legacy `readonly`
+/// bool for files written before the preset was persisted; returns `None`
+/// when neither field is present, so the startup choice stands. A saved
+/// sandboxed preset that cannot run on this host is coerced to the
+/// availability-aware default, so the restored mode never claims a
+/// confinement that cannot take effect.
+fn preset_to_restore(
+    saved_preset: Option<&str>,
+    saved_readonly: Option<bool>,
+    sandbox_available: bool,
+) -> Option<PermissionPreset> {
+    let host_default = || {
+        PermissionPreset::current(
+            SandboxMode::from_flags(false, false, sandbox_available),
+            ApprovalPolicy::default(),
+        )
+    };
+    let preset = match saved_preset.and_then(PermissionPreset::parse) {
+        Some(preset) => preset,
+        // Older file: only read-only-ness was recorded. Read-only restores
+        // read-only; a non-read-only file returns to the host default, the
+        // same behaviour as before the preset was persisted.
+        None => match saved_readonly {
+            Some(true) => PermissionPreset::ReadOnly,
+            Some(false) => host_default(),
+            None => return None,
+        },
+    };
+    Some(if preset.is_available(sandbox_available) {
+        preset
+    } else {
+        host_default()
+    })
+}
+
 impl Repl {
     pub fn list_saved_sessions(&self) -> Result<Vec<SessionMetadata>> {
         self.history_manager.list_sessions()
@@ -28,6 +64,7 @@ impl Repl {
             return Ok(());
         }
 
+        let preset = PermissionPreset::current(self.mode, self.approval_policy);
         self.history_manager.save_session(
             &self.session_state.session_id,
             self.session_state.conversation.messages(),
@@ -42,9 +79,28 @@ impl Repl {
             },
             &self.model_config.model,
             self.mode.is_readonly(),
+            Some(preset.label()),
         )?;
 
         Ok(())
+    }
+
+    /// Apply a permissions preset while resuming, without the notice,
+    /// cursor change, or mode preamble that `apply_permission_preset` adds:
+    /// the resumed conversation already reflects the saved state, so this
+    /// only syncs the access mode, the escalation policy, and the tool
+    /// executor.
+    fn restore_permission_preset(&mut self, preset: PermissionPreset) {
+        let mode = preset.mode();
+        if self.mode != mode {
+            self.mode = mode;
+            self.tool_executor.set_mode(mode);
+            self.refresh_available_tools();
+        }
+        if let Some(policy) = preset.escalation() {
+            self.approval_policy = policy;
+            self.tool_executor.set_approval_policy(policy);
+        }
     }
 
     pub fn handle_resume_command(&mut self) -> Result<()> {
@@ -180,30 +236,20 @@ impl Repl {
             }
         }
 
-        // Restore read-only silently when the file records it. The
-        // saved conversation already reflects whichever tool grant was
-        // active, so we just sync the in-memory flag and the tool
-        // executor's allow-list. Older files with no `readonly` field
-        // (`None`) keep the CLI value, so a `--readonly --resume`
-        // against a pre-persistence file still honours the flag.
-        if let Some(saved_readonly) = session.readonly {
-            if saved_readonly != self.mode.is_readonly() {
-                self.mode = if saved_readonly {
-                    SandboxMode::ReadOnly
-                } else {
-                    // Leaving read-only returns to the host default. Honour
-                    // sandbox availability the way startup does, so a host
-                    // without a usable sandbox lands in Unsandboxed rather
-                    // than a Sandboxed mode that cannot confine anything.
-                    SandboxMode::from_flags(
-                        false,
-                        false,
-                        crate::tools::bash::sandbox::is_available(),
-                    )
-                };
-                self.tool_executor.set_mode(self.mode);
-                self.refresh_available_tools();
-            }
+        // Restore the permissions preset silently when the file records
+        // one. The saved conversation already reflects whichever access
+        // mode and escalation policy were active, so we sync the in-memory
+        // state and the tool executor without re-announcing the mode or
+        // re-adding a preamble. A saved sandboxed preset that cannot run on
+        // this host is coerced to the availability-aware default. Older
+        // files carry only `readonly` (or neither field, keeping the CLI
+        // value), which `preset_to_restore` folds in.
+        if let Some(preset) = preset_to_restore(
+            session.permission_preset.as_deref(),
+            session.readonly,
+            crate::tools::bash::sandbox::is_available(),
+        ) {
+            self.restore_permission_preset(preset);
         }
 
         println!(
@@ -222,7 +268,8 @@ impl Repl {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_of;
+    use super::{preset_to_restore, provider_of};
+    use crate::config::PermissionPreset;
 
     #[test]
     fn provider_of_matches_build_llm_client_routing() {
@@ -244,5 +291,73 @@ mod tests {
         // provider (Anthropic, because the default is an Anthropic
         // model); `build_llm_client` mirrors that fallback.
         assert_eq!(provider_of("unknown-model"), "Anthropic");
+    }
+
+    /// The core of L-g: a saved sandboxed preset resumes as itself instead
+    /// of collapsing to the default `sandboxed-ask`.
+    #[test]
+    fn preset_to_restore_keeps_a_saved_sandboxed_preset_when_it_can_run() {
+        assert_eq!(
+            preset_to_restore(
+                Some(PermissionPreset::SandboxedStrict.label()),
+                Some(false),
+                true
+            ),
+            Some(PermissionPreset::SandboxedStrict)
+        );
+        assert_eq!(
+            preset_to_restore(
+                Some(PermissionPreset::SandboxedRetry.label()),
+                Some(false),
+                true
+            ),
+            Some(PermissionPreset::SandboxedRetry)
+        );
+    }
+
+    /// A saved sandboxed preset cannot run where no sandbox exists, so it
+    /// is coerced to the availability-aware default. Read-only and
+    /// unsandboxed always apply.
+    #[test]
+    fn preset_to_restore_coerces_a_sandboxed_preset_where_no_sandbox_runs() {
+        assert_eq!(
+            preset_to_restore(
+                Some(PermissionPreset::SandboxedStrict.label()),
+                Some(false),
+                false
+            ),
+            Some(PermissionPreset::Unsandboxed)
+        );
+        assert_eq!(
+            preset_to_restore(Some(PermissionPreset::ReadOnly.label()), None, false),
+            Some(PermissionPreset::ReadOnly)
+        );
+    }
+
+    /// Older files carry only the `readonly` bool; it still drives the
+    /// restored mode, with a non-read-only file returning to the host
+    /// default.
+    #[test]
+    fn preset_to_restore_falls_back_to_the_legacy_readonly_flag() {
+        assert_eq!(
+            preset_to_restore(None, Some(true), true),
+            Some(PermissionPreset::ReadOnly)
+        );
+        assert_eq!(
+            preset_to_restore(None, Some(false), true),
+            Some(PermissionPreset::SandboxedAsk)
+        );
+        assert_eq!(
+            preset_to_restore(None, Some(false), false),
+            Some(PermissionPreset::Unsandboxed)
+        );
+    }
+
+    /// A file written before either field existed, or one with an
+    /// unparseable label, keeps whatever the startup chose.
+    #[test]
+    fn preset_to_restore_keeps_startup_choice_for_pre_persistence_files() {
+        assert_eq!(preset_to_restore(None, None, true), None);
+        assert_eq!(preset_to_restore(Some("bogus"), None, true), None);
     }
 }

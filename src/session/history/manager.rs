@@ -158,6 +158,7 @@ impl HistoryManager {
         token_counters: SessionTokenCounters,
         model: &str,
         readonly: bool,
+        permission_preset: Option<&str>,
     ) -> Result<()> {
         Self::validate_session_id(session_id)?;
         let _lock = self.acquire_save_lock()?;
@@ -198,6 +199,7 @@ impl HistoryManager {
             token_counters,
             model: Some(model.to_string()),
             readonly: Some(readonly),
+            permission_preset: permission_preset.map(str::to_string),
         };
 
         let content = serde_json::to_string_pretty(&session)?;

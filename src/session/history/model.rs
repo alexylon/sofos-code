@@ -84,7 +84,16 @@ pub struct Session {
     /// on `--resume` so the tool grant matches what the user had
     /// configured. `None` in files written before this field existed —
     /// falls back to the CLI value in that case. (`bool` has no natural
-    /// "unset" sentinel, hence `Option`.)
+    /// "unset" sentinel, hence `Option`.) Kept alongside `permission_preset`
+    /// so a file written by this version still resumes sensibly under an
+    /// older build that only knows `readonly`.
     #[serde(default, alias = "safe_mode", skip_serializing_if = "Option::is_none")]
     pub readonly: Option<bool>,
+    /// The active `/permissions` preset label at save time (for example
+    /// `sandboxed-strict`). Restored on `--resume` so the access mode and
+    /// its escalation policy survive, rather than collapsing to the
+    /// default `sandboxed-ask`. `None` in files written before this field
+    /// existed — `readonly` is used as the fallback there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_preset: Option<String>,
 }
