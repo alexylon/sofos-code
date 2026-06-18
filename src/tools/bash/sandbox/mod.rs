@@ -181,12 +181,12 @@ fn longest_glob_free_prefix(path: &Path) -> PathBuf {
 }
 
 /// Canonicalize `path`, resolving symlinks even when the leaf does not
-/// exist yet: canonicalize the longest existing ancestor and re-append
-/// the missing trailing components. Plain `canonicalize` fails outright
-/// on a missing target, which would leave a symlinked prefix (macOS
-/// `/tmp` -> `/private/tmp`) unresolved and the rule unmatched by the
-/// kernel.
-fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
+/// exist yet: canonicalize the longest existing ancestor and re-append the
+/// missing trailing components. Plain `canonicalize` fails outright on a
+/// missing target, which would leave a symlinked prefix (such as macOS
+/// `/tmp` -> `/private/tmp`, or a workspace-relative path whose symlink
+/// points elsewhere) unresolved.
+pub(super) fn canonicalize_existing_prefix(path: &Path) -> PathBuf {
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical;
     }

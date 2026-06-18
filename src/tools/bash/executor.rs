@@ -110,7 +110,11 @@ impl BashExecutor {
             workspace,
             interactive,
             has_morph,
-            mode: SandboxMode::Unsandboxed,
+            // Fail closed: a freshly built executor confines until told
+            // otherwise, so a caller that forgets to set the mode cannot
+            // silently run commands unconfined. The production constructor
+            // sets the real mode on the next line.
+            mode: SandboxMode::Sandboxed,
             approval_policy: ApprovalPolicy::default(),
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
@@ -536,20 +540,18 @@ impl BashExecutor {
     }
 
     /// Resolve the program and arguments to spawn: the bare shell, or the
-    /// shell wrapped by the operating-system sandbox when `confine` is
-    /// set. When a command must be confined but the sandbox cannot be
-    /// prepared for it — for example a protected path the profile cannot
-    /// express safely — this refuses the command rather than running it
-    /// unconfined.
+    /// shell wrapped by the operating-system sandbox when `policy` is set.
+    /// When a command must be confined but the sandbox cannot be prepared
+    /// for it — for example a protected path the profile cannot express
+    /// safely — this refuses the command rather than running it unconfined.
     fn shell_invocation(
         &self,
         shell: &ResolvedShell,
         command: &str,
-        confine: bool,
+        policy: Option<&SandboxPolicy>,
     ) -> Result<(OsString, Vec<OsString>)> {
-        if confine {
-            let policy = self.confined_policy(command);
-            return sandbox::confined_invocation(&shell.program, command, &policy).ok_or_else(
+        if let Some(policy) = policy {
+            return sandbox::confined_invocation(&shell.program, command, policy).ok_or_else(
                 || {
                     SofosError::ToolExecution(
                         "This command must run confined to the workspace, but the sandbox \
@@ -576,7 +578,7 @@ impl BashExecutor {
     /// `.git` directory, which it needs for operations like `checkout` and
     /// `config`; every other command keeps `.git` read-only so it cannot
     /// plant a Git hook there.
-    fn confined_policy(&self, command: &str) -> SandboxPolicy {
+    fn confined_policy(&self, command: &str) -> Result<SandboxPolicy> {
         let mut policy = SandboxPolicy::for_workspace(&self.workspace);
         if command_runs_only_git(command) {
             let git_dir = self.workspace.join(sandbox::GIT_METADATA_DIR);
@@ -584,13 +586,18 @@ impl BashExecutor {
                 .write_protect_subpaths
                 .retain(|path| path != &git_dir);
         }
-        match PermissionManager::new(self.workspace.clone()) {
-            Ok(manager) => {
-                let (deny, allow) = manager.sandbox_read_rules();
-                policy.with_read_rules(&self.workspace, &deny, &allow)
-            }
-            Err(_) => policy,
-        }
+        // Fail closed: if the permission rules cannot be loaded, refuse the
+        // command rather than confine it without its kernel read-deny
+        // rules — running it could let a wide search reach a path the user
+        // blocked from reading.
+        let manager = PermissionManager::new(self.workspace.clone()).map_err(|error| {
+            SofosError::ToolExecution(format!(
+                "This command must run confined, but its read rules could not \
+                 be loaded ({error}), so it was not run."
+            ))
+        })?;
+        let (deny, allow) = manager.sandbox_read_rules();
+        Ok(policy.with_read_rules(&self.workspace, &deny, &allow))
     }
 
     fn spawn_supervised(&self, command: &str, confine: bool) -> Result<SupervisedOutput> {
@@ -600,22 +607,32 @@ impl BashExecutor {
         }
 
         let shell = resolve_shell();
-        let (program, args) = self.shell_invocation(&shell, command, confine)?;
+        // Build the confined policy once, failing closed if its read rules
+        // cannot be loaded, then reuse it for the invocation and the Linux
+        // metadata cleanup below.
+        let policy = if confine {
+            Some(self.confined_policy(command)?)
+        } else {
+            None
+        };
+        let (program, args) = self.shell_invocation(&shell, command, policy.as_ref())?;
 
         // A confined Linux command masks any not-yet-existing metadata
         // directory with a read-only tmpfs, which bwrap materialises as an
         // empty mount point on the real workspace. Record the absent ones
         // now so the empty leftovers can be removed once the command exits.
         #[cfg(target_os = "linux")]
-        let metadata_cleanup: Vec<PathBuf> = if confine {
-            self.confined_policy(command)
-                .write_protect_subpaths
-                .into_iter()
-                .filter(|path| !path.exists())
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let metadata_cleanup: Vec<PathBuf> = policy
+            .as_ref()
+            .map(|policy| {
+                policy
+                    .write_protect_subpaths
+                    .iter()
+                    .filter(|path| !path.exists())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let mut cmd = Command::new(&program);
         cmd.args(&args)

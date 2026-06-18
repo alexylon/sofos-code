@@ -716,6 +716,52 @@ ask = []
         }
     }
 
+    /// A workspace symlink pointing outside the project must trip the
+    /// external-path gate even when the referenced leaf does not exist yet.
+    /// Plain `canonicalize` fails on the missing leaf; resolving the
+    /// deepest existing ancestor still catches the escape. Without this, a
+    /// read of a not-yet-created path under such a symlink would skip the
+    /// gate.
+    #[cfg(unix)]
+    #[test]
+    fn test_workspace_symlink_escape_with_missing_leaf_is_blocked() {
+        use std::os::unix::fs::symlink;
+
+        let (_temp, workspace) = test_support::workspace();
+        let outside_dir = tempfile::TempDir::new().unwrap();
+        let link = workspace.join("escape_link");
+        symlink(outside_dir.path(), &link).unwrap();
+
+        let executor = BashExecutor::new(workspace, false, false).unwrap();
+        // `not-created-yet` does not exist under the linked directory.
+        let result = executor.execute("cat escape_link/not-created-yet");
+
+        assert!(
+            result.is_err(),
+            "expected a symlink escape with a missing leaf to be denied, got: {result:?}"
+        );
+        if let Err(SofosError::ToolExecution(msg)) = result {
+            assert!(
+                msg.contains("outside workspace"),
+                "expected external-path message, got: {msg}"
+            );
+        } else {
+            panic!("Expected ToolExecution error, got: {result:?}");
+        }
+    }
+
+    /// A freshly built executor defaults to the confined mode, so a caller
+    /// that forgets to set the mode fails closed rather than running
+    /// commands unconfined.
+    #[test]
+    fn new_executor_defaults_to_sandboxed() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        assert!(
+            executor.mode.is_sandboxed(),
+            "a new executor must default to the confined mode"
+        );
+    }
+
     #[test]
     fn test_interrupt_flag_terminates_long_running_command() {
         use std::sync::atomic::{AtomicBool, Ordering};

@@ -744,15 +744,17 @@ impl BashExecutor {
         permission_manager: &mut PermissionManager,
     ) -> Result<()> {
         let joined = self.workspace.join(path_candidate);
-        let canonical = match std::fs::canonicalize(&joined) {
-            Ok(path) => path,
-            Err(_) => return Ok(()),
-        };
-        if canonical.starts_with(&self.workspace) {
+        // Resolve symlinks through the deepest existing ancestor, so a
+        // symlink that points outside the workspace is still caught when
+        // its target does not exist yet. Plain `canonicalize` fails on a
+        // missing leaf, which used to let such a path skip the
+        // external-path gate.
+        let resolved = crate::tools::bash::sandbox::canonicalize_existing_prefix(&joined);
+        if resolved.starts_with(&self.workspace) {
             return Ok(());
         }
-        let canonical_str = canonical.to_string_lossy().to_string();
-        self.check_bash_external_path(&canonical_str, permission_manager)
+        let resolved_str = resolved.to_string_lossy().to_string();
+        self.check_bash_external_path(&resolved_str, permission_manager)
     }
 
     /// Check a single external path against Bash path grants; ask user if not covered.
