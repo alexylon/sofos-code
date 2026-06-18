@@ -17,7 +17,7 @@ use crate::repl::Repl;
 use crate::ui::UI;
 
 use super::event::{
-    ApprovalPickerEntry, EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, UiEvent,
+    EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, PermissionsPickerEntry, UiEvent,
 };
 
 /// Flush both stdout and stderr before signalling a turn is over.
@@ -162,10 +162,10 @@ fn run(
                     }
                 }
                 // Slash commands can mutate the conversation (`/compact`
-                // rewrites the history, `/clear` resets it, `/readonly` /
-                // `/workspace` toggle the mode preamble). Persist after the
-                // command runs so a `/exit` or Ctrl+C before the next
-                // prompt doesn't lose the change.
+                // rewrites the history, `/clear` resets it, `/permissions`
+                // toggles the mode preamble). Persist after the command runs
+                // so a `/exit` or Ctrl+C before the next prompt doesn't lose
+                // the change.
                 if let Err(e) = repl.save_current_session() {
                     UI::print_warning(&format!("Failed to save session: {}", e));
                 }
@@ -215,15 +215,20 @@ fn run(
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
-            Job::ApprovalSelected(Some(policy)) => {
+            Job::PermissionsSelected(Some(preset)) => {
                 interrupt.store(false, Ordering::SeqCst);
-                let _ = ui_tx.send(UiEvent::WorkerBusy("switching approval policy".into()));
-                repl.set_approval_policy(policy);
+                let _ = ui_tx.send(UiEvent::WorkerBusy("switching permissions".into()));
+                repl.apply_permission_preset(preset);
+                // Applying a preset appends a mode preamble to the
+                // conversation, so persist it now as the typed path does.
+                if let Err(e) = repl.save_current_session() {
+                    UI::print_warning(&format!("Failed to save session: {}", e));
+                }
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
-            Job::ApprovalSelected(None) => {
+            Job::PermissionsSelected(None) => {
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
@@ -266,9 +271,9 @@ fn run_command(
             let _ = ui_tx.send(UiEvent::ShowEffortPicker { entries });
             Ok(CommandResult::Continue)
         }
-        Command::ApprovalPicker => {
-            let entries = build_approval_picker_entries(repl);
-            let _ = ui_tx.send(UiEvent::ShowApprovalPicker { entries });
+        Command::PermissionsPicker => {
+            let entries = build_permissions_picker_entries(repl);
+            let _ = ui_tx.send(UiEvent::ShowPermissionsPicker { entries });
             Ok(CommandResult::Continue)
         }
         _ => cmd.execute(repl),
@@ -288,30 +293,18 @@ fn build_effort_picker_entries(repl: &Repl) -> Vec<EffortPickerEntry> {
         .collect()
 }
 
-fn build_approval_picker_entries(repl: &Repl) -> Vec<ApprovalPickerEntry> {
-    use crate::config::ApprovalPolicy;
-    let current = repl.approval_policy;
-    [
-        (
-            ApprovalPolicy::OnRequest,
-            "Assistant asks before running a command outside the sandbox",
-        ),
-        (
-            ApprovalPolicy::OnFailure,
-            "A sandbox-looking failure offers to retry outside the sandbox",
-        ),
-        (
-            ApprovalPolicy::Never,
-            "Never run a command outside the sandbox",
-        ),
-    ]
-    .into_iter()
-    .map(|(policy, description)| ApprovalPickerEntry {
-        policy,
-        description,
-        is_current: policy == current,
-    })
-    .collect()
+fn build_permissions_picker_entries(repl: &Repl) -> Vec<PermissionsPickerEntry> {
+    use crate::config::{PERMISSION_PRESETS, PermissionPreset};
+    let available = repl.sandbox_available();
+    let current = PermissionPreset::current(repl.mode, repl.approval_policy);
+    PERMISSION_PRESETS
+        .into_iter()
+        .map(|preset| PermissionsPickerEntry {
+            preset,
+            is_current: preset == current,
+            is_available: preset.is_available(available),
+        })
+        .collect()
 }
 
 fn build_model_picker_entries(repl: &Repl) -> Vec<ModelPickerEntry> {

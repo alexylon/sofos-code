@@ -67,7 +67,7 @@ async fn update_plan_dispatcher_returns_compact_model_result_and_styled_display(
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -244,7 +244,7 @@ async fn test_read_file_blocks_relative_escape() {
     )
     .unwrap();
 
-    let executor = ToolExecutor::new(workspace, None, None, SandboxMode::Workspace, false).unwrap();
+    let executor = ToolExecutor::new(workspace, None, None, SandboxMode::Sandboxed, false).unwrap();
 
     let result = executor
         .execute("read_file", &json!({"path": "../sibling/secret.txt"}))
@@ -290,7 +290,7 @@ async fn test_resolve_for_write_canonicalizes_through_missing_ancestors() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -350,7 +350,7 @@ async fn test_read_file_allows_explicit_outside_path_with_glob() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -386,7 +386,7 @@ async fn test_edit_file_replaces_string() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -435,7 +435,7 @@ async fn test_edit_file_preserves_content_past_truncation_cap() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -488,7 +488,7 @@ async fn test_edit_file_not_found_string() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -520,7 +520,7 @@ async fn test_edit_file_rejects_empty_old_string() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -552,7 +552,7 @@ async fn test_edit_file_rejects_ambiguous_single_replace() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -584,7 +584,7 @@ async fn test_edit_file_replace_all() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -622,7 +622,7 @@ async fn test_edit_file_returns_compact_summary_to_model_and_diff_to_display() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -674,7 +674,7 @@ async fn test_write_file_overwrite_returns_compact_summary_to_model() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -718,7 +718,7 @@ async fn test_glob_files_finds_matches() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -757,7 +757,7 @@ async fn glob_files_star_does_not_cross_path_separator() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -818,7 +818,7 @@ async fn test_glob_files_skips_default_excludes() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -883,7 +883,7 @@ async fn test_glob_files_gates_external_path_through_permissions() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -934,7 +934,7 @@ async fn test_glob_files_gates_external_path_through_permissions() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -972,7 +972,7 @@ async fn test_glob_files_no_matches() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1010,7 +1010,7 @@ async fn test_write_file_to_external_path_blocked_without_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1053,7 +1053,7 @@ async fn test_write_file_to_external_path_allowed_with_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1102,7 +1102,7 @@ async fn test_edit_file_external_path_allowed_with_read_and_write_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1156,7 +1156,7 @@ async fn test_edit_file_external_write_only_grant_denied() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1208,7 +1208,7 @@ async fn test_read_grant_does_not_allow_write() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1268,7 +1268,7 @@ async fn test_list_directory_external_with_read_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1324,7 +1324,7 @@ async fn test_symlink_does_not_bypass_write_permission() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1366,7 +1366,7 @@ async fn test_bash_external_path_blocked_without_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1408,7 +1408,7 @@ async fn test_bash_external_path_allowed_with_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1448,7 +1448,7 @@ async fn test_edit_file_external_blocked_without_any_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1493,7 +1493,7 @@ async fn test_bash_grant_does_not_allow_read_or_write() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1553,7 +1553,7 @@ async fn test_write_deny_overrides_allow() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1597,7 +1597,7 @@ async fn test_read_external_absolute_path_blocked_without_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1651,7 +1651,7 @@ async fn test_write_new_file_to_external_path() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1701,7 +1701,7 @@ async fn test_bash_partial_path_grant_blocks_ungranated_path() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1753,7 +1753,7 @@ async fn test_bash_deny_overrides_allow() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1804,7 +1804,7 @@ async fn test_create_directory_external_requires_write_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1834,7 +1834,7 @@ async fn test_create_directory_external_requires_write_grant() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1880,7 +1880,7 @@ async fn test_copy_file_external_source_and_destination() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1932,7 +1932,7 @@ async fn test_move_file_external_requires_write_on_source() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -1974,7 +1974,7 @@ async fn test_move_file_external_requires_write_on_source() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2040,7 +2040,7 @@ async fn test_glob_files_symlink_not_followed_by_default() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2109,7 +2109,7 @@ async fn view_image_loads_local_file_as_base64() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2149,7 +2149,7 @@ async fn view_image_passes_http_url_through() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2187,7 +2187,7 @@ async fn view_image_rejects_directory_with_chaining_hint() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2219,7 +2219,7 @@ async fn view_image_rejects_missing_file_clearly() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2252,7 +2252,7 @@ async fn view_image_rejects_non_image_extension() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2286,7 +2286,7 @@ async fn view_image_rejects_empty_path() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2320,7 +2320,7 @@ async fn view_image_resizes_oversized_local_file_end_to_end() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2363,7 +2363,7 @@ async fn view_image_rejects_file_exceeding_size_cap() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Workspace,
+        SandboxMode::Sandboxed,
         false,
     )
     .unwrap();
@@ -2379,10 +2379,10 @@ async fn view_image_rejects_file_exceeding_size_cap() {
     );
 }
 
-/// Switching from unrestricted to workspace mode at runtime must reach the bash
-/// executor, so an unknown command then runs confined instead of
-/// prompting. Guards against the mode being held in two places and
-/// getting out of sync.
+/// Switching from the unsandboxed to the sandboxed mode at runtime must
+/// reach the bash executor, so an unknown command then runs confined
+/// instead of prompting. Guards against the mode being held in two places
+/// and getting out of sync.
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn set_mode_propagates_to_bash_sandbox() {
@@ -2391,12 +2391,12 @@ async fn set_mode_propagates_to_bash_sandbox() {
         workspace.path().to_path_buf(),
         None,
         None,
-        SandboxMode::Unrestricted,
+        SandboxMode::Unsandboxed,
         false,
     )
     .unwrap();
 
-    executor.set_mode(SandboxMode::Workspace);
+    executor.set_mode(SandboxMode::Sandboxed);
 
     let result = executor
         .execute(
@@ -2407,7 +2407,7 @@ async fn set_mode_propagates_to_bash_sandbox() {
 
     assert!(
         result.is_ok(),
-        "after switching to workspace mode the unknown command should run confined, got {result:?}"
+        "after switching to the sandboxed mode the unknown command should run confined, got {result:?}"
     );
     assert!(
         workspace.path().join("out.txt").is_file(),

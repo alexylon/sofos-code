@@ -417,7 +417,7 @@ It does not validate provider wire compatibility beyond what can be expressed as
 It contains:
 
 - model configuration values passed into request building;
-- read-only, workspace, and unrestricted mode system messages;
+- read-only, sandboxed, and unsandboxed mode system messages, plus the `PermissionPreset` enum that pairs each mode with its escalation policy;
 - context and auto-compaction thresholds derived from model information;
 - global defaults for the response-handler loop.
 
@@ -612,7 +612,7 @@ It contains:
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/effort`, `/readonly`, `/workspace`, `/unrestricted`, and `/clear` state handlers;
+- `/effort`, `/permissions`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
@@ -763,10 +763,12 @@ It contains:
 - `slash_popup.rs` — state for the inline slash-command suggestion list;
 - `sgr.rs` — SGR escape helpers.
 
-The TUI also carries two modal pickers as fields on `app::App` and corresponding job/event variants:
+The TUI also carries several modal pickers as fields on `app::App` and corresponding job/event variants:
 
 - the resume picker (`Picker` + `UiEvent::ShowResumePicker` + `Job::ResumeSelected`) drives `/resume`;
 - the model picker (`ModelPicker` + `UiEvent::ShowModelPicker` + `Job::ModelSelected`) drives `/model`. Rows on the other provider are flagged unavailable on the `ModelPickerEntry`, the renderer greys them out, and the navigation helper in `app.rs` skips past them so the cursor only lands on a model the running session can switch to.
+- the effort picker (`EffortPicker` + `UiEvent::ShowEffortPicker` + `Job::EffortSelected`) drives `/effort`;
+- the permissions picker (`PermissionsPicker` + `UiEvent::ShowPermissionsPicker` + `Job::PermissionsSelected`) drives `/permissions`. Each row carries a `PermissionPreset`; the three `sandboxed-*` rows are flagged unavailable where the operating-system sandbox cannot run, so the renderer greys them out and the cursor skips them, sharing the `step_to_available` helper with the model picker.
 
 Rules:
 
@@ -942,7 +944,7 @@ It contains:
 
 - `mod.rs` — module façade and exports;
 - `executor.rs` — command execution, permission-manager integration, session-scoped Bash path grants, process spawning, and capture limits;
-- `sandbox/` — operating-system confinement that runs shell commands inside the workspace in workspace mode:
+- `sandbox/` — operating-system confinement that runs shell commands inside the workspace under a sandboxed preset:
   - `mod.rs` — shared `SandboxPolicy`, sandbox availability check, and Unix `confined_invocation` returning the `(program, args)` to spawn;
   - `macos.rs` — Seatbelt profile builder used with `/usr/bin/sandbox-exec`;
   - `linux.rs` — Bubblewrap argument builder used with `bwrap`;
@@ -953,8 +955,8 @@ It contains:
 Rules:
 
 - Bash commands pass through the 3-tier permission system: Allowed, Denied, or Ask.
-- In workspace mode (the default) with an available sandbox, every Allowed and Ask command runs confined by the operating-system sandbox; an Ask command runs confined instead of prompting. Denied commands are refused. In unrestricted mode (`--unrestricted`), and on platforms without a sandbox, Allowed commands run unconfined and an Ask command prompts as before.
-- The approval policy (`--ask-for-approval`, `/approval`) governs running a command outside the sandbox. With `on-request` (the default) the model can request it per command; with `on-failure` a confined command that looks blocked by the sandbox offers an unsandboxed retry; `never` does neither. The user approves before any command runs unsandboxed, and Denied commands stay refused.
+- Under a sandboxed preset (the default) with an available sandbox, every Allowed and Ask command runs confined by the operating-system sandbox; an Ask command runs confined instead of prompting. Denied commands are refused. Under the `unsandboxed` preset (`--no-sandbox`), and on platforms without a sandbox, Allowed commands run unconfined and an Ask command prompts as before.
+- The escalation policy folded into the `/permissions` sandboxed presets governs running a command outside the sandbox. With `sandboxed-ask` (the default) the model can request it per command; with `sandboxed-retry` a confined command that looks blocked by the sandbox offers an unsandboxed retry; `sandboxed-strict` does neither. The user approves before any command runs unsandboxed, and Denied commands stay refused.
 - Structural checks still run even when a command is otherwise allowed.
 - Parent-directory traversal as a path component is blocked.
 - Output redirection to files is blocked; `2>&1` is allowed.
@@ -964,7 +966,7 @@ Rules:
 - Commands referencing external paths require Bash-path grants. Workspace-relative path arguments are also canonicalised, so a symlink inside the workspace cannot route a read through an external file without the same prompt.
 - Read deny rules apply to command path arguments.
 - Each command runs under a supervisor that streams output, enforces per-stream byte caps while reading, applies a wall-clock timeout, and terminates the whole process group on user interrupt (ESC / Ctrl+C).
-- A confined command that exits unsuccessfully adds a short model-facing note explaining that workspace-mode sandbox limits can cause permission, network, socket, mount, or container engine failures and that `/unrestricted` is appropriate only when no workspace-safe alternative can finish the task.
+- A confined command that exits unsuccessfully adds a short model-facing note explaining that the sandbox can cause permission, network, socket, mount, or container engine failures, and that an unsandboxed preset is appropriate only when no alternative that works under the sandbox can finish the task.
 
 ### 7.6 `tools/permissions/`
 
@@ -1317,9 +1319,7 @@ Built-in commands include:
 - `/compact`;
 - `/effort`;
 - `/model`;
-- `/readonly`;
-- `/workspace`;
-- `/unrestricted`;
+- `/permissions`;
 - `/exit`, `/quit`, `/q`.
 
 Rules:
@@ -1396,7 +1396,7 @@ Rules:
 - Permission tiers: `tools/permissions/manager.rs`.
 - Structural command checks: `tools/bash/validate.rs`.
 - Process execution and output capture: `tools/bash/executor.rs`.
-- Operating-system confinement (workspace mode): `tools/bash/sandbox/`.
+- Operating-system confinement (sandboxed presets): `tools/bash/sandbox/`.
 - Output formatting: `tools/bash/output.rs`.
 
 Rules:

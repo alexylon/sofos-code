@@ -110,7 +110,7 @@ impl BashExecutor {
             workspace,
             interactive,
             has_morph,
-            mode: SandboxMode::Unrestricted,
+            mode: SandboxMode::Unsandboxed,
             approval_policy: ApprovalPolicy::default(),
             session_allowed: Arc::new(Mutex::new(HashSet::new())),
             session_denied: Arc::new(Mutex::new(HashSet::new())),
@@ -226,7 +226,7 @@ impl BashExecutor {
         self.execute_after_permission_check(command, &mut permission_manager)
     }
 
-    /// True when shell commands are confined here: workspace mode plus a
+    /// True when shell commands are confined here: the sandboxed mode plus a
     /// usable OS sandbox on this machine.
     fn sandbox_active(&self) -> bool {
         self.mode.is_sandboxed() && sandbox::is_available()
@@ -473,8 +473,8 @@ impl BashExecutor {
         if !self.interactive {
             return Err(SofosError::ToolExecution(
                 "Cannot approve out-of-sandbox execution in a non-interactive session. \
-                 Rework the command to run inside the workspace, or ask the user to \
-                 run with /unrestricted."
+                 Rework the command to run inside the project, or ask the user to \
+                 switch to an unsandboxed preset (/permissions)."
                     .to_string(),
             ));
         }
@@ -511,11 +511,11 @@ impl BashExecutor {
             .filter(|s| !s.is_empty());
         let prompt = match reason {
             Some(reason) => format!(
-                "The model wants to run this command outside the workspace sandbox.\n  \
+                "The model wants to run this command outside the sandbox.\n  \
                  {command}\n  Reason: {reason}\nAllow?"
             ),
             None => format!(
-                "The model wants to run this command outside the workspace sandbox.\n  \
+                "The model wants to run this command outside the sandbox.\n  \
                  {command}\nAllow?"
             ),
         };
@@ -523,7 +523,7 @@ impl BashExecutor {
         if !approved {
             return Err(SofosError::ToolExecution(format!(
                 "User declined running '{}' outside the sandbox. Rework it to run inside \
-                 the workspace, or ask the user to switch to /unrestricted.",
+                 the project, or ask the user to switch to an unsandboxed preset (/permissions).",
                 command
             )));
         }
@@ -555,7 +555,7 @@ impl BashExecutor {
                         "This command must run confined to the workspace, but the sandbox \
                      could not be prepared for it. This can happen when a path the \
                      sandbox protects contains an unusual control character.\n\
-                     Hint: rename that path, or switch to unrestricted mode if you \
+                     Hint: rename that path, or switch to the unsandboxed mode if you \
                      trust the command."
                             .to_string(),
                     )
@@ -850,11 +850,11 @@ struct SupervisedOutput {
 fn confined_command_failure_note() -> &'static str {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode: writes are limited to the workspace and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no workspace-safe alternative can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to /unrestricted for this trusted operation."
+        "Sandbox note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by the sandbox: writes are limited to the project and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no alternative that works under the sandbox can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to an unsandboxed preset with /permissions for this trusted operation."
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        "Workspace mode note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by workspace mode. If no workspace-safe alternative can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to /unrestricted for this trusted operation."
+        "Sandbox note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by the sandbox. If no alternative that works under the sandbox can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to an unsandboxed preset with /permissions for this trusted operation."
     }
 }
 
@@ -1180,10 +1180,11 @@ mod tests {
     }
 
     #[test]
-    fn confined_command_failure_note_mentions_unrestricted_mode() {
+    fn confined_command_failure_note_points_at_escalation_and_permissions() {
         let note = confined_command_failure_note();
-        assert!(note.contains("Workspace mode note"));
-        assert!(note.contains("/unrestricted"));
+        assert!(note.contains("Sandbox note"));
+        assert!(note.contains("require_escalated"));
+        assert!(note.contains("/permissions"));
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(note.contains("Docker"));
     }
@@ -1196,7 +1197,7 @@ mod tests {
         let (temp, path) = crate::tools::test_support::workspace();
         let mut executor = BashExecutor::new(path, interactive, false).unwrap();
         executor.set_approval_policy(policy);
-        executor.set_sandbox_mode(SandboxMode::Workspace);
+        executor.set_sandbox_mode(SandboxMode::Sandboxed);
         (temp, executor)
     }
 
@@ -1276,8 +1277,8 @@ mod tests {
     #[test]
     fn model_escalation_refuses_redirection() {
         // Escalation runs unconfined, so it refuses output redirection just
-        // as /unrestricted does — it is never more permissive than the
-        // explicit trust mode.
+        // as an unsandboxed preset does — it is never more permissive than
+        // the explicit unsandboxed mode.
         let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
         let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
         let escalation = EscalationRequest {

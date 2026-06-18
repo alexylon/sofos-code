@@ -7,11 +7,11 @@ use tokio::time::{Interval, interval};
 
 use crate::error::Result;
 use crate::repl::SteerBuffer;
-use crate::repl::tui::app::{self, App, ApprovalPicker, EffortPicker, ModelPicker, Picker};
+use crate::repl::tui::app::{self, App, EffortPicker, ModelPicker, PermissionsPicker, Picker};
 use crate::repl::tui::event::{Job, UiEvent};
 use crate::repl::tui::input::{
-    handle_approval_picker_key, handle_effort_picker_key, handle_idle_key, handle_model_picker_key,
-    handle_picker_key,
+    handle_effort_picker_key, handle_idle_key, handle_model_picker_key,
+    handle_permissions_picker_key, handle_picker_key,
 };
 use crate::repl::tui::keymap::handle_confirmation_key;
 use crate::repl::tui::{MAX_OUTPUT_BATCH, TICK_INTERVAL, inline_tui, ui};
@@ -106,8 +106,8 @@ pub(super) async fn event_loop(
                         handle_model_picker_key(app, key, &job_tx);
                     } else if app.effort_picker.is_some() {
                         handle_effort_picker_key(app, key, &job_tx);
-                    } else if app.approval_picker.is_some() {
-                        handle_approval_picker_key(app, key, &job_tx);
+                    } else if app.permissions_picker.is_some() {
+                        handle_permissions_picker_key(app, key, &job_tx);
                     } else {
                         handle_idle_key(app, key, &job_tx, &interrupt, &steer_buffer);
                     }
@@ -124,7 +124,7 @@ pub(super) async fn event_loop(
                         && app.picker.is_none()
                         && app.model_picker.is_none()
                         && app.effort_picker.is_none()
-                        && app.approval_picker.is_none()
+                        && app.permissions_picker.is_none()
                     {
                         app.textarea.insert_str(text);
                         app.sync_slash_popup();
@@ -144,14 +144,13 @@ pub(super) async fn event_loop(
                 }
                 UiEvent::WorkerIdle => {
                     app.finish_busy();
-                    // Don't drain the queue while a modal (resume,
-                    // model, or effort picker) is open — the user
-                    // hasn't committed to a choice yet and a queued
+                    // Don't drain the queue while a picker modal is open —
+                    // the user hasn't committed to a choice yet and a queued
                     // message would race with the selection.
                     if app.picker.is_none()
                         && app.model_picker.is_none()
                         && app.effort_picker.is_none()
-                        && app.approval_picker.is_none()
+                        && app.permissions_picker.is_none()
                     {
                         // Steer messages the tool loop didn't consume —
                         // e.g. the turn ended without ever hitting a
@@ -196,8 +195,8 @@ pub(super) async fn event_loop(
                     app.effort_picker = Some(EffortPicker::new(entries));
                     break;
                 }
-                UiEvent::ShowApprovalPicker { entries } => {
-                    app.approval_picker = Some(ApprovalPicker::new(entries));
+                UiEvent::ShowPermissionsPicker { entries } => {
+                    app.permissions_picker = Some(PermissionsPicker::new(entries));
                     break;
                 }
                 UiEvent::ConfirmRequest {

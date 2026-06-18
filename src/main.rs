@@ -205,16 +205,14 @@ fn main() -> Result<()> {
         print!("{}", startup_banner);
     }
 
-    let mode = crate::config::SandboxMode::from_flags(cli.readonly, cli.unrestricted);
-    let approval_policy = crate::config::ApprovalPolicy::parse(&cli.ask_for_approval)
-        .unwrap_or_else(|| {
-            UI::print_error_with_hint(&crate::error::SofosError::Config(format!(
-                "Invalid --ask-for-approval value '{}'. Expected one of: \
-                 on-failure, on-request, never.",
-                cli.ask_for_approval
-            )));
-            std::process::exit(1);
-        });
+    let mode = crate::config::SandboxMode::from_flags(
+        cli.readonly,
+        cli.no_sandbox,
+        crate::tools::bash::sandbox::is_available(),
+    );
+    // Escalation starts at the default; it is changed in-session through the
+    // `/permissions` sandboxed presets, not from the command line.
+    let approval_policy = crate::config::ApprovalPolicy::default();
     let config = ReplConfig::new(
         cli.model,
         cli.max_tokens,

@@ -15,8 +15,8 @@ use std::io::IsTerminal;
 use crate::api::LlmClient::Anthropic;
 use crate::api::{CreateMessageRequest, LlmClient, MorphClient};
 use crate::config::{
-    ApprovalPolicy, ModelConfig, SandboxMode, readonly_mode_message, unrestricted_mode_message,
-    workspace_mode_message,
+    ApprovalPolicy, ModelConfig, PermissionPreset, SandboxMode, readonly_mode_message,
+    sandbox_off_message, sandbox_on_message,
 };
 use crate::error::{Result, SofosError};
 use crate::mcp::McpManager;
@@ -42,26 +42,20 @@ pub type SteerBuffer = Arc<Mutex<Vec<String>>>;
 fn mode_preamble_for(mode: SandboxMode) -> String {
     match mode {
         SandboxMode::ReadOnly => readonly_mode_message(),
-        SandboxMode::Workspace => workspace_mode_message(),
-        SandboxMode::Unrestricted => unrestricted_mode_message(),
+        SandboxMode::Sandboxed => sandbox_on_message(),
+        SandboxMode::Unsandboxed => sandbox_off_message(),
     }
 }
 
-/// One-line user-facing notice printed when entering workspace mode.
-/// Differs by operating system because the macOS/Linux backend actually
-/// confines the shell while the Windows backend does not yet.
-fn workspace_switch_notice() -> colored::ColoredString {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        "Workspace mode: read and write; shell confined to the project".bright_green()
-    }
-    #[cfg(target_os = "windows")]
-    {
-        "Workspace mode: read and write; OS confinement not engaged on Windows".bright_green()
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        "Workspace mode: read and write; OS confinement unavailable".bright_green()
+/// One-line notice printed when a `/permissions` preset becomes active,
+/// coloured by access mode. Only ever called with a preset available on
+/// this host, since `apply_permission_preset` refuses the rest.
+fn permission_preset_notice(preset: PermissionPreset) -> colored::ColoredString {
+    let text = format!("Permissions: {} — {}", preset.label(), preset.description());
+    match preset.mode() {
+        SandboxMode::ReadOnly => text.bright_yellow(),
+        SandboxMode::Unsandboxed => text.bright_red(),
+        SandboxMode::Sandboxed => text.bright_green(),
     }
 }
 
@@ -357,8 +351,8 @@ impl Repl {
     pub fn process_single_prompt(&mut self, prompt: &str) -> Result<()> {
         let symbol = match self.mode {
             SandboxMode::ReadOnly => ":",
-            SandboxMode::Workspace => ">",
-            SandboxMode::Unrestricted => "#",
+            SandboxMode::Sandboxed => ">",
+            SandboxMode::Unsandboxed => "#",
         };
         println!("{} {}", symbol.bright_green().bold(), prompt);
         println!();
@@ -619,95 +613,104 @@ impl Repl {
         println!();
     }
 
-    /// Switch to `target` access mode at runtime, syncing the offered
-    /// tools, the cursor shape, and the mode preamble the assistant sees.
-    /// A no-op (with a dimmed notice) when already in that mode.
-    pub fn switch_mode(&mut self, target: SandboxMode) {
-        if self.mode == target {
+    /// Apply a `/permissions` preset: set the sandbox mode and, for the
+    /// sandboxed presets, the escalation policy in one step with a single
+    /// notice. Syncs the offered tools, the cursor shape, and the mode
+    /// preamble the assistant sees. A no-op (dimmed notice) when the preset
+    /// is already active.
+    pub fn apply_permission_preset(&mut self, preset: PermissionPreset) {
+        // The sandboxed presets need an operating-system sandbox. Where none
+        // can run, the picker greys them out; the typed `/permissions
+        // <preset>` path refuses them here for the same reason, so the mode
+        // never claims a confinement that cannot take effect.
+        if !preset.is_available(self.sandbox_available()) {
+            let current = PermissionPreset::current(self.mode, self.approval_policy);
             println!(
                 "\n{}\n",
-                format!("Already in {} mode", target.label()).dimmed()
+                format!(
+                    "{} is unavailable here: this platform has no operating-system \
+                     sandbox. Staying in {}.",
+                    preset.label(),
+                    current.label()
+                )
+                .bright_yellow()
             );
             return;
         }
-        self.mode = target;
-        self.tool_executor.set_mode(target);
-        self.refresh_available_tools();
-        // Match the terminal cursor shape to the mode. Best-effort: a
-        // failed SGR write here is purely cosmetic.
-        let _ = if target.is_readonly() {
-            set_readonly_cursor_style()
-        } else {
-            set_default_cursor_style()
-        };
-
-        let notice = match target {
-            SandboxMode::ReadOnly => {
-                "Read-only mode: read-only tools only; no writes or shell".bright_yellow()
-            }
-            SandboxMode::Workspace => workspace_switch_notice(),
-            SandboxMode::Unrestricted => {
-                "Unrestricted mode: shell runs without sandbox confinement".bright_red()
-            }
-        };
-        self.session_state
-            .conversation
-            .add_user_message(mode_preamble_for(target));
-        println!("\n{}\n", notice);
-        if target.is_readonly() {
+        let mode = preset.mode();
+        let target_policy = preset.escalation();
+        let mode_changed = self.mode != mode;
+        let policy_changed = target_policy.is_some_and(|p| p != self.approval_policy);
+        if !mode_changed && !policy_changed {
+            println!(
+                "\n{}\n",
+                format!("Already set to {}", preset.label()).dimmed()
+            );
+            return;
+        }
+        if mode_changed {
+            self.mode = mode;
+            self.tool_executor.set_mode(mode);
+            self.refresh_available_tools();
+            // Match the terminal cursor shape to the mode. Best-effort: a
+            // failed SGR write here is purely cosmetic.
+            let _ = if mode.is_readonly() {
+                set_readonly_cursor_style()
+            } else {
+                set_default_cursor_style()
+            };
+            self.session_state
+                .conversation
+                .add_user_message(mode_preamble_for(mode));
+        }
+        if let Some(policy) = target_policy {
+            self.approval_policy = policy;
+            self.tool_executor.set_approval_policy(policy);
+        }
+        println!("\n{}\n", permission_preset_notice(preset));
+        if mode.is_readonly() {
             self.print_mcp_readonly_summary();
         }
     }
 
-    /// Change the approval policy at runtime (`/approval <policy>`),
-    /// pushing it to the tool executor so the bash escalation behaviour
-    /// follows. A no-op with a dimmed notice when already set.
-    pub fn set_approval_policy(&mut self, policy: ApprovalPolicy) {
-        if self.approval_policy == policy {
-            println!(
-                "\n{}\n",
-                format!("Approval policy already {}", policy.label()).dimmed()
-            );
-            return;
-        }
-        self.approval_policy = policy;
-        self.tool_executor.set_approval_policy(policy);
-        println!(
-            "\n{}\n",
-            format!("Approval policy: {}", policy.label()).bright_cyan()
-        );
+    /// Whether the operating-system sandbox can actually run on this
+    /// machine. False on Windows and on a Linux host without a usable
+    /// Bubblewrap, where the sandboxed mode runs commands unconfined.
+    pub fn sandbox_available(&self) -> bool {
+        crate::tools::bash::sandbox::is_available()
     }
 
-    /// Non-interactive fallback for `/approval`. The TUI opens the picker;
-    /// this path lists the policies in `--prompt` mode.
-    pub fn handle_approval_picker_fallback(&self) {
+    /// Non-interactive fallback for `/permissions`. The TUI opens the
+    /// picker; this path lists the presets in `--prompt` mode and marks the
+    /// active one.
+    pub fn handle_permissions_picker_fallback(&self) {
+        let current = PermissionPreset::current(self.mode, self.approval_policy);
+        let available = self.sandbox_available();
         println!();
         println!(
             "{} {}",
-            "Current approval policy:".bright_green(),
-            self.approval_policy.label().bright_white()
+            "Current permissions:".bright_green(),
+            current.label().bright_white()
         );
-        println!("{}", "Available policies:".bright_cyan());
-        for policy in [
-            ApprovalPolicy::OnRequest,
-            ApprovalPolicy::OnFailure,
-            ApprovalPolicy::Never,
-        ] {
-            let marker = if policy == self.approval_policy {
-                "❯"
+        println!("{}", "Available presets:".bright_cyan());
+        for preset in crate::config::PERMISSION_PRESETS {
+            let marker = if preset == current { "❯" } else { " " };
+            let note = if preset.is_available(available) {
+                ""
             } else {
-                " "
+                "  (unavailable on this platform)"
             };
             println!(
-                "  {} {}",
+                "  {} {}{}",
                 marker.bright_green(),
-                policy.label().bright_white()
+                preset.label().bright_white(),
+                note.dimmed()
             );
         }
         println!();
         println!(
             "{}",
-            "Use `/approval <policy>` to switch, or open an interactive session for the picker."
+            "Use `/permissions <preset>` to switch, or open an interactive session for the picker."
                 .dimmed()
         );
     }

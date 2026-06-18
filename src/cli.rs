@@ -87,16 +87,10 @@ pub struct Cli {
     #[arg(long)]
     pub readonly: bool,
 
-    /// Run shell commands without operating-system confinement.
-    /// Overridden by `--readonly` when both are given.
+    /// Start with the operating-system sandbox off: shell commands run
+    /// without confinement. Overridden by `--readonly` when both are given.
     #[arg(long)]
-    pub unrestricted: bool,
-
-    /// When to ask before running a command outside the operating-system
-    /// sandbox: on-request (default, the model may ask), on-failure (a
-    /// sandbox-looking failure offers an unsandboxed retry), or never.
-    #[arg(short = 'a', long, default_value = "on-request")]
-    pub ask_for_approval: String,
+    pub no_sandbox: bool,
 }
 
 impl Cli {

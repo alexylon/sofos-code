@@ -36,7 +36,7 @@ pub struct BashExecutor {
     pub(super) interactive: bool,
     /// Whether `morph_edit_file` is exposed (drives error-message hints)
     pub(super) has_morph: bool,
-    /// Access mode in effect. In workspace mode, commands the permission
+    /// Access mode in effect. In the sandboxed mode, commands the permission
     /// gate would otherwise refuse are run confined by the sandbox.
     pub(super) mode: SandboxMode,
     /// When the user is asked before a command runs outside the sandbox.
@@ -1132,17 +1132,17 @@ ask = []
         assert!(executor.is_safe_command_structure("ls ~"));
     }
 
-    /// In workspace mode a command the permission gate would otherwise
+    /// In the sandboxed mode a command the permission gate would otherwise
     /// prompt for runs confined instead — no prompt — and can write
     /// inside the workspace. This is the friction fix: unknown commands
     /// just run, bounded by the sandbox. The trailing redirection also
     /// shows the structural check is skipped on the confined path.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_runs_unknown_command_confined() {
+    fn sandboxed_mode_runs_unknown_command_confined() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let result = executor.execute("notarealtool 2>/dev/null; echo confined > inside.txt");
 
@@ -1157,14 +1157,14 @@ ask = []
     }
 
     /// A known-safe command rejected only for file redirection runs
-    /// confined in workspace mode and writes inside the project, instead
+    /// confined in the sandboxed mode and writes inside the project, instead
     /// of being refused outright.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_runs_redirection_confined() {
+    fn sandboxed_mode_runs_redirection_confined() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let result = executor.execute("echo confined > out.txt");
 
@@ -1230,12 +1230,12 @@ ask = []
 
     /// The redirection relaxation must not weaken the real defences:
     /// traversal, hidden subcommands, and dangerous git stay refused in
-    /// workspace mode even when the command also redirects to a file.
+    /// the sandboxed mode even when the command also redirects to a file.
     #[test]
-    fn workspace_mode_still_refuses_dangerous_structures() {
+    fn sandboxed_mode_still_refuses_dangerous_structures() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path, false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         for cmd in [
             "cat ../secret > out.txt",
@@ -1244,7 +1244,7 @@ ask = []
         ] {
             assert!(
                 executor.execute(cmd).is_err(),
-                "workspace mode must still refuse `{cmd}`"
+                "the sandboxed mode must still refuse `{cmd}`"
             );
         }
     }
@@ -1255,10 +1255,10 @@ ask = []
     /// hidden subcommands stay refused instead of leaking through a read.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_confined_unknown_command_still_refuses_dangerous_structures() {
+    fn sandboxed_mode_confined_unknown_command_still_refuses_dangerous_structures() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path, false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         for cmd in [
             "notarealtool ../secret",
@@ -1279,10 +1279,10 @@ ask = []
     /// the Ask tier.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_confined_unknown_command_writes_inside_workspace() {
+    fn sandboxed_mode_confined_unknown_command_writes_inside_workspace() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path.clone(), false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let result = executor.execute("mkdir created_dir");
 
@@ -1302,10 +1302,10 @@ ask = []
     /// of silently reading the file.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_confined_unknown_command_gates_external_path() {
+    fn sandboxed_mode_confined_unknown_command_gates_external_path() {
         let (_temp, path) = test_support::workspace();
         let mut executor = BashExecutor::new(path, false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let result = executor.execute("notarealtool /etc/hosts");
 
@@ -1326,7 +1326,7 @@ ask = []
     /// unfamiliar command could read a denied path and echo it back.
     #[cfg(target_os = "macos")]
     #[test]
-    fn workspace_mode_confined_unknown_command_honours_read_deny() {
+    fn sandboxed_mode_confined_unknown_command_honours_read_deny() {
         use std::fs;
 
         let (_temp, path) = test_support::workspace();
@@ -1339,7 +1339,7 @@ ask = []
         .unwrap();
 
         let mut executor = BashExecutor::new(path, false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let result = executor.execute("notarealtool ./test/secret.txt");
 
@@ -1359,7 +1359,7 @@ ask = []
     /// the mask leaves a mount point to clean up.
     #[cfg(target_os = "linux")]
     #[test]
-    fn workspace_mode_blocks_creating_nonexistent_metadata() {
+    fn sandboxed_mode_blocks_creating_nonexistent_metadata() {
         use crate::tools::bash::sandbox;
 
         let (_temp, path) = test_support::workspace();
@@ -1368,7 +1368,7 @@ ask = []
         }
         let workspace = std::fs::canonicalize(&path).unwrap();
         let mut executor = BashExecutor::new(path, false, false).unwrap();
-        executor.set_sandbox_mode(crate::config::SandboxMode::Workspace);
+        executor.set_sandbox_mode(crate::config::SandboxMode::Sandboxed);
 
         let sofos = workspace.join(".sofos");
         assert!(!sofos.exists(), "precondition: .sofos absent");

@@ -333,10 +333,10 @@ pub(super) fn handle_effort_picker_key(
     }
 }
 
-/// Key handler used while the `/approval` picker overlay is open.
-/// Up/Down step through the policies; Enter sends the highlighted policy
-/// back to the worker; Esc / Ctrl+C cancel.
-pub(super) fn handle_approval_picker_key(
+/// Key handler used while the `/permissions` picker overlay is open.
+/// Up/Down skip disabled (sandbox-unavailable) rows; Enter sends the chosen
+/// preset back to the worker; Esc / Ctrl+C cancel.
+pub(super) fn handle_permissions_picker_key(
     app: &mut App,
     key: KeyEvent,
     job_tx: &std_mpsc::Sender<Job>,
@@ -345,24 +345,29 @@ pub(super) fn handle_approval_picker_key(
         return;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    let Some(picker) = app.approval_picker.as_mut() else {
+    let Some(picker) = app.permissions_picker.as_mut() else {
         return;
     };
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => picker.move_up(),
         KeyCode::Down | KeyCode::Char('j') => picker.move_down(),
         KeyCode::Enter => {
-            let policy = picker.selected().map(|e| e.policy);
-            app.approval_picker = None;
-            let _ = job_tx.send(Job::ApprovalSelected(policy));
+            // The cursor only lands on selectable rows, but filter on
+            // `is_available` anyway so a disabled row can never be sent.
+            let preset = picker
+                .selected()
+                .filter(|e| e.is_available)
+                .map(|e| e.preset);
+            app.permissions_picker = None;
+            let _ = job_tx.send(Job::PermissionsSelected(preset));
         }
         KeyCode::Esc => {
-            app.approval_picker = None;
-            let _ = job_tx.send(Job::ApprovalSelected(None));
+            app.permissions_picker = None;
+            let _ = job_tx.send(Job::PermissionsSelected(None));
         }
         KeyCode::Char('c') if ctrl => {
-            app.approval_picker = None;
-            let _ = job_tx.send(Job::ApprovalSelected(None));
+            app.permissions_picker = None;
+            let _ = job_tx.send(Job::PermissionsSelected(None));
         }
         _ => {}
     }

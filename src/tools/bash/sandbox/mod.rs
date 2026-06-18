@@ -1,6 +1,6 @@
 //! Operating-system confinement for shell commands.
 //!
-//! In workspace mode the permission gate stops refusing unknown or
+//! In the sandboxed mode the permission gate stops refusing unknown or
 //! structurally unusual commands and instead runs them confined: writes
 //! are limited to the workspace and the temporary directories, and the
 //! network is closed where the operating system allows it. The model
@@ -33,7 +33,7 @@ pub mod windows;
 /// network, and which paths it may not read. `allow_network`, the read
 /// lists, and `write_protect_subpaths` are consulted by the macOS and
 /// Linux backends only; the Windows backend leaves the network open and
-/// reads unrestricted.
+/// reads unrestricted (not gated by this policy).
 #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
 pub struct SandboxPolicy {
     pub writable_roots: Vec<PathBuf>,

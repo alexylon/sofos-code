@@ -191,7 +191,15 @@ impl Repl {
                 self.mode = if saved_readonly {
                     SandboxMode::ReadOnly
                 } else {
-                    SandboxMode::Workspace
+                    // Leaving read-only returns to the host default. Honour
+                    // sandbox availability the way startup does, so a host
+                    // without a usable sandbox lands in Unsandboxed rather
+                    // than a Sandboxed mode that cannot confine anything.
+                    SandboxMode::from_flags(
+                        false,
+                        false,
+                        crate::tools::bash::sandbox::is_available(),
+                    )
                 };
                 self.tool_executor.set_mode(self.mode);
                 self.refresh_available_tools();

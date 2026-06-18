@@ -1,5 +1,5 @@
 use super::CommandResult;
-use crate::config::{ApprovalPolicy, SandboxMode};
+use crate::config::PermissionPreset;
 use crate::error::Result;
 use crate::repl::Repl;
 use crate::ui::UI;
@@ -39,30 +39,15 @@ pub fn effort_set_command(
     Ok(CommandResult::Continue)
 }
 
-pub fn readonly_mode_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.switch_mode(SandboxMode::ReadOnly);
-    Ok(CommandResult::Continue)
-}
-
-pub fn workspace_mode_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.switch_mode(SandboxMode::Workspace);
-    Ok(CommandResult::Continue)
-}
-
-pub fn unrestricted_mode_command(repl: &mut Repl) -> Result<CommandResult> {
-    repl.switch_mode(SandboxMode::Unrestricted);
-    Ok(CommandResult::Continue)
-}
-
-pub fn approval_picker_command(repl: &mut Repl) -> Result<CommandResult> {
+pub fn permissions_picker_command(repl: &mut Repl) -> Result<CommandResult> {
     // The TUI worker intercepts this and opens the inline picker;
     // this fallback only runs in non-interactive mode.
-    repl.handle_approval_picker_fallback();
+    repl.handle_permissions_picker_fallback();
     Ok(CommandResult::Continue)
 }
 
-pub fn approval_set_command(repl: &mut Repl, policy: ApprovalPolicy) -> Result<CommandResult> {
-    repl.set_approval_policy(policy);
+pub fn permissions_set_command(repl: &mut Repl, preset: PermissionPreset) -> Result<CommandResult> {
+    repl.apply_permission_preset(preset);
     Ok(CommandResult::Continue)
 }
 

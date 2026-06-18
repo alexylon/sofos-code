@@ -108,17 +108,17 @@ pub fn readonly_mode_message() -> String {
      are filtered out unless their server is marked readonly = \"read_only\" or \
      \"allow\" in the configuration.\n\
      \n\
-     Switch with /workspace (default) or /unrestricted.]"
+     Switch access modes with /permissions.]"
         .to_string()
 }
 
-/// Workspace mode preamble shown to the assistant. Names the three
-/// command tiers, the structural rules that stay enforced, and the
+/// Sandbox-on preamble shown to the assistant. Names the three command
+/// tiers, the structural rules that stay enforced, and the
 /// per-operating-system caveats around network closure.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub fn workspace_mode_message() -> String {
+pub fn sandbox_on_message() -> String {
     String::from(
-        "[SYSTEM: Workspace mode is active (the default).\n\
+        "[SYSTEM: The sandbox is on (the default access mode).\n\
          \n\
          Shell commands run through a three-tier model:\n\
          - Familiar commands (cargo, npm, go, ls, cat, grep, rg, git status, git log, \
@@ -130,7 +130,7 @@ pub fn workspace_mode_message() -> String {
          Every command that runs, familiar or not, is confined by the operating-system \
          sandbox: writes are limited to the workspace and the temporary directories, and \
          the network is closed. This includes build and network tools such as cargo, npm, \
-         and pip — in workspace mode they cannot fetch over the network or write outside \
+         and pip — with the sandbox on they cannot fetch over the network or write outside \
          the workspace. File redirection (echo hi > file) and here-documents also run \
          confined, so they succeed when targeting paths inside the workspace.\n\
          \n\
@@ -142,28 +142,28 @@ pub fn workspace_mode_message() -> String {
          Always refused, even confined: parent traversal (..), hidden subcommands \
          ($(...), backticks, <(...), >(...)), and dangerous git operations.\n\
          \n\
-         Confined-command failures: if a workspace-mode command fails with permission, \
-         network, socket, mount, or container engine errors, assume the operating-system \
-         sandbox may be the cause. Common examples include Docker and other container \
-         runtimes, tools that need network access, local daemon sockets, or writes outside \
-         the workspace and temporary directories. Explain this likely cause to the user, \
-         try a workspace-safe alternative when possible, and otherwise rerun the command \
+         Confined-command failures: if a command fails with permission, network, socket, \
+         mount, or container engine errors, assume the operating-system sandbox may be the \
+         cause. Common examples include Docker and other container runtimes, tools that \
+         need network access, local daemon sockets, or writes outside the workspace and \
+         temporary directories. Explain this likely cause to the user, try an alternative \
+         that works under the sandbox when possible, and otherwise rerun the command \
          with sandbox_permissions set to \"require_escalated\" so the user can approve \
-         running that one command outside the sandbox; suggest /unrestricted only if many \
-         commands need it.\n\
+         running that one command outside the sandbox; suggest an unsandboxed preset \
+         (/permissions) only if many commands need it.\n\
          \n\
-         Switch with /readonly or /unrestricted. All tools are available.]",
+         Switch access modes with /permissions. All tools are available.]",
     )
 }
 
-/// Workspace mode preamble on Windows. The restricted-token backend is
-/// not engaged on this platform (the default Git for Windows `sh.exe`
-/// cannot start under it), so workspace mode currently behaves like
-/// unrestricted mode for shell commands. The message tells the
-/// assistant the truth so it does not assume confinement is in effect.
+/// Sandbox-on preamble on Windows, where the restricted-token backend is
+/// not engaged (the default Git for Windows `sh.exe` cannot start under
+/// it), so shell commands run unconfined even with the sandbox on. The
+/// message tells the assistant the truth so it does not assume confinement
+/// is in effect.
 #[cfg(target_os = "windows")]
-pub fn workspace_mode_message() -> String {
-    "[SYSTEM: Workspace mode is active (the default).\n\
+pub fn sandbox_on_message() -> String {
+    "[SYSTEM: The sandbox is on.\n\
      \n\
      Shell commands run through a three-tier model:\n\
      - Familiar commands (cargo, npm, go, ls, cat, grep, rg, git status, git log, \
@@ -177,40 +177,40 @@ pub fn workspace_mode_message() -> String {
      edit_file instead; 2>&1 is allowed), and dangerous git operations.\n\
      \n\
      Operating-system confinement is NOT engaged on Windows in this release: the \
-     default shell cannot start under the restricted access token. Workspace mode \
-     therefore behaves the same as unrestricted mode on this platform; the network \
-     is not closed for shell commands. The destructive-command blocklist, the \
-     read-deny rules, and the external-path prompts still apply.\n\
+     default shell cannot start under the restricted access token, so shell commands \
+     run unconfined on this platform even with the sandbox on; the network is not \
+     closed for shell commands. The destructive-command blocklist, the read-deny \
+     rules, and the external-path prompts still apply.\n\
      \n\
-     Switch with /readonly or /unrestricted. All tools are available.]"
+     Switch access modes with /permissions. All tools are available.]"
         .to_string()
 }
 
-/// Workspace mode preamble on platforms without a sandbox backend.
+/// Sandbox-on preamble on platforms without a sandbox backend.
 /// Treated like the Windows path until a backend is added.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub fn workspace_mode_message() -> String {
-    "[SYSTEM: Workspace mode is active (the default).\n\
+pub fn sandbox_on_message() -> String {
+    "[SYSTEM: The sandbox is on.\n\
      \n\
      Shell commands run through a three-tier model:\n\
      - Familiar commands run automatically.\n\
      - Destructive commands are always refused.\n\
      - Any other command prompts the user for approval before running.\n\
      \n\
-     Operating-system confinement is not available on this platform. Workspace mode \
-     therefore behaves the same as unrestricted mode for shell commands.\n\
+     Operating-system confinement is not available on this platform, so shell \
+     commands run unconfined even with the sandbox on.\n\
      \n\
-     Switch with /readonly or /unrestricted. All tools are available.]"
+     Switch access modes with /permissions. All tools are available.]"
         .to_string()
 }
 
-/// Unrestricted mode preamble shown to the assistant. Names the same
-/// three-tier model and the structural rules, and points out that no
-/// operating-system confinement is applied.
-pub fn unrestricted_mode_message() -> String {
-    "[SYSTEM: Unrestricted mode is active.\n\
+/// Sandbox-off preamble shown to the assistant. Names the same three-tier
+/// model and the structural rules, and points out that no operating-system
+/// confinement is applied.
+pub fn sandbox_off_message() -> String {
+    "[SYSTEM: The sandbox is off.\n\
      \n\
-     Shell commands run through the same three-tier model as workspace mode, but \
+     Shell commands run through the same three-tier model as with the sandbox on, but \
      without operating-system confinement:\n\
      - Familiar commands run automatically.\n\
      - Destructive commands (rm, rmdir, chmod, chown, sudo, dd, mkfs, systemctl, \
@@ -224,40 +224,42 @@ pub fn unrestricted_mode_message() -> String {
      \n\
      No operating-system confinement is applied; intended for trusted environments only.\n\
      \n\
-     Switch with /readonly or /workspace. All tools are available.]"
+     Switch access modes with /permissions. All tools are available.]"
         .to_string()
 }
 
 /// How much access the assistant has to the workspace and the shell.
 ///
 /// Chosen at startup from the command line (`--readonly`,
-/// `--unrestricted`, or neither) and switchable during a session with
-/// the `/readonly` and `/workspace` commands.
+/// `--no-sandbox`, or neither) and switchable during a session through the
+/// `/permissions` presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
     /// Only read-only tools are offered. No file writes and no shell
     /// commands.
     ReadOnly,
-    /// Read and write within the workspace, with shell commands confined
-    /// to the workspace directory by the operating system. This is the
-    /// default when neither switch is given.
-    Workspace,
-    /// Unrestricted: shell commands run without operating-system
+    /// Read and write, with shell commands confined to the project
+    /// directory by the operating-system sandbox. The default when a
+    /// sandbox is available and neither switch is given.
+    Sandboxed,
+    /// Read and write, with shell commands run without operating-system
     /// confinement. Intended for trusted environments only.
-    Unrestricted,
+    Unsandboxed,
 }
 
 impl SandboxMode {
-    /// Resolve the mode from the two command-line switches. `--readonly`
-    /// wins over `--unrestricted` when both are given, so the most
-    /// restrictive choice always takes effect.
-    pub fn from_flags(readonly: bool, unrestricted: bool) -> Self {
+    /// Resolve the startup mode. `--readonly` wins over `--no-sandbox` when
+    /// both are given. With neither flag the default is sandbox on, except
+    /// where no sandbox can run (`sandbox_available` is false — Windows, or
+    /// a Linux host without Bubblewrap), where the default is sandbox off so
+    /// the mode does not claim a confinement that cannot take effect.
+    pub fn from_flags(readonly: bool, no_sandbox: bool, sandbox_available: bool) -> Self {
         if readonly {
             Self::ReadOnly
-        } else if unrestricted {
-            Self::Unrestricted
+        } else if no_sandbox || !sandbox_available {
+            Self::Unsandboxed
         } else {
-            Self::Workspace
+            Self::Sandboxed
         }
     }
 
@@ -268,29 +270,9 @@ impl SandboxMode {
     }
 
     /// Whether shell commands should be confined to the workspace by the
-    /// operating-system sandbox. True only for [`SandboxMode::Workspace`].
+    /// operating-system sandbox. True only for [`SandboxMode::Sandboxed`].
     pub fn is_sandboxed(self) -> bool {
-        matches!(self, Self::Workspace)
-    }
-
-    /// Short label shown in the status line. On Windows the workspace
-    /// label is suffixed with "(no sandbox)" because operating-system
-    /// confinement is not engaged on that platform in this release.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "readonly",
-            Self::Workspace => {
-                #[cfg(target_os = "windows")]
-                {
-                    "workspace (no sandbox)"
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    "workspace"
-                }
-            }
-            Self::Unrestricted => "unrestricted",
-        }
+        matches!(self, Self::Sandboxed)
     }
 }
 
@@ -307,8 +289,9 @@ impl SandboxMode {
 ///   offered for an unsandboxed retry; only under
 ///   [`ApprovalPolicy::OnFailure`].
 ///
-/// Chosen at startup with `--ask-for-approval` / `-a` and switchable
-/// during a session with the `/approval` command.
+/// Selected through the `/permissions` presets: the three `sandboxed-*`
+/// choices fold this policy into the access mode, so there is no separate
+/// approval surface to keep in sync.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalPolicy {
     /// No up-front model escalation requests, but a confined command that
@@ -325,19 +308,8 @@ pub enum ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
-    /// Resolve from the `--ask-for-approval` value or the `/approval`
-    /// argument. Accepts the kebab-case names case-insensitively and
-    /// tolerating underscores.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
-            "on-failure" => Some(Self::OnFailure),
-            "on-request" => Some(Self::OnRequest),
-            "never" => Some(Self::Never),
-            _ => None,
-        }
-    }
-
-    /// Short label shown in the status line and echoed by `/approval`.
+    /// Short label used in the escalation-rejection message the model sees
+    /// when it requests a sandbox lift under a policy that forbids it.
     pub fn label(self) -> &'static str {
         match self {
             Self::OnFailure => "on-failure",
@@ -361,31 +333,158 @@ impl ApprovalPolicy {
     }
 }
 
+/// A `/permissions` preset: a [`SandboxMode`] paired with its escalation
+/// policy, offered to the user as one choice. The single source of truth
+/// for the picker rows, the `/permissions <label>` parser, and the status
+/// label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionPreset {
+    /// Inspection tools only; no edits or shell commands.
+    ReadOnly,
+    /// Sandboxed with [`ApprovalPolicy::OnRequest`] — the default.
+    SandboxedAsk,
+    /// Sandboxed with [`ApprovalPolicy::OnFailure`].
+    SandboxedRetry,
+    /// Sandboxed with [`ApprovalPolicy::Never`].
+    SandboxedStrict,
+    /// Edits and shell commands with no operating-system confinement.
+    Unsandboxed,
+}
+
+/// Every preset in picker-display order, least to most permissive. The
+/// picker, the parser, and the status line all read from this array.
+pub const PERMISSION_PRESETS: [PermissionPreset; 5] = [
+    PermissionPreset::ReadOnly,
+    PermissionPreset::SandboxedAsk,
+    PermissionPreset::SandboxedRetry,
+    PermissionPreset::SandboxedStrict,
+    PermissionPreset::Unsandboxed,
+];
+
+impl PermissionPreset {
+    /// User-facing name, typed as `/permissions <label>` and shown in the
+    /// picker and status line.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::SandboxedAsk => "sandboxed-ask",
+            Self::SandboxedRetry => "sandboxed-retry",
+            Self::SandboxedStrict => "sandboxed-strict",
+            Self::Unsandboxed => "unsandboxed",
+        }
+    }
+
+    /// One-line picker description. "Project-limited" is shorthand for
+    /// "writes and the network are confined to the project; reads stay
+    /// open"; "sandbox lift" means running a single command unconfined.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "Inspect only; no edits or shell commands.",
+            Self::SandboxedAsk => "Project-limited edits and commands; may request a sandbox lift.",
+            Self::SandboxedRetry => {
+                "Project-limited edits and commands; offers an unsandboxed retry if blocked."
+            }
+            Self::SandboxedStrict => "Project-limited edits and commands; never lifts the sandbox.",
+            Self::Unsandboxed => "Edit and run commands without sandbox limits.",
+        }
+    }
+
+    /// The access mode this preset selects.
+    pub fn mode(self) -> SandboxMode {
+        match self {
+            Self::ReadOnly => SandboxMode::ReadOnly,
+            Self::SandboxedAsk | Self::SandboxedRetry | Self::SandboxedStrict => {
+                SandboxMode::Sandboxed
+            }
+            Self::Unsandboxed => SandboxMode::Unsandboxed,
+        }
+    }
+
+    /// Whether this preset can be selected given whether a working OS
+    /// sandbox exists. The sandboxed presets are unavailable where none can
+    /// run (Windows, or a Linux host without Bubblewrap); the others always
+    /// apply.
+    pub fn is_available(self, sandbox_available: bool) -> bool {
+        self.mode() != SandboxMode::Sandboxed || sandbox_available
+    }
+
+    /// Escalation policy to apply, or `None` where escalation is moot —
+    /// read-only runs nothing and unsandboxed has no sandbox to lift.
+    pub fn escalation(self) -> Option<ApprovalPolicy> {
+        match self {
+            Self::ReadOnly | Self::Unsandboxed => None,
+            Self::SandboxedAsk => Some(ApprovalPolicy::OnRequest),
+            Self::SandboxedRetry => Some(ApprovalPolicy::OnFailure),
+            Self::SandboxedStrict => Some(ApprovalPolicy::Never),
+        }
+    }
+
+    /// Resolve from a `/permissions <label>` argument, lenient on case and
+    /// underscores-for-hyphens.
+    pub fn parse(s: &str) -> Option<Self> {
+        let normalized = s.trim().to_ascii_lowercase().replace('_', "-");
+        PERMISSION_PRESETS
+            .into_iter()
+            .find(|preset| preset.label() == normalized)
+    }
+
+    /// The preset matching the live state. Read-only and unsandboxed are
+    /// decided by the mode alone; the sandboxed presets are distinguished
+    /// by the active escalation policy.
+    pub fn current(mode: SandboxMode, policy: ApprovalPolicy) -> Self {
+        match mode {
+            SandboxMode::ReadOnly => Self::ReadOnly,
+            SandboxMode::Unsandboxed => Self::Unsandboxed,
+            SandboxMode::Sandboxed => match policy {
+                ApprovalPolicy::OnRequest => Self::SandboxedAsk,
+                ApprovalPolicy::OnFailure => Self::SandboxedRetry,
+                ApprovalPolicy::Never => Self::SandboxedStrict,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn sandbox_mode_from_flags_prefers_readonly_then_unrestricted() {
+    fn sandbox_mode_from_flags_prefers_readonly_then_no_sandbox() {
+        // With a sandbox available, no flags defaults to sandbox on.
         assert_eq!(
-            SandboxMode::from_flags(false, false),
-            SandboxMode::Workspace
+            SandboxMode::from_flags(false, false, true),
+            SandboxMode::Sandboxed
+        );
+        // --no-sandbox forces sandbox off even where one is available.
+        assert_eq!(
+            SandboxMode::from_flags(false, true, true),
+            SandboxMode::Unsandboxed
+        );
+        // No usable sandbox (Windows, or Linux without Bubblewrap) defaults
+        // to off rather than a confinement that cannot run.
+        assert_eq!(
+            SandboxMode::from_flags(false, false, false),
+            SandboxMode::Unsandboxed
+        );
+        // --readonly always wins.
+        assert_eq!(
+            SandboxMode::from_flags(true, false, true),
+            SandboxMode::ReadOnly
         );
         assert_eq!(
-            SandboxMode::from_flags(false, true),
-            SandboxMode::Unrestricted
+            SandboxMode::from_flags(true, true, false),
+            SandboxMode::ReadOnly
         );
-        assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::ReadOnly);
-        assert_eq!(SandboxMode::from_flags(true, true), SandboxMode::ReadOnly);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn workspace_mode_message_explains_confined_command_failures() {
-        let message = workspace_mode_message();
+    fn sandbox_on_message_explains_confined_command_failures() {
+        let message = sandbox_on_message();
         assert!(message.contains("Confined-command failures"));
         assert!(message.contains("Docker"));
-        assert!(message.contains("/unrestricted"));
+        assert!(message.contains("require_escalated"));
+        assert!(message.contains("/permissions"));
     }
 
     #[test]
@@ -409,27 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn approval_policy_parse_round_trips_labels() {
-        for policy in [
-            ApprovalPolicy::OnFailure,
-            ApprovalPolicy::OnRequest,
-            ApprovalPolicy::Never,
-        ] {
-            assert_eq!(ApprovalPolicy::parse(policy.label()), Some(policy));
-        }
-        // Lenient spellings.
-        assert_eq!(
-            ApprovalPolicy::parse("On-Failure"),
-            Some(ApprovalPolicy::OnFailure)
-        );
-        assert_eq!(
-            ApprovalPolicy::parse("on_request"),
-            Some(ApprovalPolicy::OnRequest)
-        );
-        assert_eq!(ApprovalPolicy::parse("bogus"), None);
-    }
-
-    #[test]
     fn approval_policy_gates_each_escalation_path() {
         // Reactive retry-on-failure path.
         assert!(ApprovalPolicy::OnFailure.wants_no_sandbox_approval());
@@ -439,5 +517,66 @@ mod tests {
         assert!(ApprovalPolicy::OnRequest.allows_model_escalation_request());
         assert!(!ApprovalPolicy::OnFailure.allows_model_escalation_request());
         assert!(!ApprovalPolicy::Never.allows_model_escalation_request());
+    }
+
+    #[test]
+    fn permission_preset_parse_round_trips_every_label() {
+        for preset in PERMISSION_PRESETS {
+            assert_eq!(PermissionPreset::parse(preset.label()), Some(preset));
+        }
+        // Lenient on case and underscores.
+        assert_eq!(
+            PermissionPreset::parse("Sandboxed_Ask"),
+            Some(PermissionPreset::SandboxedAsk)
+        );
+        assert_eq!(PermissionPreset::parse("bogus"), None);
+    }
+
+    #[test]
+    fn permission_preset_current_matches_mode_and_policy() {
+        // Read-only and unsandboxed are decided by the mode alone.
+        assert_eq!(
+            PermissionPreset::current(SandboxMode::ReadOnly, ApprovalPolicy::OnRequest),
+            PermissionPreset::ReadOnly
+        );
+        assert_eq!(
+            PermissionPreset::current(SandboxMode::Unsandboxed, ApprovalPolicy::Never),
+            PermissionPreset::Unsandboxed
+        );
+        // The sandboxed presets are distinguished by the escalation policy.
+        assert_eq!(
+            PermissionPreset::current(SandboxMode::Sandboxed, ApprovalPolicy::OnRequest),
+            PermissionPreset::SandboxedAsk
+        );
+        assert_eq!(
+            PermissionPreset::current(SandboxMode::Sandboxed, ApprovalPolicy::OnFailure),
+            PermissionPreset::SandboxedRetry
+        );
+        assert_eq!(
+            PermissionPreset::current(SandboxMode::Sandboxed, ApprovalPolicy::Never),
+            PermissionPreset::SandboxedStrict
+        );
+    }
+
+    #[test]
+    fn permission_preset_availability_tracks_the_sandbox() {
+        // With a sandbox, every preset is selectable.
+        for preset in PERMISSION_PRESETS {
+            assert!(preset.is_available(true));
+        }
+        // Without one, only the sandboxed presets become unavailable.
+        for preset in PERMISSION_PRESETS {
+            let expected = preset.mode() != SandboxMode::Sandboxed;
+            assert_eq!(preset.is_available(false), expected, "{:?}", preset);
+        }
+    }
+
+    #[test]
+    fn permission_preset_mode_and_escalation_agree_with_current() {
+        // Each preset's (mode, escalation) round-trips back to itself.
+        for preset in PERMISSION_PRESETS {
+            let policy = preset.escalation().unwrap_or_default();
+            assert_eq!(PermissionPreset::current(preset.mode(), policy), preset);
+        }
     }
 }

@@ -333,14 +333,14 @@ impl ToolExecutor {
     pub fn set_mode(&mut self, mode: SandboxMode) {
         self.mode = mode;
         // The bash executor keeps its own copy of the mode to drive
-        // sandbox confinement, so a runtime switch (for example `/readonly`
-        // then `/workspace`) must reach it too.
+        // sandbox confinement, so a runtime `/permissions` switch must
+        // reach it too.
         self.bash_executor.set_sandbox_mode(mode);
     }
 
     /// Push the approval policy down to the bash executor, which owns the
-    /// escalation behaviour. The REPL calls this at startup and whenever
-    /// `/approval` changes the policy mid-session.
+    /// escalation behaviour. The REPL calls this at startup and whenever a
+    /// `/permissions` sandboxed preset changes the policy mid-session.
     pub fn set_approval_policy(&mut self, policy: crate::config::ApprovalPolicy) {
         self.bash_executor.set_approval_policy(policy);
     }

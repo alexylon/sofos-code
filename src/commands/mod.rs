@@ -23,14 +23,12 @@ pub enum Command {
     /// `/effort <level>` — set the level directly. Per-model
     /// validation matches `--reasoning-effort`.
     EffortSet(crate::api::ReasoningEffort),
-    ReadOnlyMode,
-    WorkspaceMode,
-    UnrestrictedMode,
-    /// `/approval` — open the approval-policy picker.
-    ApprovalPicker,
-    /// `/approval <policy>` — set when the user is asked before a command
-    /// runs outside the sandbox (on-failure/on-request/never).
-    ApprovalSet(crate::config::ApprovalPolicy),
+    /// `/permissions` — open the access-preset picker.
+    PermissionsPicker,
+    /// `/permissions <label>` — switch directly to a named preset
+    /// (read-only / sandboxed-ask / sandboxed-retry / sandboxed-strict /
+    /// unsandboxed).
+    PermissionsSet(crate::config::PermissionPreset),
     Compact,
     /// `/model` with no argument — open the model picker.
     ModelPicker,
@@ -51,10 +49,7 @@ const CMD_RESUME: &str = "/resume";
 const CMD_EFFORT: &str = "/effort";
 const CMD_MODEL: &str = "/model";
 const CMD_COMPACT: &str = "/compact";
-const CMD_READONLY: &str = "/readonly";
-const CMD_WORKSPACE: &str = "/workspace";
-const CMD_UNRESTRICTED: &str = "/unrestricted";
-const CMD_APPROVAL: &str = "/approval";
+const CMD_PERMISSIONS: &str = "/permissions";
 
 impl Command {
     pub fn from_str(s: &str) -> Option<Self> {
@@ -64,10 +59,7 @@ impl Command {
             CMD_CLEAR => Some(Command::Clear),
             CMD_RESUME => Some(Command::Resume),
             CMD_EFFORT => Some(Command::EffortPicker),
-            CMD_READONLY => Some(Command::ReadOnlyMode),
-            CMD_WORKSPACE => Some(Command::WorkspaceMode),
-            CMD_UNRESTRICTED => Some(Command::UnrestrictedMode),
-            CMD_APPROVAL => Some(Command::ApprovalPicker),
+            CMD_PERMISSIONS => Some(Command::PermissionsPicker),
             CMD_COMPACT => Some(Command::Compact),
             CMD_MODEL => Some(Command::ModelPicker),
             _ => {
@@ -85,12 +77,12 @@ impl Command {
                     } else {
                         Some(Command::ModelSet(trimmed.to_string()))
                     }
-                } else if let Some(arg) = lower.strip_prefix("/approval ") {
+                } else if let Some(arg) = lower.strip_prefix("/permissions ") {
                     let trimmed = arg.trim();
                     if trimmed.is_empty() {
-                        Some(Command::ApprovalPicker)
+                        Some(Command::PermissionsPicker)
                     } else {
-                        crate::config::ApprovalPolicy::parse(trimmed).map(Command::ApprovalSet)
+                        crate::config::PermissionPreset::parse(trimmed).map(Command::PermissionsSet)
                     }
                 } else {
                     None
@@ -106,11 +98,8 @@ impl Command {
             Command::Resume => builtin::resume_command(repl),
             Command::EffortPicker => builtin::effort_picker_command(repl),
             Command::EffortSet(effort) => builtin::effort_set_command(repl, *effort),
-            Command::ReadOnlyMode => builtin::readonly_mode_command(repl),
-            Command::WorkspaceMode => builtin::workspace_mode_command(repl),
-            Command::UnrestrictedMode => builtin::unrestricted_mode_command(repl),
-            Command::ApprovalPicker => builtin::approval_picker_command(repl),
-            Command::ApprovalSet(policy) => builtin::approval_set_command(repl, *policy),
+            Command::PermissionsPicker => builtin::permissions_picker_command(repl),
+            Command::PermissionsSet(preset) => builtin::permissions_set_command(repl, *preset),
             Command::Compact => builtin::compact_command(repl),
             Command::ModelPicker => builtin::model_picker_command(repl),
             Command::ModelSet(name) => builtin::model_set_command(repl, name),
@@ -153,20 +142,8 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
         description: "resume a previously saved session",
     },
     CommandEntry {
-        name: CMD_READONLY,
-        description: "switch to read-only mode (no writes or shell)",
-    },
-    CommandEntry {
-        name: CMD_WORKSPACE,
-        description: "switch to workspace mode (read/write, shell confined to the project)",
-    },
-    CommandEntry {
-        name: CMD_UNRESTRICTED,
-        description: "switch to unrestricted mode (shell without sandbox confinement)",
-    },
-    CommandEntry {
-        name: CMD_APPROVAL,
-        description: "set when to run a command outside the sandbox",
+        name: CMD_PERMISSIONS,
+        description: "choose what the assistant may do (opens a picker)",
     },
     CommandEntry {
         name: CMD_EXIT,
@@ -253,36 +230,44 @@ mod tests {
     }
 
     #[test]
-    fn bare_slash_approval_opens_picker() {
+    fn bare_slash_permissions_opens_picker() {
         assert_eq!(
-            Command::from_str("/approval"),
-            Some(Command::ApprovalPicker)
+            Command::from_str("/permissions"),
+            Some(Command::PermissionsPicker)
         );
         assert_eq!(
-            Command::from_str("/approval   "),
-            Some(Command::ApprovalPicker)
+            Command::from_str("/permissions   "),
+            Some(Command::PermissionsPicker)
         );
     }
 
     #[test]
-    fn slash_approval_with_policy_parses_to_set() {
+    fn slash_permissions_with_preset_parses_to_set() {
         assert_eq!(
-            Command::from_str("/approval on-failure"),
-            Some(Command::ApprovalSet(
-                crate::config::ApprovalPolicy::OnFailure
+            Command::from_str("/permissions read-only"),
+            Some(Command::PermissionsSet(
+                crate::config::PermissionPreset::ReadOnly
             ))
         );
         assert_eq!(
-            Command::from_str("/approval never"),
-            Some(Command::ApprovalSet(crate::config::ApprovalPolicy::Never))
+            Command::from_str("/permissions sandboxed-retry"),
+            Some(Command::PermissionsSet(
+                crate::config::PermissionPreset::SandboxedRetry
+            ))
+        );
+        assert_eq!(
+            Command::from_str("/permissions unsandboxed"),
+            Some(Command::PermissionsSet(
+                crate::config::PermissionPreset::Unsandboxed
+            ))
         );
     }
 
     #[test]
-    fn slash_approval_with_unknown_policy_returns_none() {
-        // Like `/effort`, the argument has a fixed alphabet; anything
+    fn slash_permissions_with_unknown_preset_returns_none() {
+        // The argument has a fixed alphabet of preset labels; anything
         // else surfaces the generic unknown-command message.
-        assert!(Command::from_str("/approval turbo").is_none());
+        assert!(Command::from_str("/permissions turbo").is_none());
     }
 
     /// Every catalog name must parse back into a known `Command`.

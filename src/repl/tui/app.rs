@@ -20,7 +20,7 @@ use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
 use super::event::{
-    ApprovalPickerEntry, EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, StatusSnapshot,
+    EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, PermissionsPickerEntry, StatusSnapshot,
 };
 use super::slash_popup::SlashPopup;
 
@@ -47,7 +47,8 @@ pub struct App {
     pub model_picker: Option<ModelPicker>,
     /// If Some, render the `/effort` picker overlay.
     pub effort_picker: Option<EffortPicker>,
-    pub approval_picker: Option<ApprovalPicker>,
+    /// If Some, render the `/permissions` access-preset picker overlay.
+    pub permissions_picker: Option<PermissionsPicker>,
     /// If Some, render a confirmation modal blocking the worker thread
     /// until the user answers. Used by destructive tool prompts like
     /// `delete_file`.
@@ -117,11 +118,15 @@ impl ModelPicker {
     }
 
     pub fn move_up(&mut self) {
-        self.cursor = step_to_available(self.cursor, &self.entries, -1);
+        self.cursor = step_to_available(self.cursor, self.entries.len(), -1, |i| {
+            self.entries[i].is_available
+        });
     }
 
     pub fn move_down(&mut self) {
-        self.cursor = step_to_available(self.cursor, &self.entries, 1);
+        self.cursor = step_to_available(self.cursor, self.entries.len(), 1, |i| {
+            self.entries[i].is_available
+        });
     }
 
     /// Currently highlighted entry, if any.
@@ -130,17 +135,22 @@ impl ModelPicker {
     }
 }
 
-/// Advance the cursor in `direction` (+1 or -1), skipping disabled
-/// rows and stopping at the list edges. Stays put if no enabled row
-/// can be reached.
-fn step_to_available(cursor: usize, entries: &[ModelPickerEntry], direction: i32) -> usize {
-    if entries.is_empty() {
+/// Advance the cursor in `direction` (+1 or -1), skipping rows where
+/// `available(idx)` is false and stopping at the list edges. Stays put if
+/// no enabled row can be reached. Shared by the model and sandbox pickers.
+fn step_to_available(
+    cursor: usize,
+    len: usize,
+    direction: i32,
+    available: impl Fn(usize) -> bool,
+) -> usize {
+    if len == 0 {
         return 0;
     }
     let mut idx = cursor as i32 + direction;
-    while idx >= 0 && (idx as usize) < entries.len() {
+    while idx >= 0 && (idx as usize) < len {
         let candidate = idx as usize;
-        if entries[candidate].is_available {
+        if available(candidate) {
             return candidate;
         }
         idx += direction;
@@ -178,32 +188,40 @@ impl EffortPicker {
     }
 }
 
-/// Inline overlay shown by `/approval`. Holds the selectable policies
-/// plus the cursor; every row is selectable.
-pub struct ApprovalPicker {
-    pub entries: Vec<ApprovalPickerEntry>,
+/// Inline overlay shown by `/permissions`. The `sandboxed-*` rows are
+/// disabled where the OS sandbox is unavailable, so the cursor skips them
+/// just like the model picker skips other-provider rows.
+pub struct PermissionsPicker {
+    pub entries: Vec<PermissionsPickerEntry>,
     pub cursor: usize,
 }
 
-impl ApprovalPicker {
-    pub fn new(entries: Vec<ApprovalPickerEntry>) -> Self {
-        let cursor = entries.iter().position(|e| e.is_current).unwrap_or(0);
+impl PermissionsPicker {
+    pub fn new(entries: Vec<PermissionsPickerEntry>) -> Self {
+        // Park on the current preset if it is selectable; otherwise on the
+        // first selectable row (on Windows the sandboxed rows are disabled,
+        // so the cursor lands elsewhere).
+        let cursor = entries
+            .iter()
+            .position(|e| e.is_current && e.is_available)
+            .or_else(|| entries.iter().position(|e| e.is_available))
+            .unwrap_or(0);
         Self { entries, cursor }
     }
 
     pub fn move_up(&mut self) {
-        if self.cursor > 0 {
-            self.cursor -= 1;
-        }
+        self.cursor = step_to_available(self.cursor, self.entries.len(), -1, |i| {
+            self.entries[i].is_available
+        });
     }
 
     pub fn move_down(&mut self) {
-        if self.cursor + 1 < self.entries.len() {
-            self.cursor += 1;
-        }
+        self.cursor = step_to_available(self.cursor, self.entries.len(), 1, |i| {
+            self.entries[i].is_available
+        });
     }
 
-    pub fn selected(&self) -> Option<&ApprovalPickerEntry> {
+    pub fn selected(&self) -> Option<&PermissionsPickerEntry> {
         self.entries.get(self.cursor)
     }
 }
@@ -238,7 +256,7 @@ impl App {
             picker: None,
             model_picker: None,
             effort_picker: None,
-            approval_picker: None,
+            permissions_picker: None,
             model_label,
             should_quit: false,
             exit_summary: None,
@@ -260,15 +278,16 @@ impl App {
         self.slash_popup.sync(&text);
     }
 
-    /// The live access mode from the latest status snapshot, defaulting
-    /// to workspace before the first snapshot arrives. Reading from the
-    /// snapshot (not a per-session flag) means `/readonly`, `/workspace`, and
-    /// `/unrestricted` take effect immediately.
+    /// The live access mode from the latest status snapshot. Reading from
+    /// the snapshot (not a per-session flag) means a `/permissions` switch
+    /// takes effect immediately.
     pub fn mode(&self) -> SandboxMode {
-        self.status
-            .as_ref()
-            .map(|s| s.mode)
-            .unwrap_or(SandboxMode::Workspace)
+        self.status.as_ref().map(|s| s.mode).unwrap_or_else(|| {
+            // Before the first snapshot, fall back to the host default so the
+            // prompt glyph and status line stay honest on a host without a
+            // usable sandbox instead of assuming the sandbox is on.
+            SandboxMode::from_flags(false, false, crate::tools::bash::sandbox::is_available())
+        })
     }
 
     pub fn is_readonly(&self) -> bool {
@@ -562,7 +581,7 @@ mod tests {
             cache_creation_tokens: 0,
         });
         assert!(a.is_readonly());
-        a.status.as_mut().unwrap().mode = SandboxMode::Workspace;
+        a.status.as_mut().unwrap().mode = SandboxMode::Sandboxed;
         assert!(!a.is_readonly());
     }
 
@@ -773,54 +792,49 @@ mod tests {
         assert_eq!(p.cursor, 1);
     }
 
-    #[test]
-    fn approval_picker_lands_cursor_on_current_policy() {
-        use crate::config::ApprovalPolicy::{Never, OnFailure, OnRequest};
-        let entries = vec![
-            ApprovalPickerEntry {
-                policy: OnRequest,
-                description: "",
-                is_current: false,
-            },
-            ApprovalPickerEntry {
-                policy: OnFailure,
-                description: "",
-                is_current: true,
-            },
-            ApprovalPickerEntry {
-                policy: Never,
-                description: "",
-                is_current: false,
-            },
-        ];
-        let p = ApprovalPicker::new(entries);
-        assert_eq!(p.cursor, 1);
-        assert_eq!(p.selected().unwrap().policy, OnFailure);
+    fn permissions_entry(
+        preset: crate::config::PermissionPreset,
+        is_current: bool,
+        is_available: bool,
+    ) -> PermissionsPickerEntry {
+        PermissionsPickerEntry {
+            preset,
+            is_current,
+            is_available,
+        }
     }
 
     #[test]
-    fn approval_picker_navigation_clamps_at_edges() {
-        use crate::config::ApprovalPolicy::{OnFailure, OnRequest};
+    fn permissions_picker_skips_unavailable_sandboxed_rows() {
+        use crate::config::PermissionPreset::{ReadOnly, SandboxedAsk, Unsandboxed};
+        // Windows-style: the sandboxed rows are disabled, and unsandboxed
+        // is the current state.
         let entries = vec![
-            ApprovalPickerEntry {
-                policy: OnRequest,
-                description: "",
-                is_current: true,
-            },
-            ApprovalPickerEntry {
-                policy: OnFailure,
-                description: "",
-                is_current: false,
-            },
+            permissions_entry(ReadOnly, false, true),
+            permissions_entry(SandboxedAsk, false, false),
+            permissions_entry(Unsandboxed, true, true),
         ];
-        let mut p = ApprovalPicker::new(entries);
-        assert_eq!(p.cursor, 0);
+        let mut p = PermissionsPicker::new(entries);
+        // Cursor lands on the current selectable row, not a disabled one.
+        assert_eq!(p.cursor, 2);
+        // Up skips the disabled sandboxed row and stops on read-only.
         p.move_up();
         assert_eq!(p.cursor, 0);
-        p.move_down();
+    }
+
+    #[test]
+    fn permissions_picker_lands_on_current_when_available() {
+        use crate::config::PermissionPreset::{ReadOnly, SandboxedAsk, SandboxedRetry};
+        let entries = vec![
+            permissions_entry(ReadOnly, false, true),
+            permissions_entry(SandboxedAsk, true, true),
+            permissions_entry(SandboxedRetry, false, true),
+        ];
+        let mut p = PermissionsPicker::new(entries);
         assert_eq!(p.cursor, 1);
+        assert_eq!(p.selected().unwrap().preset, SandboxedAsk);
         p.move_down();
-        assert_eq!(p.cursor, 1);
+        assert_eq!(p.cursor, 2);
     }
 
     #[test]
@@ -862,7 +876,7 @@ mod tests {
             cache_creation_tokens: 0,
         });
         let s = a.status.as_ref().unwrap();
-        assert_eq!(s.mode.label(), "readonly");
+        assert_eq!(s.mode, SandboxMode::ReadOnly);
         assert_eq!(s.model, crate::api::model_info::CLAUDE_OPUS);
         assert_eq!(s.input_tokens, 123);
     }

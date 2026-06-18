@@ -81,7 +81,7 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
 - **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
-- **Access modes** — read-only, workspace (the default; shell commands run confined to the project by the operating-system sandbox on macOS and Linux, or prompt the user on Windows), and unrestricted; switchable mid-session.
+- **Access presets** — one `/permissions` command picks how much the assistant may do: read-only, sandboxed (the default; shell commands run confined to the project by the operating-system sandbox on macOS and Linux), or unsandboxed; switchable mid-session.
 - **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
 - **Session persistence** — saved conversations, resume picker, restored read-only mode, restored model where compatible, and persisted cost counters.
@@ -192,11 +192,8 @@ sofos --resume
 | `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a named level. Validation matches the picker — unsupported levels print a clear error. |
 | `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
 | `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
-| `/readonly`                                 | Switch to read-only mode: inspection tools only. Prompt shows `:`. |
-| `/workspace`                                | Switch to workspace mode (the default): read and write, with shell commands confined to the project on macOS and Linux, or unfamiliar ones prompted for approval on Windows. Prompt shows `>`. |
-| `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
-| `/approval`                                 | Open a picker to choose when you are asked to run a command outside the sandbox. |
-| `/approval <policy>`                         | Set it directly: `on-request` (default), `on-failure`, or `never`. The status line shows the active policy while you are in workspace mode. |
+| `/permissions`                              | Open a picker to choose what the assistant may do. Five presets, from least to most permissive: `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. **Up / Down**, **Enter** to switch, **Esc** to cancel. Where the sandbox is unavailable, such as Windows, the three `sandboxed-*` presets are shown but disabled. |
+| `/permissions <preset>`                     | Switch directly to a named preset without opening the picker. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 
@@ -249,8 +246,7 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 ```text
 -p, --prompt <TEXT>          Run one prompt and exit.
     --readonly               Start in read-only mode (inspection tools only).
-    --unrestricted           Run shell commands without operating-system confinement.
--a, --ask-for-approval <LV>  When to ask before running a command outside the sandbox: on-failure, on-request, or never. Default: on-request.
+    --no-sandbox             Start unsandboxed: run shell commands without operating-system confinement.
 -r, --resume                 Resume a previous session.
     --check-connection       Check provider connectivity and exit.
     --api-key <KEY>          Anthropic API key; overrides ANTHROPIC_API_KEY.
@@ -348,7 +344,7 @@ Clipboard pastes are not routed through a tool: pressing Ctrl-V in the prompt at
 
 ### Read-only mode tools
 
-Read-only mode is enabled with `--readonly` or `/readonly`. It restricts the native tool set to:
+Read-only mode is enabled with `--readonly` or the `read-only` preset in `/permissions`. It restricts the native tool set to:
 
 - `list_directory`;
 - `read_file`;
@@ -392,13 +388,17 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 
 ### Access modes
 
-Sofos starts in one of three access modes. The current mode is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
+The `/permissions` command picks how much the assistant may do. It opens a picker of five presets; you can also type `/permissions <preset>`. The current preset is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
 
-- **Read-only** (`--readonly`, or `/readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
-- **Workspace** (the default; `/workspace` returns to it) — read and write in the project and run shell commands. On macOS and Linux, shell commands run confined by the operating system: writes stay inside the project and the network is closed, for familiar build tools and interpreters just as for unfamiliar commands. Familiar commands run without interruption and unfamiliar ones run without a prompt. On Windows, operating-system confinement is not engaged in this release, so unfamiliar commands prompt you for approval before running instead. Prompt shows `>`.
-- **Unrestricted** (`--unrestricted`, or `/unrestricted`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
+- **`read-only`** (also `--readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
+- **`sandboxed-ask`** (the default) — read and write in the project and run shell commands, confined by the operating system on macOS and Linux: writes stay inside the project and the network is closed, for familiar build tools and interpreters just as for unfamiliar commands. Familiar commands run without interruption and unfamiliar ones run without a prompt. When a command genuinely needs network access or to write outside the project, the assistant may ask you to approve running that one command outside the sandbox. Prompt shows `>`.
+- **`sandboxed-retry`** — same confinement, but instead of asking up front, a command that fails in a way that looks caused by the sandbox offers to retry once without it.
+- **`sandboxed-strict`** — same confinement, and the sandbox is never lifted: a blocked command simply fails.
+- **`unsandboxed`** (also `--no-sandbox`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
 
-Within workspace mode, a single command can still run outside the sandbox when one genuinely needs network access or to write outside the project. The `--ask-for-approval` option (short `-a`) and the `/approval` command decide when you are asked: with `on-request` (the default) the assistant asks before running such a command; with `on-failure` a command that fails in a way that looks caused by the sandbox offers to retry without it; and `never` turns both off. You always approve before anything runs outside the sandbox, and clearly destructive commands stay refused.
+"Sandboxed" confines **writes and the network**, not reads — a sandboxed command can still read files outside the project unless a deny rule or an external-path prompt stops it. Lifting the sandbox for one command (the `-ask` and `-retry` presets) always needs your approval, and clearly destructive commands stay refused even then.
+
+Where no operating-system sandbox can run — Windows, or a Linux host without Bubblewrap — the three `sandboxed-*` presets are unavailable: the default is `unsandboxed`, the picker greys them out, and the status line reports `unsandboxed` honestly.
 
 Operating-system confinement uses a different primitive on each platform:
 
@@ -406,21 +406,21 @@ Operating-system confinement uses a different primitive on each platform:
 - **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS — writes inside the workspace and `/tmp`, the network closed down to local sockets such as the Docker daemon, and blocked files kept unreadable. The `bubblewrap` package must be installed; where the sandbox cannot start, an unfamiliar command falls back to asking for approval.
 
 On both platforms the project's `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only even though the rest of the workspace is writable, so a confined command cannot rewrite the rules that decide which commands are allowed or change agent settings. The `.git` directory is read-only too for any command other than git itself, so a stray command cannot plant a Git hook; git's own commands can still update `.git`, so branch switches and local git config keep working. These directories remain readable.
-- **Windows**: operating-system confinement is not engaged in this release. Workspace mode therefore behaves the same as unrestricted mode for shell commands: familiar commands run automatically, destructive commands are always refused, and any other command prompts the user for approval before running. The destructive-command blocklist, the read-deny rules, and the external-path prompts still apply. The restricted-token framework is in the tree as a foundation; the default Windows shell is Git for Windows `sh.exe`, which cannot start under a restricted access token because of how its Cygwin-derived runtime sets up session-shared-memory, and the alternatives (a different shell, or a dedicated sandbox user account that needs administrator setup) are larger product decisions left for a future release.
+- **Windows**: operating-system confinement is not engaged in this release, so the default preset is `unsandboxed` and the `sandboxed-*` presets are disabled in the picker. Shell commands therefore behave the same as `unsandboxed` on every platform: familiar commands run automatically, destructive commands are always refused, and any other command prompts the user for approval before running. The destructive-command blocklist, the read-deny rules, and the external-path prompts still apply. The restricted-token framework is in the tree as a foundation; the default Windows shell is Git for Windows `sh.exe`, which cannot start under a restricted access token because of how its Cygwin-derived runtime sets up session-shared-memory, and the alternatives (a different shell, or a dedicated sandbox user account that needs administrator setup) are larger product decisions left for a future release.
 
 ### Bash command permissions
 
 Bash commands pass through these layers:
 
-1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs without a prompt in workspace mode on macOS and Linux, or prompts for approval on Windows and in unrestricted mode on any platform. In workspace mode on macOS and Linux the safe commands are confined too, not only the unfamiliar ones.
-2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. In workspace mode on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
+1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs without a prompt under a sandboxed preset on macOS and Linux, or prompts for approval on Windows and under the `unsandboxed` preset on any platform. Under a sandboxed preset on macOS and Linux the safe commands are confined too, not only the unfamiliar ones.
+2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. Under a sandboxed preset on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
 3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your read-deny rules, but otherwise leaves reads open — so reaching an external path that isn't denied still needs a grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
-| Allowed | Runs automatically after structural checks; confined by the operating system in workspace mode on macOS and Linux. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
+| Allowed | Runs automatically after structural checks; confined by the operating system under a sandboxed preset on macOS and Linux. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
 | Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
-| Other | Workspace mode on macOS and Linux: runs confined to the project. Workspace mode on Windows, or unrestricted mode anywhere: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
+| Other | Sandboxed preset on macOS and Linux: runs confined to the project. Sandboxed preset on Windows, or the `unsandboxed` preset anywhere: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
 
 ### Destructive operations
 

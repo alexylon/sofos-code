@@ -72,8 +72,8 @@ pub enum Job {
     ModelSelected(Option<&'static str>),
     /// User confirmed a level inside the `/effort` picker; `None` on cancel.
     EffortSelected(Option<ReasoningEffort>),
-    /// Approval policy chosen in the `/approval` picker (None on cancel).
-    ApprovalSelected(Option<crate::config::ApprovalPolicy>),
+    /// Access preset chosen in the `/permissions` picker; `None` on cancel.
+    PermissionsSelected(Option<crate::config::PermissionPreset>),
     /// Graceful shutdown — save session, print summary, exit worker loop.
     Shutdown,
 }
@@ -107,12 +107,16 @@ pub struct EffortPickerEntry {
     pub is_current: bool,
 }
 
-/// One row in the inline `/approval` picker. Each row is selectable.
+/// One row in the inline `/permissions` picker. Carries the preset it
+/// selects; the label and description are read from the preset. A
+/// `sandboxed-*` row is unavailable where no OS sandbox can run (Windows,
+/// or a Linux box without bubblewrap); disabled rows stay visible and the
+/// cursor skips over them.
 #[derive(Debug, Clone, Copy)]
-pub struct ApprovalPickerEntry {
-    pub policy: crate::config::ApprovalPolicy,
-    pub description: &'static str,
+pub struct PermissionsPickerEntry {
+    pub preset: crate::config::PermissionPreset,
     pub is_current: bool,
+    pub is_available: bool,
 }
 
 /// Event pushed to the UI thread. Sources: output readers, keyboard reader,
@@ -144,8 +148,10 @@ pub enum UiEvent {
     ShowModelPicker { entries: Vec<ModelPickerEntry> },
     /// Worker wants the UI to show the reasoning-effort picker.
     ShowEffortPicker { entries: Vec<EffortPickerEntry> },
-    /// Worker wants the UI to show the approval-policy picker.
-    ShowApprovalPicker { entries: Vec<ApprovalPickerEntry> },
+    /// Worker wants the UI to show the `/permissions` access-preset picker.
+    ShowPermissionsPicker {
+        entries: Vec<PermissionsPickerEntry>,
+    },
     /// Worker pushes a fresh status snapshot (model / mode / reasoning).
     Status(StatusSnapshot),
     /// A tool call needs user confirmation. The UI renders a modal list of

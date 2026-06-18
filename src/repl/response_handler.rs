@@ -733,7 +733,7 @@ mod truncation_tests {
             workspace.path().to_path_buf(),
             None,
             None,
-            crate::config::SandboxMode::Workspace,
+            crate::config::SandboxMode::Sandboxed,
             false,
         )
         .expect("tool executor");
