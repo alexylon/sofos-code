@@ -137,10 +137,13 @@ impl BashExecutor {
         let mut permission_manager = PermissionManager::new(self.workspace.clone())?;
         let normalized = PermissionManager::normalize_command_key(command);
 
-        // Check session-scoped decisions first (for "allow once" / "deny once")
+        // Check session-scoped decisions first (for "allow once" / "deny once").
+        // A prior "allow once" grant covered a normal run, not running outside
+        // the sandbox, so when the model asks to escalate the same command let
+        // it fall through to the escalation path below and ask afresh.
+        let escalating = escalation.is_some() && self.sandbox_active();
         if let Ok(allowed) = self.session_allowed.lock() {
-            if allowed.contains(&normalized) {
-                // Previously allowed this session, skip permission check
+            if allowed.contains(&normalized) && !escalating {
                 return self.execute_after_permission_check(command, &mut permission_manager);
             }
         }
@@ -412,6 +415,14 @@ impl BashExecutor {
             return Ok(None);
         }
 
+        // The retry runs unconfined, so it must clear the same structural bar
+        // as any unsandboxed command — output redirection and here-documents
+        // stay refused because nothing would bound their writes. A confined
+        // command that used them is simply not offered an unsandboxed retry.
+        if !self.is_safe_command_structure(command) {
+            return Ok(None);
+        }
+
         // Already approved for this session: rerun unsandboxed without
         // asking again.
         let cached = self
@@ -468,11 +479,13 @@ impl BashExecutor {
             ));
         }
 
-        // Escalation lifts the sandbox, not the other gates: parent
-        // traversal, hidden subcommands, and dangerous git stay refused,
-        // and the read-deny, git-checkout, and external-path rules apply
-        // just as they would for a confined run.
-        if !self.is_confinement_safe(command) {
+        // Escalation lifts the sandbox, not the other gates. The command
+        // then runs unconfined, so it must clear the same structural bar as
+        // any unsandboxed command: parent traversal, hidden subcommands,
+        // dangerous git, output redirection, and here-documents stay refused,
+        // because without the sandbox nothing bounds their writes. The
+        // read-deny, git-checkout, and external-path checks still run below.
+        if !self.is_safe_command_structure(command) {
             return Err(SofosError::ToolExecution(
                 self.get_rejection_reason(command),
             ));
@@ -1173,5 +1186,145 @@ mod tests {
         assert!(note.contains("/unrestricted"));
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(note.contains("Docker"));
+    }
+
+    #[cfg(unix)]
+    fn escalation_executor(
+        policy: ApprovalPolicy,
+        interactive: bool,
+    ) -> (tempfile::TempDir, BashExecutor) {
+        let (temp, path) = crate::tools::test_support::workspace();
+        let mut executor = BashExecutor::new(path, interactive, false).unwrap();
+        executor.set_approval_policy(policy);
+        executor.set_sandbox_mode(SandboxMode::Workspace);
+        (temp, executor)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_refused_unless_policy_takes_requests() {
+        // Only on-request takes a model escalation request; under on-failure
+        // and never the model is told to reissue without escalation.
+        for policy in [ApprovalPolicy::OnFailure, ApprovalPolicy::Never] {
+            let (_temp, executor) = escalation_executor(policy, true);
+            let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+            let escalation = EscalationRequest {
+                justification: None,
+            };
+            let normalized = PermissionManager::normalize_command_key("curl https://example.com");
+            let err = executor
+                .run_model_escalation(
+                    "curl https://example.com",
+                    &normalized,
+                    &escalation,
+                    &mut pm,
+                )
+                .unwrap_err();
+            match err {
+                SofosError::ToolExecution(msg) => assert!(
+                    msg.contains("does not take escalation"),
+                    "unexpected message for {policy:?}: {msg}"
+                ),
+                other => panic!("expected ToolExecution, got {other:?}"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_refused_when_non_interactive() {
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, false);
+        let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+        let escalation = EscalationRequest {
+            justification: None,
+        };
+        let normalized = PermissionManager::normalize_command_key("curl https://example.com");
+        let err = executor
+            .run_model_escalation(
+                "curl https://example.com",
+                &normalized,
+                &escalation,
+                &mut pm,
+            )
+            .unwrap_err();
+        match err {
+            SofosError::ToolExecution(msg) => {
+                assert!(msg.contains("non-interactive"), "got: {msg}")
+            }
+            other => panic!("expected ToolExecution, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_keeps_structural_gates() {
+        // Escalation lifts the sandbox, not the structural checks: a command
+        // substitution stays refused even with a valid escalation request.
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
+        let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+        let escalation = EscalationRequest {
+            justification: Some("needs network".to_string()),
+        };
+        let normalized = PermissionManager::normalize_command_key("echo $(id)");
+        let err = executor
+            .run_model_escalation("echo $(id)", &normalized, &escalation, &mut pm)
+            .unwrap_err();
+        assert!(matches!(err, SofosError::ToolExecution(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_refuses_redirection() {
+        // Escalation runs unconfined, so it refuses output redirection just
+        // as /unrestricted does — it is never more permissive than the
+        // explicit trust mode.
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
+        let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+        let escalation = EscalationRequest {
+            justification: Some("write a log file".to_string()),
+        };
+        let normalized = PermissionManager::normalize_command_key("echo hi > out.txt");
+        let err = executor
+            .run_model_escalation("echo hi > out.txt", &normalized, &escalation, &mut pm)
+            .unwrap_err();
+        assert!(matches!(err, SofosError::ToolExecution(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn escalation_request_never_bypasses_denylist() {
+        // A forbidden command stays refused even when escalation is requested,
+        // because the Denied check precedes the escalation branch.
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
+        let escalation = EscalationRequest {
+            justification: Some("trust me".to_string()),
+        };
+        let err = executor
+            .execute_with_escalation("rm -rf /tmp/escalation-bypass-test", Some(escalation))
+            .unwrap_err();
+        assert!(matches!(err, SofosError::ToolExecution(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_session_grant_skips_prompt() {
+        // A command already approved for unsandboxed use this session reruns
+        // without prompting. `true` exits 0, so this is deterministic and
+        // needs no real sandbox.
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
+        let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+        let normalized = PermissionManager::normalize_command_key("true");
+        executor
+            .session_unsandboxed
+            .lock()
+            .unwrap()
+            .insert(normalized.clone());
+        let escalation = EscalationRequest {
+            justification: None,
+        };
+        let out = executor
+            .run_model_escalation("true", &normalized, &escalation, &mut pm)
+            .unwrap();
+        assert!(out.contains("Command executed successfully") || out.contains("STDOUT"));
     }
 }

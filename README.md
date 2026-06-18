@@ -196,7 +196,7 @@ sofos --resume
 | `/workspace`                                | Switch to workspace mode (the default): read and write, with shell commands confined to the project on macOS and Linux, or unfamiliar ones prompted for approval on Windows. Prompt shows `>`. |
 | `/unrestricted`                             | Switch to unrestricted mode: shell runs without sandbox confinement. Prompt shows `#`. |
 | `/approval`                                 | Open a picker to choose when you are asked to run a command outside the sandbox. |
-| `/approval <policy>`                         | Set it directly: `on-request` (default), `on-failure`, or `never`. Prompt shows the active policy next to the mode. |
+| `/approval <policy>`                         | Set it directly: `on-request` (default), `on-failure`, or `never`. The status line shows the active policy while you are in workspace mode. |
 | `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
 | `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
 

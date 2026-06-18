@@ -1399,15 +1399,17 @@ impl ToolExecutor {
                 })?;
 
                 // The model can ask to run a command outside the sandbox via
-                // `sandbox_permissions: "require_escalated"` (a bare bool
-                // `require_escalated` is also accepted), with an optional
-                // `justification` shown in the approval prompt.
+                // `sandbox_permissions: "require_escalated"`. A bare bool on
+                // either `sandbox_permissions` or `require_escalated` is also
+                // accepted, with an optional `justification` shown in the
+                // approval prompt.
                 let wants_escalation = input["sandbox_permissions"]
                     .as_str()
                     .map(|s| {
                         s.eq_ignore_ascii_case("require_escalated")
                             || s.eq_ignore_ascii_case("escalate")
                     })
+                    .or_else(|| input["sandbox_permissions"].as_bool())
                     .or_else(|| input["require_escalated"].as_bool())
                     .unwrap_or(false);
                 let result = if wants_escalation {

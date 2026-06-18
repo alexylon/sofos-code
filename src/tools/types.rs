@@ -131,7 +131,7 @@ fn execute_bash_tool() -> Tool {
                 },
                 "justification": {
                     "type": "string",
-                    "description": "User-facing approval question for require_escalated; omit otherwise."
+                    "description": "A short reason, shown to the user, for why this command needs to run outside the sandbox; used with require_escalated, omit otherwise."
                 }
             },
             "required": ["command"]
