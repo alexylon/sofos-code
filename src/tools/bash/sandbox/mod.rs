@@ -74,21 +74,28 @@ impl SandboxPolicy {
 
     /// Add the kernel-enforced read rules from the workspace's `Read(...)`
     /// deny and allow patterns. A deny pattern becomes a subpath the
-    /// command may not read. An allow is kept only when it carves an
+    /// command may not read; a deny with a glob falls back to its longest
+    /// glob-free leading path so it is widened rather than dropped (see
+    /// [`resolve_read_subpath`]). An allow is kept only when it carves an
     /// exception out of a denied subtree — an exact path strictly inside a
     /// deny — so a broad or glob allow cannot re-open a denied path, which
     /// matches the per-argument check where an exact allow outranks a glob
-    /// deny but a broad allow does not. Patterns that are not a plain
-    /// directory subtree or file are skipped and stay covered by the
-    /// per-argument read check alone.
+    /// deny but a broad allow does not.
     pub fn with_read_rules(mut self, workspace: &Path, deny: &[String], allow: &[String]) -> Self {
         let deny_subpaths: Vec<PathBuf> = deny
             .iter()
-            .filter_map(|p| resolve_read_subpath(p, workspace, true))
+            .filter_map(|p| resolve_read_subpath(p, workspace, ReadRuleSide::Deny))
+            // Drop a deny that covers the workspace itself or an ancestor of
+            // it: the confined command runs inside the workspace and must be
+            // able to read it, so such a deny would break the command rather
+            // than hide a secret. It only arises when a pattern's glob-free
+            // prefix climbs to the workspace root; the per-argument read
+            // check still applies to that pattern.
+            .filter(|subpath| !workspace.starts_with(subpath))
             .collect();
         self.read_allow_subpaths = allow
             .iter()
-            .filter_map(|p| resolve_read_subpath(p, workspace, false))
+            .filter_map(|p| resolve_read_subpath(p, workspace, ReadRuleSide::Allow))
             .filter(|a| {
                 !deny_subpaths.contains(a) && deny_subpaths.iter().any(|d| a.starts_with(d))
             })
@@ -98,35 +105,79 @@ impl SandboxPolicy {
     }
 }
 
-/// Resolve a `Read(...)` pattern to one absolute subpath, or `None` when
-/// it is not a plain path. With `strip_subtree`, a trailing `/**` is
-/// dropped because a subpath rule already covers the whole tree;
-/// otherwise (and for any other glob metacharacter) the pattern is left
-/// out so the per-argument read check stays its only boundary. `.` and
-/// `..` are folded and the existing prefix is canonicalized — resolving
-/// symlinks like macOS `/tmp` -> `/private/tmp` — so the rule matches the
-/// path the kernel enforces on even when the target does not exist yet.
-fn resolve_read_subpath(pattern: &str, workspace: &Path, strip_subtree: bool) -> Option<PathBuf> {
-    let core = if strip_subtree {
-        pattern.strip_suffix("/**").unwrap_or(pattern)
-    } else {
-        pattern
+/// Characters a `Read(...)` pattern can use as glob metacharacters; a path
+/// component holding any of them is not a literal path segment.
+const GLOB_METACHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
+
+/// Which side of the workspace read rules a pattern came from, which
+/// decides how a glob in it is handled. A deny is widened so the kernel
+/// never reads less than the rule names: a trailing `/**` is dropped (a
+/// subpath rule already covers the whole tree) and any remaining glob
+/// falls back to the pattern's longest glob-free leading path. An allow
+/// must stay an exact path, so a glob allow is dropped and left to the
+/// per-argument read check; this keeps a broad allow from re-opening a
+/// denied path.
+#[derive(Clone, Copy)]
+enum ReadRuleSide {
+    Deny,
+    Allow,
+}
+
+/// Resolve a `Read(...)` pattern to one absolute subpath for the kernel
+/// rules, or `None` when it cannot be expressed as one (an empty pattern,
+/// or a glob allow). `side` decides how a glob is handled — see
+/// [`ReadRuleSide`]. `.` and `..` are folded and the existing prefix is
+/// canonicalized — resolving symlinks like macOS `/tmp` -> `/private/tmp`
+/// — so the rule matches the path the kernel enforces on even when the
+/// target does not exist yet.
+fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> Option<PathBuf> {
+    let trimmed = match side {
+        ReadRuleSide::Deny => pattern.strip_suffix("/**").unwrap_or(pattern),
+        ReadRuleSide::Allow => pattern,
     }
     .trim();
-    if core.is_empty() || core.contains(['*', '?', '[', ']', '{', '}']) {
+    if trimmed.is_empty() {
         return None;
     }
-    let expanded = if core == "~" {
+    if matches!(side, ReadRuleSide::Allow) && trimmed.contains(GLOB_METACHARACTERS) {
+        return None;
+    }
+    let expanded = if trimmed == "~" {
         PathBuf::from(std::env::var_os("HOME")?)
-    } else if let Some(rest) = core.strip_prefix("~/") {
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
         PathBuf::from(std::env::var_os("HOME")?).join(rest)
-    } else if Path::new(core).is_absolute() {
-        PathBuf::from(core)
+    } else if Path::new(trimmed).is_absolute() {
+        PathBuf::from(trimmed)
     } else {
-        workspace.join(core.strip_prefix("./").unwrap_or(core))
+        workspace.join(trimmed.strip_prefix("./").unwrap_or(trimmed))
     };
     let normalized = crate::tools::utils::lexically_normalize(&expanded);
-    Some(canonicalize_existing_prefix(&normalized))
+    let resolved = match side {
+        ReadRuleSide::Deny => longest_glob_free_prefix(&normalized),
+        ReadRuleSide::Allow => normalized,
+    };
+    Some(canonicalize_existing_prefix(&resolved))
+}
+
+/// The longest leading path made only of components without a glob
+/// character: `/a/b*/c` yields `/a`, and a path with no glob is returned
+/// whole. Used to widen a glob deny to a real path the kernel can hide
+/// instead of dropping it. The result stays absolute when `path` is,
+/// because the root component carries no glob.
+fn longest_glob_free_prefix(path: &Path) -> PathBuf {
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        // Only a named path segment can carry a glob; stop at the first one
+        // that does. Root and drive-prefix components are always kept, so a
+        // Windows verbatim prefix (`\\?\…`) is not mistaken for a glob.
+        if let std::path::Component::Normal(part) = component {
+            if part.to_string_lossy().contains(GLOB_METACHARACTERS) {
+                break;
+            }
+        }
+        prefix.push(component);
+    }
+    prefix
 }
 
 /// Canonicalize `path`, resolving symlinks even when the leaf does not
@@ -402,6 +453,36 @@ mod tests {
             &[],
         );
         assert_eq!(policy.read_deny_subpaths, vec![workspace.join("private")]);
+    }
+
+    /// A deny with a glob in the middle is widened to its longest glob-free
+    /// leading path instead of being dropped, so the kernel still hides the
+    /// directory the secret lives under.
+    #[test]
+    fn read_deny_with_inner_glob_falls_back_to_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &["./config/*/secret.env".to_string()],
+            &[],
+        );
+        assert_eq!(policy.read_deny_subpaths, vec![workspace.join("config")]);
+    }
+
+    /// A deny whose glob-free prefix is the workspace itself is dropped
+    /// rather than blocking every read in the project the confined command
+    /// runs in.
+    #[test]
+    fn read_deny_covering_the_workspace_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &["*/secret".to_string()],
+            &[],
+        );
+        assert!(policy.read_deny_subpaths.is_empty());
     }
 
     /// A deny on a path that does not exist yet still resolves through a
