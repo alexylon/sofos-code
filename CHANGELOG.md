@@ -18,6 +18,10 @@ All notable changes to Sofos are documented in this file.
 - **`edit_file` now rejects ambiguous single replacements.** When the old text appears more than once, the assistant must include more surrounding context or set `replace_all` for an intentional global replacement. Empty old text is also rejected.
 - **Read-only mode is now selected with `--readonly` and the `read-only` preset in `/permissions`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
 
+### Fixed
+
+- **External-path permissions are scoped correctly and never offer a "remember" that won't be saved.** Running tests in Docker used to save a rule covering the whole machine — a working directory like `/work` became `Bash(//**)`; a top-level path is now scoped to itself (`Bash(/work/**)`), using the same logic across command, file, and image access. When a grant genuinely can't be saved as a sane rule (the filesystem root, a `docker` `host:container` mount, or a one-off command using multiple lines, `$(…)`, or a heredoc), the prompt shows a plain Yes/No instead of an "and remember" option it would silently drop — and no rule is ever written to `.sofos/config.local.toml` twice.
+
 ### Security
 
 - **Git global options can no longer hide blocked Git operations.** Commands such as `git -C . push`, `git --git-dir=.git fetch`, and Git config options that can redirect Git into aliases, included config, pagers, or external helper commands are now rejected before they run.

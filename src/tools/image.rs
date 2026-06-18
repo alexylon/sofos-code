@@ -293,15 +293,12 @@ impl ImageLoader {
     }
 
     fn ask_external_read_access(&self, canonical: &Path, canonical_str: &str) -> Result<()> {
-        let parent_dir = canonical
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or(canonical_str);
+        let grant_dir = crate::tools::permissions::grant_dir_for_path(canonical);
         crate::tools::permissions::check_external_path_session_access(
             &self.workspace,
             "Read",
             canonical_str,
-            parent_dir,
+            grant_dir,
             self.interactive,
             &self.read_path_session_allowed,
             &self.read_path_session_denied,

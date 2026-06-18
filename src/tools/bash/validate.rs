@@ -12,7 +12,7 @@ use crate::tools::bash::BashExecutor;
 use crate::tools::permissions::command_parse::{
     COMPOUND_HEADERS_NO_BODY, COMPOUND_HEADERS_WITH_BODY, COMPOUND_KEYWORDS, is_env_assignment,
 };
-use crate::tools::permissions::{CommandPermission, PermissionManager};
+use crate::tools::permissions::{CommandPermission, PermissionManager, grant_dir_for_path};
 use crate::tools::utils::{is_absolute_path, lexically_normalize, normalize_command_whitespace};
 use std::path::PathBuf;
 
@@ -819,22 +819,19 @@ impl BashExecutor {
             }
         }
 
-        let parent = std::path::Path::new(&check_path)
-            .parent()
-            .and_then(|p| p.to_str())
-            .unwrap_or(&check_path);
+        let grant_dir = grant_dir_for_path(std::path::Path::new(&check_path));
 
         // Non-interactive mode (tests, piped input): deny with a config hint
         if !self.interactive {
             return Err(SofosError::ToolExecution(format!(
                 "Command references path '{}' outside workspace\n\
                  Hint: Add Bash({}/**) to 'allow' list in .sofos/config.local.toml",
-                check_path, parent
+                check_path, grant_dir
             )));
         }
 
         // Ask user interactively
-        let (allowed, remember) = permission_manager.ask_user_path_permission("Bash", parent)?;
+        let (allowed, remember) = permission_manager.ask_user_path_permission("Bash", grant_dir)?;
 
         if allowed {
             if !remember {

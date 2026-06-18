@@ -431,11 +431,7 @@ impl ToolExecutor {
                 let dir_to_grant = if canonical.is_dir() {
                     canonical_str.to_string()
                 } else {
-                    canonical
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or(canonical_str)
-                        .to_string()
+                    permissions::grant_dir_for_path(canonical).to_string()
                 };
                 self.check_external_path_access(
                     "Read",
@@ -473,10 +469,7 @@ impl ToolExecutor {
         // Check explicit allow (canonical only, for symlink safety)
         let is_explicit_allow = permission_manager.is_write_explicit_allow(canonical_str);
         if !is_explicit_allow {
-            let dir_to_grant = canonical
-                .parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or(canonical_str);
+            let dir_to_grant = permissions::grant_dir_for_path(canonical);
             self.check_external_path_access(
                 "Write",
                 canonical_str,

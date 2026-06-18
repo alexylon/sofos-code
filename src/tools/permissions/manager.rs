@@ -529,14 +529,15 @@ impl PermissionManager {
         let normalized = Self::normalize_command_key(command);
         let prompt = format!("Allow command `{}`?", command);
 
-        // For commands whose args change every call (sed line ranges,
-        // head/tail line counts, grep context flags, awk NR predicates),
-        // "remember this exact command" would never match the next
-        // invocation. Drop those to a plain Yes/No so the user isn't
-        // offered a useless persistence option. Users who want to
-        // allowlist the invocation family can add `Bash(cmd:*)` to
-        // settings directly.
-        let (confirmed, remember) = if Self::command_has_volatile_line_args(command) {
+        // "Remember this exact command" only helps when the same string
+        // can recur. Commands whose args change every call (sed line
+        // ranges, head/tail counts, grep context flags, awk NR predicates)
+        // and one-shot shapes (multi-line scripts, command / process
+        // substitution, heredocs) never will, so they drop to a plain
+        // Yes/No instead of offering a persistence option that would only
+        // clutter config.local.toml. Users who want to allowlist an
+        // invocation family can add `Bash(cmd:*)` to settings directly.
+        let (confirmed, remember) = if Self::command_not_rememberable(command) {
             let choices = ["Yes", "No"];
             let idx = confirm_multi_choice(&prompt, &choices, 1, ConfirmationType::Permission)?;
             (idx == 0, false)
@@ -545,16 +546,34 @@ impl PermissionManager {
         };
 
         if remember {
-            if confirmed {
-                self.settings.permissions.allow.push(normalized);
-            } else {
-                self.settings.permissions.deny.push(normalized);
-            }
+            self.remember_rule(normalized, confirmed);
             self.save_settings()?;
             self.rebuild_all_globs()?;
         }
 
         Ok((confirmed, remember))
+    }
+
+    /// Whether the prompt for `command` should drop the "and remember"
+    /// options and offer a plain Yes/No, because a remembered rule could
+    /// never usefully apply:
+    /// - volatile line-number args ([`Self::command_has_volatile_line_args`]):
+    ///   the args change every run, so the exact string never recurs
+    /// - one-shot shapes ([`Self::command_is_one_shot`]): multi-line
+    ///   scripts and heredocs that won't be retyped verbatim, and command
+    ///   or process substitution (`$( )`, backticks, `<( )`, `>( )`) which
+    ///   the executor rejects outright, so a saved rule could never fire
+    pub(super) fn command_not_rememberable(command: &str) -> bool {
+        Self::command_has_volatile_line_args(command) || Self::command_is_one_shot(command)
+    }
+
+    pub(super) fn command_is_one_shot(command: &str) -> bool {
+        command.contains('\n')
+            || command.contains("$(")
+            || command.contains('`')
+            || command.contains("<<")
+            || command.contains("<(")
+            || command.contains(">(")
     }
 
     /// Heuristic: does `command` carry line-number / line-range args that
@@ -672,19 +691,57 @@ impl PermissionManager {
     pub fn ask_user_path_permission(&mut self, scope: &str, dir: &str) -> Result<(bool, bool)> {
         let grant = format!("{}({}/**)", scope, dir);
         let prompt = format!("Allow {} access to `{}/**`?", scope.to_lowercase(), dir);
-        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
+
+        // A degenerate directory (filesystem root, or a `host:container`
+        // docker mount) can't be persisted as a sane `<scope>(<dir>/**)`
+        // rule, so offer only Yes/No there instead of the "and remember"
+        // options — the prompt must not promise a grant it would silently
+        // drop. Same handling as an un-rememberable command.
+        let (confirmed, remember) = if Self::is_persistable_grant_dir(dir) {
+            Self::ask_three_way(&prompt)?
+        } else {
+            let choices = ["Yes", "No"];
+            let idx = confirm_multi_choice(&prompt, &choices, 1, ConfirmationType::Permission)?;
+            (idx == 0, false)
+        };
 
         if remember {
-            if confirmed {
-                self.settings.permissions.allow.push(grant);
-            } else {
-                self.settings.permissions.deny.push(grant);
-            }
+            self.remember_rule(grant, confirmed);
             self.save_settings()?;
             self.rebuild_all_globs()?;
         }
 
         Ok((confirmed, remember))
+    }
+
+    /// Persist `rule` into the allow (`allow == true`) or deny list,
+    /// skipping the push when an identical rule is already present so
+    /// repeat grants of the same command or directory don't accumulate
+    /// duplicate lines in config.local.toml.
+    pub(super) fn remember_rule(&mut self, rule: String, allow: bool) {
+        let list = if allow {
+            &mut self.settings.permissions.allow
+        } else {
+            &mut self.settings.permissions.deny
+        };
+        if !list.contains(&rule) {
+            list.push(rule);
+        }
+    }
+
+    /// Whether `dir` is specific enough to persist as a `<scope>(<dir>/**)`
+    /// rule. Rejects the filesystem root and the empty string — the grant
+    /// would match the whole machine, which is where `Bash(//**)` came
+    /// from (`docker -w /work` gives `/work` a parent of `/`) — and
+    /// Unix-absolute paths carrying a colon, which are `host:container`
+    /// docker mounts or `PATH`-style lists (`-v /repo:/work:ro`) rather
+    /// than a single directory and would persist as nonsense such as
+    /// `Bash(/repo:/**)`.
+    pub(super) fn is_persistable_grant_dir(dir: &str) -> bool {
+        if dir.is_empty() || std::path::Path::new(dir).parent().is_none() {
+            return false;
+        }
+        !(dir.starts_with('/') && dir.contains(':'))
     }
 
     /// Ask the user a single permission question with four options — one

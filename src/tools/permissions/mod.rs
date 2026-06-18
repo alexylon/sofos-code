@@ -18,6 +18,23 @@ pub enum CommandPermission {
     Ask,
 }
 
+/// Directory to offer as a `<scope>(<dir>/**)` grant for an external
+/// path: the path's parent, so sibling files under the same directory
+/// share one grant — but never the filesystem root. A top-level path
+/// like `/work` (from `docker -w /work`) has parent `/`, and
+/// `<scope>(//**)` would grant the whole machine, so such a path is
+/// scoped to itself (`<scope>(/work/**)`). Shared by the bash, read,
+/// write, and image external-path gates so all four scope grants the
+/// same way.
+pub(crate) fn grant_dir_for_path(path: &Path) -> &str {
+    let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("");
+    if parent.is_empty() || Path::new(parent).parent().is_none() {
+        path.to_str().unwrap_or("")
+    } else {
+        parent
+    }
+}
+
 /// Gate access to a path that is outside the workspace, sharing one
 /// allow / deny set across every caller (filesystem read, filesystem
 /// write, bash path arguments, image loading) so a permission granted
@@ -1229,6 +1246,85 @@ ask = []
         assert!(!PermissionManager::command_has_volatile_line_args(
             "ls -la src/"
         ));
+    }
+
+    /// One-shot command shapes (multi-line scripts, command / process
+    /// substitution, heredocs) can never match a remembered rule again,
+    /// so they must be flagged un-rememberable just like volatile args.
+    /// These are exactly the strange entries that landed in the allow
+    /// list: a `for ...; do ... awk ... done` block and a
+    /// `python3 - <<'PY'` heredoc.
+    #[test]
+    fn test_command_not_rememberable() {
+        assert!(PermissionManager::command_not_rememberable(
+            "for file in $(find src -name '*.rs'); do echo \"$file\"; done"
+        ));
+        assert!(PermissionManager::command_not_rememberable(
+            "python3 - <<'PY'\nprint('hi')\nPY"
+        ));
+        assert!(PermissionManager::command_not_rememberable("echo `whoami`"));
+        assert!(PermissionManager::command_not_rememberable(
+            "diff <(sort a) <(sort b)"
+        ));
+        // Volatile-arg commands stay covered through the combined gate.
+        assert!(PermissionManager::command_not_rememberable(
+            "sed -n '10,20p' file.txt"
+        ));
+        // A plain, stable single command is still rememberable.
+        assert!(!PermissionManager::command_not_rememberable(
+            "cargo build --release"
+        ));
+    }
+
+    /// `Bash(<dir>/**)` grants must never be persisted for the filesystem
+    /// root (`docker -w /work` → parent `/` → `Bash(//**)`, which grants
+    /// the whole machine) or for `host:container` docker mounts
+    /// (`-v /repo:/work:ro` → `Bash(/repo:/**)`).
+    #[test]
+    fn test_is_persistable_grant_dir() {
+        assert!(!PermissionManager::is_persistable_grant_dir("/"));
+        assert!(!PermissionManager::is_persistable_grant_dir(""));
+        assert!(!PermissionManager::is_persistable_grant_dir(
+            "/Users/alex/git/aal/sofos-code:"
+        ));
+        assert!(PermissionManager::is_persistable_grant_dir("/work"));
+        assert!(PermissionManager::is_persistable_grant_dir(
+            "/Users/alex/Pictures"
+        ));
+    }
+
+    /// The shared grant-dir helper used by the bash, read, write, and
+    /// image gates: a path's parent, except a top-level path is scoped to
+    /// itself so it never expands to the filesystem root.
+    #[test]
+    fn test_grant_dir_for_path() {
+        use std::path::Path;
+        assert_eq!(grant_dir_for_path(Path::new("/a/b/c.txt")), "/a/b");
+        assert_eq!(grant_dir_for_path(Path::new("/etc/hosts")), "/etc");
+        // Top-level path: the parent is root, so scope to the path itself
+        // rather than emit `//**`.
+        assert_eq!(grant_dir_for_path(Path::new("/work")), "/work");
+    }
+
+    /// Granting the same directory twice should leave one rule, not pile
+    /// up duplicate lines like the three `Bash(//**)` entries the bug
+    /// produced.
+    #[test]
+    fn test_remember_rule_dedup() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut manager = PermissionManager::new(temp_dir.path().to_path_buf()).unwrap();
+
+        manager.remember_rule("Bash(/work/**)".to_string(), true);
+        manager.remember_rule("Bash(/work/**)".to_string(), true);
+
+        let hits = manager
+            .settings
+            .permissions
+            .allow
+            .iter()
+            .filter(|r| *r == "Bash(/work/**)")
+            .count();
+        assert_eq!(hits, 1);
     }
 
     /// Volatile sed/head/tail buried inside a `for ...; do ...; done`
