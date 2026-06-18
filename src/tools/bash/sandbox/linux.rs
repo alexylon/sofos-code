@@ -173,25 +173,47 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
 /// user namespaces are restricted on some hardened kernels, inside
 /// containers, and on WSL1 — in which case it exits with a namespace
 /// error. An older `bwrap` may also not recognise every `--unshare-*`
-/// flag used below. Running a throwaway `bwrap … /bin/true` with the
-/// same unshare flags tells the caller whether confinement will work, so
-/// it can fall back to the permission prompt instead of failing every
-/// command with an unclear bwrap error. A short timeout guards against a
-/// bwrap that hangs.
+/// flag used below. The probe runs a throwaway `bwrap … /bin/true` under
+/// the same network seccomp filter the real command installs, so it sees
+/// the same restrictions: installing the filter sets `no_new_privs`, and
+/// on a host where that stops a setuid bwrap from gaining the privileges
+/// it needs for namespaces, the probe now fails just as every real
+/// command would, letting the caller fall back to the permission prompt
+/// instead of confining commands that cannot actually spawn. A short
+/// timeout guards against a bwrap that hangs.
 pub fn bwrap_can_unshare_namespaces() -> bool {
+    bwrap_probe_succeeds(network_seccomp_program())
+}
+
+/// Run the throwaway `bwrap … /bin/true` probe with `seccomp` installed in
+/// the child before exec, returning whether it exits cleanly within the
+/// timeout. `seccomp` is the filter the real run installs (so the probe
+/// matches production), or `None` to probe namespace support on its own.
+fn bwrap_probe_succeeds(seccomp: Option<BpfProgram>) -> bool {
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     let Some(program) = resolved_bwrap() else {
         return false;
     };
-    let mut child = match Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(BWRAP_UNSHARE_FLAGS)
         .args(["--unshare-net", "--ro-bind", "/", "/", "/bin/true"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stderr(Stdio::null());
+    // The filter is built in the parent (the child must not allocate after
+    // fork) and installed in the child, the same path the executor uses.
+    unsafe {
+        command.pre_exec(move || {
+            if let Some(program) = &seccomp {
+                super::apply_network_seccomp(program)?;
+            }
+            Ok(())
+        });
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(_) => return false,
     };
@@ -451,6 +473,68 @@ mod tests {
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
             "a confined process must keep AF_UNIX and AF_NETLINK but lose AF_INET"
         );
+    }
+
+    /// End-to-end proof that a confined command still runs with the network
+    /// seccomp filter installed the way production installs it — in the
+    /// child via `pre_exec` before bwrap execs — and that the network is
+    /// closed for it. The other end-to-end tests spawn bwrap without the
+    /// filter, so this is the only test exercising bwrap under it; a change
+    /// that made bwrap need a filtered syscall would fail here. The skip
+    /// gate probes namespace support without the filter, so a filter that
+    /// broke bwrap surfaces as a failure rather than a silent skip. Skipped
+    /// where bubblewrap cannot create user namespaces.
+    #[test]
+    fn bwrap_runs_confined_command_under_network_filter() {
+        if !bwrap_probe_succeeds(None) {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace);
+
+        // Spawn a confined command with the network filter installed in the
+        // child, exactly as the executor does for a real confined command.
+        let run = |shell: &str, command: &str| {
+            use std::os::unix::process::CommandExt;
+            let (program, args) =
+                super::super::confined_invocation(std::ffi::OsStr::new(shell), command, &policy)
+                    .unwrap();
+            let seccomp = network_seccomp_program();
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args);
+            unsafe {
+                cmd.pre_exec(move || {
+                    if let Some(program) = &seccomp {
+                        super::super::apply_network_seccomp(program)?;
+                    }
+                    Ok(())
+                });
+            }
+            cmd.output().expect("spawn bwrap")
+        };
+
+        let ran = run("/bin/sh", "printf confined");
+        assert!(
+            ran.status.success(),
+            "a confined command must run with the network filter installed; stderr: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&ran.stdout), "confined");
+
+        // The network stays closed: an outbound connection fails. bash's
+        // /dev/tcp gives a shell-level connect without a network tool;
+        // where bash is absent the socket-creation denial is still covered
+        // by the seccomp unit test, so skip this part.
+        if Path::new("/bin/bash").exists() {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let blocked = run("/bin/bash", &format!("echo hi > /dev/tcp/127.0.0.1/{port}"));
+            assert!(
+                !blocked.status.success(),
+                "the network must stay closed for a confined command"
+            );
+        }
     }
 
     /// A denied read directory is masked with a tmpfs, a denied file with
