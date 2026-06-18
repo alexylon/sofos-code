@@ -57,9 +57,10 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     // Pseudo-terminal slaves (`/dev/ttysNNN`), restricted to those the
     // command allocates inside the sandbox: the kernel tags those with
     // this extension, so a confined command can drive its own PTY without
-    // reaching another terminal.
+    // reaching another terminal. The pattern is end-anchored so it matches
+    // exactly one device path and nothing that merely starts with it.
     profile.push_str(
-        "  (require-all (regex #\"^/dev/ttys[0-9]+\") (extension \"com.apple.sandbox.pty\"))\n",
+        "  (require-all (regex #\"^/dev/ttys[0-9]+$\") (extension \"com.apple.sandbox.pty\"))\n",
     );
     profile.push_str(")\n");
 
@@ -214,6 +215,10 @@ mod tests {
         let profile = seatbelt_profile(&policy).expect("clean policy paths build a profile");
         assert!(profile.contains("(literal \"/dev/ptmx\")"));
         assert!(profile.contains("com.apple.sandbox.pty"));
+        assert!(
+            profile.contains("#\"^/dev/ttys[0-9]+$\""),
+            "the pseudo-terminal slave pattern must be end-anchored"
+        );
     }
 
     /// End-to-end proof that a confined command can allocate a
