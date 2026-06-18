@@ -121,24 +121,36 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
 
     // Read confinement: hide each denied subpath, then re-expose the
     // allow exceptions on top so a specific allow overrides a broader
-    // deny. A file is masked with `/dev/null`; a directory — or a path
-    // not created yet but inside a writable root, where a secret could
-    // appear later — is masked with an empty tmpfs. A missing path
-    // outside the writable roots is left alone: a tmpfs there would have
-    // to create its mount point on the read-only base, which bwrap cannot.
+    // deny. A directory is masked with an empty tmpfs. Any other existing
+    // node — a regular file, but also a pipe, socket, or device — is
+    // masked with `/dev/null`; `symlink_metadata` succeeding means the
+    // mount point exists, which is exactly what bwrap needs to bind over
+    // it. A path that does not exist yet is masked with a tmpfs only when
+    // it lies inside a writable root, where a secret could appear later
+    // and the writable bind lets bwrap create the mount point. Outside the
+    // writable roots an absent path has no mount point to mask over on the
+    // read-only base, and a path the host cannot stat is, under the
+    // same-uid mapping, unreadable to the confined process too.
     for path in &policy.read_deny_subpaths {
-        if path.is_file() {
-            args.push(OsString::from("--ro-bind"));
-            args.push(OsString::from("/dev/null"));
-            args.push(path.clone().into_os_string());
-        } else if path.is_dir()
-            || policy
-                .writable_roots
-                .iter()
-                .any(|root| path.starts_with(root))
-        {
-            args.push(OsString::from("--tmpfs"));
-            args.push(path.clone().into_os_string());
+        let inside_writable_root = policy
+            .writable_roots
+            .iter()
+            .any(|root| path.starts_with(root));
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => {
+                args.push(OsString::from("--tmpfs"));
+                args.push(path.clone().into_os_string());
+            }
+            Ok(_) => {
+                args.push(OsString::from("--ro-bind"));
+                args.push(OsString::from("/dev/null"));
+                args.push(path.clone().into_os_string());
+            }
+            Err(_) if inside_writable_root => {
+                args.push(OsString::from("--tmpfs"));
+                args.push(path.clone().into_os_string());
+            }
+            Err(_) => {}
         }
     }
     for path in &policy.read_allow_subpaths {
@@ -516,6 +528,44 @@ mod tests {
         assert!(
             !args.contains(&outside),
             "a missing deny target outside the writable roots is not masked"
+        );
+    }
+
+    /// A denied path that is a named pipe — neither a regular file nor a
+    /// directory — is masked with `/dev/null` even though it lies outside
+    /// every writable root. The earlier code probed only `is_file` and
+    /// `is_dir`, both false for a pipe, so it left the pipe unmasked.
+    #[test]
+    fn bwrap_masks_denied_non_regular_file() {
+        let pipe_dir = tempfile::tempdir().unwrap();
+        let pipe = pipe_dir.path().join("pipe");
+        let c_path = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) },
+            0,
+            "create the named pipe"
+        );
+
+        // A separate writable root, so the pipe is outside it — the case
+        // the old `is_file`/`is_dir` probes left unmasked.
+        let workspace = tempfile::tempdir().unwrap();
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace.path().to_path_buf()],
+            allow_network: false,
+            read_deny_subpaths: vec![pipe.clone()],
+            read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
+        };
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let pipe = pipe.to_string_lossy().into_owned();
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == pipe),
+            "a denied pipe must be masked with /dev/null"
         );
     }
 
