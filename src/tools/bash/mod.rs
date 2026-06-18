@@ -323,6 +323,49 @@ ask = []
         }
     }
 
+    /// A `Read(...)` deny that matches the command's own program path
+    /// blocks it: the program token is checked when it is path-shaped, so a
+    /// denied script cannot be run to read it. A bare command name is not
+    /// treated as a read target, so a deny that happens to match the name
+    /// does not block it.
+    #[test]
+    fn read_deny_applies_to_path_shaped_program_token() {
+        use std::fs;
+
+        let (_temp, path) = test_support::workspace();
+        let config_dir = path.join(".sofos");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.local.toml"),
+            r#"[permissions]
+allow = []
+deny = ["Read(./scripts/**)", "Read(ls)"]
+ask = []
+"#,
+        )
+        .unwrap();
+
+        let executor = BashExecutor::new(path.clone(), false, false).unwrap();
+        let manager = crate::tools::permissions::PermissionManager::new(path).unwrap();
+
+        // The path-shaped program token is now checked against the deny.
+        assert!(
+            executor
+                .enforce_read_permissions(&manager, "./scripts/secret.sh --flag")
+                .is_err(),
+            "a read-denied program path must be blocked"
+        );
+
+        // A bare command name at index 0 is not a read target, so the
+        // contrived `Read(ls)` deny does not block running `ls`.
+        assert!(
+            executor
+                .enforce_read_permissions(&manager, "ls -la")
+                .is_ok(),
+            "a bare command name must not be treated as a read path"
+        );
+    }
+
     #[test]
     fn test_safe_git_commands() {
         let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();

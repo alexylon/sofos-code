@@ -868,7 +868,7 @@ impl BashExecutor {
         // Heuristic-based detection of file paths in commands.
         // Checks paths against Read deny rules (regardless of Bash path grants).
         // External path access is handled separately by check_bash_external_paths.
-        for token in command.split_whitespace().skip(1) {
+        for (index, token) in command.split_whitespace().enumerate() {
             let cleaned = token
                 .trim_matches('"')
                 .trim_matches('\'')
@@ -886,6 +886,14 @@ impl BashExecutor {
                 || cleaned.starts_with('.')
                 || cleaned.starts_with('~')
                 || is_absolute_path(cleaned);
+
+            // The program token (index 0) is a read target only when it is
+            // path-shaped, such as `./scripts/run.sh`; a bare command name
+            // like `cat` names no file to read. Later tokens are checked
+            // whether or not they look like a path.
+            if index == 0 && !path_shaped {
+                continue;
+            }
 
             if path_shaped {
                 if let Some(kind) = path_token_shell_meta(cleaned) {

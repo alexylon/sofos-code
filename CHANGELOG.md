@@ -26,6 +26,7 @@ All notable changes to Sofos are documented in this file.
 
 - **Git global options can no longer hide blocked Git operations.** Commands such as `git -C . push`, `git --git-dir=.git fetch`, and Git config options that can redirect Git into aliases, included config, pagers, or external helper commands are now rejected before they run.
 - **A shell command reaching outside the project through a workspace symlink is now checked even when the target does not exist yet.** Such a path previously skipped the outside-the-project permission prompt when its target had not been created.
+- **A blocked-read rule now also applies to a shell command's own program path, not just its arguments.** A command such as `./scripts/run.sh` is refused when a `Read(...)` rule blocks that path, so a script you blocked from reading cannot be run.
 
 ## [0.3.5] - 2026-06-09
 
