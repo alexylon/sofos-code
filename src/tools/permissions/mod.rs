@@ -9,6 +9,7 @@ pub use manager::PermissionManager;
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::pattern::WEB_FETCH_SCOPE;
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -104,8 +105,69 @@ pub fn check_external_path_session_access(
     }
 }
 
+/// Why `web_fetch` refuses an internal `host`, or `None` for a public one:
+/// loopback, unspecified, link-local (the `169.254.169.254` metadata
+/// endpoint), private, and unique-local addresses, plus `localhost` and
+/// `*.internal`. `host` is canonical; an IPv6 literal keeps its `[...]`
+/// brackets, peeled here before parsing.
+fn web_fetch_blocked_internal_host(host: &str) -> Option<&'static str> {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return blocked_ip_reason(ip);
+    }
+    if host == "localhost" || host.ends_with(".localhost") {
+        return Some("the local host");
+    }
+    if host.ends_with(".internal") {
+        return Some("an internal-only host");
+    }
+    None
+}
+
+/// Classify a literal IP for [`web_fetch_blocked_internal_host`]. An
+/// IPv4-mapped IPv6 address is unwrapped first so `::ffff:169.254.169.254`
+/// can't slip an internal target past the v6 checks.
+fn blocked_ip_reason(ip: IpAddr) -> Option<&'static str> {
+    if ip.is_loopback() {
+        return Some("a loopback address");
+    }
+    if ip.is_unspecified() {
+        return Some("the unspecified address");
+    }
+    match ip {
+        IpAddr::V4(v4) => {
+            if v4.is_link_local() {
+                Some("a link-local address (the cloud-metadata range)")
+            } else if v4.is_private() {
+                Some("a private address")
+            } else {
+                None
+            }
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return blocked_ip_reason(IpAddr::V4(v4));
+            }
+            let octets = v6.octets();
+            if (octets[0] & 0xfe) == 0xfc {
+                // fc00::/7 unique-local (holds the IPv6 metadata fd00:ec2::254).
+                Some("a unique-local address")
+            } else if octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80 {
+                // fe80::/10 link-local.
+                Some("a link-local address")
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Gate a `web_fetch` of `host` through the configured rules plus the
-/// per-session grant flow. Order: a configured `WebFetch(...)` deny
+/// per-session grant flow. Order: an internal/loopback/metadata host is
+/// refused outright, then a configured `WebFetch(...)` deny
 /// rejects, a configured allow passes, a host allowed earlier this session
 /// (or a subdomain of it) passes, a host denied earlier this session
 /// rejects, otherwise prompt the user when interactive or surface a config
@@ -120,6 +182,16 @@ pub fn check_web_fetch_session_access(
     session_denied: &Arc<Mutex<HashSet<String>>>,
 ) -> Result<()> {
     let host_key = PermissionManager::canonical_web_fetch_host(host);
+
+    // Refuse internal targets before any allow rule or prompt: the sandbox
+    // already closes the network to these, and the prompt shows only the
+    // host, where an address like 169.254.169.254 reads as harmless.
+    if let Some(reason) = web_fetch_blocked_internal_host(&host_key) {
+        return Err(SofosError::ToolExecution(format!(
+            "web_fetch to '{host}' is refused: it is {reason}. Loopback, \
+             private, link-local, and cloud-metadata addresses are blocked."
+        )));
+    }
 
     let mut manager = PermissionManager::new(workspace.to_path_buf())?;
     match manager.check_web_fetch_permission(&host_key) {
@@ -438,6 +510,124 @@ mod tests {
         assert!(
             lookalike,
             "a look-alike host is not covered and is refused non-interactively"
+        );
+    }
+
+    #[test]
+    fn web_fetch_classifies_internal_and_public_hosts() {
+        let blocked = [
+            "169.254.169.254",          // IPv4 cloud metadata (link-local)
+            "127.0.0.1",                // IPv4 loopback
+            "10.1.2.3",                 // private
+            "192.168.0.5",              // private
+            "172.16.9.9",               // private
+            "0.0.0.0",                  // unspecified
+            "[::1]",                    // IPv6 loopback
+            "[fd00:ec2::254]",          // IPv6 metadata (unique-local)
+            "[fe80::1]",                // IPv6 link-local
+            "[::ffff:169.254.169.254]", // IPv4-mapped metadata
+            "localhost",
+            "build.internal",
+        ];
+        for host in blocked {
+            let key = PermissionManager::canonical_web_fetch_host(host);
+            assert!(
+                web_fetch_blocked_internal_host(&key).is_some(),
+                "{host} should be blocked as an internal target"
+            );
+        }
+
+        let public = [
+            "example.com",
+            "8.8.8.8",        // public
+            "172.32.0.1",     // just outside the 172.16/12 private block
+            "[2606:4700::1]", // public IPv6
+            "notlocalhost.com",
+        ];
+        for host in public {
+            let key = PermissionManager::canonical_web_fetch_host(host);
+            assert!(
+                web_fetch_blocked_internal_host(&key).is_none(),
+                "{host} is a public host and should not be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn web_fetch_block_matches_what_the_url_parser_resolves() {
+        // Pin the real pipeline: the classifier sees the host the HTTP
+        // client connects to, after the url crate's normalization. Notably
+        // it compresses an IPv4-mapped address to hex (`::ffff:169.254.169.254`
+        // becomes `::ffff:a9fe:a9fe`), so the block must survive that.
+        let blocked = [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://LocalHost:8080/",
+            "http://[::1]/",
+        ];
+        for url in blocked {
+            let parsed = reqwest::Url::parse(url).unwrap();
+            let key = PermissionManager::canonical_web_fetch_host(parsed.host_str().unwrap());
+            assert!(
+                web_fetch_blocked_internal_host(&key).is_some(),
+                "{url} (host {key}) must be blocked"
+            );
+        }
+
+        let public = reqwest::Url::parse("https://example.com/").unwrap();
+        let key = PermissionManager::canonical_web_fetch_host(public.host_str().unwrap());
+        assert!(web_fetch_blocked_internal_host(&key).is_none());
+    }
+
+    #[test]
+    fn web_fetch_internal_block_overrides_allow_rule_and_session_grant() {
+        // Isolate HOME so no global config feeds rules into the manager.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        // An explicit allow rule for the metadata IP must not open it.
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[permissions]\n\
+             allow = [\"WebFetch(domain:169.254.169.254)\"]\n\
+             deny = []\n\
+             ask = []\n",
+        )
+        .unwrap();
+
+        let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        // And a session grant for localhost must not open it either.
+        allowed.lock().unwrap().insert("localhost".to_string());
+        let denied = std::sync::Arc::new(Mutex::new(HashSet::new()));
+
+        // interactive = true proves the block returns before any prompt.
+        let metadata = check_web_fetch_session_access(
+            workspace.path(),
+            "169.254.169.254",
+            true,
+            &allowed,
+            &denied,
+        );
+        let loopback =
+            check_web_fetch_session_access(workspace.path(), "localhost", true, &allowed, &denied);
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            metadata.is_err(),
+            "an allow rule cannot open the cloud-metadata IP"
+        );
+        assert!(
+            loopback.is_err(),
+            "a session grant cannot open localhost"
         );
     }
 
