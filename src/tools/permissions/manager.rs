@@ -714,6 +714,22 @@ impl PermissionManager {
         Ok((confirmed, remember))
     }
 
+    /// Ask the user whether `web_fetch` may reach `host`, offering the
+    /// four-way Yes / Yes-and-remember / No / No-and-remember modal.
+    /// Returns `(confirmed, remember)`. A remembered choice is persisted
+    /// as a `WebFetch(domain:<host>)` rule in the allow or deny list.
+    /// Web-fetch rules are matched by a direct host scan rather than a
+    /// glob set, so no glob rebuild is needed for the new rule to apply.
+    pub fn ask_user_web_fetch_permission(&mut self, host: &str) -> Result<(bool, bool)> {
+        let prompt = format!("Allow web_fetch to `{}`?", host);
+        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
+        if remember {
+            self.remember_rule(Self::normalize_web_fetch(host), confirmed);
+            self.save_settings()?;
+        }
+        Ok((confirmed, remember))
+    }
+
     /// Persist `rule` into the allow (`allow == true`) or deny list,
     /// skipping the push when an identical rule is already present so
     /// repeat grants of the same command or directory don't accumulate

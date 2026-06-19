@@ -311,7 +311,7 @@ src/
 │       ├── pattern.rs
 │       │   # Permission rule parsing, scope extraction, wildcard handling, and blanket Bash rules.
 │       ├── scope.rs
-│       │   # Read, Write, and Bash path scope matching helpers.
+│       │   # Read, Write, and Bash path scope matching helpers, plus the WebFetch host scope.
 │       └── command_parse.rs
 │           # Shell tokenisation and compound-command analysis used by bash permission checks.
 │
@@ -978,7 +978,7 @@ It contains:
 - `manager.rs` — `PermissionManager`, built-in command tiers, config loading, permission prompts, glob compilation, and tilde expansion;
 - `settings.rs` — TOML settings shapes;
 - `pattern.rs` — permission rule parsing, including blanket Bash rules;
-- `scope.rs` — Read / Write / Bash path scope matching;
+- `scope.rs` — Read / Write / Bash path scope matching and the WebFetch host scope;
 - `command_parse.rs` — command tokenization and compound command analysis.
 
 Permission files:
@@ -991,7 +991,7 @@ Permission files:
 Rules:
 
 - Deny rules win over allow rules.
-- Read, Write, and Bash path scopes are independent.
+- Read, Write, and Bash path scopes are independent; the WebFetch host scope gates `web_fetch` per host (allowing a host also covers its subdomains).
 - `*` must not cross directory separators; recursive matches use `**`.
 - `Read(path/**)` and equivalent scope rules should also cover the base directory.
 - Command allow / deny rules can be exact or wildcard by base command.

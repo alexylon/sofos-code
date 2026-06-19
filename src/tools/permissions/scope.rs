@@ -59,6 +59,19 @@ fn build_candidates(trimmed: &str) -> Vec<String> {
     out
 }
 
+/// Whether a fetch `host` is covered by a `domain` grant — a
+/// `WebFetch(domain:...)` rule or a host allowed earlier in the session:
+/// the host itself, or any subdomain of it on a label boundary, so
+/// `rust-lang.org` covers `blog.rust-lang.org` but not `evilrust-lang.org`.
+/// Both sides are expected lower-cased by the caller.
+pub(super) fn web_fetch_host_matches(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .and_then(|prefix| prefix.strip_suffix('.'))
+            .is_some()
+}
+
 /// Windows-shaped absolute path: drive letter (`C:\foo`) or UNC
 /// (`\\server\share`).
 fn is_windows_absolute(s: &str) -> bool {
@@ -144,6 +157,27 @@ impl PermissionManager {
             patterns(&self.settings.permissions.deny),
             patterns(&self.settings.permissions.allow),
         )
+    }
+
+    /// Resolve whether `web_fetch` may reach `host` from the configured
+    /// rules: a matching `WebFetch(domain:...)` deny wins, then a matching
+    /// allow, otherwise `Ask` so the caller prompts. The host is matched
+    /// case-insensitively against each rule's domain, exact or subdomain.
+    pub fn check_web_fetch_permission(&self, host: &str) -> CommandPermission {
+        let host = Self::canonical_web_fetch_host(host);
+        let any_match = |entries: &[String]| {
+            entries
+                .iter()
+                .filter_map(|entry| Self::extract_web_fetch_domain(entry))
+                .any(|domain| web_fetch_host_matches(&host, &domain))
+        };
+        if any_match(&self.settings.permissions.deny) {
+            CommandPermission::Denied
+        } else if any_match(&self.settings.permissions.allow) {
+            CommandPermission::Allowed
+        } else {
+            CommandPermission::Ask
+        }
     }
 
     pub fn check_write_permission(&self, path: &str) -> CommandPermission {

@@ -386,6 +386,8 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 - Tools that both read and write external files, such as `edit_file` and `morph_edit_file`, require both Read and Write grants.
 - External access can be allowed for the current session or remembered in configuration.
 
+A fourth scope, `WebFetch(domain:example.com)`, gates the `web_fetch` tool. The first time the assistant fetches a URL from a host you have not already allowed, Sofos shows that host and asks whether to allow it, with the option to remember it. Allowing a host also covers its subdomains (so allowing `example.com` covers `docs.example.com`): a one-off allow lasts for the rest of the session, and remembering it saves `WebFetch(domain:example.com)` to your local config for future sessions too. Redirects are followed only after the same check on the destination host, so a redirect to a host you have not allowed prompts again (or is refused) rather than being followed silently. Declining blocks the fetch; in a non-interactive run a host that is not already allowed is refused.
+
 ### Access modes
 
 The `/permissions` command picks how much the assistant may do. It opens a picker of five presets; you can also type `/permissions <preset>`. The current preset is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
@@ -471,6 +473,9 @@ allow = [
   # Bash command permissions.
   "Bash(custom_tool)",
   "Bash(cargo:*)",
+
+  # Web fetch permissions (host and its subdomains).
+  "WebFetch(domain:blog.rust-lang.org)",
 ]
 
 deny = [
@@ -478,6 +483,7 @@ deny = [
   "Read(./.env.*)",
   "Read(./secrets/**)",
   "Bash(dangerous_tool)",
+  "WebFetch(domain:metadata.google.internal)",
 ]
 
 ask = [

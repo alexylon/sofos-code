@@ -25,7 +25,7 @@ use colored::Colorize;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const SOFOS_USER_AGENT: &str = concat!("Sofos/", env!("CARGO_PKG_VERSION"));
 
@@ -41,6 +41,65 @@ const MAX_WEB_FETCH_BODY_BYTES: usize = 8 * 1024 * 1024;
 /// Sized for a small headroom over the eventual model truncation
 /// budget so we never copy bytes that would be dropped anyway.
 const WEB_FETCH_TEXT_BUDGET_BYTES: usize = 128 * 1024;
+
+/// Maximum number of http(s) redirects `web_fetch` follows. Each hop that
+/// lands on a new host is re-checked against the WebFetch approval gate,
+/// so a redirect cannot reach a host the user has not allowed.
+const MAX_WEB_FETCH_REDIRECTS: usize = 3;
+
+/// Total wall-clock budget for a single `web_fetch`, covering the whole
+/// redirect chain and the body download. The budget is shared across hops
+/// rather than applied per request, so a chain of slow redirects cannot
+/// stretch the call to a multiple of this limit.
+const WEB_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The redirect status codes `web_fetch` follows manually. Other 3xx
+/// codes (300 Multiple Choices, 304 Not Modified) are not redirects to a
+/// new location and fall through to normal response handling.
+fn is_web_fetch_redirect(status: reqwest::StatusCode) -> bool {
+    use reqwest::StatusCode;
+    matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::SEE_OTHER
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    )
+}
+
+/// Resolve a redirect `location` against the `current` URL and confirm the
+/// target is an http(s) URL. A relative `location` is resolved against
+/// `current`; a non-http(s) target (for example `file:`, `data:`, or
+/// `javascript:` from an open redirect) is refused rather than followed.
+fn web_fetch_redirect_target(current: &reqwest::Url, location: &str) -> Result<reqwest::Url> {
+    let next = current.join(location).map_err(|_| {
+        SofosError::ToolExecution(format!(
+            "web_fetch could not resolve the redirect target '{}'",
+            location
+        ))
+    })?;
+    if !matches!(next.scheme(), "http" | "https") {
+        return Err(SofosError::ToolExecution(
+            "web_fetch refuses to follow a non-http(s) redirect".to_string(),
+        ));
+    }
+    Ok(next)
+}
+
+/// Reframe a redirect-target approval failure so the model sees that the
+/// block came from following a redirect away from the URL it requested,
+/// not from that URL itself. The specific reason from the gate (a deny
+/// rule, an earlier decline, or the non-interactive approval hint) is kept.
+fn redirect_denied(requested_host: &str, target_host: &str, denial: SofosError) -> SofosError {
+    let reason = match denial {
+        SofosError::ToolExecution(message) => message,
+        other => other.to_string(),
+    };
+    SofosError::ToolExecution(format!(
+        "web_fetch to '{requested_host}' was redirected to '{target_host}'. {reason}"
+    ))
+}
 
 /// Result from tool execution that can contain text and/or images
 #[derive(Debug, Clone)]
@@ -154,6 +213,10 @@ pub struct ToolExecutor {
     read_path_session_denied: Arc<Mutex<HashSet<String>>>,
     write_path_session_allowed: Arc<Mutex<HashSet<String>>>,
     write_path_session_denied: Arc<Mutex<HashSet<String>>>,
+    /// Hosts the user allowed/declined once for `web_fetch` this session,
+    /// so a non-remembered choice is not re-asked for the same host.
+    web_fetch_session_allowed: Arc<Mutex<HashSet<String>>>,
+    web_fetch_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Apply both MCP-response caps (image count/bytes and text tokens) in
@@ -319,7 +382,93 @@ impl ToolExecutor {
             read_path_session_denied,
             write_path_session_allowed: Arc::new(Mutex::new(HashSet::new())),
             write_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
+            web_fetch_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            web_fetch_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    /// Send `GET` for `url` and follow up to [`MAX_WEB_FETCH_REDIRECTS`]
+    /// http(s) redirects, returning the final non-redirect response. Each
+    /// hop that moves to a different host is sent through the WebFetch
+    /// approval gate first, so a redirect cannot silently reach a host the
+    /// user has not allowed; a same-host redirect (for example `http` to
+    /// `https`, or a path change) needs no new approval. The caller must
+    /// have already gated `url`'s own host. The `client` must be built with
+    /// redirects disabled so this method sees each hop. The whole chain,
+    /// including the final body download, shares one [`WEB_FETCH_TIMEOUT`]
+    /// budget of network time, applied as a per-request timeout against a
+    /// deadline; time spent waiting for a redirect approval prompt is
+    /// credited back so it is not charged against that budget.
+    async fn web_fetch_follow_redirects(
+        &self,
+        client: &reqwest::Client,
+        url: reqwest::Url,
+    ) -> Result<reqwest::Response> {
+        let requested_host = url.host_str().unwrap_or_default().to_string();
+        let mut deadline = Instant::now() + WEB_FETCH_TIMEOUT;
+        let mut current = url;
+        let mut redirects = 0;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(SofosError::ToolExecution(format!(
+                    "web_fetch timed out after {} seconds",
+                    WEB_FETCH_TIMEOUT.as_secs()
+                )));
+            }
+            let response = client
+                .get(current.clone())
+                .timeout(remaining)
+                .header("User-Agent", SOFOS_USER_AGENT)
+                .send()
+                .await
+                .map_err(|e| SofosError::ToolExecution(format!("Fetch failed: {}", e)))?;
+
+            if !is_web_fetch_redirect(response.status()) {
+                return Ok(response);
+            }
+            if redirects >= MAX_WEB_FETCH_REDIRECTS {
+                return Err(SofosError::ToolExecution(format!(
+                    "web_fetch follows at most {} redirects",
+                    MAX_WEB_FETCH_REDIRECTS
+                )));
+            }
+            redirects += 1;
+
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| {
+                    SofosError::ToolExecution(
+                        "web_fetch received a redirect with no readable Location header"
+                            .to_string(),
+                    )
+                })?;
+            let next = web_fetch_redirect_target(&current, location)?;
+            if next.host_str() != current.host_str() {
+                let next_host = next.host_str().ok_or_else(|| {
+                    SofosError::ToolExecution(
+                        "web_fetch could not determine the host of the redirect target".to_string(),
+                    )
+                })?;
+                // Approving a new host can block on the user. The timeout
+                // budget is for network time, so credit the wait back to
+                // the deadline rather than charging the user's thinking
+                // time against it.
+                let gate_started = Instant::now();
+                permissions::check_web_fetch_session_access(
+                    self.fs_tool.workspace(),
+                    next_host,
+                    self.interactive,
+                    &self.web_fetch_session_allowed,
+                    &self.web_fetch_session_denied,
+                )
+                .map_err(|denial| redirect_denied(&requested_host, next_host, denial))?;
+                deadline += gate_started.elapsed();
+            }
+            current = next;
+        }
     }
 
     pub fn has_morph(&self) -> bool {
@@ -1493,30 +1642,36 @@ impl ToolExecutor {
                     ));
                 }
 
-                // Limit redirects to three hops and only http(s); the
-                // default policy follows ten hops across any scheme.
+                // Ask before reaching a host the user has not already
+                // allowed. The host is parsed the way reqwest resolves it
+                // so the approval matches the connection that follows.
+                let parsed_url = reqwest::Url::parse(url).map_err(|_| {
+                    SofosError::ToolExecution("web_fetch could not parse this URL".to_string())
+                })?;
+                let host = parsed_url.host_str().ok_or_else(|| {
+                    SofosError::ToolExecution(
+                        "web_fetch could not determine the host of this URL".to_string(),
+                    )
+                })?;
+                permissions::check_web_fetch_session_access(
+                    self.fs_tool.workspace(),
+                    host,
+                    self.interactive,
+                    &self.web_fetch_session_allowed,
+                    &self.web_fetch_session_denied,
+                )?;
+
+                // Redirects are followed by hand (policy disabled) so each
+                // hop that crosses to a new host passes through the same
+                // approval gate before the connection is made. The request
+                // timeout is set per hop against a shared deadline inside
+                // the follower, so it is not configured on the client here.
                 let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(30))
-                    .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                        if attempt.previous().len() >= 3 {
-                            return attempt.error("web_fetch follows at most 3 redirects");
-                        }
-                        match attempt.url().scheme() {
-                            "http" | "https" => attempt.follow(),
-                            _ => {
-                                attempt.error("web_fetch refuses to follow a non-http(s) redirect")
-                            }
-                        }
-                    }))
+                    .redirect(reqwest::redirect::Policy::none())
                     .build()
                     .map_err(|e| SofosError::ToolExecution(format!("HTTP client error: {}", e)))?;
 
-                let response = client
-                    .get(url)
-                    .header("User-Agent", SOFOS_USER_AGENT)
-                    .send()
-                    .await
-                    .map_err(|e| SofosError::ToolExecution(format!("Fetch failed: {}", e)))?;
+                let response = self.web_fetch_follow_redirects(&client, parsed_url).await?;
 
                 let status = response.status();
                 if !status.is_success() {
@@ -1594,5 +1749,94 @@ impl ToolExecutor {
         };
 
         Ok(ToolExecutionResult::Text(text_result?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_fetch_redirect_classifies_only_real_redirects() {
+        use reqwest::StatusCode;
+        for status in [
+            StatusCode::MOVED_PERMANENTLY,
+            StatusCode::FOUND,
+            StatusCode::SEE_OTHER,
+            StatusCode::TEMPORARY_REDIRECT,
+            StatusCode::PERMANENT_REDIRECT,
+        ] {
+            assert!(is_web_fetch_redirect(status), "{status} is a redirect");
+        }
+        for status in [
+            StatusCode::OK,
+            StatusCode::MULTIPLE_CHOICES,
+            StatusCode::NOT_MODIFIED,
+            StatusCode::NOT_FOUND,
+        ] {
+            assert!(!is_web_fetch_redirect(status), "{status} is not a redirect");
+        }
+    }
+
+    #[test]
+    fn web_fetch_redirect_target_resolves_http_and_refuses_other_schemes() {
+        let current = reqwest::Url::parse("https://example.com/a/b").unwrap();
+
+        let cross = web_fetch_redirect_target(&current, "https://other.example.org/x").unwrap();
+        assert_eq!(
+            cross.host_str(),
+            Some("other.example.org"),
+            "an absolute cross-host http(s) target resolves so the gate sees the new host"
+        );
+
+        let relative = web_fetch_redirect_target(&current, "/landing").unwrap();
+        assert_eq!(relative.host_str(), Some("example.com"));
+        assert_eq!(
+            relative.path(),
+            "/landing",
+            "a relative target resolves against the current URL"
+        );
+
+        for target in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "ftp://host/x",
+        ] {
+            assert!(
+                web_fetch_redirect_target(&current, target).is_err(),
+                "a non-http(s) redirect target must be refused: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_denied_names_both_hosts_and_keeps_the_reason() {
+        let denial = SofosError::ToolExecution(
+            "web_fetch to 'evil.example.com' was declined earlier this session".to_string(),
+        );
+        let message = format!(
+            "{}",
+            redirect_denied("good.example.com", "evil.example.com", denial)
+        );
+        assert!(
+            message.contains("good.example.com"),
+            "names the host the model requested: {message}"
+        );
+        assert!(
+            message.contains("redirected to 'evil.example.com'"),
+            "names the redirect target: {message}"
+        );
+        assert!(
+            message.contains("was declined earlier this session"),
+            "keeps the specific reason from the gate: {message}"
+        );
+        // The inner ToolExecution message is reused, not the whole error, so
+        // the "Tool execution error:" prefix appears once, not twice.
+        assert_eq!(
+            message.matches("Tool execution error:").count(),
+            1,
+            "the error prefix must not be doubled: {message}"
+        );
     }
 }

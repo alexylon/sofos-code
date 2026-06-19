@@ -7,6 +7,7 @@ pub mod settings;
 pub use manager::PermissionManager;
 
 use crate::error::{Result, SofosError};
+use crate::tools::permissions::pattern::WEB_FETCH_SCOPE;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -103,6 +104,87 @@ pub fn check_external_path_session_access(
     }
 }
 
+/// Gate a `web_fetch` of `host` through the configured rules plus the
+/// per-session grant flow. Order: a configured `WebFetch(...)` deny
+/// rejects, a configured allow passes, a host allowed earlier this session
+/// (or a subdomain of it) passes, a host denied earlier this session
+/// rejects, otherwise prompt the user when interactive or surface a config
+/// hint when not. A remembered choice is written to `config.local.toml`; a
+/// one-off choice is kept in the session sets so the same host — and, for
+/// an allow, its subdomains — is not asked about again.
+pub fn check_web_fetch_session_access(
+    workspace: &Path,
+    host: &str,
+    interactive: bool,
+    session_allowed: &Arc<Mutex<HashSet<String>>>,
+    session_denied: &Arc<Mutex<HashSet<String>>>,
+) -> Result<()> {
+    let host_key = PermissionManager::canonical_web_fetch_host(host);
+
+    let mut manager = PermissionManager::new(workspace.to_path_buf())?;
+    match manager.check_web_fetch_permission(&host_key) {
+        CommandPermission::Denied => {
+            return Err(SofosError::ToolExecution(format!(
+                "web_fetch to '{}' is blocked by a {} deny rule in .sofos/config.local.toml",
+                host, WEB_FETCH_SCOPE
+            )));
+        }
+        CommandPermission::Allowed => return Ok(()),
+        CommandPermission::Ask => {}
+    }
+
+    if let Ok(allowed) = session_allowed.lock() {
+        // A session allow covers the granted host and its subdomains, the
+        // same way a remembered `WebFetch(domain:...)` rule does.
+        if allowed
+            .iter()
+            .any(|granted| scope::web_fetch_host_matches(&host_key, granted))
+        {
+            return Ok(());
+        }
+    }
+    if let Ok(denied) = session_denied.lock() {
+        // A session denial stays exact: declining one host does not block
+        // its subdomains, so an unrelated path on the same domain can still
+        // be asked about rather than silently refused.
+        if denied.contains(&host_key) {
+            return Err(SofosError::ToolExecution(format!(
+                "web_fetch to '{}' was declined earlier this session",
+                host
+            )));
+        }
+    }
+
+    if !interactive {
+        return Err(SofosError::ToolExecution(format!(
+            "web_fetch to '{}' needs approval, which is unavailable in a non-interactive \
+             session.\nHint: add {} to the 'allow' list in .sofos/config.local.toml",
+            host,
+            PermissionManager::normalize_web_fetch(&host_key)
+        )));
+    }
+
+    let (allowed, remember) = manager.ask_user_web_fetch_permission(&host_key)?;
+    if allowed {
+        if !remember {
+            if let Ok(mut set) = session_allowed.lock() {
+                set.insert(host_key);
+            }
+        }
+        Ok(())
+    } else {
+        if !remember {
+            if let Ok(mut set) = session_denied.lock() {
+                set.insert(host_key);
+            }
+        }
+        Err(SofosError::ToolExecution(format!(
+            "web_fetch to '{}' was declined",
+            host
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +229,215 @@ mod tests {
             bash_path_deny_set: bash_deny,
             global_rules: HashSet::new(),
         }
+    }
+
+    #[test]
+    fn web_fetch_domain_parses_both_forms_and_normalizes() {
+        assert_eq!(
+            PermissionManager::extract_web_fetch_domain("WebFetch(domain:Blog.Rust-Lang.org)"),
+            Some("blog.rust-lang.org".to_string()),
+            "the domain: form is parsed and lower-cased"
+        );
+        assert_eq!(
+            PermissionManager::extract_web_fetch_domain("WebFetch(example.com)"),
+            Some("example.com".to_string()),
+            "a bare host (hand-edited) is accepted too"
+        );
+        assert_eq!(
+            PermissionManager::extract_web_fetch_domain("Read(./secret)"),
+            None,
+            "a non web-fetch rule is ignored"
+        );
+        assert_eq!(
+            PermissionManager::extract_web_fetch_domain("WebFetch(domain:)"),
+            None,
+            "an empty host is rejected"
+        );
+        assert_eq!(
+            PermissionManager::normalize_web_fetch("API.Example.COM"),
+            "WebFetch(domain:api.example.com)",
+            "persisted rules use the canonical domain: form, lower-cased"
+        );
+    }
+
+    #[test]
+    fn web_fetch_permission_matches_host_and_subdomains_with_deny_winning() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings
+            .permissions
+            .allow
+            .push("WebFetch(domain:rust-lang.org)".to_string());
+        settings
+            .permissions
+            .deny
+            .push("WebFetch(domain:internal.rust-lang.org)".to_string());
+        let manager = create_test_manager(settings, &temp_dir);
+
+        assert_eq!(
+            manager.check_web_fetch_permission("rust-lang.org"),
+            CommandPermission::Allowed,
+            "the exact allowed host matches"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("blog.rust-lang.org"),
+            CommandPermission::Allowed,
+            "a subdomain of an allowed host matches on a label boundary"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("internal.rust-lang.org"),
+            CommandPermission::Denied,
+            "a deny rule wins over the broader allow"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("evilrust-lang.org"),
+            CommandPermission::Ask,
+            "a look-alike host that is not a real subdomain does not match the allow"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("crates.io"),
+            CommandPermission::Ask,
+            "an unconfigured host falls through to a prompt"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("internal.rust-lang.org."),
+            CommandPermission::Denied,
+            "a trailing FQDN dot must not slip a request past the deny rule"
+        );
+        assert_eq!(
+            manager.check_web_fetch_permission("blog.rust-lang.org."),
+            CommandPermission::Allowed,
+            "a trailing FQDN dot still matches the allow rule"
+        );
+    }
+
+    #[test]
+    fn web_fetch_remember_round_trips_through_local_config() {
+        // Isolate HOME so the merged-in global config is empty and the
+        // local file the remember path writes is the only rule source.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        // Persist an allow the way the prompt's "Yes and remember" does.
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(
+            PermissionManager::normalize_web_fetch("Blog.Example.com"),
+            true,
+        );
+        manager.save_settings().unwrap();
+
+        // A fresh manager reads the saved rule back and honours it.
+        let reloaded = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        let exact = reloaded.check_web_fetch_permission("blog.example.com");
+        let subdomain = reloaded.check_web_fetch_permission("cdn.blog.example.com");
+        let written =
+            std::fs::read_to_string(workspace.path().join(".sofos/config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(
+            exact,
+            CommandPermission::Allowed,
+            "remembered host is allowed"
+        );
+        assert_eq!(
+            subdomain,
+            CommandPermission::Allowed,
+            "remembered host also covers its subdomains after reload"
+        );
+        assert!(
+            written.contains("WebFetch(domain:blog.example.com)"),
+            "the rule is saved in canonical lower-cased domain form: {written}"
+        );
+    }
+
+    #[test]
+    fn web_fetch_session_access_applies_config_rules_and_refuses_when_non_interactive() {
+        // Isolate HOME so no real global config feeds rules into the
+        // PermissionManager the gate builds; the workspace local config
+        // below is then the only rule source.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[permissions]\n\
+             allow = [\"WebFetch(domain:allowed.example.com)\"]\n\
+             deny = [\"WebFetch(domain:blocked.example.com)\"]\n\
+             ask = []\n",
+        )
+        .unwrap();
+
+        let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let denied = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let check = |host: &str| {
+            check_web_fetch_session_access(workspace.path(), host, false, &allowed, &denied)
+        };
+        let exact = check("allowed.example.com").is_ok();
+        let subdomain = check("docs.allowed.example.com").is_ok();
+        let blocked = check("blocked.example.com").is_err();
+        let unknown = check("unknown.example.com").is_err();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(exact, "an allowed host passes");
+        assert!(subdomain, "a subdomain of an allowed host passes");
+        assert!(blocked, "a denied host is refused");
+        assert!(
+            unknown,
+            "an unconfigured host is refused in a non-interactive session"
+        );
+    }
+
+    #[test]
+    fn web_fetch_session_allow_covers_subdomains() {
+        // Isolate HOME so no global config supplies rules; the session set
+        // below is then the only thing that can allow a host.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        // Simulate a one-off "Yes" for example.com earlier this session.
+        allowed.lock().unwrap().insert("example.com".to_string());
+        let denied = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let check = |host: &str| {
+            check_web_fetch_session_access(workspace.path(), host, false, &allowed, &denied)
+        };
+        let exact = check("example.com").is_ok();
+        let subdomain = check("cdn.example.com").is_ok();
+        let lookalike = check("evilexample.com").is_err();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(exact, "the exact session-allowed host passes");
+        assert!(
+            subdomain,
+            "a subdomain of a session-allowed host passes without asking again"
+        );
+        assert!(
+            lookalike,
+            "a look-alike host is not covered and is refused non-interactively"
+        );
     }
 
     #[test]

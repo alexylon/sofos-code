@@ -14,6 +14,15 @@ use crate::tools::utils::{is_absolute_path, normalize_command_whitespace};
 /// the blanket entry.
 pub(super) const BLANKET_BASH: &str = "Bash";
 
+/// Scope token for the `WebFetch(domain:<host>)` rule that gates the
+/// `web_fetch` tool's network access by host.
+pub(super) const WEB_FETCH_SCOPE: &str = "WebFetch";
+
+/// Qualifier inside a `WebFetch(...)` rule that selects host matching.
+/// Rules are written with this prefix; it is optional when reading, so a
+/// hand-edited `WebFetch(example.com)` is accepted as well.
+pub(super) const WEB_FETCH_DOMAIN_PREFIX: &str = "domain:";
+
 impl PermissionManager {
     /// Extract path patterns from Bash() entries.
     /// Only treats entries as path grants if the content is absolute or
@@ -59,5 +68,43 @@ impl PermissionManager {
 
     pub(super) fn normalize_write(path: &str) -> String {
         format!("Write({})", path.trim())
+    }
+
+    /// Canonical comparison form for a web-fetch host or rule domain:
+    /// trimmed, with any trailing FQDN dot removed (`example.com.` and
+    /// `example.com` are the same host, the way DNS and the HTTP client
+    /// treat them), and lower-cased. Applied to both the fetched host and
+    /// the rule domain so the two match regardless of a trailing dot or
+    /// letter case — and so a trailing dot cannot slip a request past a
+    /// deny rule.
+    pub(super) fn canonical_web_fetch_host(host: &str) -> String {
+        host.trim().trim_end_matches('.').to_ascii_lowercase()
+    }
+
+    /// Extract the host from a `WebFetch(domain:<host>)` rule in canonical
+    /// form (see [`Self::canonical_web_fetch_host`]). The `domain:`
+    /// qualifier is optional on read, so a bare `WebFetch(<host>)` is
+    /// accepted too. Returns `None` for any entry that is not a web-fetch
+    /// rule or whose host is empty.
+    pub(super) fn extract_web_fetch_domain(entry: &str) -> Option<String> {
+        let trimmed = entry.trim();
+        let inner = trimmed
+            .strip_prefix(WEB_FETCH_SCOPE)?
+            .strip_prefix('(')?
+            .strip_suffix(')')?
+            .trim();
+        let host = Self::canonical_web_fetch_host(
+            inner.strip_prefix(WEB_FETCH_DOMAIN_PREFIX).unwrap_or(inner),
+        );
+        (!host.is_empty()).then_some(host)
+    }
+
+    /// The canonical rule string persisted and looked up for a fetch
+    /// `host`: always the `domain:` form, in canonical host form.
+    pub(super) fn normalize_web_fetch(host: &str) -> String {
+        format!(
+            "{WEB_FETCH_SCOPE}({WEB_FETCH_DOMAIN_PREFIX}{})",
+            Self::canonical_web_fetch_host(host)
+        )
     }
 }
