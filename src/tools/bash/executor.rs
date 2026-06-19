@@ -665,9 +665,7 @@ impl BashExecutor {
                         return Err(std::io::Error::last_os_error());
                     }
                     #[cfg(target_os = "linux")]
-                    if let Some(program) = &seccomp {
-                        sandbox::apply_network_seccomp(program)?;
-                    }
+                    sandbox::apply_network_seccomp(seccomp.as_ref())?;
                     Ok(())
                 });
             }

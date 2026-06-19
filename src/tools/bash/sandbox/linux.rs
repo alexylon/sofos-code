@@ -207,9 +207,7 @@ fn bwrap_probe_succeeds(seccomp: Option<BpfProgram>) -> bool {
     // fork) and installed in the child, the same path the executor uses.
     unsafe {
         command.pre_exec(move || {
-            if let Some(program) = &seccomp {
-                super::apply_network_seccomp(program)?;
-            }
+            super::apply_network_seccomp(seccomp.as_ref())?;
             Ok(())
         });
     }
@@ -505,9 +503,7 @@ mod tests {
             cmd.args(args);
             unsafe {
                 cmd.pre_exec(move || {
-                    if let Some(program) = &seccomp {
-                        super::super::apply_network_seccomp(program)?;
-                    }
+                    super::super::apply_network_seccomp(seccomp.as_ref())?;
                     Ok(())
                 });
             }

@@ -302,12 +302,19 @@ pub fn network_seccomp_program() -> Option<seccompiler::BpfProgram> {
     linux::network_seccomp_program()
 }
 
-/// Install a network seccomp program on the current thread. The caller
-/// runs this in the child between `fork` and `exec` so the confined
-/// command inherits the filter.
+/// Install the network seccomp program on the current thread, or do
+/// nothing when there is none (an architecture the filter does not
+/// target). The caller runs this in the child between `fork` and `exec`
+/// so the confined command inherits the filter; the executor, the
+/// availability probe, and the end-to-end test all install through here,
+/// so one path is exercised. Must not allocate after `fork`.
 #[cfg(target_os = "linux")]
-pub fn apply_network_seccomp(program: &seccompiler::BpfProgram) -> std::io::Result<()> {
-    seccompiler::apply_filter(program).map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))
+pub fn apply_network_seccomp(program: Option<&seccompiler::BpfProgram>) -> std::io::Result<()> {
+    match program {
+        Some(program) => seccompiler::apply_filter(program)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other)),
+        None => Ok(()),
+    }
 }
 
 /// Windows: the restricted-token backend is present but not yet engaged.
