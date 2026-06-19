@@ -105,12 +105,17 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
     // content there (for example a `.sofos` config that would relax the
     // next command's gate). bwrap applies mounts in order, so both override
     // the writable bind. The tmpfs leaves an empty mount point on the
-    // workspace; the executor removes it after the run.
+    // workspace; the executor removes it after the run. A dangling symlink
+    // is left alone, like the read-deny loop below: bwrap cannot mount over
+    // a broken link, and there is nothing to protect behind it.
     for path in &policy.write_protect_subpaths {
         if path.exists() {
             args.push(OsString::from("--ro-bind"));
             args.push(path.clone().into_os_string());
             args.push(path.clone().into_os_string());
+        } else if path.symlink_metadata().is_ok() {
+            // The link node is here but its target is gone, so `exists()` is
+            // false; masking it with a tmpfs would abort the command.
         } else {
             args.push(OsString::from("--tmpfs"));
             args.push(path.clone().into_os_string());
@@ -709,6 +714,33 @@ mod tests {
         assert!(
             !args.contains(&through_file.to_string_lossy().into_owned()),
             "a deny path through a file has no valid mount point and must be skipped"
+        );
+    }
+
+    /// A write-protected metadata path that is a dangling symlink is left
+    /// alone: bwrap cannot mount a tmpfs over a broken link, so masking it
+    /// would abort every confined command in the workspace, and a broken
+    /// link has nothing to protect.
+    #[test]
+    fn bwrap_skips_write_protect_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = dir.path().join(".git");
+        std::os::unix::fs::symlink(dir.path().join("missing-gitdir"), &git).unwrap();
+
+        let policy = SandboxPolicy::for_workspace(dir.path());
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        let git = git.to_string_lossy().into_owned();
+        assert!(
+            !args.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == git),
+            "a dangling-symlink metadata dir must not be masked with a tmpfs"
+        );
+        assert!(
+            !args.windows(3).any(|w| w[0] == "--ro-bind" && w[2] == git),
+            "a dangling-symlink metadata dir must not be re-bound either"
         );
     }
 

@@ -620,17 +620,19 @@ impl BashExecutor {
         };
         let (program, args) = self.shell_invocation(&shell, command, policy.as_ref())?;
 
-        // A confined Linux command masks any not-yet-existing metadata
-        // directory with a read-only tmpfs, which bwrap materialises as an
-        // empty mount point on the real workspace. Record the absent ones
-        // now so the empty leftovers can be removed once the command exits.
+        // A confined Linux command masks any not-yet-existing protected
+        // metadata directory or denied read path with a tmpfs, which bwrap
+        // materialises as an empty mount point on the real workspace. Record
+        // the absent ones now — both kinds — so the empty leftovers can be
+        // removed once the command exits.
         #[cfg(target_os = "linux")]
-        let metadata_cleanup: Vec<PathBuf> = policy
+        let tmpfs_cleanup: Vec<PathBuf> = policy
             .as_ref()
             .map(|policy| {
                 policy
                     .write_protect_subpaths
                     .iter()
+                    .chain(&policy.read_deny_subpaths)
                     .filter(|path| !path.exists())
                     .cloned()
                     .collect()
@@ -773,12 +775,12 @@ impl BashExecutor {
         let stdout = drain_into_vec(stdout_buf);
         let stderr = drain_into_vec(stderr_buf);
 
-        // Remove the empty mount points the read-only tmpfs masks left for
-        // metadata directories that did not exist before the run. remove_dir
+        // Remove the empty mount points the tmpfs masks left for protected
+        // or denied paths that did not exist before the run. remove_dir
         // deletes only an empty directory, so anything that already held
-        // content is left untouched.
+        // content — or a path no tmpfs was mounted over — is left untouched.
         #[cfg(target_os = "linux")]
-        for path in &metadata_cleanup {
+        for path in &tmpfs_cleanup {
             let _ = std::fs::remove_dir(path);
         }
 
