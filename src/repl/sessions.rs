@@ -256,7 +256,22 @@ impl Repl {
             session.readonly,
             crate::tools::bash::sandbox::is_available(),
         ) {
+            // When a saved sandboxed preset is coerced to unsandboxed because
+            // this host has no operating-system sandbox, the restored
+            // conversation still describes confinement that is not in effect.
+            // Re-announce the live mode so the model is not left assuming a
+            // sandbox that cannot run here.
+            let saved_mode = session
+                .permission_preset
+                .as_deref()
+                .and_then(PermissionPreset::parse)
+                .map(PermissionPreset::mode);
             self.restore_permission_preset(preset);
+            if saved_mode.is_some_and(|saved| saved != preset.mode()) {
+                self.session_state
+                    .conversation
+                    .add_user_message(super::mode_preamble_for(self.mode, self.approval_policy));
+            }
         }
 
         println!(

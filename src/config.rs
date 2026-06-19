@@ -113,12 +113,48 @@ pub fn readonly_mode_message() -> String {
 }
 
 /// Sandbox-on preamble shown to the assistant. Names the three command
-/// tiers, the structural rules that stay enforced, and the
-/// per-operating-system caveats around network closure.
+/// tiers, the structural rules that stay enforced, the per-operating-system
+/// caveats around network closure, and — keyed off `policy` — the escalation
+/// path the active sandboxed preset actually offers, so the three
+/// `sandboxed-*` presets each describe their own behaviour.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub fn sandbox_on_message() -> String {
-    String::from(
-        "[SYSTEM: The sandbox is on (the default access mode).\n\
+pub fn sandbox_on_message(policy: ApprovalPolicy) -> String {
+    let preset = PermissionPreset::current(SandboxMode::Sandboxed, policy);
+    let preset_intro = match policy {
+        ApprovalPolicy::OnRequest => format!("{} preset, the default access mode", preset.label()),
+        _ => format!("{} preset", preset.label()),
+    };
+    // The action a confined failure should trigger differs by preset:
+    // sandboxed-ask honours an up-front require_escalated, sandboxed-retry
+    // offers an unsandboxed retry instead (and refuses require_escalated), and
+    // sandboxed-strict never lifts the sandbox at all.
+    let escalation = match policy {
+        ApprovalPolicy::OnRequest => {
+            "Explain this likely cause to the user, try an alternative \
+            that works under the sandbox when possible, and otherwise rerun the command with \
+            sandbox_permissions set to \"require_escalated\" so the user can approve running that \
+            one command outside the sandbox; suggest an unsandboxed preset (/permissions) only if \
+            many commands need it."
+        }
+        ApprovalPolicy::OnFailure => {
+            "Explain this likely cause to the user and try an alternative \
+            that works under the sandbox when possible. Do not set sandbox_permissions to \
+            \"require_escalated\" in this preset — up-front escalation requests are refused; \
+            instead run the command normally, and when a confined command looks sandbox-blocked \
+            the user is offered an unsandboxed retry of it. Suggest an unsandboxed preset \
+            (/permissions) only if many commands need it."
+        }
+        ApprovalPolicy::Never => {
+            "Explain this likely cause to the user and try an alternative \
+            that works under the sandbox when possible. This preset never lifts the sandbox: \
+            sandbox_permissions \"require_escalated\" requests are refused and failed commands are \
+            not offered an unsandboxed retry, so a command that genuinely needs the network or to \
+            write outside the workspace cannot run here — tell the user and suggest switching to \
+            an unsandboxed preset with /permissions."
+        }
+    };
+    format!(
+        "[SYSTEM: The sandbox is on ({preset_intro}).\n\
          \n\
          Shell commands run through a three-tier model:\n\
          - Familiar commands (cargo, npm, go, ls, cat, grep, rg, git status, git log, \
@@ -146,13 +182,9 @@ pub fn sandbox_on_message() -> String {
          mount, or container engine errors, assume the operating-system sandbox may be the \
          cause. Common examples include Docker and other container runtimes, tools that \
          need network access, local daemon sockets, or writes outside the workspace and \
-         temporary directories. Explain this likely cause to the user, try an alternative \
-         that works under the sandbox when possible, and otherwise rerun the command \
-         with sandbox_permissions set to \"require_escalated\" so the user can approve \
-         running that one command outside the sandbox; suggest an unsandboxed preset \
-         (/permissions) only if many commands need it.\n\
+         temporary directories. {escalation}\n\
          \n\
-         Switch access modes with /permissions. All tools are available.]",
+         Switch access modes with /permissions. All tools are available.]"
     )
 }
 
@@ -160,9 +192,10 @@ pub fn sandbox_on_message() -> String {
 /// not engaged (the default Git for Windows `sh.exe` cannot start under
 /// it), so shell commands run unconfined even with the sandbox on. The
 /// message tells the assistant the truth so it does not assume confinement
-/// is in effect.
+/// is in effect. The escalation policy is moot here because no confinement
+/// is engaged, so the policy argument is accepted only to match the signature.
 #[cfg(target_os = "windows")]
-pub fn sandbox_on_message() -> String {
+pub fn sandbox_on_message(_policy: ApprovalPolicy) -> String {
     "[SYSTEM: The sandbox is on.\n\
      \n\
      Shell commands run through a three-tier model:\n\
@@ -187,9 +220,11 @@ pub fn sandbox_on_message() -> String {
 }
 
 /// Sandbox-on preamble on platforms without a sandbox backend.
-/// Treated like the Windows path until a backend is added.
+/// Treated like the Windows path until a backend is added. The escalation
+/// policy is moot without confinement, so the argument is accepted only to
+/// match the signature.
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-pub fn sandbox_on_message() -> String {
+pub fn sandbox_on_message(_policy: ApprovalPolicy) -> String {
     "[SYSTEM: The sandbox is on.\n\
      \n\
      Shell commands run through a three-tier model:\n\
@@ -480,11 +515,31 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn sandbox_on_message_explains_confined_command_failures() {
-        let message = sandbox_on_message();
+        let message = sandbox_on_message(ApprovalPolicy::OnRequest);
         assert!(message.contains("Confined-command failures"));
         assert!(message.contains("Docker"));
         assert!(message.contains("require_escalated"));
         assert!(message.contains("/permissions"));
+    }
+
+    /// Each sandboxed preset must describe its own escalation path: ask
+    /// points at require_escalated, retry points at the unsandboxed retry and
+    /// refuses require_escalated, and strict says the sandbox never lifts.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn sandbox_on_message_describes_the_active_escalation_policy() {
+        let ask = sandbox_on_message(ApprovalPolicy::OnRequest);
+        assert!(ask.contains(PermissionPreset::SandboxedAsk.label()));
+        assert!(ask.contains("require_escalated"));
+
+        let retry = sandbox_on_message(ApprovalPolicy::OnFailure);
+        assert!(retry.contains(PermissionPreset::SandboxedRetry.label()));
+        assert!(retry.contains("unsandboxed retry"));
+        assert!(retry.contains("Do not set sandbox_permissions"));
+
+        let strict = sandbox_on_message(ApprovalPolicy::Never);
+        assert!(strict.contains(PermissionPreset::SandboxedStrict.label()));
+        assert!(strict.contains("never lifts the sandbox"));
     }
 
     #[test]

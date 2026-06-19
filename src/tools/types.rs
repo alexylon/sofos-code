@@ -116,7 +116,7 @@ fn openai_web_search_tool() -> Tool {
 fn execute_bash_tool() -> Tool {
     Tool::Regular {
         name: "execute_bash".to_string(),
-        description: "Execute a bash command in the workspace. Use the shell freely for project work — builds, tests, scripts, and creating, overwriting, or editing files inside the workspace are all expected and safe. In the default mode commands run confined by the operating system: their writes cannot leave the workspace and they have no network access. If a command genuinely needs network access or to write outside the workspace, set sandbox_permissions to \"require_escalated\" with a short justification; the user is asked to approve running it outside the sandbox. Commands may reference external absolute or ~/ paths (the user is prompted for access). Parent directory traversal (..) is always blocked. Do not run irreversible or system-wide commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services); if one seems genuinely necessary, stop and request explicit confirmation first.".to_string(),
+        description: "Execute a bash command in the workspace. Use the shell freely for project work — builds, tests, scripts, and creating, overwriting, or editing files inside the workspace are all expected and safe. When the sandbox is on, commands run confined by the operating system: their writes cannot leave the workspace and they have no network access. To run one command outside the sandbox, set sandbox_permissions to \"require_escalated\" with a short justification — but this is honored only when the active preset permits an up-front sandbox lift and is refused otherwise, so follow the current mode preamble for the active preset's escalation behavior. Commands may reference external absolute or ~/ paths (the user is prompted for access). Parent directory traversal (..) is always blocked. Do not run irreversible or system-wide commands (e.g., rm -rf, rm, rmdir, dd, mkfs*, fdisk/parted, wipefs, chmod/chown -R on broad paths, truncate, :>, >/dev/sd*, kill -9 on system services); if one seems genuinely necessary, stop and request explicit confirmation first.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -127,7 +127,7 @@ fn execute_bash_tool() -> Tool {
                 "sandbox_permissions": {
                     "type": "string",
                     "enum": ["use_default", "require_escalated"],
-                    "description": "Per-command sandbox override. Defaults to use_default; set to require_escalated to run this command outside the operating-system sandbox when it genuinely needs network access or to write outside the workspace. The user is asked to approve."
+                    "description": "Per-command sandbox override. Defaults to use_default; set to require_escalated to ask to run this command outside the operating-system sandbox when it genuinely needs network access or to write outside the workspace. Honored only when the active preset permits an up-front sandbox lift (the user is asked to approve); refused under the other sandboxed presets — see the current mode preamble."
                 },
                 "justification": {
                     "type": "string",

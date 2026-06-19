@@ -36,13 +36,13 @@ use tokio::time::sleep;
 /// the accumulated text into the user turn that carries the tool results.
 pub type SteerBuffer = Arc<Mutex<Vec<String>>>;
 
-/// Build the assistant-facing preamble for `mode`. Centralised so the
-/// startup path, slash-command path, and `/clear` path all show the
-/// same text.
-fn mode_preamble_for(mode: SandboxMode) -> String {
+/// Build the assistant-facing preamble for the active access `mode` and
+/// escalation `policy`. Centralised so the startup path, slash-command path,
+/// and `/clear` path all show the same text.
+fn mode_preamble_for(mode: SandboxMode, policy: ApprovalPolicy) -> String {
     match mode {
         SandboxMode::ReadOnly => readonly_mode_message(),
-        SandboxMode::Sandboxed => sandbox_on_message(),
+        SandboxMode::Sandboxed => sandbox_on_message(policy),
         SandboxMode::Unsandboxed => sandbox_off_message(),
     }
 }
@@ -204,7 +204,7 @@ impl Repl {
         // Every mode gets a startup preamble so the assistant knows from
         // turn 1 which tier rules and platform caveats apply, not just
         // when the mode is switched mid-session.
-        conversation.add_user_message(mode_preamble_for(config.mode));
+        conversation.add_user_message(mode_preamble_for(config.mode, config.approval_policy));
         let readonly_mcp_note = if config.mode.is_readonly() {
             set_readonly_cursor_style()?;
             format_mcp_readonly_summary(
@@ -405,7 +405,7 @@ impl Repl {
         // readonly mode) or assumes a different policy than is in effect.
         self.session_state
             .conversation
-            .add_user_message(mode_preamble_for(self.mode));
+            .add_user_message(mode_preamble_for(self.mode, self.approval_policy));
         self.session_state
             .conversation
             .add_user_message("The session history has been cleared".to_string());
@@ -659,14 +659,18 @@ impl Repl {
             } else {
                 set_default_cursor_style()
             };
-            self.session_state
-                .conversation
-                .add_user_message(mode_preamble_for(mode));
         }
         if let Some(policy) = target_policy {
             self.approval_policy = policy;
             self.tool_executor.set_approval_policy(policy);
         }
+        // Re-state the active permissions to the assistant on every change.
+        // Switching among the sandboxed presets changes only the escalation
+        // policy, not the mode, so this must fire on a policy-only change too —
+        // otherwise the model keeps the previous preset's escalation guidance.
+        self.session_state
+            .conversation
+            .add_user_message(mode_preamble_for(self.mode, self.approval_policy));
         println!("\n{}\n", permission_preset_notice(preset));
         if mode.is_readonly() {
             self.print_mcp_readonly_summary();

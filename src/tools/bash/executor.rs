@@ -369,7 +369,7 @@ impl BashExecutor {
                     return Ok(escalated);
                 }
                 error_output.push_str("\n\n");
-                error_output.push_str(confined_command_failure_note());
+                error_output.push_str(&confined_command_failure_note(self.approval_policy));
             }
             return Ok(truncate_for_context(
                 &error_output,
@@ -867,15 +867,49 @@ struct SupervisedOutput {
     terminated_for: Option<TerminationReason>,
 }
 
-fn confined_command_failure_note() -> &'static str {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        "Sandbox note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by the sandbox: writes are limited to the project and temporary directories, project metadata folders are read-only, and network access, including local daemon sockets such as Docker, is closed. If no alternative that works under the sandbox can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to an unsandboxed preset with /permissions for this trusted operation."
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        "Sandbox note: this command ran under the operating-system sandbox. Permission, network, socket, mount, or container engine errors can be caused by the sandbox. If no alternative that works under the sandbox can finish the task, rerun the command with sandbox_permissions set to \"require_escalated\" so the user can approve running it outside the sandbox, or tell the user they can switch to an unsandboxed preset with /permissions for this trusted operation."
-    }
+/// The note appended to a confined command's failure output. The diagnosis
+/// is the same for every sandboxed preset, but the suggested next step has to
+/// match the active escalation policy — otherwise the note tells the model to
+/// use `require_escalated` under retry/strict, where it is refused, directly
+/// contradicting the preset's own preamble.
+fn confined_command_failure_note(policy: ApprovalPolicy) -> String {
+    let diagnosis = {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            "Sandbox note: this command ran under the operating-system sandbox. Permission, \
+             network, socket, mount, or container engine errors can be caused by the sandbox: \
+             writes are limited to the project and temporary directories, project metadata \
+             folders are read-only, and network access, including local daemon sockets such as \
+             Docker, is closed."
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            "Sandbox note: this command ran under the operating-system sandbox. Permission, \
+             network, socket, mount, or container engine errors can be caused by the sandbox."
+        }
+    };
+    let action = match policy {
+        ApprovalPolicy::OnRequest => {
+            "If no alternative that works under the sandbox can finish \
+            the task, rerun the command with sandbox_permissions set to \"require_escalated\" so \
+            the user can approve running it outside the sandbox, or tell the user they can switch \
+            to an unsandboxed preset with /permissions for this trusted operation."
+        }
+        ApprovalPolicy::OnFailure => {
+            "Up-front sandbox_permissions \"require_escalated\" requests \
+            are refused in this preset; an unsandboxed retry is offered only when a confined \
+            failure looks sandbox-blocked and the user approves it. If no alternative that works \
+            under the sandbox can finish the task, tell the user they can switch to an \
+            unsandboxed preset with /permissions for this trusted operation."
+        }
+        ApprovalPolicy::Never => {
+            "This preset never lifts the sandbox: sandbox_permissions \
+            \"require_escalated\" is refused and there is no unsandboxed retry. If no alternative \
+            that works under the sandbox can finish the task, tell the user they can switch to an \
+            unsandboxed preset with /permissions for this trusted operation."
+        }
+    };
+    format!("{diagnosis} {action}")
 }
 
 /// Ask the user to approve an action with a three-way choice — Yes,
@@ -1201,12 +1235,28 @@ mod tests {
 
     #[test]
     fn confined_command_failure_note_points_at_escalation_and_permissions() {
-        let note = confined_command_failure_note();
+        let note = confined_command_failure_note(ApprovalPolicy::OnRequest);
         assert!(note.contains("Sandbox note"));
         assert!(note.contains("require_escalated"));
         assert!(note.contains("/permissions"));
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         assert!(note.contains("Docker"));
+    }
+
+    /// Under retry and strict the note must not steer the model to
+    /// `require_escalated` as the escape hatch — it is refused under both, so
+    /// the note describes the retry-on-failure path or says the sandbox never
+    /// lifts instead.
+    #[test]
+    fn confined_command_failure_note_matches_the_active_policy() {
+        let retry = confined_command_failure_note(ApprovalPolicy::OnFailure);
+        assert!(retry.contains("unsandboxed retry"));
+        assert!(retry.contains("refused"));
+        assert!(retry.contains("/permissions"));
+
+        let strict = confined_command_failure_note(ApprovalPolicy::Never);
+        assert!(strict.contains("never lifts the sandbox"));
+        assert!(strict.contains("/permissions"));
     }
 
     #[cfg(unix)]
