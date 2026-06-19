@@ -704,6 +704,17 @@ impl ToolExecutor {
 
         let tool = ToolName::from_str(tool_name)?;
 
+        // Read-only mode only omits the mutating tools from the advertised
+        // set, which the model side need not honour. Refuse them at dispatch
+        // too, so a stale-context or misbehaving call cannot write or run a
+        // shell command.
+        if self.mode.is_readonly() && !tool.is_read_only_safe() {
+            return Err(SofosError::ToolExecution(format!(
+                "Tool '{}' is not available in read-only mode, which allows inspection only — no edits or shell commands.",
+                tool
+            )));
+        }
+
         let text_result = match tool {
             ToolName::ReadFile => {
                 let path = input["path"].as_str().ok_or_else(|| {

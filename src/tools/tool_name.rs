@@ -70,6 +70,34 @@ impl ToolName {
         }
     }
 
+    /// Whether this tool only inspects state. Read-only-safe tools are the
+    /// ones offered in read-only mode (see `tools::get_read_only_tools`)
+    /// and the only ones permitted there; the mutating and command-running
+    /// tools return `false` and are refused at dispatch when read-only mode
+    /// is active. Every variant is listed explicitly, with no wildcard, so
+    /// a newly added tool must be classified here before it compiles.
+    pub fn is_read_only_safe(&self) -> bool {
+        match self {
+            ToolName::ReadFile
+            | ToolName::ListDirectory
+            | ToolName::GlobFiles
+            | ToolName::SearchCode
+            | ToolName::UpdatePlan
+            | ToolName::ViewImage
+            | ToolName::WebFetch
+            | ToolName::WebSearch => true,
+            ToolName::WriteFile
+            | ToolName::EditFile
+            | ToolName::MorphEditFile
+            | ToolName::CreateDirectory
+            | ToolName::DeleteFile
+            | ToolName::DeleteDirectory
+            | ToolName::MoveFile
+            | ToolName::CopyFile
+            | ToolName::ExecuteBash => false,
+        }
+    }
+
     /// Render a one-line human summary of a completed tool call for the
     /// transcript UI. The four custom-shaped variants (read_file,
     /// list_directory, search_code, web_fetch) extract counts/paths from
@@ -235,6 +263,39 @@ mod tests {
     #[test]
     fn test_unknown_tool() {
         assert!(ToolName::from_str("unknown_tool").is_err());
+    }
+
+    #[test]
+    fn read_only_safe_classification() {
+        use ToolName::*;
+        for tool in [
+            ReadFile,
+            ListDirectory,
+            GlobFiles,
+            SearchCode,
+            UpdatePlan,
+            ViewImage,
+            WebFetch,
+            WebSearch,
+        ] {
+            assert!(tool.is_read_only_safe(), "{tool} should be read-only safe");
+        }
+        for tool in [
+            WriteFile,
+            EditFile,
+            MorphEditFile,
+            CreateDirectory,
+            DeleteFile,
+            DeleteDirectory,
+            MoveFile,
+            CopyFile,
+            ExecuteBash,
+        ] {
+            assert!(
+                !tool.is_read_only_safe(),
+                "{tool} must not be read-only safe"
+            );
+        }
     }
 
     #[test]

@@ -535,6 +535,22 @@ mod tests {
     }
 
     #[test]
+    fn read_only_tool_list_offers_only_read_only_safe_tools() {
+        // Guards against a mutating tool being advertised in read-only
+        // mode, which the dispatch guard would then refuse anyway.
+        for tool in get_read_only_tools() {
+            if let Tool::Regular { name, .. } = &tool {
+                if let Ok(parsed) = crate::tools::ToolName::from_str(name) {
+                    assert!(
+                        parsed.is_read_only_safe(),
+                        "{name} is offered in read-only mode but is not read-only safe"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn update_plan_schema_restricts_status_values() {
         let tools = get_all_tools();
         let plan_tool = tools

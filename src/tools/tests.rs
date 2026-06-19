@@ -258,6 +258,54 @@ async fn test_read_file_blocks_relative_escape() {
     }
 }
 
+#[tokio::test]
+async fn read_only_mode_refuses_write_and_exec_tools_at_dispatch() {
+    let dir = tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config_dir = workspace.join(".sofos");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.local.toml"),
+        "[permissions]\nallow = []\ndeny = []\nask = []\n",
+    )
+    .unwrap();
+    std::fs::write(workspace.join("readme.txt"), "hello").unwrap();
+
+    let executor =
+        ToolExecutor::new(workspace.clone(), None, None, SandboxMode::ReadOnly, false).unwrap();
+
+    // Every mutating or command-running tool is refused before it runs,
+    // even though read-only mode also omits them from the advertised set.
+    let blocked = [
+        ("write_file", json!({"path": "x.txt", "content": "data"})),
+        ("execute_bash", json!({"command": "echo hi"})),
+        ("delete_file", json!({"path": "readme.txt"})),
+        (
+            "edit_file",
+            json!({"path": "readme.txt", "old_string": "hello", "new_string": "bye"}),
+        ),
+        ("create_directory", json!({"path": "sub"})),
+    ];
+    for (name, input) in blocked {
+        let result = executor.execute(name, &input).await;
+        match result {
+            Err(SofosError::ToolExecution(msg)) => {
+                assert!(msg.contains("read-only mode"), "{name}: got {msg}")
+            }
+            other => panic!("{name} must be refused in read-only mode, got: {other:?}"),
+        }
+    }
+
+    // The blocked delete left the file in place, and read-only tools work.
+    assert!(workspace.join("readme.txt").exists());
+    assert!(
+        executor
+            .execute("read_file", &json!({"path": "readme.txt"}))
+            .await
+            .is_ok()
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn test_resolve_for_write_canonicalizes_through_missing_ancestors() {
