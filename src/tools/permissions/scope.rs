@@ -143,6 +143,18 @@ impl PermissionManager {
         )
     }
 
+    /// Whether any `Read(...)` deny rule is configured, from the global or
+    /// local config. The sandbox enforces these as kernel-level read masks,
+    /// so a caller can refuse to drop the sandbox while any are active —
+    /// nothing else reliably keeps an arbitrary command off a denied path.
+    pub fn has_read_deny_rules(&self) -> bool {
+        self.settings
+            .permissions
+            .deny
+            .iter()
+            .any(|entry| Self::extract_read_pattern(entry).is_some())
+    }
+
     /// The configured `Read(...)` deny and allow patterns, for translating
     /// into kernel-level sandbox read rules.
     pub fn sandbox_read_rules(&self) -> (Vec<String>, Vec<String>) {

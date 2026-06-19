@@ -422,6 +422,16 @@ impl BashExecutor {
             return Ok(None);
         }
 
+        // The sandbox is the only reliable enforcement of Read deny rules for
+        // an arbitrary command, so do not offer to drop it while any are
+        // active. If the rules cannot be loaded, withhold the retry as well.
+        let read_denies_active = PermissionManager::new(self.workspace.clone())
+            .map(|manager| manager.has_read_deny_rules())
+            .unwrap_or(true);
+        if read_denies_active {
+            return Ok(None);
+        }
+
         // The retry runs unconfined, so it must clear the same structural bar
         // as any unsandboxed command — output redirection and here-documents
         // stay refused because nothing would bound their writes. A confined
@@ -500,6 +510,20 @@ impl BashExecutor {
         self.enforce_read_permissions(permission_manager, command)?;
         self.confirm_askable_command(command)?;
         self.check_bash_external_paths(command, permission_manager)?;
+
+        // Dropping the sandbox removes the kernel-enforced Read deny masks,
+        // and the textual path check above cannot catch a denied file reached
+        // indirectly (through a variable or a recursive walk). Refuse to
+        // unsandbox while any Read deny rule is active, before the approval
+        // prompt so the user is not asked for something that will be refused.
+        if permission_manager.has_read_deny_rules() {
+            return Err(SofosError::ToolExecution(format!(
+                "Cannot run '{}' outside the sandbox while a Read(...) deny rule is active: \
+                 the denied paths are only reliably protected while the sandbox is on. \
+                 Run it inside the project, or remove the read-deny rule first.",
+                command
+            )));
+        }
 
         // Already approved for this session: run unsandboxed without asking.
         let cached = self
@@ -1366,6 +1390,42 @@ mod tests {
             .run_model_escalation("echo hi > out.txt", &normalized, &escalation, &mut pm)
             .unwrap_err();
         assert!(matches!(err, SofosError::ToolExecution(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_escalation_refused_while_read_deny_active() {
+        // A Read deny is only reliably enforced by the sandbox, so a
+        // structurally fine command is refused escalation while one is set.
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnRequest, true);
+        let config_dir = executor.workspace.join(".sofos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.local.toml"),
+            "[permissions]\nallow = []\ndeny = [\"Read(./secret.txt)\"]\nask = []\n",
+        )
+        .unwrap();
+        let mut pm = PermissionManager::new(executor.workspace.clone()).unwrap();
+        assert!(pm.has_read_deny_rules(), "the deny rule should register");
+
+        let escalation = EscalationRequest {
+            justification: Some("needs network".to_string()),
+        };
+        let normalized = PermissionManager::normalize_command_key("curl https://example.com");
+        let err = executor
+            .run_model_escalation(
+                "curl https://example.com",
+                &normalized,
+                &escalation,
+                &mut pm,
+            )
+            .unwrap_err();
+        match err {
+            SofosError::ToolExecution(msg) => {
+                assert!(msg.contains("Read(...) deny rule is active"), "got: {msg}")
+            }
+            other => panic!("expected ToolExecution, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]

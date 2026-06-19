@@ -305,6 +305,32 @@ mod tests {
     }
 
     #[test]
+    fn has_read_deny_rules_detects_only_read_denies() {
+        let temp = TempDir::new().unwrap();
+
+        let mut without_read = PermissionSettings::default();
+        without_read.permissions.deny.push("Bash(rm)".to_string());
+        without_read
+            .permissions
+            .deny
+            .push("Write(./out)".to_string());
+        assert!(
+            !create_test_manager(without_read, &temp).has_read_deny_rules(),
+            "Bash and Write denies must not count as read denies"
+        );
+
+        let mut with_read = PermissionSettings::default();
+        with_read
+            .permissions
+            .deny
+            .push("Read(~/.ssh/id_rsa)".to_string());
+        assert!(
+            create_test_manager(with_read, &temp).has_read_deny_rules(),
+            "a Read deny must be detected"
+        );
+    }
+
+    #[test]
     fn web_fetch_domain_parses_both_forms_and_normalizes() {
         assert_eq!(
             PermissionManager::extract_web_fetch_domain("WebFetch(domain:Blog.Rust-Lang.org)"),
