@@ -153,10 +153,34 @@ fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> 
     };
     let normalized = crate::tools::utils::lexically_normalize(&expanded);
     let resolved = match side {
-        ReadRuleSide::Deny => longest_glob_free_prefix(&normalized),
+        ReadRuleSide::Deny => {
+            let prefix = longest_glob_free_prefix(&normalized);
+            // The pattern had a glob, so the prefix is broader than what it
+            // names. Only widen where masking that broader directory cannot
+            // blank a tree the confined command needs to run: inside the
+            // workspace or the user's home, where a command's own secrets
+            // live. A widened prefix elsewhere — a system directory such as
+            // `/etc` — is left to the per-argument read check instead of
+            // masking the whole tree.
+            if prefix != normalized && !widened_prefix_is_maskable(&prefix, workspace) {
+                return None;
+            }
+            prefix
+        }
         ReadRuleSide::Allow => normalized,
     };
     Some(canonicalize_existing_prefix(&resolved))
+}
+
+/// Whether a glob deny widened up to `prefix` may be masked in the kernel.
+/// True inside the workspace or the user's home directory, where masking a
+/// parent only hides files belonging to the project or the user; false for
+/// a system path, where blanking the parent (for example `/etc`) would
+/// break the confined command, so that deny stays a per-argument check
+/// only.
+fn widened_prefix_is_maskable(prefix: &Path, workspace: &Path) -> bool {
+    prefix.starts_with(workspace)
+        || std::env::var_os("HOME").is_some_and(|home| prefix.starts_with(home))
 }
 
 /// The longest leading path made only of components without a glob
@@ -490,6 +514,25 @@ mod tests {
             &[],
         );
         assert!(policy.read_deny_subpaths.is_empty());
+    }
+
+    /// A glob deny that would widen to a system directory outside the
+    /// workspace and home (here `/etc`) is not masked: blanking the whole
+    /// tree would break the confined command. It falls back to the
+    /// per-argument read check instead.
+    #[test]
+    fn read_deny_with_glob_outside_workspace_and_home_is_not_widened() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &["/etc/*/passwd".to_string()],
+            &[],
+        );
+        assert!(
+            policy.read_deny_subpaths.is_empty(),
+            "a glob deny widening to a system directory must not mask it"
+        );
     }
 
     /// A deny on a path that does not exist yet still resolves through a

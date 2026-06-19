@@ -121,16 +121,21 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
 
     // Read confinement: hide each denied subpath, then re-expose the
     // allow exceptions on top so a specific allow overrides a broader
-    // deny. A directory is masked with an empty tmpfs. Any other existing
-    // node — a regular file, but also a pipe, socket, or device — is
-    // masked with `/dev/null`; `symlink_metadata` succeeding means the
-    // mount point exists, which is exactly what bwrap needs to bind over
-    // it. A path that does not exist yet is masked with a tmpfs only when
-    // it lies inside a writable root, where a secret could appear later
-    // and the writable bind lets bwrap create the mount point. Outside the
-    // writable roots an absent path has no mount point to mask over on the
-    // read-only base, and a path the host cannot stat is, under the
-    // same-uid mapping, unreadable to the confined process too.
+    // deny. Each branch must emit a mount bwrap can actually apply —
+    // mounting over a missing or invalid mount point aborts the whole
+    // confined command, so a single odd deny path must not be allowed to
+    // do that. A directory is masked with an empty tmpfs. Any other
+    // existing node — a regular file, but also a pipe, socket, or device —
+    // is masked with `/dev/null`. A symlink here is always dangling (a live
+    // one is resolved away when the deny path is canonicalized), so its
+    // target is already gone: nothing to hide, and a bind over it would
+    // fail, so it is left alone. A path that does not yet exist is masked
+    // with a tmpfs only when it is genuinely absent (`NotFound`) inside a
+    // writable root, where a secret could appear later and the writable
+    // bind lets bwrap create the mount point; a path that cannot be stat'd
+    // for any other reason (a non-directory component, no search
+    // permission) has no usable mount point and is, under the same-uid
+    // mapping, unreadable to the confined process anyway.
     for path in &policy.read_deny_subpaths {
         let inside_writable_root = policy
             .writable_roots
@@ -141,12 +146,13 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
                 args.push(OsString::from("--tmpfs"));
                 args.push(path.clone().into_os_string());
             }
+            Ok(meta) if meta.file_type().is_symlink() => {}
             Ok(_) => {
                 args.push(OsString::from("--ro-bind"));
                 args.push(OsString::from("/dev/null"));
                 args.push(path.clone().into_os_string());
             }
-            Err(_) if inside_writable_root => {
+            Err(err) if inside_writable_root && err.kind() == std::io::ErrorKind::NotFound => {
                 args.push(OsString::from("--tmpfs"));
                 args.push(path.clone().into_os_string());
             }
@@ -646,6 +652,63 @@ mod tests {
             args.windows(3)
                 .any(|w| w[0] == "--ro-bind" && w[1] == "/dev/null" && w[2] == pipe),
             "a denied pipe must be masked with /dev/null"
+        );
+    }
+
+    /// A denied path that is a dangling symlink is left unmasked: its
+    /// target is already gone, so there is nothing to hide, and a
+    /// `/dev/null` bind over a broken link would make bwrap fail to start
+    /// the command.
+    #[test]
+    fn bwrap_skips_denied_dangling_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("missing-target"), &link).unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![dir.path().to_path_buf()],
+            allow_network: false,
+            read_deny_subpaths: vec![link.clone()],
+            read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
+        };
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !args.contains(&link.to_string_lossy().into_owned()),
+            "a dangling symlink deny must not be masked; bwrap could not bind over it"
+        );
+    }
+
+    /// A denied path that descends through a regular file can never be a
+    /// real mount point, so it is left unmasked rather than asking bwrap to
+    /// mount over an invalid point and abort the command. The error is not
+    /// `NotFound`, so it must not take the tmpfs branch.
+    #[test]
+    fn bwrap_skips_denied_path_through_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "x").unwrap();
+        let through_file = file.join("nested");
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![dir.path().to_path_buf()],
+            allow_network: false,
+            read_deny_subpaths: vec![through_file.clone()],
+            read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
+        };
+        let args: Vec<String> = bwrap_arguments(&policy)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            !args.contains(&through_file.to_string_lossy().into_owned()),
+            "a deny path through a file has no valid mount point and must be skipped"
         );
     }
 
