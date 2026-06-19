@@ -349,7 +349,7 @@ mod tests {
                 SessionTokenCounters::default(),
                 crate::api::model_info::CLAUDE_OPUS,
                 true,
-                Some("read-only"),
+                Some(crate::config::PermissionPreset::ReadOnly.label()),
             )
             .unwrap();
 
@@ -359,7 +359,10 @@ mod tests {
             Some(crate::api::model_info::CLAUDE_OPUS)
         );
         assert_eq!(loaded.readonly, Some(true));
-        assert_eq!(loaded.permission_preset.as_deref(), Some("read-only"));
+        assert_eq!(
+            loaded.permission_preset.as_deref(),
+            Some(crate::config::PermissionPreset::ReadOnly.label())
+        );
     }
 
     /// Older session files written before `model` and `readonly` existed

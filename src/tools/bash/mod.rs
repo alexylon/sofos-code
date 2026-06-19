@@ -374,6 +374,17 @@ ask = []
                 .is_ok(),
             "a bare command name must not be treated as a read path"
         );
+
+        // A program reached through a variable path can't be expanded before
+        // the shell runs, so it can't be checked against the deny rules and
+        // is refused — the same fail-closed treatment a `$VAR` argument path
+        // already gets. Passing a literal path instead is the way through.
+        assert!(
+            executor
+                .enforce_read_permissions(&manager, "$HOME/bin/tool --flag")
+                .is_err(),
+            "a program reached through a variable path must be refused"
+        );
     }
 
     #[test]

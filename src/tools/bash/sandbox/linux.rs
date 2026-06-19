@@ -188,8 +188,8 @@ pub fn bwrap_arguments(policy: &SandboxPolicy) -> Vec<OsString> {
 /// the same network seccomp filter the real command installs, so it sees
 /// the same restrictions: installing the filter sets `no_new_privs`, and
 /// on a host where that stops a setuid bwrap from gaining the privileges
-/// it needs for namespaces, the probe now fails just as every real
-/// command would, letting the caller fall back to the permission prompt
+/// it needs for namespaces, the probe fails just as every real command
+/// would, letting the caller fall back to the permission prompt
 /// instead of confining commands that cannot actually spawn. A short
 /// timeout guards against a bwrap that hangs.
 pub fn bwrap_can_unshare_namespaces() -> bool {
