@@ -217,6 +217,7 @@ mod tests {
 
         PermissionManager {
             settings,
+            local_settings: PermissionSettings::default(),
             local_settings_path: temp_dir.path().join(".sofos/config.local.toml"),
             global_settings_path: None,
             allowed_commands: HashSet::new(),
@@ -794,11 +795,7 @@ mod tests {
 
         {
             let mut manager = PermissionManager::new(workspace.clone()).unwrap();
-            manager
-                .settings
-                .permissions
-                .allow
-                .push("Bash(custom:*)".to_string());
+            manager.remember_rule("Bash(custom:*)".to_string(), true);
             manager.save_settings().unwrap();
         }
 

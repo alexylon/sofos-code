@@ -13,7 +13,13 @@ const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
 const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
 
 pub struct PermissionManager {
+    /// The merged global + local view used for every runtime permission
+    /// check.
     pub(super) settings: PermissionSettings,
+    /// Exactly what the local file holds (and what `save_settings` writes
+    /// back). Kept apart from `settings` so a save never copies the
+    /// global `~/.sofos/config.toml` rules into the local file.
+    pub(super) local_settings: PermissionSettings,
     pub(super) local_settings_path: PathBuf,
     #[allow(dead_code)]
     pub(super) global_settings_path: Option<PathBuf>,
@@ -53,7 +59,7 @@ impl PermissionManager {
         }
 
         let local_settings = Self::load_settings(&local_settings_path)?;
-        settings.merge(local_settings);
+        settings.merge(local_settings.clone());
 
         let (read_allow_set, read_deny_set) =
             Self::build_scope_globs(&settings, Self::extract_read_pattern)?;
@@ -225,6 +231,7 @@ impl PermissionManager {
 
         Ok(Self {
             settings,
+            local_settings,
             local_settings_path,
             global_settings_path,
             allowed_commands,
@@ -328,7 +335,10 @@ impl PermissionManager {
             })?;
         }
 
-        let content = toml::to_string_pretty(&self.settings)
+        // Write only the local settings — never the merged view — so the
+        // global `~/.sofos/config.toml` rules are not copied into the
+        // local file.
+        let content = toml::to_string_pretty(&self.local_settings)
             .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
         fs::write(&self.local_settings_path, content).map_err(|e| {
@@ -733,15 +743,23 @@ impl PermissionManager {
     /// Persist `rule` into the allow (`allow == true`) or deny list,
     /// skipping the push when an identical rule is already present so
     /// repeat grants of the same command or directory don't accumulate
-    /// duplicate lines in config.local.toml.
+    /// duplicate lines in config.local.toml. The rule lands in both the
+    /// local settings (so `save_settings` writes it to the local file)
+    /// and the merged runtime view (so the grant takes effect at once).
     pub(super) fn remember_rule(&mut self, rule: String, allow: bool) {
-        let list = if allow {
-            &mut self.settings.permissions.allow
+        if allow {
+            Self::push_unique(&mut self.local_settings.permissions.allow, &rule);
+            Self::push_unique(&mut self.settings.permissions.allow, &rule);
         } else {
-            &mut self.settings.permissions.deny
-        };
-        if !list.contains(&rule) {
-            list.push(rule);
+            Self::push_unique(&mut self.local_settings.permissions.deny, &rule);
+            Self::push_unique(&mut self.settings.permissions.deny, &rule);
+        }
+    }
+
+    /// Append `rule` to `list` unless it is already present.
+    fn push_unique(list: &mut Vec<String>, rule: &str) {
+        if !list.iter().any(|r| r == rule) {
+            list.push(rule.to_string());
         }
     }
 
