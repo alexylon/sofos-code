@@ -465,11 +465,15 @@ ask = []
         assert!(has_path_traversal("cat /foo/..")); // ends_with /..
         assert!(has_path_traversal("cat foo/../bar")); // contains /../
         // Quoted / shell-wrapped variants — still blocked after the
-        // trailing paren, quote, or backtick is stripped.
+        // quoting and grouping characters are removed.
         assert!(has_path_traversal("cat \"../secret\""));
         assert!(has_path_traversal("cat '../secret'"));
         assert!(has_path_traversal("echo $(cat ../secret)"));
         assert!(has_path_traversal("ls `../bin/tool`"));
+        // `..` split apart by interior quotes, or hidden behind a leading
+        // backslash, is normalised to `../secret` before the scan.
+        assert!(has_path_traversal("cat \".\"\".\"/secret"));
+        assert!(has_path_traversal("cat \\../secret"));
 
         // Flag-embedded / assignment-embedded traversal. These used
         // to slip through the token-only split because the entire

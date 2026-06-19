@@ -32,16 +32,20 @@ use std::path::PathBuf;
 pub(super) fn has_path_traversal(command: &str) -> bool {
     let split = |c: char| c.is_whitespace() || matches!(c, '=' | ':');
     for raw in command.split(split).filter(|t| !t.is_empty()) {
-        // Strip the common shell wrappers the parser would peel off
-        // anyway, so `"../foo"`, `` `../foo` ``, and `$(cat ../foo)`
-        // all still flag as traversal after the trailing `)`, quote,
-        // or backtick is removed.
-        let t = raw.trim_matches(|c: char| {
-            matches!(
-                c,
-                '"' | '\'' | '`' | '(' | ')' | '{' | '}' | '[' | ']' | ';' | ','
-            )
-        });
+        // Remove the quoting and grouping characters the shell strips while
+        // expanding a word — interior ones too, not just the edges — so a
+        // `..` split apart by quotes (`".""."/x`) or hidden behind a leading
+        // backslash (`\../x`) is normalised to what the shell actually runs
+        // before the scan. This is the reduction `base_is_git` also applies.
+        let t: String = raw
+            .chars()
+            .filter(|c| {
+                !matches!(
+                    c,
+                    '"' | '\'' | '\\' | '`' | '(' | ')' | '{' | '}' | '[' | ']' | ';' | ','
+                )
+            })
+            .collect();
         if t == ".." || t.starts_with("../") || t.ends_with("/..") || t.contains("/../") {
             return true;
         }
