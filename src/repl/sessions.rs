@@ -266,11 +266,26 @@ impl Repl {
                 .as_deref()
                 .and_then(PermissionPreset::parse)
                 .map(PermissionPreset::mode);
+            let mode_before = self.mode;
+            let preset_before = PermissionPreset::current(self.mode, self.approval_policy);
             self.restore_permission_preset(preset);
             if saved_mode.is_some_and(|saved| saved != preset.mode()) {
                 self.session_state
                     .conversation
                     .add_user_message(super::mode_preamble_for(self.mode, self.approval_policy));
+            }
+            // A relaxed saved preset must not silently undo a stricter mode
+            // that was in effect: surface the loosening so the user knows the
+            // resumed session runs with fewer restrictions than before.
+            if self.mode.is_more_permissive_than(mode_before) {
+                println!(
+                    "{} resuming this session relaxed the access mode from {} to {}. \
+                     Commands now run with fewer restrictions; use /permissions to change it.",
+                    "Note:".yellow(),
+                    preset_before.label(),
+                    PermissionPreset::current(self.mode, self.approval_policy).label(),
+                );
+                println!();
             }
         }
 

@@ -309,6 +309,23 @@ impl SandboxMode {
     pub fn is_sandboxed(self) -> bool {
         matches!(self, Self::Sandboxed)
     }
+
+    /// Whether `self` restricts less than `other`. Read-only is the most
+    /// restrictive, then sandboxed, then unsandboxed. Used so a resume that
+    /// lands on a less restrictive mode than the one in effect can be
+    /// surfaced rather than applied silently.
+    pub fn is_more_permissive_than(self, other: SandboxMode) -> bool {
+        self.restriction_rank() < other.restriction_rank()
+    }
+
+    /// Relative restrictiveness, higher meaning more locked down.
+    fn restriction_rank(self) -> u8 {
+        match self {
+            Self::ReadOnly => 2,
+            Self::Sandboxed => 1,
+            Self::Unsandboxed => 0,
+        }
+    }
 }
 
 /// When the user is asked before a command runs outside the
@@ -482,6 +499,19 @@ impl PermissionPreset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_more_permissive_than_orders_modes_by_restrictiveness() {
+        use SandboxMode::*;
+        // Unsandboxed is the least restrictive, read-only the most.
+        assert!(Unsandboxed.is_more_permissive_than(Sandboxed));
+        assert!(Unsandboxed.is_more_permissive_than(ReadOnly));
+        assert!(Sandboxed.is_more_permissive_than(ReadOnly));
+        // Tightening or keeping the mode is not "more permissive".
+        assert!(!ReadOnly.is_more_permissive_than(Unsandboxed));
+        assert!(!Sandboxed.is_more_permissive_than(Unsandboxed));
+        assert!(!Sandboxed.is_more_permissive_than(Sandboxed));
+    }
 
     #[test]
     fn sandbox_mode_from_flags_prefers_readonly_then_no_sandbox() {
