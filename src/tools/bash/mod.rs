@@ -333,6 +333,35 @@ ask = []
         }
     }
 
+    /// Serialises tests that mutate process-wide environment variables.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The audit's S5 attack: a command reads Sofos's API key out of its
+    /// own environment. The key must expand to nothing in the child.
+    #[cfg(unix)]
+    #[test]
+    fn secret_api_key_is_not_visible_to_a_shell_command() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        let secret = "sk-test-must-not-leak-000000000000";
+        std::env::set_var("ANTHROPIC_API_KEY", secret);
+
+        let (_temp, workspace) = test_support::workspace();
+        let executor = BashExecutor::new(workspace, false, false).unwrap();
+        let output = executor.execute("echo \"key=[$ANTHROPIC_API_KEY]\"");
+
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        let output = output.unwrap();
+        assert!(
+            !output.contains(secret),
+            "the API key leaked into command output: {output}"
+        );
+        assert!(
+            output.contains("key=[]"),
+            "the scrubbed variable should expand to empty, got: {output}"
+        );
+    }
+
     /// A `Read(...)` deny that matches the command's own program path
     /// blocks it: the program token is checked when it is path-shaped, so a
     /// denied script cannot be run to read it. A bare command name is not

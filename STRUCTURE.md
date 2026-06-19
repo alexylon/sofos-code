@@ -274,6 +274,8 @@ src/
 │   │   # Path resolution, tilde handling, canonicalization, write-target resolution, and workspace classification.
 │   ├── filesystem.rs
 │   │   # Low-level file and directory operations, atomic writes, append, edit, move, copy, and delete helpers.
+│   ├── child_env.rs
+│   │   # Removes Sofos's API keys and loader-injection variables from the environment of spawned shell and ripgrep child processes.
 │   ├── codesearch.rs
 │   │   # Ripgrep-backed code search with ignore policy, file-type filters, and output limits.
 │   ├── image.rs

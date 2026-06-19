@@ -149,6 +149,9 @@ impl CodeSearchTool {
         cmd.arg("--").arg(pattern);
         cmd.current_dir(&self.workspace);
 
+        // ripgrep never needs Sofos's API keys; keep them out of its env.
+        crate::tools::child_env::scrub_sensitive_env(&mut cmd);
+
         let output = cmd
             .output()
             .map_err(|e| SofosError::ToolExecution(format!("Failed to execute ripgrep: {}", e)))?;

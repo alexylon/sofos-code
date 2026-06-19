@@ -658,6 +658,10 @@ impl BashExecutor {
             }
         }
 
+        // Keep Sofos's API keys and inherited loader-injection variables
+        // out of the command and everything it spawns.
+        crate::tools::child_env::scrub_sensitive_env(&mut cmd);
+
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

@@ -1,4 +1,5 @@
 pub mod bash;
+pub mod child_env;
 pub mod codesearch;
 pub mod executor;
 pub mod filesystem;
