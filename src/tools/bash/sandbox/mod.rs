@@ -76,7 +76,7 @@ impl SandboxPolicy {
     /// deny and allow patterns. A deny pattern becomes a subpath the
     /// command may not read; a deny with a glob falls back to its longest
     /// glob-free leading path so it is widened rather than dropped (see
-    /// [`resolve_read_subpath`]). An allow is kept only when it carves an
+    /// [`resolve_rule_subpath`]). An allow is kept only when it carves an
     /// exception out of a denied subtree — an exact path strictly inside a
     /// deny — so a broad or glob allow cannot re-open a denied path, which
     /// matches the per-argument check where an exact allow outranks a glob
@@ -84,7 +84,7 @@ impl SandboxPolicy {
     pub fn with_read_rules(mut self, workspace: &Path, deny: &[String], allow: &[String]) -> Self {
         let deny_subpaths: Vec<PathBuf> = deny
             .iter()
-            .filter_map(|p| resolve_read_subpath(p, workspace, ReadRuleSide::Deny))
+            .filter_map(|p| resolve_rule_subpath(p, workspace, RuleSide::Deny))
             // Drop a deny that covers the workspace itself or an ancestor of
             // it: the confined command runs inside the workspace and must be
             // able to read it, so such a deny would break the command rather
@@ -95,12 +95,35 @@ impl SandboxPolicy {
             .collect();
         self.read_allow_subpaths = allow
             .iter()
-            .filter_map(|p| resolve_read_subpath(p, workspace, ReadRuleSide::Allow))
+            .filter_map(|p| resolve_rule_subpath(p, workspace, RuleSide::Allow))
             .filter(|a| {
                 !deny_subpaths.contains(a) && deny_subpaths.iter().any(|d| a.starts_with(d))
             })
             .collect();
         self.read_deny_subpaths = deny_subpaths;
+        self
+    }
+
+    /// Add kernel-enforced write protection for the workspace's `Write(...)`
+    /// deny patterns: each becomes a subpath the confined command may read
+    /// but not write, so a redirect such as `echo x > blocked/path` is
+    /// refused the same way the `write_file` tool already refuses it. Only
+    /// paths inside the writable workspace are added — a write outside it is
+    /// already refused — and the workspace root itself is never protected,
+    /// which would make the whole workspace read-only. A glob deny is
+    /// widened to its glob-free prefix, the same way a read deny is.
+    pub fn with_write_deny_rules(mut self, workspace: &Path, deny: &[String]) -> Self {
+        for pattern in deny {
+            let Some(subpath) = resolve_rule_subpath(pattern, workspace, RuleSide::Deny) else {
+                continue;
+            };
+            if subpath.starts_with(workspace)
+                && subpath != workspace
+                && !self.write_protect_subpaths.contains(&subpath)
+            {
+                self.write_protect_subpaths.push(subpath);
+            }
+        }
         self
     }
 }
@@ -109,37 +132,37 @@ impl SandboxPolicy {
 /// component holding any of them is not a literal path segment.
 const GLOB_METACHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
-/// Which side of the workspace read rules a pattern came from, which
-/// decides how a glob in it is handled. A deny is widened so the kernel
-/// never reads less than the rule names: a trailing `/**` is dropped (a
+/// Which side of a deny or allow rule a pattern came from, which decides
+/// how a glob in it is handled. A deny is widened so the kernel never
+/// enforces less than the rule names: a trailing `/**` is dropped (a
 /// subpath rule already covers the whole tree) and any remaining glob
 /// falls back to the pattern's longest glob-free leading path. An allow
 /// must stay an exact path, so a glob allow is dropped and left to the
-/// per-argument read check; this keeps a broad allow from re-opening a
-/// denied path.
+/// per-argument check; this keeps a broad allow from re-opening a denied
+/// path.
 #[derive(Clone, Copy)]
-enum ReadRuleSide {
+enum RuleSide {
     Deny,
     Allow,
 }
 
-/// Resolve a `Read(...)` pattern to one absolute subpath for the kernel
-/// rules, or `None` when it cannot be expressed as one (an empty pattern,
-/// or a glob allow). `side` decides how a glob is handled — see
-/// [`ReadRuleSide`]. `.` and `..` are folded and the existing prefix is
-/// canonicalized — resolving symlinks like macOS `/tmp` -> `/private/tmp`
-/// — so the rule matches the path the kernel enforces on even when the
-/// target does not exist yet.
-fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> Option<PathBuf> {
+/// Resolve a deny or allow pattern (from a `Read(...)` or `Write(...)`
+/// rule) to one absolute subpath for the kernel rules, or `None` when it
+/// cannot be expressed as one (an empty pattern, or a glob allow). `side`
+/// decides how a glob is handled — see [`RuleSide`]. `.` and `..` are
+/// folded and the existing prefix is canonicalized — resolving symlinks
+/// like macOS `/tmp` -> `/private/tmp` — so the rule matches the path the
+/// kernel enforces on even when the target does not exist yet.
+fn resolve_rule_subpath(pattern: &str, workspace: &Path, side: RuleSide) -> Option<PathBuf> {
     let trimmed = match side {
-        ReadRuleSide::Deny => pattern.strip_suffix("/**").unwrap_or(pattern),
-        ReadRuleSide::Allow => pattern,
+        RuleSide::Deny => pattern.strip_suffix("/**").unwrap_or(pattern),
+        RuleSide::Allow => pattern,
     }
     .trim();
     if trimmed.is_empty() {
         return None;
     }
-    if matches!(side, ReadRuleSide::Allow) && trimmed.contains(GLOB_METACHARACTERS) {
+    if matches!(side, RuleSide::Allow) && trimmed.contains(GLOB_METACHARACTERS) {
         return None;
     }
     let expanded = if trimmed == "~" {
@@ -153,7 +176,7 @@ fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> 
     };
     let normalized = crate::tools::utils::lexically_normalize(&expanded);
     match side {
-        ReadRuleSide::Deny => {
+        RuleSide::Deny => {
             let prefix = longest_glob_free_prefix(&normalized);
             let resolved = canonicalize_existing_prefix(&prefix);
             // The pattern had a glob, so the prefix is broader than what it
@@ -169,7 +192,7 @@ fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> 
             }
             Some(resolved)
         }
-        ReadRuleSide::Allow => Some(canonicalize_existing_prefix(&normalized)),
+        RuleSide::Allow => Some(canonicalize_existing_prefix(&normalized)),
     }
 }
 
@@ -474,6 +497,42 @@ mod tests {
         let secret = workspace.join("secret");
         assert_eq!(policy.read_deny_subpaths, vec![secret.clone()]);
         assert_eq!(policy.read_allow_subpaths, vec![secret.join("ok.txt")]);
+    }
+
+    /// An in-workspace `Write(...)` deny becomes a write-protected subpath;
+    /// a deny outside the workspace, or one covering the workspace root, is
+    /// not added — the first is already unwritable and the second would make
+    /// the whole workspace read-only.
+    #[test]
+    fn write_deny_protects_only_in_workspace_subpaths() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(dir.path()).unwrap();
+        let policy = SandboxPolicy::for_workspace(&workspace).with_write_deny_rules(
+            &workspace,
+            &[
+                "./build/output".to_string(),
+                "/etc/passwd".to_string(),
+                "./".to_string(),
+            ],
+        );
+        assert!(
+            policy
+                .write_protect_subpaths
+                .contains(&workspace.join("build/output")),
+            "an in-workspace write deny must be protected: {:?}",
+            policy.write_protect_subpaths
+        );
+        assert!(
+            !policy
+                .write_protect_subpaths
+                .iter()
+                .any(|p| p.ends_with("passwd")),
+            "an out-of-workspace write deny must not be added"
+        );
+        assert!(
+            !policy.write_protect_subpaths.contains(&workspace),
+            "the workspace root must never be write-protected"
+        );
     }
 
     /// A `..` segment is collapsed so the rule matches the path the kernel

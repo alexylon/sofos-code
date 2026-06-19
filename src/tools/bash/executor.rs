@@ -627,7 +627,10 @@ impl BashExecutor {
             ))
         })?;
         let (deny, allow) = manager.sandbox_read_rules();
-        Ok(policy.with_read_rules(&self.workspace, &deny, &allow))
+        let write_deny = manager.sandbox_write_deny_rules();
+        Ok(policy
+            .with_read_rules(&self.workspace, &deny, &allow)
+            .with_write_deny_rules(&self.workspace, &write_deny))
     }
 
     fn spawn_supervised(&self, command: &str, confine: bool) -> Result<SupervisedOutput> {
@@ -1502,5 +1505,40 @@ mod tests {
 
         // A non-git command always keeps .git read-only.
         assert!(protects("ls -la"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_policy_write_protects_in_workspace_write_denies() {
+        let (_temp, path) = crate::tools::test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
+        let config_dir = executor.workspace.join(".sofos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.local.toml"),
+            "[permissions]\nallow = []\n\
+             deny = [\"Write(./build/output)\", \"Write(/etc/passwd)\"]\nask = []\n",
+        )
+        .unwrap();
+
+        let policy = executor.confined_policy("echo hi").unwrap();
+
+        // The in-workspace write-deny is now kernel-write-protected, the same
+        // path the write_file tool already refuses.
+        assert!(
+            policy
+                .write_protect_subpaths
+                .contains(&executor.workspace.join("build/output")),
+            "in-workspace Write deny should be write-protected: {:?}",
+            policy.write_protect_subpaths
+        );
+        // A write-deny outside the workspace is irrelevant — already unwritable.
+        assert!(
+            !policy
+                .write_protect_subpaths
+                .iter()
+                .any(|p| p.ends_with("passwd")),
+            "out-of-workspace Write deny should not be added"
+        );
     }
 }

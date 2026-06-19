@@ -155,6 +155,18 @@ impl PermissionManager {
             .any(|entry| Self::extract_read_pattern(entry).is_some())
     }
 
+    /// The configured `Write(...)` deny patterns, for translating into
+    /// kernel-level write protection inside the workspace.
+    pub fn sandbox_write_deny_rules(&self) -> Vec<String> {
+        self.settings
+            .permissions
+            .deny
+            .iter()
+            .filter_map(|entry| Self::extract_write_pattern(entry))
+            .map(str::to_string)
+            .collect()
+    }
+
     /// The configured `Read(...)` deny and allow patterns, for translating
     /// into kernel-level sandbox read rules.
     pub fn sandbox_read_rules(&self) -> (Vec<String>, Vec<String>) {
