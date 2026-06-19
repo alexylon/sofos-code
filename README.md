@@ -76,7 +76,7 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 
 - **Terminal UI** — inline viewport at the bottom of your terminal; normal terminal scrollback remains available.
 - **Claude and OpenAI support** — one provider abstraction with provider-specific streaming, reasoning, web search, and cache handling.
-- **Live streaming Markdown** — assistant responses render as they arrive, including code blocks, headings, lists, blockquotes, and links.
+- **Live streaming Markdown** — assistant responses render as they arrive, including code blocks, headings, lists, tables, blockquotes, and links.
 - **Tool loop execution** — the model can use tools iteratively, with a hard maximum to prevent infinite loops.
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.

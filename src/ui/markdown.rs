@@ -1,6 +1,8 @@
 use crate::ui::UI;
 use colored::Colorize;
+use pulldown_cmark::Alignment;
 use std::io::{self, Write, stdout};
+use unicode_width::UnicodeWidthStr;
 
 /// SGR code for bold-on. Shared between the markdown Strong Start handler
 /// and the ambient-style restorer so the two never drift apart.
@@ -15,6 +17,15 @@ const SGR_HEADING: &str = "\x1b[1;36m";
 /// streamed thinking block. `\x1b[22m` and `\x1b[0m` both clear faint,
 /// so the restorer re-applies it after those resets.
 const SGR_FAINT: &str = "\x1b[2m";
+
+/// Re-apply the ambient faint that a block-level SGR reset clears, so a
+/// dimmed thinking block stays dim after content that ends on a reset.
+fn restore_faint(out: &mut impl io::Write, dimmed: bool) -> io::Result<()> {
+    if dimmed {
+        write!(out, "{}", SGR_FAINT)?;
+    }
+    Ok(())
+}
 
 impl UI {
     pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
@@ -59,14 +70,6 @@ impl UI {
             Ok(())
         }
 
-        // Re-apply the ambient faint that a block-level SGR reset clears.
-        fn restore_faint(out: &mut impl io::Write, dimmed: bool) -> io::Result<()> {
-            if dimmed {
-                write!(out, "{}", SGR_FAINT)?;
-            }
-            Ok(())
-        }
-
         let parser = Parser::new_ext(md, Options::all());
 
         let mut in_code_block = false;
@@ -76,6 +79,10 @@ impl UI {
         let mut italic = false;
         let mut in_heading = false;
         let mut in_blockquote = false;
+        let mut in_table = false;
+        let mut table_aligns: Vec<Alignment> = Vec::new();
+        let mut table_rows: Vec<Vec<String>> = Vec::new();
+        let mut current_cell = String::new();
 
         for event in parser {
             match event {
@@ -122,23 +129,35 @@ impl UI {
                     writeln!(out)?;
                 }
                 Event::Code(code) => {
-                    write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
-                    restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
+                    if in_table {
+                        current_cell.push_str(&code);
+                    } else {
+                        write!(out, "\x1b[38;2;175;215;255m{}\x1b[0m", code)?;
+                        restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
+                    }
                 }
                 Event::Text(text) => {
                     if in_code_block {
                         code_buf.push_str(&text);
+                    } else if in_table {
+                        current_cell.push_str(&text);
                     } else {
                         write!(out, "{}", text)?;
                     }
                 }
                 Event::SoftBreak => {
-                    if !in_code_block {
+                    if in_table {
+                        current_cell.push(' ');
+                    } else if !in_code_block {
                         writeln!(out)?;
                     }
                 }
                 Event::HardBreak => {
-                    writeln!(out)?;
+                    if in_table {
+                        current_cell.push(' ');
+                    } else {
+                        writeln!(out)?;
+                    }
                 }
                 Event::Start(Tag::Paragraph) => {}
                 Event::End(TagEnd::Paragraph) => {
@@ -176,6 +195,29 @@ impl UI {
                     write!(out, "\x1b[0m\x1b]8;;\x07")?;
                     restore_ambient(out, bold, italic, in_heading, in_blockquote, dimmed)?;
                 }
+                Event::Start(Tag::Table(aligns)) => {
+                    in_table = true;
+                    table_aligns = aligns;
+                    table_rows.clear();
+                }
+                Event::Start(Tag::TableHead) | Event::Start(Tag::TableRow) => {
+                    table_rows.push(Vec::new());
+                }
+                Event::Start(Tag::TableCell) => {
+                    current_cell.clear();
+                }
+                Event::End(TagEnd::TableCell) => {
+                    if let Some(row) = table_rows.last_mut() {
+                        row.push(std::mem::take(&mut current_cell));
+                    }
+                }
+                Event::End(TagEnd::Table) => {
+                    in_table = false;
+                    write_table(out, &table_rows, &table_aligns, dimmed)?;
+                    // Separate the table from the next block with a blank line;
+                    // the rows are already newline-terminated by write_table.
+                    writeln!(out)?;
+                }
                 Event::Rule => {
                     write!(out, "{}", "─".repeat(40).dimmed())?;
                     restore_faint(out, dimmed)?;
@@ -190,9 +232,15 @@ impl UI {
 }
 
 /// Return the byte offset of the last newline in `buf` that is **not**
-/// inside an open fenced code block. Lines opening with ``` toggle the
-/// fence state; the trailing newline of an open-fence line is therefore
-/// not a safe commit point.
+/// inside an open fenced code block or an in-progress table. Lines opening
+/// with ``` toggle the fence state; the trailing newline of an open-fence
+/// line is therefore not a safe commit point. A table is held from its
+/// header row until the blank line that closes it, because aligned column
+/// widths depend on every row and a partial table, once committed, can't
+/// be redrawn at the final widths. A potential header — a pipe-bearing
+/// line that is the last line, or is followed only by a partial delimiter
+/// row still streaming in — is held too, so it is never committed as a
+/// paragraph and then redrawn as a table.
 ///
 /// Returns 0 when no safe newline exists yet (caller commits nothing).
 ///
@@ -204,15 +252,30 @@ impl UI {
 /// the safe-commit point may be conservative or skewed inside such
 /// blocks. Rare in assistant output; accept the limitation.
 fn safe_commit_end(buf: &str) -> usize {
+    let lines: Vec<&str> = buf.split_inclusive('\n').collect();
     let mut fence_open = false;
+    let mut in_table = false;
     let mut last_safe = 0usize;
     let mut pos = 0usize;
-    for line in buf.split_inclusive('\n') {
+    for (i, line) in lines.iter().enumerate() {
         if is_fence_line(line) {
             fence_open = !fence_open;
         }
+        if !fence_open {
+            if in_table {
+                if line.trim().is_empty() {
+                    in_table = false;
+                }
+            } else if lines
+                .get(i + 1)
+                .is_some_and(|next| is_table_delimiter(next))
+            {
+                // This line is a table header: its successor is the delimiter row.
+                in_table = true;
+            }
+        }
         pos += line.len();
-        if line.ends_with('\n') && !fence_open {
+        if line.ends_with('\n') && !fence_open && !in_table && !pending_table_header(&lines, i) {
             last_safe = pos;
         }
     }
@@ -227,6 +290,105 @@ fn is_fence_line(line: &str) -> bool {
     let after_spaces = line.trim_start_matches(' ');
     let indent = line.len() - after_spaces.len();
     indent <= 3 && (after_spaces.starts_with("```") || after_spaces.starts_with("~~~"))
+}
+
+/// True when `line` is a GFM table delimiter row — the `|---|:--:|` line
+/// beneath a header. Requires a pipe so a thematic break or setext
+/// underline (`---`) is not mistaken for one.
+fn is_table_delimiter(line: &str) -> bool {
+    if !line.contains('|') {
+        return false;
+    }
+    let inner = line.trim().trim_start_matches('|').trim_end_matches('|');
+    !inner.is_empty()
+        && inner.split('|').all(|cell| {
+            let trimmed = cell.trim();
+            !trimmed.is_empty()
+                && trimmed.contains('-')
+                && trimmed.bytes().all(|b| b == b'-' || b == b':')
+        })
+}
+
+/// True when line `i` may be a table header whose delimiter row has not
+/// finished streaming, so committing it now would show it as a paragraph
+/// and then redraw it as a table. Holds when the header is the last line
+/// (the delimiter has not started) or the only line after it is a partial
+/// delimiter row still being received. Only a pipe-bearing line qualifies,
+/// because pulldown does not treat a pipe-less line as a table header.
+fn pending_table_header(lines: &[&str], i: usize) -> bool {
+    if !lines[i].contains('|') {
+        return false;
+    }
+    match lines.get(i + 1) {
+        None => true,
+        Some(next) => i + 2 == lines.len() && !next.ends_with('\n') && is_delimiter_prefix(next),
+    }
+}
+
+/// True when `s`, a partial line still being streamed, contains only the
+/// characters a delimiter row is built from, so it may still grow into one.
+fn is_delimiter_prefix(s: &str) -> bool {
+    let trimmed = s.trim();
+    !trimmed.is_empty()
+        && trimmed
+            .bytes()
+            .all(|b| matches!(b, b'|' | b'-' | b':' | b' '))
+}
+
+/// Render a parsed table as aligned, box-drawn columns. Column widths are
+/// the max display width per column across every row; the header (row 0)
+/// is followed by a `─┼─` rule. Cells carry plain text only — inline
+/// styling inside a cell is flattened — so padding is computed on visible
+/// width without having to discount ANSI escapes.
+fn write_table(
+    out: &mut impl io::Write,
+    rows: &[Vec<String>],
+    aligns: &[Alignment],
+    dimmed: bool,
+) -> io::Result<()> {
+    let col_count = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    if col_count == 0 {
+        return Ok(());
+    }
+    let mut widths = vec![0usize; col_count];
+    for row in rows {
+        for (col, cell) in row.iter().enumerate() {
+            widths[col] = widths[col].max(cell.width());
+        }
+    }
+    let sep = format!(" {} ", "│".dimmed());
+    for (row_idx, row) in rows.iter().enumerate() {
+        let mut line = String::new();
+        for (col, &width) in widths.iter().enumerate() {
+            if col > 0 {
+                line.push_str(&sep);
+            }
+            let cell = row.get(col).map_or("", |s| s.as_str());
+            let align = aligns.get(col).copied().unwrap_or(Alignment::None);
+            line.push_str(&pad_cell(cell, width, align));
+        }
+        writeln!(out, "{}", line.trim_end())?;
+        restore_faint(out, dimmed)?;
+        if row_idx == 0 {
+            let rule: Vec<String> = widths.iter().map(|width| "─".repeat(*width)).collect();
+            writeln!(out, "{}", rule.join("─┼─").dimmed())?;
+            restore_faint(out, dimmed)?;
+        }
+    }
+    Ok(())
+}
+
+/// Pad `text` to `width` display columns per `align` (`None` renders left).
+fn pad_cell(text: &str, width: usize, align: Alignment) -> String {
+    let fill = width.saturating_sub(text.width());
+    match align {
+        Alignment::Right => format!("{}{text}", " ".repeat(fill)),
+        Alignment::Center => {
+            let left = fill / 2;
+            format!("{}{text}{}", " ".repeat(left), " ".repeat(fill - left))
+        }
+        Alignment::Left | Alignment::None => format!("{text}{}", " ".repeat(fill)),
+    }
 }
 
 /// Newline-gated markdown renderer for streaming output. Accumulates
@@ -610,6 +772,59 @@ mod render_tests {
             out
         );
     }
+
+    #[test]
+    fn table_renders_aligned_columns_with_separators() {
+        let out = render("| Module | Tests |\n|--------|------:|\n| api | 120 |\n| repl | 5 |\n");
+        // The header cells are no longer fused: a separator sits between them.
+        assert!(
+            !out.contains("ModuleTests"),
+            "header cells must not be fused; out={:?}",
+            out
+        );
+        assert!(out.contains("Module"), "header cell missing; out={:?}", out);
+        assert!(out.contains('│'), "column separator missing; out={:?}", out);
+        // A rule line separates the header from the body.
+        assert!(out.contains('┼'), "header rule missing; out={:?}", out);
+        // Body rows render their own cells rather than collapsing onto one line.
+        assert!(out.contains("api"), "first body row missing; out={:?}", out);
+        assert!(
+            out.contains("repl"),
+            "second body row missing; out={:?}",
+            out
+        );
+        // The right-aligned numeric column pads on the left: "120" is the
+        // widest cell, so "5" gets four leading spaces.
+        assert!(
+            out.contains("    5"),
+            "right alignment not applied; out={:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn table_is_followed_by_blank_line() {
+        // A table is separated from the following block by a blank line.
+        let out = render("| A | B |\n|---|---|\n| 1 | 2 |\n\nNext.\n");
+        assert!(
+            out.contains("\n\nNext."),
+            "blank line after table missing; out={:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn empty_table_body_still_shows_header() {
+        // A header-only table (the "empty summary" case) renders the
+        // header and rule instead of fusing the cells into one token.
+        let out = render("| Module | Tests |\n|--------|-------|\n");
+        assert!(
+            !out.contains("ModuleTests"),
+            "header cells must not be fused; out={:?}",
+            out
+        );
+        assert!(out.contains('┼'), "header rule missing; out={:?}", out);
+    }
 }
 
 #[cfg(test)]
@@ -755,6 +970,90 @@ mod stream_tests {
         assert!(
             out.contains("second turn"),
             "renderer must be reusable after finalize; got {out:?}"
+        );
+    }
+
+    #[test]
+    fn streamed_table_matches_full_render() {
+        // The reported bug: a table streamed in pieces dropped its body
+        // rows because the unhandled table collapsed onto one line and the
+        // already-committed header line was never redrawn. The renderer now
+        // holds the table until it is complete, so streamed output equals a
+        // one-shot render — every row survives.
+        let md = "Summary:\n\n| Module | Tests |\n|--------|-------|\n| api | 120 |\n| repl | 95 |\n\nDone.\n";
+        let streamed = stream(&[
+            "Summary:\n\n| Module ",
+            "| Tests |\n|--------|",
+            "-------|\n| api | 120 |\n",
+            "| repl | 95 |\n\nDone.\n",
+        ]);
+        let full = full_render(md);
+        assert_eq!(streamed, full, "streamed table must match full render");
+    }
+
+    #[test]
+    fn streamed_table_header_before_delimiter_matches_full_render() {
+        // The header row (with its newline) arrives in one delta and the
+        // delimiter in the next, so a commit fires between them. The header
+        // must not be committed as a paragraph before the table is known.
+        let md = "| Module | Tests |\n|--------|-------|\n| api | 120 |\n\nDone.\n";
+        let streamed = stream(&[
+            "| Module | Tests |\n",
+            "|--------|-------|\n| api | 120 |\n\nDone.\n",
+        ]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "header committed before its delimiter must not diverge"
+        );
+    }
+
+    #[test]
+    fn streamed_table_at_message_end_matches_full_render() {
+        // A table with no trailing blank line is held until finalize; it
+        // must still come out identical to a one-shot render.
+        let md = "| A | B |\n|---|---|\n| 1 | 2 |\n";
+        let streamed = stream(&["| A | B |\n|---|", "---|\n| 1 | 2 |\n"]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "table at message end must match full render"
+        );
+    }
+
+    #[test]
+    fn table_delimiter_detection() {
+        assert!(is_table_delimiter("|---|---|\n"));
+        assert!(is_table_delimiter("| --- | :---: |\n"));
+        assert!(is_table_delimiter(":--|--:\n"));
+        // No pipe: a thematic break or setext underline, not a delimiter.
+        assert!(!is_table_delimiter("---\n"));
+        assert!(!is_table_delimiter("------\n"));
+        // Cells with non-dash content are not a delimiter row.
+        assert!(!is_table_delimiter("| a | b |\n"));
+    }
+
+    #[test]
+    fn delimiter_prefix_detection() {
+        assert!(is_delimiter_prefix("|"));
+        assert!(is_delimiter_prefix("|--"));
+        assert!(is_delimiter_prefix(":--|--"));
+        assert!(!is_delimiter_prefix("more"));
+        assert!(!is_delimiter_prefix(""));
+        assert!(!is_delimiter_prefix("   "));
+    }
+
+    #[test]
+    fn streamed_table_with_split_delimiter_matches_full_render() {
+        // The delimiter row arrives across deltas, so a partial delimiter
+        // (just "|") briefly sits after the header. The header must not be
+        // committed as a paragraph before the delimiter row completes.
+        let md = "| a | b |\n|--|--|\n| 1 | 2 |\n\nz\n";
+        let streamed = stream(&["| a", " | b |\n|", "--|--|\n| 1 ", "| 2 |\n\nz\n"]);
+        let full = full_render(md);
+        assert_eq!(
+            streamed, full,
+            "table with a split delimiter row must match full render"
         );
     }
 }

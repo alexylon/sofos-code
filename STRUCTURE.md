@@ -1240,7 +1240,7 @@ Rules:
 It contains:
 
 - block and streaming Markdown formatting;
-- heading, emphasis, code, blockquote, list, and link handling;
+- heading, emphasis, code, blockquote, list, table, and link handling;
 - terminal hyperlink support where available;
 - style restoration across nested spans.
 

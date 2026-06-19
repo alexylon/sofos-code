@@ -20,6 +20,8 @@ All notable changes to Sofos are documented in this file.
 
 ### Fixed
 
+- **Tables in the assistant's replies now display correctly.** A table used to collapse as it streamed: the column headers ran together into one word and the rows beneath them disappeared. Tables now render as aligned columns with a rule under the header, and every row is shown.
+
 - **External-path permissions are scoped correctly and never offer a "remember" that won't be saved.** Running tests in Docker used to save a rule covering the whole machine — a working directory like `/work` became `Bash(//**)`; a top-level path is now scoped to itself (`Bash(/work/**)`), using the same logic across command, file, and image access. When a grant genuinely can't be saved as a sane rule (the filesystem root, a `docker` `host:container` mount, or a one-off command using multiple lines, `$(…)`, or a heredoc), the prompt shows a plain Yes/No instead of an "and remember" option it would silently drop — and no rule is ever written to `.sofos/config.local.toml` twice.
 
 ### Security
