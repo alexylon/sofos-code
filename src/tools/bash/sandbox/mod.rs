@@ -152,35 +152,39 @@ fn resolve_read_subpath(pattern: &str, workspace: &Path, side: ReadRuleSide) -> 
         workspace.join(trimmed.strip_prefix("./").unwrap_or(trimmed))
     };
     let normalized = crate::tools::utils::lexically_normalize(&expanded);
-    let resolved = match side {
+    match side {
         ReadRuleSide::Deny => {
             let prefix = longest_glob_free_prefix(&normalized);
+            let resolved = canonicalize_existing_prefix(&prefix);
             // The pattern had a glob, so the prefix is broader than what it
             // names. Only widen where masking that broader directory cannot
             // blank a tree the confined command needs to run: inside the
             // workspace or the user's home, where a command's own secrets
-            // live. A widened prefix elsewhere — a system directory such as
-            // `/etc` — is left to the per-argument read check instead of
-            // masking the whole tree.
-            if prefix != normalized && !widened_prefix_is_maskable(&prefix, workspace) {
+            // live. The check is on the resolved path, so a prefix that
+            // resolves through a symlink onto a system tree (for example
+            // `~/link` -> `/etc`) is refused here too; such a deny stays a
+            // per-argument read check instead of masking the whole tree.
+            if prefix != normalized && !widened_prefix_is_maskable(&resolved, workspace) {
                 return None;
             }
-            prefix
+            Some(resolved)
         }
-        ReadRuleSide::Allow => normalized,
-    };
-    Some(canonicalize_existing_prefix(&resolved))
+        ReadRuleSide::Allow => Some(canonicalize_existing_prefix(&normalized)),
+    }
 }
 
-/// Whether a glob deny widened up to `prefix` may be masked in the kernel.
-/// True inside the workspace or the user's home directory, where masking a
-/// parent only hides files belonging to the project or the user; false for
-/// a system path, where blanking the parent (for example `/etc`) would
-/// break the confined command, so that deny stays a per-argument check
-/// only.
+/// Whether a glob deny widened up to the resolved `prefix` may be masked in
+/// the kernel. True inside the workspace or the user's home directory, where
+/// masking a parent only hides files belonging to the project or the user;
+/// false for a system path, where blanking the parent (for example `/etc`)
+/// would break the confined command, so that deny stays a per-argument check
+/// only. `prefix` is the canonicalized path the kernel would actually mask,
+/// and the home directory is canonicalized to match, so a symlink in either
+/// cannot make the comparison disagree with the path that gets masked.
 fn widened_prefix_is_maskable(prefix: &Path, workspace: &Path) -> bool {
     prefix.starts_with(workspace)
-        || std::env::var_os("HOME").is_some_and(|home| prefix.starts_with(home))
+        || std::env::var_os("HOME")
+            .is_some_and(|home| prefix.starts_with(canonicalize_existing_prefix(Path::new(&home))))
 }
 
 /// The longest leading path made only of components without a glob
@@ -532,6 +536,32 @@ mod tests {
         assert!(
             policy.read_deny_subpaths.is_empty(),
             "a glob deny widening to a system directory must not mask it"
+        );
+    }
+
+    /// A glob deny whose glob-free prefix resolves through a symlink onto a
+    /// tree outside the workspace and home is not masked: the maskability
+    /// check runs on the resolved path, so masking the whole resolved system
+    /// tree (which would break the confined command) is refused, and the
+    /// deny falls back to the per-argument read check.
+    #[cfg(unix)]
+    #[test]
+    fn read_deny_glob_through_symlink_to_outside_is_not_widened() {
+        let ws_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(ws_dir.path()).unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let outside = std::fs::canonicalize(outside_dir.path()).unwrap();
+        // A workspace entry that resolves to a directory outside workspace+home.
+        std::os::unix::fs::symlink(&outside, workspace.join("config")).unwrap();
+
+        let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
+            &workspace,
+            &["./config/*/secret.env".to_string()],
+            &[],
+        );
+        assert!(
+            policy.read_deny_subpaths.is_empty(),
+            "a glob deny whose prefix resolves outside workspace+home must not mask the resolved tree"
         );
     }
 
