@@ -625,10 +625,7 @@ mod tests {
             metadata.is_err(),
             "an allow rule cannot open the cloud-metadata IP"
         );
-        assert!(
-            loopback.is_err(),
-            "a session grant cannot open localhost"
-        );
+        assert!(loopback.is_err(), "a session grant cannot open localhost");
     }
 
     #[test]
