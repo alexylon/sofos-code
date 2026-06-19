@@ -99,6 +99,43 @@ pub(super) fn detect_command_substitution(command: &str) -> Option<&'static str>
     None
 }
 
+/// Detect bash ANSI-C quoting (`$'...'`) used outside other quoting. The
+/// shell decodes the backslash escapes inside such a token into bytes, so
+/// `$'\x67it'` becomes `git` and `git $'\x70ush'` runs `git push` — a
+/// spelling neither the structural git gate nor the command classifier
+/// would otherwise recognise. Any command using this form is refused, so a
+/// dangerous program name or git subcommand cannot be hidden behind it.
+/// A `$'` inside single or double quotes is an ordinary dollar before a
+/// quote and is left alone, as the shell treats it.
+pub(super) fn detect_ansi_c_quoting(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !in_single && b == b'\\' {
+            i = i.saturating_add(2);
+            continue;
+        }
+        if !in_double && b == b'\'' {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if !in_single && b == b'"' {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if !in_single && !in_double && b == b'$' && bytes.get(i + 1) == Some(&b'\'') {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Programs that run one of their arguments as a command, so a dangerous
 /// `git` call can hide behind them — `env git push`, `timeout 5 git push`,
 /// `nice git push`, `xargs git push`. We look past the launcher to the git
@@ -995,6 +1032,12 @@ impl BashExecutor {
             return false;
         }
 
+        // `$'...'` quoting decodes to other characters, so `$'\x67it' push`
+        // would slip a disguised git command past the scans below.
+        if detect_ansi_c_quoting(command) {
+            return false;
+        }
+
         // Note: absolute paths (/...) and tilde paths (~/) are now handled by
         // check_bash_external_paths which asks the user interactively.
 
@@ -1051,6 +1094,14 @@ impl BashExecutor {
                 "Command '{}' uses shell substitution ('{}') which would run a hidden subcommand outside the permission system\n\
                  Hint: Run each step as its own bash call so the permission system can see it. Use single quotes if you need the literal characters.",
                 command, marker
+            );
+        }
+
+        if detect_ansi_c_quoting(command) {
+            return format!(
+                "Command '{}' uses the bash $'...' quoting form, which the shell rewrites into other characters and can hide a program name or git subcommand from the safety checks\n\
+                 Hint: Write the characters directly, or pass them inside ordinary single or double quotes.",
+                command
             );
         }
 

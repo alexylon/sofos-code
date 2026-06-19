@@ -36,6 +36,7 @@ All notable changes to Sofos are documented in this file.
 - **A shell command reaching outside the project through a workspace symlink is now checked even when the target does not exist yet.** Such a path previously skipped the outside-the-project permission prompt when its target had not been created.
 - **A blocked-read rule now also applies to a shell command's own program path, not just its arguments.** A command such as `./scripts/run.sh` is refused when a `Read(...)` rule blocks that path, so a script you blocked from reading cannot be run.
 - **A confined command can no longer plant a Git hook by disguising the write as git** (macOS and Linux). The `.git` folder is writable only for a plain `git` command that writes the repository itself; a git command that redirects output (`git log > .git/hooks/pre-commit`), a `git` reached through a path (`./git`), or a `git` run under an environment override (`PATH=…`, `LD_PRELOAD=…`) now keeps `.git` read-only, so none of these can write a hook that would later run outside the sandbox.
+- **A blocked command can no longer be disguised with the bash `$'...'` quoting form.** The shell decodes that form into other characters, so a `git push` written as `git $'\x70ush'` used to slip past the safety checks. Commands that use `$'...'` are now refused; write the characters directly, or pass them inside ordinary single or double quotes.
 
 ## [0.3.5] - 2026-06-09
 

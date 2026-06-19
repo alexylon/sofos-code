@@ -79,8 +79,8 @@ mod tests {
     use super::*;
     use crate::error::SofosError;
     use crate::tools::bash::validate::{
-        command_contains_askable_git_checkout, command_runs_only_git, detect_command_substitution,
-        has_path_traversal, path_token_shell_meta,
+        command_contains_askable_git_checkout, command_runs_only_git, detect_ansi_c_quoting,
+        detect_command_substitution, has_path_traversal, path_token_shell_meta,
     };
     use crate::tools::test_support;
 
@@ -744,6 +744,38 @@ ask = []
         let reason = executor.get_rejection_reason("echo $(rm bad)");
         assert!(reason.contains("shell substitution"));
         assert!(reason.contains("$("));
+    }
+
+    #[test]
+    fn test_detect_ansi_c_quoting() {
+        // The decoded forms the git gate would otherwise miss.
+        assert!(detect_ansi_c_quoting("$'\\x67it' push"));
+        assert!(detect_ansi_c_quoting("git $'\\x70ush' origin main"));
+        assert!(detect_ansi_c_quoting("git $'\\x72m' -rf ."));
+        // Glued to a preceding word, and after a single-quoted segment.
+        assert!(detect_ansi_c_quoting("echo a$'\\x41'"));
+        assert!(detect_ansi_c_quoting("'git '$'\\x70ush'"));
+
+        // A `$'` inside single or double quotes, or escaped, is an ordinary
+        // dollar before a quote — not ANSI-C quoting.
+        assert!(!detect_ansi_c_quoting("echo '$'"));
+        assert!(!detect_ansi_c_quoting("echo \"$'foo'\""));
+        assert!(!detect_ansi_c_quoting("echo \\$'foo'"));
+        assert!(!detect_ansi_c_quoting("git push origin main"));
+        assert!(!detect_ansi_c_quoting("grep '\\t' file"));
+    }
+
+    #[test]
+    fn test_ansi_c_quoting_blocks_disguised_git() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        // The audit's bypass: $'\x70ush' decodes to push, $'\x67it' to git.
+        assert!(!executor.is_safe_command_structure("git $'\\x70ush' origin main"));
+        assert!(!executor.is_safe_command_structure("$'\\x67it' push"));
+        // The .git write carve-out cannot be reopened with a disguised verb.
+        assert!(!executor.is_safe_command_structure("git $'\\x72m' --cached file"));
+
+        let reason = executor.get_rejection_reason("git $'\\x70ush' origin main");
+        assert!(reason.contains("$'...'"));
     }
 
     /// Workspace-relative tokens whose canonical resolution lands

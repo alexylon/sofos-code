@@ -16,7 +16,7 @@ use crate::tools::bash::output::{
 use crate::tools::bash::sandbox::{self, SandboxPolicy};
 use crate::tools::bash::validate::{
     command_contains_askable_git_checkout, command_redirects_output, command_runs_only_git,
-    detect_command_substitution, has_path_traversal,
+    detect_ansi_c_quoting, detect_command_substitution, has_path_traversal,
 };
 use crate::tools::bash::{BashExecutor, EscalationRequest};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
@@ -296,7 +296,10 @@ impl BashExecutor {
     /// inside the workspace; parent-directory traversal, hidden
     /// subcommands, and dangerous git operations are refused even confined.
     fn is_confinement_safe(&self, command: &str) -> bool {
-        if has_path_traversal(command) || detect_command_substitution(command).is_some() {
+        if has_path_traversal(command)
+            || detect_command_substitution(command).is_some()
+            || detect_ansi_c_quoting(command)
+        {
             return false;
         }
         self.is_safe_git_command(&normalize_command_whitespace(command))
