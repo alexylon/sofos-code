@@ -85,17 +85,24 @@ impl Repl {
         Ok(())
     }
 
-    /// Apply a permissions preset while resuming, without the notice,
-    /// cursor change, or mode preamble that `apply_permission_preset` adds:
-    /// the resumed conversation already reflects the saved state, so this
-    /// only syncs the access mode, the escalation policy, and the tool
-    /// executor.
+    /// Apply a permissions preset while resuming, without the notice or mode
+    /// preamble that `apply_permission_preset` adds: the resumed conversation
+    /// already reflects the saved state. The terminal cursor is still synced
+    /// to the restored mode, because the cursor shows the live access mode
+    /// rather than the conversation, so leaving it would strand the glyph on
+    /// the pre-resume mode.
     fn restore_permission_preset(&mut self, preset: PermissionPreset) {
         let mode = preset.mode();
         if self.mode != mode {
             self.mode = mode;
             self.tool_executor.set_mode(mode);
             self.refresh_available_tools();
+            // Best-effort: a failed SGR write here is purely cosmetic.
+            let _ = if mode.is_readonly() {
+                crate::ui::set_readonly_cursor_style()
+            } else {
+                crate::ui::set_default_cursor_style()
+            };
         }
         if let Some(policy) = preset.escalation() {
             self.approval_policy = policy;
