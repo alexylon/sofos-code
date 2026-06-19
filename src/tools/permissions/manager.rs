@@ -519,7 +519,7 @@ impl PermissionManager {
     /// dangerous env-assignment (`PATH=`, `LD_PRELOAD=`, etc.). Walking
     /// every segment means `ls; PATH=. cargo build` is caught even though
     /// the first segment is plain.
-    pub(super) fn command_has_dangerous_env_prefix(command: &str) -> bool {
+    pub(crate) fn command_has_dangerous_env_prefix(command: &str) -> bool {
         Self::split_compound_command(command)
             .iter()
             .any(|seg| leading_dangerous_env_prefix(seg).is_some())

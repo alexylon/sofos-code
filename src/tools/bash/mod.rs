@@ -220,6 +220,16 @@ mod tests {
         assert!(!command_runs_only_git("cat f && git checkout other"));
         // A launcher-wrapped git is not plainly git, so it fails closed.
         assert!(!command_runs_only_git("env git checkout other"));
+
+        // A "git" that is not the trusted binary must not earn the carve-out:
+        // a path-prefixed git could be a planted binary, and a dangerous env
+        // prefix could swap the binary or hijack the real git's loader.
+        assert!(!command_runs_only_git("./git status"));
+        assert!(!command_runs_only_git("./fakebin/git status"));
+        assert!(!command_runs_only_git("/usr/bin/git status"));
+        assert!(!command_runs_only_git("PATH=./fakebin git status"));
+        assert!(!command_runs_only_git("LD_PRELOAD=./evil.so git status"));
+        assert!(!command_runs_only_git("git status && PATH=. git log"));
     }
 
     #[test]

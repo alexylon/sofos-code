@@ -547,30 +547,52 @@ fn git_invocations(command: &str) -> Vec<Vec<String>> {
     out
 }
 
-/// Whether every program the command runs is `git`. A confined command of
-/// this kind may write the project's `.git` directory: git needs that for
-/// `checkout`, `config`, `restore --staged`, and similar, and the git
-/// gate has already vetted the operation. A command that also runs
+/// Whether every program the command runs is the real `git`. A confined
+/// command of this kind may write the project's `.git` directory: git needs
+/// that for `checkout`, `config`, `restore --staged`, and similar, and the
+/// git gate has already vetted the operation. A command that also runs
 /// anything else keeps `.git` read-only, so it cannot plant a hook there.
 ///
-/// Fails closed: any segment whose base program is not plainly `git`,
-/// including launcher wrappers such as `env git`, makes this false. The
-/// caller only reaches it once the command is confinement-safe, so there
-/// are no hidden subcommands ($(...), backticks) for a non-git program to
-/// hide behind.
+/// Fails closed: any segment whose base program is not plainly `git` makes
+/// this false. Three forms that look like git but are not the trusted
+/// binary are refused, since lifting `.git` write-protection for them would
+/// hand metadata write access to attacker-controlled code:
+/// - a launcher wrapper such as `env git`;
+/// - a path-prefixed `git` (`./git`, `/tmp/x/git`) that could be a planted
+///   binary — only a bare `git` qualifies;
+/// - a dangerous env prefix (`PATH=`, `LD_PRELOAD=`, …) that could swap the
+///   binary or hijack the real git's loader.
+///
+/// The caller only reaches it once the command is confinement-safe, so
+/// there are no hidden subcommands ($(...), backticks) for a non-git
+/// program to hide behind.
 pub(super) fn command_runs_only_git(command: &str) -> bool {
+    if PermissionManager::command_has_dangerous_env_prefix(command) {
+        return false;
+    }
     let mut saw_git = false;
     for segment in PermissionManager::split_compound_command(command) {
         let words = shell_words(&segment);
         let Some(base) = command_base_index(&words) else {
             continue;
         };
-        if !base_is_git(&words[base]) {
+        if !base_is_bare_git(&words[base]) {
             return false;
         }
         saw_git = true;
     }
     saw_git
+}
+
+/// Whether `command` redirects output to a file (`>` or `>>`, including
+/// `2>file`), ignoring the `2>&1` stderr-to-stdout dup. Git writes the
+/// repository through its own file operations, never a shell redirect, so
+/// a redirect in an otherwise git-only command is the command aiming a
+/// write somewhere of its choosing — e.g. `git log > .git/hooks/pre-commit`
+/// — rather than git doing its job. The confined `.git` write carve-out
+/// uses this to stay closed for such a command.
+pub(super) fn command_redirects_output(command: &str) -> bool {
+    command.replace("2>&1", "").contains('>')
 }
 
 /// The subcommand verb (lower-cased) of the first dangerous git invocation
@@ -622,6 +644,20 @@ fn base_is_git(token: &str) -> bool {
         .next()
         .unwrap_or(&bare)
         .eq_ignore_ascii_case("git")
+}
+
+/// Whether `token` is a bare `git` with no directory prefix — stricter than
+/// [`base_is_git`], which also accepts `/path/to/git`. The `.git`
+/// write-protection carve-out uses this so a planted `./git` or a binary at
+/// some other path cannot pose as the trusted git and earn write access to
+/// the repository metadata. A bare invocation resolves `git` through the
+/// child's `PATH`, the same binary the dangerous-env check guards.
+fn base_is_bare_git(token: &str) -> bool {
+    let bare: String = token
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\' | '(' | ')' | '{' | '}'))
+        .collect();
+    bare.eq_ignore_ascii_case("git")
 }
 
 /// Returns the kind of expansion that would change the path between

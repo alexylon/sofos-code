@@ -15,8 +15,8 @@ use crate::tools::bash::output::{
 };
 use crate::tools::bash::sandbox::{self, SandboxPolicy};
 use crate::tools::bash::validate::{
-    command_contains_askable_git_checkout, command_runs_only_git, detect_command_substitution,
-    has_path_traversal,
+    command_contains_askable_git_checkout, command_redirects_output, command_runs_only_git,
+    detect_command_substitution, has_path_traversal,
 };
 use crate::tools::bash::{BashExecutor, EscalationRequest};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
@@ -577,10 +577,13 @@ impl BashExecutor {
     /// A command that runs only git is allowed to write the project's
     /// `.git` directory, which it needs for operations like `checkout` and
     /// `config`; every other command keeps `.git` read-only so it cannot
-    /// plant a Git hook there.
+    /// plant a Git hook there. A git-only command that also redirects output
+    /// keeps `.git` read-only too: git never writes the repository through a
+    /// shell redirect, so a redirect would be the command aiming a write at
+    /// `.git` (such as a hook) rather than git doing its work.
     fn confined_policy(&self, command: &str) -> Result<SandboxPolicy> {
         let mut policy = SandboxPolicy::for_workspace(&self.workspace);
-        if command_runs_only_git(command) {
+        if command_runs_only_git(command) && !command_redirects_output(command) {
             let git_dir = self.workspace.join(sandbox::GIT_METADATA_DIR);
             policy
                 .write_protect_subpaths
@@ -1342,5 +1345,43 @@ mod tests {
             .run_model_escalation("true", &normalized, &escalation, &mut pm)
             .unwrap();
         assert!(out.contains("Command executed successfully") || out.contains("STDOUT"));
+    }
+
+    /// The `.git` write-protection is lifted only for a command that runs
+    /// the trusted git and does not redirect output. A redirect, a disguised
+    /// or env-hijacked "git", or any non-git program keeps `.git` read-only,
+    /// so a confined command cannot redirect a write into `.git/hooks` or
+    /// hand metadata write access to a planted binary.
+    #[cfg(unix)]
+    #[test]
+    fn confined_policy_lifts_git_protection_only_for_trusted_unredirected_git() {
+        let (_temp, path) = crate::tools::test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
+        let git_dir = executor.workspace.join(".git");
+        let protects = |cmd: &str| {
+            executor
+                .confined_policy(cmd)
+                .unwrap()
+                .write_protect_subpaths
+                .contains(&git_dir)
+        };
+
+        // A plain git-only command may write .git (checkout/config need it).
+        assert!(!protects("git checkout other"));
+        assert!(!protects("git config user.name x"));
+        // A harmless stderr dup still earns the carve-out.
+        assert!(!protects("git checkout other 2>&1"));
+
+        // A git command that redirects output keeps .git read-only, so it
+        // cannot aim the write at .git/hooks/pre-commit.
+        assert!(protects("git log > .git/hooks/pre-commit"));
+        assert!(protects("git log >> .git/hooks/pre-commit"));
+
+        // A disguised or env-hijacked "git" keeps .git read-only.
+        assert!(protects("./fakebin/git status"));
+        assert!(protects("LD_PRELOAD=./evil.so git status"));
+
+        // A non-git command always keeps .git read-only.
+        assert!(protects("ls -la"));
     }
 }
