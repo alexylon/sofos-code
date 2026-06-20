@@ -79,11 +79,64 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     for path in &policy.read_deny_subpaths {
         push_file_read_rule(&mut profile, "deny", path);
     }
+    // Glob read-denies that could not be a subpath mask (a system tree
+    // outside the workspace and home) become precise regex denies. A glob
+    // we cannot translate safely refuses confinement rather than emitting a
+    // rule that lets some reads through.
+    for glob in &policy.read_deny_globs {
+        let regex = glob_to_seatbelt_regex(glob)?;
+        profile.push_str("(deny file-read* (regex #\"");
+        profile.push_str(&regex);
+        profile.push_str("\"))\n");
+    }
     for path in &policy.read_allow_subpaths {
         push_file_read_rule(&mut profile, "allow", path);
     }
 
     Some(profile)
+}
+
+/// Convert an absolute glob into a Seatbelt `file-read*` regex body, or
+/// `None` when it uses a construct we will not translate precisely. `*`
+/// matches within a path segment, `**` crosses separators, and `?` matches
+/// one non-separator character; every other character is matched literally,
+/// with regex metacharacters escaped. Character classes (`[`, `{`), a double
+/// quote (which would close the regex literal), and control characters are
+/// refused so the caller falls back to refusing confinement rather than
+/// emitting a rule that lets some reads through. The result is anchored so
+/// it matches a whole path.
+fn glob_to_seatbelt_regex(glob: &str) -> Option<String> {
+    if glob.contains(|c: char| c.is_control() || matches!(c, '"' | '[' | ']' | '{' | '}')) {
+        return None;
+    }
+    let mut regex = String::from("^");
+    let mut chars = glob.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => {
+                if chars.peek() == Some(&'*') {
+                    chars.next();
+                    regex.push_str(".*");
+                    // `**` spans whole components, including zero, so absorb
+                    // the trailing separator — otherwise `/a/**/b` would
+                    // require a middle directory and miss `/a/b`.
+                    if chars.peek() == Some(&'/') {
+                        chars.next();
+                    }
+                } else {
+                    regex.push_str("[^/]*");
+                }
+            }
+            '?' => regex.push_str("[^/]"),
+            '.' | '\\' | '+' | '(' | ')' | '^' | '$' | '|' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            other => regex.push(other),
+        }
+    }
+    regex.push('$');
+    Some(regex)
 }
 
 /// Append a `file-read*` rule (`deny` or `allow`) for `path`, scoped to
@@ -131,6 +184,7 @@ mod tests {
             writable_roots: vec![PathBuf::from("/workspace")],
             allow_network: false,
             read_deny_subpaths: Vec::new(),
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -151,6 +205,7 @@ mod tests {
             writable_roots: vec![PathBuf::from("/workspace")],
             allow_network: false,
             read_deny_subpaths: vec![PathBuf::from("/workspace/secret\u{1}name")],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -175,6 +230,7 @@ mod tests {
             writable_roots: vec![workspace.clone()],
             allow_network: false,
             read_deny_subpaths: Vec::new(),
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -278,6 +334,7 @@ mod tests {
             writable_roots: vec![workspace.clone()],
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: vec![public.clone()],
             write_protect_subpaths: Vec::new(),
         };
@@ -308,6 +365,144 @@ mod tests {
         assert_eq!(
             String::from_utf8_lossy(&allowed.stdout).trim(),
             "fine to read"
+        );
+    }
+
+    #[test]
+    fn glob_to_seatbelt_regex_translates_globs_and_refuses_unsafe() {
+        assert_eq!(
+            glob_to_seatbelt_regex("/etc/ssl/private/*.key").unwrap(),
+            r"^/etc/ssl/private/[^/]*\.key$"
+        );
+        // `**` absorbs its trailing separator so it matches zero directories
+        // too: `/a/**/b` must still match `/a/b`.
+        assert_eq!(glob_to_seatbelt_regex("/a/**/b").unwrap(), r"^/a/.*b$");
+        assert_eq!(
+            glob_to_seatbelt_regex("/etc/**/passwd").unwrap(),
+            r"^/etc/.*passwd$"
+        );
+        assert_eq!(glob_to_seatbelt_regex("/a/?.c").unwrap(), r"^/a/[^/]\.c$");
+        // Constructs we will not translate precisely refuse confinement.
+        assert!(glob_to_seatbelt_regex("/a/[ab].key").is_none());
+        assert!(glob_to_seatbelt_regex("/a/{x,y}").is_none());
+        assert!(glob_to_seatbelt_regex("/a/\"q").is_none());
+        assert!(glob_to_seatbelt_regex("/a/\nb").is_none());
+    }
+
+    #[test]
+    fn seatbelt_profile_emits_regex_deny_for_glob_and_refuses_unconvertible() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = SandboxPolicy::for_workspace(dir.path());
+        policy.read_deny_globs = vec!["/etc/ssl/private/*.key".to_string()];
+        let profile = seatbelt_profile(&policy).expect("a convertible glob builds a profile");
+        assert!(profile.contains("(deny file-read* (regex"));
+        assert!(profile.contains(r"^/etc/ssl/private/[^/]*\.key$"));
+
+        policy.read_deny_globs = vec!["/etc/[ab].key".to_string()];
+        assert!(
+            seatbelt_profile(&policy).is_none(),
+            "an unconvertible glob refuses confinement"
+        );
+    }
+
+    /// End-to-end S6d proof: a glob read-deny onto a tree outside the
+    /// workspace and home is enforced by a seatbelt regex, so a confined
+    /// command cannot read a matching file even by reaching it indirectly
+    /// through a variable. A sibling that does not match stays readable.
+    #[test]
+    fn seatbelt_blocks_reads_matching_a_glob_deny_including_indirect() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let outside_dir = tempfile::tempdir().unwrap();
+        let keys = std::fs::canonicalize(outside_dir.path())
+            .unwrap()
+            .join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        let secret = keys.join("id.key");
+        std::fs::write(&secret, "top secret").unwrap();
+        let public = keys.join("note.txt");
+        std::fs::write(&public, "fine to read").unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace],
+            allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_deny_globs: vec![format!("{}/*.key", keys.display())],
+            read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
+        };
+
+        let run = |command: String| {
+            let (program, args) =
+                super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn sandbox-exec")
+        };
+
+        assert!(
+            !run(format!("cat {}", secret.display())).status.success(),
+            "a direct read of a glob-denied file must be blocked"
+        );
+        // The kernel enforces it regardless of how the path reaches open(),
+        // so an indirect read through a variable is blocked too.
+        assert!(
+            !run(format!("f={}; cat \"$f\"", secret.display()))
+                .status
+                .success(),
+            "an indirect read of a glob-denied file must be blocked"
+        );
+        let allowed = run(format!("cat {}", public.display()));
+        assert!(
+            allowed.status.success(),
+            "a non-matching sibling must stay readable; stderr: {}",
+            String::from_utf8_lossy(&allowed.stderr)
+        );
+    }
+
+    /// A `**` glob deny matches zero directories too, so the file directly
+    /// under the prefix is blocked, not only nested ones (regression: `**`
+    /// used to require a middle directory).
+    #[test]
+    fn seatbelt_double_star_glob_blocks_the_zero_directory_case() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let workspace = std::fs::canonicalize(workspace_dir.path()).unwrap();
+        let base_dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(base_dir.path()).unwrap();
+        let direct = base.join("secret");
+        std::fs::write(&direct, "top secret").unwrap();
+        let nested_dir = base.join("sub");
+        std::fs::create_dir(&nested_dir).unwrap();
+        let nested = nested_dir.join("secret");
+        std::fs::write(&nested, "top secret").unwrap();
+
+        let policy = SandboxPolicy {
+            writable_roots: vec![workspace],
+            allow_network: false,
+            read_deny_subpaths: Vec::new(),
+            read_deny_globs: vec![format!("{}/**/secret", base.display())],
+            read_allow_subpaths: Vec::new(),
+            write_protect_subpaths: Vec::new(),
+        };
+        let read = |target: &Path| {
+            let command = format!("cat {}", target.display());
+            let (program, args) =
+                super::super::confined_invocation(OsStr::new("/bin/sh"), &command, &policy)
+                    .unwrap();
+            Command::new(program)
+                .args(args)
+                .output()
+                .expect("spawn sandbox-exec")
+        };
+        assert!(
+            !read(&direct).status.success(),
+            "the zero-directory match must be blocked"
+        );
+        assert!(
+            !read(&nested).status.success(),
+            "a nested match must be blocked"
         );
     }
 

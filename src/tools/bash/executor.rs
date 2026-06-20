@@ -582,10 +582,11 @@ impl BashExecutor {
                 || {
                     SofosError::ToolExecution(
                         "This command must run confined to the workspace, but the sandbox \
-                     could not be prepared for it. This can happen when a path the \
-                     sandbox protects contains an unusual control character.\n\
-                     Hint: rename that path, or switch to the unsandboxed mode if you \
-                     trust the command."
+                     could not be prepared for it. This can happen when a protected path \
+                     contains an unusual character, or when a Read(...) deny rule uses a \
+                     wildcard pattern the sandbox cannot enforce.\n\
+                     Hint: remove or simplify that rule, rename the path, or switch to the \
+                     unsandboxed mode if you trust the command."
                             .to_string(),
                     )
                 },

@@ -42,6 +42,13 @@ pub struct SandboxPolicy {
     /// enforced by the kernel so a denied path cannot be reached even
     /// when its name never appears as a command argument.
     pub read_deny_subpaths: Vec<PathBuf>,
+    /// Absolute glob patterns (with the glob-free prefix canonicalized) for
+    /// read denies whose prefix is a system tree outside the workspace and
+    /// home, so they cannot be a subpath mask without blanking that tree.
+    /// macOS compiles each into a precise `file-read*` regex deny; Linux
+    /// cannot match a glob, so a confined command is refused while any is
+    /// set.
+    pub read_deny_globs: Vec<String>,
     /// Subpaths that stay readable even when a broader entry denies them,
     /// so a specific allow can carve an exception out of a denied tree.
     pub read_allow_subpaths: Vec<PathBuf>,
@@ -67,40 +74,46 @@ impl SandboxPolicy {
             writable_roots,
             allow_network: false,
             read_deny_subpaths: Vec::new(),
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: metadata_protect_subpaths(workspace),
         }
     }
 
     /// Add the kernel-enforced read rules from the workspace's `Read(...)`
-    /// deny and allow patterns. A deny pattern becomes a subpath the
-    /// command may not read; a deny with a glob falls back to its longest
-    /// glob-free leading path so it is widened rather than dropped (see
-    /// [`resolve_rule_subpath`]). An allow is kept only when it carves an
-    /// exception out of a denied subtree — an exact path strictly inside a
-    /// deny — so a broad or glob allow cannot re-open a denied path, which
-    /// matches the per-argument check where an exact allow outranks a glob
-    /// deny but a broad allow does not.
+    /// deny and allow patterns. A literal deny, or a glob deny whose
+    /// glob-free prefix is inside the workspace or home, becomes a subpath
+    /// the command may not read. A glob deny onto a system tree outside both
+    /// — which cannot be masked without blanking that tree — is kept as a
+    /// `read_deny_globs` entry for a precise per-platform deny instead of
+    /// being dropped. An allow is kept only when it carves an exception out
+    /// of a denied subtree — an exact path strictly inside a deny — so a
+    /// broad or glob allow cannot re-open a denied path.
     pub fn with_read_rules(mut self, workspace: &Path, deny: &[String], allow: &[String]) -> Self {
-        let deny_subpaths: Vec<PathBuf> = deny
-            .iter()
-            .filter_map(|p| resolve_rule_subpath(p, workspace, RuleSide::Deny))
-            // Drop a deny that covers the workspace itself or an ancestor of
-            // it: the confined command runs inside the workspace and must be
-            // able to read it, so such a deny would break the command rather
-            // than hide a secret. It only arises when a pattern's glob-free
-            // prefix climbs to the workspace root; the per-argument read
-            // check still applies to that pattern.
-            .filter(|subpath| !workspace.starts_with(subpath))
-            .collect();
+        let mut deny_subpaths: Vec<PathBuf> = Vec::new();
+        let mut deny_globs: Vec<String> = Vec::new();
+        for pattern in deny {
+            match resolve_deny(pattern, workspace) {
+                // Drop a deny that covers the workspace itself or an ancestor
+                // of it: the confined command runs inside the workspace and
+                // must be able to read it, so such a deny would break the
+                // command rather than hide a secret.
+                DenyResolution::Subpath(subpath) if !workspace.starts_with(&subpath) => {
+                    deny_subpaths.push(subpath)
+                }
+                DenyResolution::Glob(glob) => deny_globs.push(glob),
+                _ => {}
+            }
+        }
         self.read_allow_subpaths = allow
             .iter()
-            .filter_map(|p| resolve_rule_subpath(p, workspace, RuleSide::Allow))
+            .filter_map(|p| resolve_allow_subpath(p, workspace))
             .filter(|a| {
                 !deny_subpaths.contains(a) && deny_subpaths.iter().any(|d| a.starts_with(d))
             })
             .collect();
         self.read_deny_subpaths = deny_subpaths;
+        self.read_deny_globs = deny_globs;
         self
     }
 
@@ -111,10 +124,12 @@ impl SandboxPolicy {
     /// paths inside the writable workspace are added — a write outside it is
     /// already refused — and the workspace root itself is never protected,
     /// which would make the whole workspace read-only. A glob deny is
-    /// widened to its glob-free prefix, the same way a read deny is.
+    /// widened to its glob-free prefix, the same way a read deny is; a glob
+    /// onto a system tree outside the workspace is ignored (writes there are
+    /// already refused).
     pub fn with_write_deny_rules(mut self, workspace: &Path, deny: &[String]) -> Self {
         for pattern in deny {
-            let Some(subpath) = resolve_rule_subpath(pattern, workspace, RuleSide::Deny) else {
+            let DenyResolution::Subpath(subpath) = resolve_deny(pattern, workspace) else {
                 continue;
             };
             if subpath.starts_with(workspace)
@@ -132,39 +147,24 @@ impl SandboxPolicy {
 /// component holding any of them is not a literal path segment.
 const GLOB_METACHARACTERS: &[char] = &['*', '?', '[', ']', '{', '}'];
 
-/// Which side of a deny or allow rule a pattern came from, which decides
-/// how a glob in it is handled. A deny is widened so the kernel never
-/// enforces less than the rule names: a trailing `/**` is dropped (a
-/// subpath rule already covers the whole tree) and any remaining glob
-/// falls back to the pattern's longest glob-free leading path. An allow
-/// must stay an exact path, so a glob allow is dropped and left to the
-/// per-argument check; this keeps a broad allow from re-opening a denied
-/// path.
-#[derive(Clone, Copy)]
-enum RuleSide {
-    Deny,
-    Allow,
+/// Outcome of resolving a `Read(...)` or `Write(...)` deny pattern for the
+/// kernel rules.
+enum DenyResolution {
+    /// A concrete subpath the kernel can mask directly.
+    Subpath(PathBuf),
+    /// A glob whose glob-free prefix is a system tree outside the workspace
+    /// and home, so masking the prefix would blank a tree the command needs.
+    /// The absolute glob (prefix canonicalized) is kept for a precise
+    /// per-platform deny — a macOS regex, or a Linux refusal to confine.
+    Glob(String),
+    /// Nothing the kernel rules can use (an empty pattern).
+    Nothing,
 }
 
-/// Resolve a deny or allow pattern (from a `Read(...)` or `Write(...)`
-/// rule) to one absolute subpath for the kernel rules, or `None` when it
-/// cannot be expressed as one (an empty pattern, or a glob allow). `side`
-/// decides how a glob is handled — see [`RuleSide`]. `.` and `..` are
-/// folded and the existing prefix is canonicalized — resolving symlinks
-/// like macOS `/tmp` -> `/private/tmp` — so the rule matches the path the
-/// kernel enforces on even when the target does not exist yet.
-fn resolve_rule_subpath(pattern: &str, workspace: &Path, side: RuleSide) -> Option<PathBuf> {
-    let trimmed = match side {
-        RuleSide::Deny => pattern.strip_suffix("/**").unwrap_or(pattern),
-        RuleSide::Allow => pattern,
-    }
-    .trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if matches!(side, RuleSide::Allow) && trimmed.contains(GLOB_METACHARACTERS) {
-        return None;
-    }
+/// Expand a trimmed rule pattern to an absolute, lexically normalized path:
+/// `~` / `~/...` resolve against `HOME`, an absolute path is taken as-is,
+/// and a relative path joins the workspace. `.` and `..` are folded.
+fn expand_rule_pattern(trimmed: &str, workspace: &Path) -> Option<PathBuf> {
     let expanded = if trimmed == "~" {
         PathBuf::from(std::env::var_os("HOME")?)
     } else if let Some(rest) = trimmed.strip_prefix("~/") {
@@ -174,26 +174,53 @@ fn resolve_rule_subpath(pattern: &str, workspace: &Path, side: RuleSide) -> Opti
     } else {
         workspace.join(trimmed.strip_prefix("./").unwrap_or(trimmed))
     };
-    let normalized = crate::tools::utils::lexically_normalize(&expanded);
-    match side {
-        RuleSide::Deny => {
-            let prefix = longest_glob_free_prefix(&normalized);
-            let resolved = canonicalize_existing_prefix(&prefix);
-            // The pattern had a glob, so the prefix is broader than what it
-            // names. Only widen where masking that broader directory cannot
-            // blank a tree the confined command needs to run: inside the
-            // workspace or the user's home, where a command's own secrets
-            // live. The check is on the resolved path, so a prefix that
-            // resolves through a symlink onto a system tree (for example
-            // `~/link` -> `/etc`) is refused here too; such a deny stays a
-            // per-argument read check instead of masking the whole tree.
-            if prefix != normalized && !widened_prefix_is_maskable(&resolved, workspace) {
-                return None;
-            }
-            Some(resolved)
-        }
-        RuleSide::Allow => Some(canonicalize_existing_prefix(&normalized)),
+    Some(crate::tools::utils::lexically_normalize(&expanded))
+}
+
+/// Resolve a deny pattern for the kernel rules. A trailing `/**` is dropped
+/// (a subpath rule already covers the whole tree); a literal path, or a glob
+/// whose glob-free prefix is maskable (inside the workspace or home),
+/// becomes a [`DenyResolution::Subpath`]; a glob onto an unmaskable system
+/// tree becomes a [`DenyResolution::Glob`] rather than being dropped. The
+/// glob-free prefix is canonicalized — resolving symlinks like macOS `/tmp`
+/// -> `/private/tmp` — so the rule matches the path the kernel sees even
+/// when the target does not exist yet.
+fn resolve_deny(pattern: &str, workspace: &Path) -> DenyResolution {
+    let trimmed = pattern.strip_suffix("/**").unwrap_or(pattern).trim();
+    if trimmed.is_empty() {
+        return DenyResolution::Nothing;
     }
+    let Some(normalized) = expand_rule_pattern(trimmed, workspace) else {
+        return DenyResolution::Nothing;
+    };
+    let prefix = longest_glob_free_prefix(&normalized);
+    let resolved = canonicalize_existing_prefix(&prefix);
+    // A literal path, or a glob whose prefix can be masked without blanking a
+    // tree the command needs (inside the workspace or home), is a subpath
+    // mask. Otherwise keep the glob, prefix canonicalized, for a precise
+    // per-platform deny. The maskability check is on the resolved path, so a
+    // prefix that resolves through a symlink onto a system tree (for example
+    // `~/link` -> `/etc`) is handled as a glob too.
+    if prefix == normalized || widened_prefix_is_maskable(&resolved, workspace) {
+        return DenyResolution::Subpath(resolved);
+    }
+    match normalized.strip_prefix(&prefix) {
+        Ok(tail) => DenyResolution::Glob(resolved.join(tail).to_string_lossy().into_owned()),
+        Err(_) => DenyResolution::Nothing,
+    }
+}
+
+/// Resolve an allow pattern to one absolute subpath, or `None` for an empty
+/// pattern or a glob: an allow must stay an exact path, so a glob allow is
+/// left to the per-argument read check and cannot re-open a denied path. The
+/// existing prefix is canonicalized like a deny.
+fn resolve_allow_subpath(pattern: &str, workspace: &Path) -> Option<PathBuf> {
+    let trimmed = pattern.trim();
+    if trimmed.is_empty() || trimmed.contains(GLOB_METACHARACTERS) {
+        return None;
+    }
+    let normalized = expand_rule_pattern(trimmed, workspace)?;
+    Some(canonicalize_existing_prefix(&normalized))
 }
 
 /// Whether a glob deny widened up to the resolved `prefix` may be masked in
@@ -411,6 +438,12 @@ pub fn confined_invocation(
     command: &str,
     policy: &SandboxPolicy,
 ) -> Option<(OsString, Vec<OsString>)> {
+    // Bubblewrap masks concrete paths, not globs, so a glob read-deny onto a
+    // system tree cannot be expressed here. Refuse to confine (the caller
+    // then refuses the command) rather than run with the deny unenforced.
+    if !policy.read_deny_globs.is_empty() {
+        return None;
+    }
     let program = linux::resolved_bwrap()?;
     let mut args = linux::bwrap_arguments(policy);
     args.push(OsString::from("--"));
@@ -580,11 +613,12 @@ mod tests {
     }
 
     /// A glob deny that would widen to a system directory outside the
-    /// workspace and home (here `/etc`) is not masked: blanking the whole
-    /// tree would break the confined command. It falls back to the
-    /// per-argument read check instead.
+    /// workspace and home (here `/etc`) is not masked as a subpath — blanking
+    /// the whole tree would break the confined command — but it is kept as a
+    /// precise glob deny (`read_deny_globs`) instead of being dropped, so the
+    /// macOS backend can still enforce it with a regex.
     #[test]
-    fn read_deny_with_glob_outside_workspace_and_home_is_not_widened() {
+    fn read_deny_with_glob_outside_workspace_and_home_is_kept_as_a_glob() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = std::fs::canonicalize(dir.path()).unwrap();
         let policy = SandboxPolicy::for_workspace(&workspace).with_read_rules(
@@ -596,16 +630,23 @@ mod tests {
             policy.read_deny_subpaths.is_empty(),
             "a glob deny widening to a system directory must not mask it"
         );
+        assert_eq!(policy.read_deny_globs.len(), 1, "the glob deny is kept");
+        let glob = &policy.read_deny_globs[0];
+        assert!(
+            glob.ends_with("/*/passwd") && glob.contains("etc"),
+            "the kept glob keeps its pattern with the prefix canonicalized: {glob}"
+        );
     }
 
     /// A glob deny whose glob-free prefix resolves through a symlink onto a
-    /// tree outside the workspace and home is not masked: the maskability
-    /// check runs on the resolved path, so masking the whole resolved system
-    /// tree (which would break the confined command) is refused, and the
-    /// deny falls back to the per-argument read check.
+    /// tree outside the workspace and home is not masked as a subpath: the
+    /// maskability check runs on the resolved path, so masking the whole
+    /// resolved system tree (which would break the confined command) is
+    /// refused. It is kept as a glob deny with the prefix canonicalized to
+    /// the symlink target, so the rule matches the path the kernel sees.
     #[cfg(unix)]
     #[test]
-    fn read_deny_glob_through_symlink_to_outside_is_not_widened() {
+    fn read_deny_glob_through_symlink_to_outside_is_kept_as_a_glob() {
         let ws_dir = tempfile::tempdir().unwrap();
         let workspace = std::fs::canonicalize(ws_dir.path()).unwrap();
         let outside_dir = tempfile::tempdir().unwrap();
@@ -621,6 +662,12 @@ mod tests {
         assert!(
             policy.read_deny_subpaths.is_empty(),
             "a glob deny whose prefix resolves outside workspace+home must not mask the resolved tree"
+        );
+        assert_eq!(policy.read_deny_globs.len(), 1, "the glob deny is kept");
+        let glob = &policy.read_deny_globs[0];
+        assert!(
+            glob.starts_with(&*outside.to_string_lossy()) && glob.ends_with("/*/secret.env"),
+            "the kept glob has its prefix canonicalized to the symlink target: {glob}"
         );
     }
 
@@ -644,6 +691,21 @@ mod tests {
             &[],
         );
         assert_eq!(policy.read_deny_subpaths, vec![real.join("missing")]);
+    }
+
+    /// Linux cannot match a glob in the kernel sandbox, so a glob read-deny
+    /// makes confinement refuse outright (the caller then refuses the
+    /// command) rather than run with the deny unenforced.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_glob_read_deny_refuses_confinement() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut policy = SandboxPolicy::for_workspace(dir.path());
+        policy.read_deny_globs = vec!["/etc/*/passwd".to_string()];
+        assert!(
+            confined_invocation(std::ffi::OsStr::new("/bin/sh"), "echo hi", &policy).is_none(),
+            "a glob read-deny must refuse confinement on Linux"
+        );
     }
 
     #[cfg(target_os = "windows")]

@@ -322,6 +322,7 @@ mod tests {
             writable_roots: vec![root.clone()],
             allow_network: false,
             read_deny_subpaths: Vec::new(),
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -364,6 +365,7 @@ mod tests {
             writable_roots: vec![root],
             allow_network: true,
             read_deny_subpaths: Vec::new(),
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -560,6 +562,7 @@ mod tests {
             writable_roots: vec![dir.path().to_path_buf()],
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone(), secret_file.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: vec![allowed.clone()],
             write_protect_subpaths: Vec::new(),
         };
@@ -602,6 +605,7 @@ mod tests {
             writable_roots: vec![dir.path().to_path_buf()],
             allow_network: false,
             read_deny_subpaths: vec![inside.clone(), outside.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -644,6 +648,7 @@ mod tests {
             writable_roots: vec![workspace.path().to_path_buf()],
             allow_network: false,
             read_deny_subpaths: vec![pipe.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -674,6 +679,7 @@ mod tests {
             writable_roots: vec![dir.path().to_path_buf()],
             allow_network: false,
             read_deny_subpaths: vec![link.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -703,6 +709,7 @@ mod tests {
             writable_roots: vec![dir.path().to_path_buf()],
             allow_network: false,
             read_deny_subpaths: vec![through_file.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: Vec::new(),
             write_protect_subpaths: Vec::new(),
         };
@@ -768,6 +775,7 @@ mod tests {
             writable_roots: vec![workspace.clone()],
             allow_network: false,
             read_deny_subpaths: vec![secret_dir.clone()],
+            read_deny_globs: Vec::new(),
             read_allow_subpaths: vec![allowed.clone()],
             write_protect_subpaths: Vec::new(),
         };
