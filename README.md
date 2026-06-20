@@ -2,11 +2,11 @@
 
 ![CI](https://github.com/alexylon/sofos-code/actions/workflows/rust.yml/badge.svg) &nbsp; [![Crates.io](https://img.shields.io/crates/v/sofos.svg?color=blue)](https://crates.io/crates/sofos)
 
-Sofos Code is a terminal-based AI coding assistant for software projects. It connects Claude or OpenAI models to a secure local toolset for reading code, editing files, running approved commands, searching the web, and working with external tools through Model Context Protocol (MCP).
+Sofos Code is a terminal-based AI coding assistant for software projects. It connects Claude or OpenAI models to local tools for reading code, editing files, running approved commands, searching the web, viewing images, and using external tools through the Model Context Protocol (MCP).
 
-Sofos is written in Rust, runs in your terminal, and is designed around explicit permissions: workspace access is available by default, while external paths and higher-risk actions require user approval or configuration.
+Sofos is written in Rust and runs in your terminal. Its access model is explicit: project files are available by default, while external paths and higher-risk actions require approval or configuration.
 
-Sofos runs on macOS, Linux, and Windows. On macOS and Linux, the default shell mode uses an operating-system sandbox when the required platform support is available. On Windows, command confinement is disabled in this release, but the bash executor runs commands through Git for Windows's `sh.exe`, located automatically at the standard install path even when the integrated terminal of an IDE does not expose Git on `PATH`.
+Sofos runs on macOS, Linux, and Windows. On macOS and Linux, the default shell mode uses an operating-system sandbox when the required platform support is available. On Windows, command confinement is disabled in this release. The bash executor still runs commands through the `sh.exe` provided by Git for Windows, which Sofos can find at the standard install path even when an integrated terminal does not expose Git on `PATH`.
 
 <div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code terminal screenshot"></div>
 
@@ -55,38 +55,39 @@ Sofos runs on macOS, Linux, and Windows. On macOS and Linux, the default shell m
 
 ## What Sofos does
 
-Sofos provides an AI assistant inside your terminal with controlled access to your project. It can:
+Sofos provides an AI assistant with controlled access to your project from inside the terminal. It can:
 
 - inspect files and directories;
 - search code with ripgrep;
-- edit files through exact replacements or Morph Apply;
+- edit files with exact replacements or Morph Apply;
 - create, move, copy, and delete files with permission checks;
-- run safe build and test commands;
+- run approved build, test, and inspection commands;
 - fetch documentation and use provider-native web search;
-- open local image files or remote image URLs through the `view_image` tool, and accept clipboard pastes directly;
-- update a visible task plan during multi-step work;
+- open local image files or remote image URLs;
+- accept image pastes from the clipboard;
+- keep a visible task plan during multi-step work;
 - save and resume conversations;
-- connect to external tools through Model Context Protocol servers.
+- connect to external tools through MCP servers.
 
-The assistant can act through tools, but it does not do so silently: tool calls are shown to the user, dangerous commands are blocked, and operations outside the workspace are gated by independent permission scopes.
+The assistant acts through visible tool calls. Dangerous commands are blocked, deletion prompts for confirmation, and access outside the workspace is controlled by separate permission scopes.
 
 ---
 
 ## Key features
 
-- **Terminal UI** — inline viewport at the bottom of your terminal; normal terminal scrollback remains available.
-- **Claude and OpenAI support** — one provider abstraction with provider-specific streaming, reasoning, web search, and cache handling.
-- **Live streaming Markdown** — assistant responses render as they arrive, including code blocks, headings, lists, tables, blockquotes, and links.
-- **Tool loop execution** — the model can use tools iteratively, with a hard maximum to prevent infinite loops.
-- **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
-- **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
-- **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, hidden subcommands, unconfined redirection, and dangerous Git operations.
-- **Access presets** — one `/permissions` command picks `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, or `unsandboxed`; sandboxed presets confine shell commands on macOS and Linux when a usable sandbox is available, and the preset can be changed mid-session.
-- **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
-- **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
-- **Session persistence** — saved conversations, resume picker, restored permission preset, restored model where compatible, and persisted cost counters.
-- **Cost visibility** — token totals, cache hit reporting, and provider-specific price estimates.
-- **Context compaction** — local and provider-supported compaction to keep long sessions usable.
+- **Terminal interface** — Inline viewport at the bottom of your terminal while normal scrollback remains available.
+- **Claude and OpenAI support** — Shared provider layer with provider-specific streaming, reasoning, web search, and cache handling.
+- **Streaming Markdown** — Responses render as they arrive, including code blocks, headings, lists, tables, blockquotes, and links.
+- **Iterative tool use** — The model can use tools across multiple steps, with a hard limit to prevent endless loops.
+- **Safe file editing** — Exact edits, chunked writes, visual diffs, atomic writes, and optional Morph Apply.
+- **Explicit permissions** — Separate Read, Write, and Bash grants for paths outside the workspace.
+- **Bash safety checks** — Command tiers and structural checks for parent traversal, hidden subcommands, ANSI-C quoting, unconfined redirection, and dangerous Git operations.
+- **Access presets** — Five permission modes: `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`.
+- **Image vision** — Local image files, remote image URLs, and pasted clipboard images.
+- **MCP integration** — Tools from stdio or streamable HTTP MCP servers.
+- **Session persistence** — Saved conversations with compatible model, permission preset, and cost counters restored.
+- **Cost visibility** — Token totals, cache usage, and provider-specific cost estimates.
+- **Context compaction** — Local and provider-supported compaction for older conversation context.
 
 ---
 
@@ -94,15 +95,15 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 
 ### Requirements
 
-You need at least one provider API key:
+Set at least one provider API key:
 
 - `ANTHROPIC_API_KEY` for Claude models; or
 - `OPENAI_API_KEY` for OpenAI models.
 
-Optional:
+Optional tools and keys:
 
-- `ripgrep` (recommended) for fast code search through the `search_code` tool;
-- `MORPH_API_KEY` for the `morph_edit_file` fast edit tool.
+- `ripgrep`, recommended for fast code search through `search_code`;
+- `MORPH_API_KEY`, required for the `morph_edit_file` tool.
 
 ### Prebuilt binary
 
@@ -117,7 +118,7 @@ sudo mv sofos /usr/local/bin/
 # Extract the .zip archive and add the extracted folder to PATH.
 ```
 
-On macOS, the first run may be blocked by Gatekeeper. Open System Settings → Privacy & Security and choose **Allow Anyway** for the Sofos binary.
+On macOS, Gatekeeper may block the first run. Open System Settings → Privacy & Security, then choose **Allow Anyway** for the Sofos binary.
 
 ### Install with Cargo
 
@@ -139,16 +140,23 @@ Keep `.sofos/` out of version control. It stores sessions, local permissions, an
 
 ## Quick start
 
+Set a provider key:
+
 ```bash
-# Choose one provider.
 export ANTHROPIC_API_KEY='your-anthropic-key'
 # or
 export OPENAI_API_KEY='your-openai-key'
+```
 
-# Optional: enable Morph Apply edits.
+Optionally enable Morph Apply edits:
+
+```bash
 export MORPH_API_KEY='your-morph-key'
+```
 
-# Start the interactive assistant.
+Start the interactive assistant:
+
+```bash
 sofos
 ```
 
@@ -159,13 +167,13 @@ sofos --model gpt-5.5
 sofos --model claude-opus-4-8 -e high
 ```
 
-Run a single prompt and exit:
+Run one prompt and exit:
 
 ```bash
 sofos -p "Review the error handling in src/error.rs"
 ```
 
-Start in read-only native-tool mode:
+Start with inspection tools only:
 
 ```bash
 sofos --readonly
@@ -183,31 +191,34 @@ sofos --resume
 
 ### Interactive commands
 
-| Command                                     | Description |
-|---------------------------------------------|---|
-| `/resume`                                   | Open the session picker and resume a saved conversation. |
-| `/clear`                                    | Clear the current conversation history and start a fresh session id. |
-| `/compact`                                  | Compact older context to reduce token usage. |
-| `/effort`                                   | Open the reasoning-effort picker. The picker lists only the levels the active model supports. **Up / Down**, **Enter** to switch, **Esc** to cancel. |
-| `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a named level. Validation matches the picker — unsupported levels print a clear error. |
-| `/model`                                    | Open the model picker. Highlight an entry with **Up / Down**, **Enter** to switch, **Esc** to cancel. Models on the other provider are greyed out (the API client is fixed at startup) and the cursor skips them. |
-| `/model <name>`                             | Switch directly to a named model without opening the picker. Same-provider only — cross-provider switches require relaunching with `--model <name>`. |
-| `/permissions`                              | Open a picker to choose what the assistant may do. Five presets, from least to most permissive: `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. **Up / Down**, **Enter** to switch, **Esc** to cancel. Where the sandbox is unavailable, such as Windows, the three `sandboxed-*` presets are shown but disabled. |
-| `/permissions <preset>`                     | Switch directly to a named preset without opening the picker. |
-| `/exit`, `/quit`, `/q`, `Ctrl+D`            | Save the session and exit with a cost summary. |
-| `ESC` or `Ctrl+C` while busy                | Interrupt the current AI turn. |
+| Command | Description |
+|---|---|
+| `/resume` | Open the session picker and resume a saved conversation. |
+| `/clear` | Clear the current conversation history and start a new session id. |
+| `/compact` | Compact older context to reduce token usage. |
+| `/effort` | Open the reasoning-effort picker. The picker lists only the levels supported by the active model. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
+| `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
+| `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models from the other provider are greyed out because the API client is fixed at startup. |
+| `/model <name>` | Switch directly to a model on the active provider. To switch provider, restart Sofos with `--model <name>`. |
+| `/permissions` | Open the permission preset picker. The presets are `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Where sandboxing is unavailable, such as Windows, the `sandboxed-*` presets are shown but disabled. |
+| `/permissions <preset>` | Switch directly to a permission preset. |
+| `/exit`, `/quit`, `/q`, `Ctrl+D` | Save the session and exit with a cost summary. |
+| `Esc` or `Ctrl+C` while busy | Interrupt the current AI turn. |
 
 ### Input behaviour
 
 - **Enter** submits the current message.
 - **Shift+Enter** inserts a newline when the terminal supports it.
-- **Alt+Enter** or **Ctrl+Enter** can be used as newline fallbacks.
-- **Ctrl+U** deletes from the cursor to the start of the line; **Ctrl+W** deletes the previous word; **Ctrl+K** deletes to the end of the line — matching readline / bash / zsh / fish.
-- **Alt+Up** / **Alt+Down** walk through previously submitted prompts. The in-progress draft is preserved and restored when you walk past the newest entry.
-- Typing a leading `/` opens an inline command suggestion list. Use **Up / Down** to highlight an entry, **Enter** to run the highlighted command, **Tab** to insert it into the input, and **Esc** (or **Ctrl+C**) to dismiss the list.
+- **Alt+Enter** and **Ctrl+Enter** are newline fallbacks.
+- **Ctrl+U** deletes from the cursor to the start of the line.
+- **Ctrl+W** deletes the previous word.
+- **Ctrl+K** deletes from the cursor to the end of the line.
+- These editing shortcuts match common readline behaviour used by bash, zsh, and fish.
+- **Alt+Up** and **Alt+Down** move through previously submitted prompts. Sofos preserves the current draft and restores it when you move past the newest entry.
+- Typing `/` at the start of the input opens command suggestions. Use **Up / Down** to select, **Enter** to run the selected command, **Tab** to insert it into the input, and **Esc** or **Ctrl+C** to dismiss the list.
 - You can keep typing while the model is working. New messages are queued and processed in order.
-- If the model is inside a tool loop, a queued message is delivered at the next tool-result boundary so it can steer the current turn without interrupting it.
-- The status line shows the model, mode, reasoning setting, running token totals, and (when present) the cumulative cache-read and cache-creation tokens.
+- If the model is inside a tool loop, a queued message is delivered at the next tool-result boundary. This lets you steer the current turn without interrupting it.
+- The status line shows the model, permission mode, reasoning setting, running token totals, and cache token counters when available.
 
 ### One-shot prompts
 
@@ -220,7 +231,7 @@ sofos -p "Create a high-level summary of this crate" --readonly
 
 ### Image vision
 
-Ask about an image by referring to it in your message. The model calls the `view_image` tool to open the file or URL you mention.
+Ask about an image by mentioning the file path or URL in your message. Sofos will call `view_image` to open it.
 
 ```text
 What is wrong in ./screenshots/error.png?
@@ -229,7 +240,7 @@ Review https://example.com/chart.png
 What do you see in the images in ./assets/?
 ```
 
-For a folder, the model lists the directory first and then opens each image one by one.
+For a folder, Sofos lists the directory first, then opens each image one by one.
 
 Clipboard paste:
 
@@ -237,7 +248,7 @@ Clipboard paste:
 Ctrl+V    # Inserts a numbered marker such as ①.
 ```
 
-Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. Images larger than 2048 pixels on the long side are scaled down proportionally before being sent to the model, so a 4K screenshot does not balloon your token budget. Images outside the workspace require Read permission the first time, just like reading a file.
+Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 MB. Images larger than 2048 pixels on the long side are scaled down proportionally before being sent to the model, so large screenshots do not inflate token usage unnecessarily. Images outside the workspace require Read permission the first time, like any other external file.
 
 ---
 
@@ -245,39 +256,39 @@ Supported formats: JPEG, PNG, GIF, and WebP. Local images are capped at 20 MB. I
 
 ```text
 -p, --prompt <TEXT>          Run one prompt and exit.
-    --readonly               Start in read-only mode (inspection tools only).
+    --readonly               Start in read-only mode with inspection tools only.
     --no-sandbox             Start unsandboxed: run shell commands without operating-system confinement.
 -r, --resume                 Resume a previous session.
     --check-connection       Check provider connectivity and exit.
-    --api-key <KEY>          Anthropic API key; overrides ANTHROPIC_API_KEY.
-    --openai-api-key <KEY>   OpenAI API key; overrides OPENAI_API_KEY.
-    --morph-api-key <KEY>    Morph API key; overrides MORPH_API_KEY.
+    --api-key <KEY>          Anthropic API key. Overrides ANTHROPIC_API_KEY.
+    --openai-api-key <KEY>   OpenAI API key. Overrides OPENAI_API_KEY.
+    --morph-api-key <KEY>    Morph API key. Overrides MORPH_API_KEY.
     --model <MODEL>          Model to use. Default: claude-sonnet-4-6.
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
     --max-tokens <N>         Maximum output tokens per response. Default: 32768.
 -e, --reasoning-effort <LV>  off, low, medium, high, xhigh, or max. Default: medium.
 ```
 
-`--max-tokens` must be greater than `16384` when reasoning effort is enabled. The deprecated hidden `--thinking-budget` flag still parses for backwards compatibility but has no effect and is intentionally omitted from the CLI help.
+`--max-tokens` must be greater than `16384` when reasoning effort is enabled. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
 
 ---
 
 ## Models and reasoning effort
 
-Sofos supports eight models, in `/model` picker order:
+Sofos supports these models, shown in `/model` picker order:
 
-| Model                         | Provider |
-|-------------------------------|---|
-| `claude-fable-5`              | Anthropic |
-| `claude-opus-4-8`             | Anthropic |
+| Model | Provider |
+|---|---|
+| `claude-fable-5` | Anthropic |
+| `claude-opus-4-8` | Anthropic |
 | `claude-sonnet-4-6` (default) | Anthropic |
-| `claude-haiku-4-5`            | Anthropic |
-| `gpt-5.5`                     | OpenAI |
-| `gpt-5.4`                     | OpenAI |
-| `gpt-5.4-mini`                | OpenAI |
-| `gpt-5.3-codex`               | OpenAI |
+| `claude-haiku-4-5` | Anthropic |
+| `gpt-5.5` | OpenAI |
+| `gpt-5.4` | OpenAI |
+| `gpt-5.4-mini` | OpenAI |
+| `gpt-5.3-codex` | OpenAI |
 
-`--model <name>` accepts only the values above; any other slug is refused at startup with the supported list. The same whitelist drives the inline `/model` picker, so the two surfaces never disagree about which models exist.
+`--model <name>` accepts only the values above. Any other value is refused at startup and Sofos prints the supported list. The same list drives the `/model` picker, so the CLI and picker stay consistent.
 
 Sofos exposes six reasoning levels:
 
@@ -285,7 +296,7 @@ Sofos exposes six reasoning levels:
 off, low, medium, high, xhigh, max
 ```
 
-The active model determines which levels are accepted. Sofos validates the level at startup and when `/effort` is used, so unsupported combinations fail before reaching the provider API.
+The active model determines which levels are valid. Sofos validates the level at startup and when `/effort` is used, so unsupported combinations fail before a provider request is sent.
 
 Examples:
 
@@ -300,17 +311,17 @@ sofos -e xhigh --model gpt-5.5        # Highest OpenAI gpt-5 reasoning level.
 Support matrix:
 
 | Effort | Fable 5 | Opus 4.8 | Sonnet 4.6 | Haiku 4.5 | OpenAI gpt-5 reasoning models |
-|---|:---:|:--------:|:---:|:---:|:---:|
-| `off` | ✓ |    ✓     | ✓ | ✓ | ✓ |
-| `low` | ✓ |    ✓     | ✓ | ✓ | ✓ |
-| `medium` | ✓ |    ✓     | ✓ | ✓ | ✓ |
-| `high` | ✓ |    ✓     | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ |    ✓     | ✗ | ✗ | ✓ |
-| `max` | ✓ |    ✓     | ✓ | ✗ | ✗ |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `off` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ | ✓ | ✗ | ✗ | ✓ |
+| `max` | ✓ | ✓ | ✓ | ✗ | ✗ |
 
 Provider mapping:
 
-- **OpenAI** sends `reasoning.effort`; `off` maps to minimal reasoning and suppresses reasoning summaries.
+- **OpenAI** sends `reasoning.effort`. `off` maps to minimal reasoning and suppresses reasoning summaries.
 - **Claude Fable 5, Opus 4.8, and Sonnet 4.6** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
 
@@ -324,27 +335,27 @@ Provider mapping:
 |---|---|
 | `list_directory` | List one directory. Use `glob_files` for recursive discovery. |
 | `read_file` | Read a file. External paths require Read permission. |
-| `glob_files` | Find files recursively with glob patterns. Skips build and vendor directories by default. |
+| `glob_files` | Find files recursively with glob patterns. Build and vendor directories are skipped by default. |
 | `search_code` | Search code with ripgrep when `rg` is installed. |
 | `write_file` | Create, overwrite, or append to a file. External paths require Write permission. |
-| `edit_file` | Replace exact text in an existing file. Non-global edits require one unique match; use `replace_all` only for intentional global replacement. External paths require both Read and Write permission. |
-| `morph_edit_file` | Apply fast Morph edits when `MORPH_API_KEY` is configured. External paths require both Read and Write permission. |
+| `edit_file` | Replace exact text in an existing file. Non-global edits require one unique match. Use `replace_all` only for intentional global replacement. External paths require Read and Write permission. |
+| `morph_edit_file` | Apply fast Morph edits when `MORPH_API_KEY` is configured. External paths require Read and Write permission. |
 | `create_directory` | Create directories. External paths require Write permission. |
 | `move_file` | Move or rename files or directories. External paths require Write permission. |
-| `copy_file` | Copy files. External sources require Read permission; external destinations require Write permission. |
+| `copy_file` | Copy files. External sources require Read permission, and external destinations require Write permission. |
 | `delete_file` | Delete a file after confirmation. External paths require Write permission. |
 | `delete_directory` | Delete a directory after confirmation. External paths require Write permission. |
 | `execute_bash` | Run approved shell commands through the bash permission system. |
-| `update_plan` | Show the current multi-step task plan with `pending`, `in_progress`, and `completed` statuses. |
+| `update_plan` | Show the current task plan with `pending`, `in_progress`, and `completed` statuses. |
 | `view_image` | Attach a local image file or an `http(s)://` URL to the conversation so the model can see it. |
 | `web_fetch` | Fetch a URL and return readable text. |
-| `web_search` | Provider-native web search. |
+| `web_search` | Use provider-native web search. |
 
-Clipboard pastes are not routed through a tool: pressing Ctrl-V in the prompt attaches the image directly to the message.
+Clipboard pastes are not routed through a tool. Pressing Ctrl+V in the prompt attaches the image directly to the message.
 
 ### Read-only mode tools
 
-Read-only mode is enabled with `--readonly` or the `read-only` preset in `/permissions`. It restricts the native tool set to:
+Read-only mode is enabled with `--readonly` or the `read-only` preset in `/permissions`. It limits the native tool set to:
 
 - `list_directory`;
 - `read_file`;
@@ -355,24 +366,29 @@ Read-only mode is enabled with `--readonly` or the `read-only` preset in `/permi
 - `web_fetch`;
 - `web_search`.
 
-MCP tools are filtered out in read-only mode by default. To make a particular server's tools available in read-only mode, add `readonly = "read_only"` (server is known to expose only read operations) or `readonly = "allow"` (explicit opt-in even when the server may mutate) to its entry in `~/.sofos/config.toml` or `.sofos/config.local.toml`. Sofos lists which servers are filtered out and which are opted in on the startup banner whenever read-only mode is on.
+MCP tools are filtered out in read-only mode by default. To make a server's tools available in read-only mode, add one of these values to that server entry in `~/.sofos/config.toml` or `.sofos/config.local.toml`:
+
+- `readonly = "read_only"` when the server is known to expose only read operations;
+- `readonly = "allow"` when you explicitly want to allow the server even if it may mutate data.
+
+When read-only mode is enabled, the startup banner lists which MCP servers were filtered out and which were opted in.
 
 ### MCP tools
 
-Configured MCP servers can add tools dynamically. Sofos prefixes each MCP tool with the server name using a triple underscore separator so distinct `(server, tool)` pairs cannot collide on the prefixed name:
+Configured MCP servers can add tools dynamically. Sofos prefixes each MCP tool with the server name and a triple underscore separator so different `(server, tool)` pairs cannot collide:
 
 ```text
 filesystem___read_file
 github___create_issue
 ```
 
-Server names and tool names that contain the reserved separator are rejected at startup with a warning. If two servers expose the same tool name, the second registration is skipped so the first one keeps its identifier. Tool listings are cached at startup for the session.
+Server names and tool names that contain the reserved separator are rejected at startup with a warning. If two servers expose the same tool name, the second registration is skipped and the first tool keeps its identifier. Tool listings are cached at startup for the session.
 
 ---
 
 ## Security model
 
-Sofos is built around explicit access boundaries. The assistant can be useful without receiving unrestricted access to the host system.
+Sofos is built around explicit access boundaries. The assistant can work with a project without receiving unrestricted access to the host system.
 
 ### Workspace and external paths
 
@@ -386,47 +402,47 @@ Sofos is built around explicit access boundaries. The assistant can be useful wi
 - Tools that both read and write external files, such as `edit_file` and `morph_edit_file`, require both Read and Write grants.
 - External access can be allowed for the current session or remembered in configuration.
 
-A fourth scope, `WebFetch(domain:example.com)`, gates the `web_fetch` tool. The first time the assistant fetches a URL from a host you have not already allowed, Sofos shows that host and asks whether to allow it, with the option to remember it. Allowing a host also covers its subdomains (so allowing `example.com` covers `docs.example.com`): a one-off allow lasts for the rest of the session, and remembering it saves `WebFetch(domain:example.com)` to your local config for future sessions too. Redirects are followed only after the same check on the destination host, so a redirect to a host you have not allowed prompts again (or is refused) rather than being followed silently. Declining blocks the fetch; in a non-interactive run a host that is not already allowed is refused.
+A fourth scope, `WebFetch(domain:example.com)`, controls the `web_fetch` tool. The first time the assistant fetches a URL from a host you have not allowed, Sofos shows the host and asks whether to allow it. You can allow it for the current session or remember it for future sessions. Allowing a host also covers its subdomains, so allowing `example.com` also allows `docs.example.com`. Redirects are followed only after the same check on the destination host. In non-interactive runs, a host that is not already allowed is refused.
 
 ### Access modes
 
-The `/permissions` command picks how much the assistant may do. It opens a picker of five presets; you can also type `/permissions <preset>`. The current preset is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
+Use `/permissions` to choose what the assistant may do. The current preset appears in the status line, and you can switch during a session. From least to most permissive:
 
-- **`read-only`** (also `--readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
-- **`sandboxed-ask`** (the default when a sandbox is available) — read and write in the project and run shell commands inside the operating-system sandbox on macOS and Linux. Writes stay inside the project and temporary directories, the network is closed, familiar commands run without interruption, and unfamiliar commands run without a prompt. When a command genuinely needs network access or must write outside the project, the assistant may ask you to approve running that one command outside the sandbox. Prompt shows `>`.
-- **`sandboxed-retry`** — same confinement, but instead of asking up front, a command that fails in a way that looks caused by the sandbox offers to retry once without it.
-- **`sandboxed-strict`** — same confinement, and the sandbox is never lifted: a blocked command simply fails.
-- **`unsandboxed`** (also `--no-sandbox`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
+- **`read-only`** (also `--readonly`) — Inspection tools only. Writes and shell commands are disabled. The prompt shows `:`.
+- **`sandboxed-ask`** (default when a sandbox is available) — Reads and writes are allowed in the project, and shell commands run inside the operating-system sandbox on macOS and Linux. Writes stay inside the project and temporary directories, the network is closed, familiar commands run automatically, and unfamiliar commands run without a prompt. If a command needs network access or must write outside the project, the assistant may ask you to approve running that one command outside the sandbox. The prompt shows `>`.
+- **`sandboxed-retry`** — Same confinement as `sandboxed-ask`, but a command may be retried once without the sandbox when the failure appears to be caused by the sandbox.
+- **`sandboxed-strict`** — Same confinement, with no sandbox lift. A blocked command fails.
+- **`unsandboxed`** (also `--no-sandbox`) — Shell commands run without operating-system confinement. Unfamiliar commands prompt for approval. The prompt shows `#`.
 
-"Sandboxed" confines **writes and the network**, not general reads. A sandboxed command can still read files outside the project unless a `Read(...)` deny rule or an external-path permission prompt stops it. Lifting the sandbox for one command always needs your approval, and clearly destructive commands stay refused even then.
+Sandboxing confines writes and network access. It does not block all reads. A sandboxed command can still read files outside the project unless a `Read(...)` deny rule or an external-path permission prompt stops it. Lifting the sandbox for one command always requires your approval, and clearly destructive commands remain refused.
 
-Where no operating-system sandbox can run — Windows, or a Linux host without Bubblewrap, user-namespace support, or the required network filter — the three `sandboxed-*` presets are unavailable. The default is then `unsandboxed`, the picker greys out the sandboxed presets, and the status line reports `unsandboxed`.
+Where no operating-system sandbox can run, the `sandboxed-*` presets are unavailable. This includes Windows and Linux hosts without Bubblewrap, user-namespace support, or the required network filter. In those cases, the default is `unsandboxed`, the picker greys out the sandboxed presets, and the status line reports `unsandboxed`.
 
-Operating-system confinement uses a different platform mechanism where available:
+Operating-system confinement uses the available platform mechanism:
 
-- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and system temporary directories, the network is closed, and files blocked by `Read(...)` deny rules stay unreadable even when a command reaches them indirectly.
+- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and system temporary directories, the network is closed, and files blocked by `Read(...)` deny rules stay unreadable even when reached indirectly.
 - **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS: writes stay inside the workspace and `/tmp`, network access is closed, local daemon sockets such as Docker are blocked, and files blocked by `Read(...)` deny rules stay unreadable. The `bubblewrap` package and kernel support for user namespaces are required.
-- **Windows** does not engage operating-system command confinement in this release. The default preset is `unsandboxed`, the `sandboxed-*` presets are disabled, familiar commands run automatically, destructive commands are always refused, and any other command prompts for approval before running. The destructive-command blocklist, `Read(...)` deny rules for named paths, and external-path prompts still apply.
+- **Windows** does not use operating-system command confinement in this release. The default preset is `unsandboxed`, the `sandboxed-*` presets are disabled, familiar commands run automatically, destructive commands are always refused, and any other command prompts for approval before running. The destructive-command blocklist, `Read(...)` deny rules for named paths, and external-path prompts still apply.
 
-On macOS and Linux, the project's `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only inside the sandbox even though the rest of the workspace is writable. The `.git` directory is also read-only for any command other than plain Git commands that need to update repository state, so branch switches and local Git config still work while stray commands cannot plant hooks. These directories remain readable.
+On macOS and Linux, the project `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only inside the sandbox, even though the rest of the workspace is writable. The `.git` directory is also read-only for any command other than plain Git commands that need to update repository state, so branch switches and local Git configuration still work while other commands cannot write Git hooks. These directories remain readable.
 
 ### Bash command permissions
 
-Bash commands pass through these layers:
+Bash commands pass through three checks:
 
-1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs without a prompt under a sandboxed preset on macOS and Linux, or prompts for approval on Windows and under the `unsandboxed` preset on any platform. Under a sandboxed preset on macOS and Linux the safe commands are confined too, not only the unfamiliar ones.
-2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous Git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. Under a sandboxed preset on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
-3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your `Read(...)` deny rules, but otherwise leaves reads open — so reaching an external path that is not denied still needs a grant.
+1. **Command tier** — Known safe commands run automatically. Known destructive commands are always blocked. Other commands run without a prompt under a sandboxed preset on macOS and Linux, or prompt for approval on Windows and under `unsandboxed` on any platform. Under a sandboxed preset on macOS and Linux, safe commands are confined too.
+2. **Structural checks** — Parent traversal, hidden subcommands (command and process substitution), ANSI-C `$'...'` quoting, and dangerous Git operations are always blocked. File output redirection and here-documents are blocked for commands that run without confinement. Under a sandboxed preset on macOS and Linux, a command whose only such issue is writing to a file runs confined and is allowed. On Windows, the command is refused and the assistant should use `write_file` or `edit_file` instead.
+3. **Path checks** — Commands that reference external absolute paths or `~/` paths require Bash-path permission, even when the command runs confined. Confinement limits writes, network access, and files blocked by `Read(...)` deny rules, but it does not otherwise close general read access. An external path that is not denied still needs a Bash-path grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
-| Allowed | Runs automatically after structural checks; confined by the operating system under a sandboxed preset on macOS and Linux. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
+| Allowed | Runs automatically after structural checks. Confined by the operating system under a sandboxed preset on macOS and Linux. | `cargo`, `npm`, `go`, `ls`, `cat`, `grep`, `rg`, `git status`, `git log`, `git diff` |
 | Forbidden | Always blocked. | `rm`, `rmdir`, `chmod`, `chown`, `sudo`, `dd`, `mkfs`, `systemctl`, `kill`, destructive git operations |
-| Other | Sandboxed preset on macOS and Linux: runs confined to the project. Sandboxed preset on Windows, or the `unsandboxed` preset anywhere: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
+| Other | Sandboxed preset on macOS and Linux: runs confined to the project. Sandboxed preset on Windows, or `unsandboxed` anywhere: prompts. | Unfamiliar commands, `cp`, `mv`, `mkdir`, selected git checkout forms |
 
 ### Destructive operations
 
-`delete_file` and `delete_directory` always show a confirmation prompt before deletion. If the user cancels a deletion in a batch of tool calls, Sofos returns synthetic tool results for the skipped tools so the next provider request remains valid.
+`delete_file` and `delete_directory` always show a confirmation prompt before deletion. If you cancel a deletion in a batch of tool calls, Sofos returns placeholder results for the skipped tools so the next provider request remains valid.
 
 ---
 
@@ -474,7 +490,7 @@ allow = [
   "Bash(custom_tool)",
   "Bash(cargo:*)",
 
-  # Web fetch permissions (host and its subdomains).
+  # Web fetch permissions for a host and its subdomains.
   "WebFetch(domain:blog.rust-lang.org)",
 ]
 
@@ -502,13 +518,13 @@ Rules:
 - `Bash(/path/**)` grants bash path access, not command execution by itself.
 - `Bash(command)` grants one exact command.
 - `Bash(command:*)` grants commands by base name.
-- A bare `"Bash"` in `allow` allows every bash command except built-in forbidden commands; structural checks still apply.
+- A bare `"Bash"` in `allow` allows every bash command except built-in forbidden commands. Structural checks still apply.
 - A bare `"Bash"` in `deny` rejects every bash command.
 - `ask` is valid only for Bash command rules.
 
 ### MCP servers
 
-Configure MCP servers in either local or global config.
+Configure MCP servers in either local or global configuration.
 
 Stdio server:
 
@@ -527,7 +543,7 @@ url = "https://api.example.com/mcp"
 headers = { "Authorization" = "Bearer token" }
 ```
 
-Sofos connects at startup, lists available tools, prefixes tool names by server, and caches the list for the session.
+Sofos connects to configured servers at startup, lists available tools, prefixes tool names by server, and caches the tool list for the session.
 
 ---
 
@@ -548,19 +564,19 @@ A saved session includes:
 - permission preset, with read-only state restored for older sessions;
 - token counters and cache counters.
 
-Resume with:
+Resume from the command line:
 
 ```bash
 sofos --resume
 ```
 
-or from inside Sofos:
+Or resume from inside Sofos:
 
 ```text
 /resume
 ```
 
-On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available and accounts for provider cache discounts and cache-write premiums. For OpenAI models with tiered pricing, Sofos tracks the largest single-turn input and switches the estimate when the premium threshold is crossed.
+On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available, and accounts for provider cache discounts and cache-write premiums. For OpenAI models with tiered pricing, Sofos tracks the largest single-turn input and switches the estimate when the premium threshold is crossed.
 
 ---
 
@@ -574,10 +590,10 @@ High-level layout:
 
 ```text
 src/
-├── api/       Provider clients, shared message types, model metadata.
-├── repl/      Turn orchestration, request building, response handling, TUI worker.
-├── tools/     Native tool execution, permissions, filesystem, bash, search, image handling.
-├── mcp/       Model Context Protocol configuration, clients, manager, transports.
+├── api/       Provider clients, shared message types, and model metadata.
+├── repl/      Turn orchestration, request building, response handling, and TUI worker.
+├── tools/     Native tool execution, permissions, filesystem, bash, search, and image handling.
+├── mcp/       MCP configuration, clients, manager, and transports.
 ├── session/   Runtime session state and on-disk session persistence.
 ├── ui/        Markdown, syntax highlighting, diffs, cost summaries, and display helpers.
 └── commands/  Slash-command parsing and dispatch.
@@ -621,13 +637,13 @@ See [`RELEASE.md`](RELEASE.md) for the full process.
 
 | Problem | What to check |
 |---|---|
-| API key error | Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or pass `--api-key` / `--openai-api-key`. |
+| API key error | Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, or pass `--api-key` or `--openai-api-key`. |
 | Cannot connect | Run `sofos --check-connection`. |
 | Model rejects reasoning effort | Use `/effort` or `-e` with a level supported by the selected model. |
 | Path denied | Add a `Read`, `Write`, or `Bash` rule, or approve the interactive prompt. |
-| External edit denied | `edit_file` and `morph_edit_file` need both Read and Write for external files. |
+| External edit denied | `edit_file` and `morph_edit_file` need Read and Write permission for external files. |
 | Code search unavailable | Install `ripgrep` and ensure `rg` is on `PATH`. |
-| Image not opening | Mention the image by path or URL in your message; the model will call `view_image`. For a folder, ask it to look in the folder and it will list and open each image. |
+| Image not opening | Mention the image by path or URL in your message. For a folder, ask Sofos to look in the folder so it can list and open each image. |
 | Terminal does not insert newline with Shift+Enter | Use Alt+Enter or Ctrl+Enter. |
 | Sandboxed command cannot reach the network or Docker | This is expected in a sandboxed preset on macOS and Linux. Use a workspace-local alternative, approve a one-command sandbox lift when offered, or switch to `unsandboxed` for a trusted operation. |
 | Build problems | Run `rustup update`, then `cargo clean` and `cargo build`. |
@@ -642,7 +658,7 @@ Apache License 2.0. See [`LICENSE`](LICENSE). Reused third-party code is listed 
 
 ## Acknowledgments
 
-Sofos is built with Rust and powered by Anthropic Claude or OpenAI models. Optional fast edits are provided through Morph Apply.
+Sofos is built with Rust and uses Anthropic Claude or OpenAI models. Optional fast edits are provided through Morph Apply.
 
 ---
 
