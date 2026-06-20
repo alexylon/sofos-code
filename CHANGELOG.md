@@ -20,7 +20,7 @@ All notable changes to Sofos are documented in this file.
 - **The assistant is now told the escalation behavior of the active sandboxed preset** (macOS and Linux). Switching between `sandboxed-ask`, `sandboxed-retry`, and `sandboxed-strict` now updates the assistant's guidance even though all three keep the sandbox on, and a confined command's failure note matches the chosen preset. Under `sandboxed-retry` and `sandboxed-strict` the assistant no longer suggests the up-front sandbox lift that only `sandboxed-ask` allows; resuming a sandboxed session on a machine with no sandbox now tells the assistant the sandbox is off.
 
 - **`edit_file` now rejects ambiguous single replacements.** When the old text appears more than once, the assistant must include more surrounding context or set `replace_all` for an intentional global replacement. Empty old text is also rejected.
-- **Read-only mode is now selected with `--readonly` and the `read-only` preset in `/permissions`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown.
+- **Read-only mode is now selected with `--readonly` and the `read-only` preset in `/permissions`** (previously `--safe-mode` and `/safe`). It is named "read-only" rather than "safe" because it limits the tools that are offered, not a full lockdown. An edit or shell command is also refused if one is requested directly, not only left out of the offered tools.
 
 ### Fixed
 
