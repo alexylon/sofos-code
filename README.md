@@ -6,7 +6,7 @@ Sofos Code is a terminal-based AI coding assistant for software projects. It con
 
 Sofos is written in Rust, runs in your terminal, and is designed around explicit permissions: workspace access is available by default, while external paths and higher-risk actions require user approval or configuration.
 
-Tested on macOS, Linux, and Windows. On Windows the bash executor runs commands through Git for Windows's `sh.exe`, located automatically at the standard install path even when the integrated terminal of an IDE does not expose Git on `PATH`.
+Sofos runs on macOS, Linux, and Windows. On macOS and Linux, the default shell mode uses an operating-system sandbox when the required platform support is available. On Windows, command confinement is disabled in this release, but the bash executor runs commands through Git for Windows's `sh.exe`, located automatically at the standard install path even when the integrated terminal of an IDE does not expose Git on `PATH`.
 
 <div align="center"><img src="/assets/screenshot.png" style="width: 800px;" alt="Sofos Code terminal screenshot"></div>
 
@@ -80,11 +80,11 @@ The assistant can act through tools, but it does not do so silently: tool calls 
 - **Tool loop execution** — the model can use tools iteratively, with a hard maximum to prevent infinite loops.
 - **Safe file editing** — targeted `edit_file`, chunked `write_file`, visual diffs, atomic writes, and optional Morph Apply.
 - **Strong permission model** — independent Read, Write, and Bash grants for paths outside the workspace.
-- **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, redirection, and dangerous git operations.
-- **Access presets** — one `/permissions` command picks how much the assistant may do: read-only, sandboxed (the default; shell commands run confined to the project by the operating-system sandbox on macOS and Linux), or unsandboxed; switchable mid-session.
+- **Bash safety** — allowed, denied, and ask tiers, plus structural checks for parent traversal, hidden subcommands, unconfined redirection, and dangerous Git operations.
+- **Access presets** — one `/permissions` command picks `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, or `unsandboxed`; sandboxed presets confine shell commands on macOS and Linux when a usable sandbox is available, and the preset can be changed mid-session.
 - **Image vision** — `view_image` tool for local files and remote URLs, plus clipboard paste.
 - **MCP integration** — connect additional tool servers through stdio or streamable HTTP.
-- **Session persistence** — saved conversations, resume picker, restored read-only mode, restored model where compatible, and persisted cost counters.
+- **Session persistence** — saved conversations, resume picker, restored permission preset, restored model where compatible, and persisted cost counters.
 - **Cost visibility** — token totals, cache hit reporting, and provider-specific price estimates.
 - **Context compaction** — local and provider-supported compaction to keep long sessions usable.
 
@@ -393,30 +393,30 @@ A fourth scope, `WebFetch(domain:example.com)`, gates the `web_fetch` tool. The 
 The `/permissions` command picks how much the assistant may do. It opens a picker of five presets; you can also type `/permissions <preset>`. The current preset is shown in the status line under the input box, and you can switch during a session. From least to most permissive:
 
 - **`read-only`** (also `--readonly`) — only inspection tools; no writes and no shell commands. Prompt shows `:`.
-- **`sandboxed-ask`** (the default) — read and write in the project and run shell commands, confined by the operating system on macOS and Linux: writes stay inside the project and the network is closed, for familiar build tools and interpreters just as for unfamiliar commands. Familiar commands run without interruption and unfamiliar ones run without a prompt. When a command genuinely needs network access or to write outside the project, the assistant may ask you to approve running that one command outside the sandbox. Prompt shows `>`.
+- **`sandboxed-ask`** (the default when a sandbox is available) — read and write in the project and run shell commands inside the operating-system sandbox on macOS and Linux. Writes stay inside the project and temporary directories, the network is closed, familiar commands run without interruption, and unfamiliar commands run without a prompt. When a command genuinely needs network access or must write outside the project, the assistant may ask you to approve running that one command outside the sandbox. Prompt shows `>`.
 - **`sandboxed-retry`** — same confinement, but instead of asking up front, a command that fails in a way that looks caused by the sandbox offers to retry once without it.
 - **`sandboxed-strict`** — same confinement, and the sandbox is never lifted: a blocked command simply fails.
 - **`unsandboxed`** (also `--no-sandbox`) — shell commands run without operating-system confinement; unfamiliar commands prompt for approval instead. Prompt shows `#`.
 
-"Sandboxed" confines **writes and the network**, not reads — a sandboxed command can still read files outside the project unless a deny rule or an external-path prompt stops it. Lifting the sandbox for one command (the `-ask` and `-retry` presets) always needs your approval, and clearly destructive commands stay refused even then.
+"Sandboxed" confines **writes and the network**, not general reads. A sandboxed command can still read files outside the project unless a `Read(...)` deny rule or an external-path permission prompt stops it. Lifting the sandbox for one command always needs your approval, and clearly destructive commands stay refused even then.
 
-Where no operating-system sandbox can run — Windows, or a Linux host without Bubblewrap — the three `sandboxed-*` presets are unavailable: the default is `unsandboxed`, the picker greys them out, and the status line reports `unsandboxed` honestly.
+Where no operating-system sandbox can run — Windows, or a Linux host without Bubblewrap, user-namespace support, or the required network filter — the three `sandboxed-*` presets are unavailable. The default is then `unsandboxed`, the picker greys out the sandboxed presets, and the status line reports `unsandboxed`.
 
-Operating-system confinement uses a different primitive on each platform:
+Operating-system confinement uses a different platform mechanism where available:
 
-- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and the system temporary directories, the network is closed, and any file you have blocked from reading stays unreadable even when a command reaches it through a wide search rather than naming it directly.
-- **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS — writes inside the workspace and `/tmp`, the network closed down to local sockets such as the Docker daemon, and blocked files kept unreadable. The `bubblewrap` package must be installed; where the sandbox cannot start, an unfamiliar command falls back to asking for approval.
+- **macOS** uses the Seatbelt profile compiler (`sandbox-exec`). Writes are limited to the workspace and system temporary directories, the network is closed, and files blocked by `Read(...)` deny rules stay unreadable even when a command reaches them indirectly.
+- **Linux** uses Bubblewrap (`bwrap`). The constraints match macOS: writes stay inside the workspace and `/tmp`, network access is closed, local daemon sockets such as Docker are blocked, and files blocked by `Read(...)` deny rules stay unreadable. The `bubblewrap` package and kernel support for user namespaces are required.
+- **Windows** does not engage operating-system command confinement in this release. The default preset is `unsandboxed`, the `sandboxed-*` presets are disabled, familiar commands run automatically, destructive commands are always refused, and any other command prompts for approval before running. The destructive-command blocklist, `Read(...)` deny rules for named paths, and external-path prompts still apply.
 
-On both platforms the project's `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only even though the rest of the workspace is writable, so a confined command cannot rewrite the rules that decide which commands are allowed or change agent settings. The `.git` directory is read-only too for any command other than git itself, so a stray command cannot plant a Git hook; git's own commands can still update `.git`, so branch switches and local git config keep working. These directories remain readable.
-- **Windows**: operating-system confinement is not engaged in this release, so the default preset is `unsandboxed` and the `sandboxed-*` presets are disabled in the picker. Shell commands therefore behave the same as `unsandboxed` on every platform: familiar commands run automatically, destructive commands are always refused, and any other command prompts the user for approval before running. The destructive-command blocklist, the read-deny rules, and the external-path prompts still apply. The restricted-token framework is in the tree as a foundation; the default Windows shell is Git for Windows `sh.exe`, which cannot start under a restricted access token because of how its Cygwin-derived runtime sets up session-shared-memory, and the alternatives (a different shell, or a dedicated sandbox user account that needs administrator setup) are larger product decisions left for a future release.
+On macOS and Linux, the project's `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only inside the sandbox even though the rest of the workspace is writable. The `.git` directory is also read-only for any command other than plain Git commands that need to update repository state, so branch switches and local Git config still work while stray commands cannot plant hooks. These directories remain readable.
 
 ### Bash command permissions
 
 Bash commands pass through these layers:
 
 1. **Command tier** — commands recognised as safe run automatically; commands recognised as destructive are always blocked; any other command runs without a prompt under a sandboxed preset on macOS and Linux, or prompts for approval on Windows and under the `unsandboxed` preset on any platform. Under a sandboxed preset on macOS and Linux the safe commands are confined too, not only the unfamiliar ones.
-2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. Under a sandboxed preset on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
-3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your read-deny rules, but otherwise leaves reads open — so reaching an external path that isn't denied still needs a grant.
+2. **Structural checks** — parent traversal, hidden subcommands (command and process substitution), and dangerous Git operations are always blocked. File output redirection and here-documents are blocked for commands that run unconfined. Under a sandboxed preset on macOS and Linux, a command whose only such issue is writing to a file runs confined instead and is allowed; on Windows the command is refused, and the assistant should use `write_file` or `edit_file` to create the file.
+3. **Path checks** — commands that reference external absolute or `~/` paths require Bash-path permission, whether or not the command runs confined. Confinement bounds writes, the network, and your `Read(...)` deny rules, but otherwise leaves reads open — so reaching an external path that is not denied still needs a grant.
 
 | Tier | Behaviour | Examples |
 |---|---|---|
@@ -545,7 +545,7 @@ A saved session includes:
 - display history for replay;
 - system prompt;
 - model name where available;
-- read-only mode state;
+- permission preset, with read-only state restored for older sessions;
 - token counters and cache counters.
 
 Resume with:
@@ -629,13 +629,14 @@ See [`RELEASE.md`](RELEASE.md) for the full process.
 | Code search unavailable | Install `ripgrep` and ensure `rg` is on `PATH`. |
 | Image not opening | Mention the image by path or URL in your message; the model will call `view_image`. For a folder, ask it to look in the folder and it will list and open each image. |
 | Terminal does not insert newline with Shift+Enter | Use Alt+Enter or Ctrl+Enter. |
+| Sandboxed command cannot reach the network or Docker | This is expected in a sandboxed preset on macOS and Linux. Use a workspace-local alternative, approve a one-command sandbox lift when offered, or switch to `unsandboxed` for a trusted operation. |
 | Build problems | Run `rustup update`, then `cargo clean` and `cargo build`. |
 
 ---
 
 ## License
 
-Apache License 2.0. See [`LICENSE`](LICENSE).
+Apache License 2.0. See [`LICENSE`](LICENSE). Reused third-party code is listed in [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
 
 ---
 
