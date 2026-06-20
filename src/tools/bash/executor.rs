@@ -508,14 +508,11 @@ impl BashExecutor {
             ));
         }
         self.enforce_read_permissions(permission_manager, command)?;
-        self.confirm_askable_command(command)?;
-        self.check_bash_external_paths(command, permission_manager)?;
 
-        // Dropping the sandbox removes the kernel-enforced Read deny masks,
-        // and the textual path check above cannot catch a denied file reached
-        // indirectly (through a variable or a recursive walk). Refuse to
-        // unsandbox while any Read deny rule is active, before the approval
-        // prompt so the user is not asked for something that will be refused.
+        // Refuse to unsandbox while a Read deny rule is active — the kernel
+        // masks are the only reliable enforcement, and the textual checks miss
+        // indirect reads. Before the askable/external-path prompts so we never
+        // ask to approve a command we are about to refuse.
         if permission_manager.has_read_deny_rules() {
             return Err(SofosError::ToolExecution(format!(
                 "Cannot run '{}' outside the sandbox while a Read(...) deny rule is active: \
@@ -524,6 +521,9 @@ impl BashExecutor {
                 command
             )));
         }
+
+        self.confirm_askable_command(command)?;
+        self.check_bash_external_paths(command, permission_manager)?;
 
         // Already approved for this session: run unsandboxed without asking.
         let cached = self
@@ -1430,6 +1430,58 @@ mod tests {
             }
             other => panic!("expected ToolExecution, got {other:?}"),
         }
+    }
+
+    /// The on-failure retry path also refuses to drop the sandbox while a
+    /// Read deny is active — the parallel guard to the model-escalation test
+    /// above. The failure is shaped to look like a sandbox denial so the
+    /// retry would otherwise be offered; the guard returns `Ok(None)` before
+    /// any prompt.
+    #[cfg(unix)]
+    #[test]
+    fn on_failure_retry_refused_while_read_deny_active() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let (_temp, executor) = escalation_executor(ApprovalPolicy::OnFailure, true);
+        let config_dir = executor.workspace.join(".sofos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.local.toml"),
+            "[permissions]\nallow = []\ndeny = [\"Read(./secret.txt)\"]\nask = []\n",
+        )
+        .unwrap();
+
+        let output = SupervisedOutput {
+            stdout: Vec::new(),
+            stderr: b"cat: /x: Operation not permitted".to_vec(),
+            status: ExitStatus::from_raw(1 << 8),
+            terminated_for: None,
+        };
+        // Sanity: this failure shape does trigger the on-failure retry path,
+        // so we are exercising the guard rather than an early bail-out.
+        assert!(should_prompt_unsandboxed(
+            ApprovalPolicy::OnFailure,
+            true,
+            true,
+            &output
+        ));
+
+        // Pre-approve the retry for this session: without the read-deny guard
+        // the cached branch would run the (harmless) command and return
+        // Ok(Some), so Ok(None) proves the guard fired first.
+        let normalized = PermissionManager::normalize_command_key("true");
+        executor
+            .session_unsandboxed
+            .lock()
+            .unwrap()
+            .insert(normalized.clone());
+        assert!(
+            matches!(
+                executor.maybe_escalate_unsandboxed("true", &normalized, &output),
+                Ok(None)
+            ),
+            "an active Read deny must withhold the on-failure unsandboxed retry"
+        );
     }
 
     #[cfg(unix)]
