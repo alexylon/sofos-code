@@ -61,7 +61,14 @@ impl CodeSearchTool {
         // Fallback search list for common macOS/Homebrew and Linux locations
         let fallback_paths = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"];
 
-        let try_path = |p: &PathBuf| Command::new(p).arg("--version").output();
+        let try_path = |p: &PathBuf| {
+            let mut cmd = Command::new(p);
+            cmd.arg("--version");
+            // Keep the API keys out of the probe: the rg found here can be an
+            // untrusted binary on PATH or a fallback location.
+            crate::tools::child_env::scrub_sensitive_env(&mut cmd);
+            cmd.output()
+        };
 
         if let Some(p) = env_override {
             if try_path(&p).is_ok() {
