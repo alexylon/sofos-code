@@ -488,6 +488,10 @@ ask = []
         assert!(!has_path_traversal("git log HEAD~5..HEAD"));
         assert!(!has_path_traversal("git diff HEAD~1..HEAD -- src/foo.rs"));
         assert!(!has_path_traversal("grep '\\.\\.\\.' file.txt"));
+        // Quoted escaped-dot regexes: the backslashes are literal, not a path.
+        assert!(!has_path_traversal("sed 's/\\.\\.//' file.txt"));
+        assert!(!has_path_traversal("grep -E '\\.\\./' file.txt"));
+        assert!(!has_path_traversal("perl -pe 's/\\.\\.//g' file.txt"));
         assert!(!has_path_traversal("ls foo..bar")); // unusual filename, not traversal
         // Git colon path syntax survives the `:` split because
         // neither `HEAD` nor the path contain a traversal fragment.
@@ -809,6 +813,22 @@ ask = []
 
         let reason = executor.get_rejection_reason("git $'\\x70ush' origin main");
         assert!(reason.contains("$'...'"));
+    }
+
+    /// The confined (sandboxed) gate must refuse `$'...'` too, not only the
+    /// unsandboxed gate above. `should_confine(cmd, true)` exercises
+    /// `is_confinement_safe`; without this, deleting that check leaves the
+    /// suite green.
+    #[test]
+    fn confined_gate_refuses_ansi_c_quoting() {
+        let executor = BashExecutor::new(PathBuf::from("."), false, false).unwrap();
+        assert!(
+            executor
+                .should_confine("git $'\\x70ush' origin main", true)
+                .is_err()
+        );
+        // A normal command still runs confined.
+        assert!(matches!(executor.should_confine("ls -la", true), Ok(true)));
     }
 
     /// Workspace-relative tokens whose canonical resolution lands

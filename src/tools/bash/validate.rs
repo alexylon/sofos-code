@@ -32,25 +32,39 @@ use std::path::PathBuf;
 pub(super) fn has_path_traversal(command: &str) -> bool {
     let split = |c: char| c.is_whitespace() || matches!(c, '=' | ':');
     for raw in command.split(split).filter(|t| !t.is_empty()) {
-        // Remove the quoting and grouping characters the shell strips while
-        // expanding a word — interior ones too, not just the edges — so a
-        // `..` split apart by quotes (`".""."/x`) or hidden behind a leading
-        // backslash (`\../x`) is normalised to what the shell actually runs
-        // before the scan. This is the reduction `base_is_git` also applies.
-        let t: String = raw
-            .chars()
-            .filter(|c| {
-                !matches!(
-                    c,
-                    '"' | '\'' | '\\' | '`' | '(' | ')' | '{' | '}' | '[' | ']' | ';' | ','
-                )
-            })
-            .collect();
+        // Reduce to the bytes the shell passes, so a `..` hidden by quotes
+        // (`".""."/x`) or a backslash (`\../x`) surfaces — without flagging a
+        // quoted regex like `'s/\.\.//'` whose backslashes are literal.
+        let t = reduce_for_traversal(raw);
         if t == ".." || t.starts_with("../") || t.ends_with("/..") || t.contains("/../") {
             return true;
         }
     }
     false
+}
+
+/// Reduce a shell word to the bytes it expands to, for spotting a `..` path
+/// component. Quotes and grouping chars are dropped; an unquoted backslash
+/// escapes the next char, while a quoted backslash stays literal.
+fn reduce_for_traversal(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '\\' if !in_single && !in_double => {
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '"' | '\'' | '`' | '(' | ')' | '{' | '}' | '[' | ']' | ';' | ',' => {}
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Detect shell command and process substitution outside of single
