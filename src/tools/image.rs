@@ -1,3 +1,4 @@
+use crate::config::config_files_hint;
 use crate::error::{Result, ResultExt, SofosError};
 use crate::tools::permissions::{CommandPermission, PermissionManager};
 use crate::tools::utils::{is_absolute_or_tilde, is_http_url};
@@ -229,7 +230,7 @@ impl ImageLoader {
                 let config_source = if let Some(ref rule) = matched_rule {
                     self.permission_manager.get_rule_source(rule)
                 } else {
-                    ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                    config_files_hint()
                 };
                 return Err(SofosError::ToolExecution(format!(
                     "Read access denied for image '{}'\n\

@@ -7,29 +7,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PermissionSettings {
+    // Defaults so a config with no [permissions] section (e.g. MCP-only)
+    // still loads instead of failing on the missing field.
+    #[serde(default)]
     pub permissions: Permissions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Permissions {
+    // Every list defaults to empty, so a [permissions] section that sets
+    // only one of them still parses instead of failing the whole config
+    // load.
+    #[serde(default)]
     pub allow: Vec<String>,
+    #[serde(default)]
     pub deny: Vec<String>,
     #[serde(default)]
     pub ask: Vec<String>,
-}
-
-impl Default for PermissionSettings {
-    fn default() -> Self {
-        Self {
-            permissions: Permissions {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                ask: Vec::new(),
-            },
-        }
-    }
 }
 
 impl PermissionSettings {

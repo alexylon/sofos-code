@@ -405,6 +405,8 @@ Sofos is built around explicit access boundaries. The assistant can work with a 
 
 A fourth scope, `WebFetch(domain:example.com)`, controls the `web_fetch` tool. The first time the assistant fetches a URL from a host you have not allowed, Sofos shows the host and asks whether to allow it. You can allow it for the current session or remember it for future sessions. Allowing a host also covers its subdomains, so allowing `example.com` also allows `docs.example.com`. Redirects are followed only after the same check on the destination host. In non-interactive runs, a host that is not already allowed is refused.
 
+A fifth scope, `Mcp(servername)`, controls tools from MCP servers. MCP servers run outside the Sofos sandbox with open network access, so the first time the assistant calls a tool from a server you have not allowed, Sofos shows the server and tool and asks whether to allow it. You can allow it for the current session or remember it as `Mcp(servername)`, which covers every tool from that server. A matching `deny` rule blocks the server outright. In non-interactive runs, a server that is not already allowed is refused.
+
 ### Access modes
 
 Use `/permissions` to choose what the assistant may do. The current preset appears in the status line, and you can switch during a session. From least to most permissive:
@@ -510,6 +512,9 @@ allow = [
 
   # Web fetch permissions for a host and its subdomains.
   "WebFetch(domain:blog.rust-lang.org)",
+
+  # MCP server permissions (every tool from the server).
+  "Mcp(docs)",
 ]
 
 deny = [
@@ -518,6 +523,7 @@ deny = [
   "Read(./secrets/**)",
   "Bash(dangerous_tool)",
   "WebFetch(domain:metadata.google.internal)",
+  "Mcp(untrusted-server)",
 ]
 
 ask = [
@@ -539,6 +545,7 @@ Rules:
 - A bare `"Bash"` in `allow` allows every bash command except built-in forbidden commands. Structural checks still apply.
 - A bare `"Bash"` in `deny` rejects every bash command.
 - `ask` is valid only for Bash command rules.
+- `Mcp(servername)` allows or denies every tool from one MCP server.
 
 ### MCP servers
 
@@ -562,6 +569,8 @@ headers = { "Authorization" = "Bearer token" }
 ```
 
 Sofos connects to configured servers at startup, lists available tools, prefixes tool names by server, and caches the tool list for the session.
+
+The first time the assistant calls a tool from a server, Sofos asks for approval; you can allow it for the session or remember it as an `Mcp(servername)` rule. See [Permissions](#permissions).
 
 ---
 

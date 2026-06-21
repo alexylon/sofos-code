@@ -313,7 +313,7 @@ src/
 │       ├── pattern.rs
 │       │   # Permission rule parsing, scope extraction, wildcard handling, and blanket Bash rules.
 │       ├── scope.rs
-│       │   # Read, Write, and Bash path scope matching helpers, plus the WebFetch host scope.
+│       │   # Read, Write, and Bash path scope matching helpers, plus the WebFetch host and MCP server scopes.
 │       └── command_parse.rs
 │           # Shell tokenisation and compound-command analysis used by bash permission checks.
 │
@@ -421,9 +421,10 @@ It contains:
 - model configuration values passed into request building;
 - read-only, sandboxed, and unsandboxed mode system messages, plus the `PermissionPreset` enum that pairs each mode with its escalation policy;
 - context and auto-compaction thresholds derived from model information;
-- global defaults for the response-handler loop.
+- global defaults for the response-handler loop;
+- the config file locations and home-directory lookup shared by the permission and MCP loaders.
 
-It does not load permission files. Permission configuration belongs to `tools/permissions/`.
+It owns where the config files live, but not how they are parsed: permission configuration belongs to `tools/permissions/` and MCP server configuration to `mcp/`.
 
 ### 3.4 `error.rs`
 

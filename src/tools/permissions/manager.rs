@@ -1,3 +1,4 @@
+use crate::config::{GLOBAL_CONFIG_FILE, LOCAL_CONFIG_FILE, global_config_path, home_dir};
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::CommandPermission;
 use crate::tools::permissions::command_parse::{command_lookup_key, leading_dangerous_env_prefix};
@@ -9,9 +10,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
-const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
-const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
-
 pub struct PermissionManager {
     /// The merged global + local view used for every runtime permission
     /// check.
@@ -21,8 +19,6 @@ pub struct PermissionManager {
     /// global `~/.sofos/config.toml` rules into the local file.
     pub(super) local_settings: PermissionSettings,
     pub(super) local_settings_path: PathBuf,
-    #[allow(dead_code)]
-    pub(super) global_settings_path: Option<PathBuf>,
     pub(super) allowed_commands: HashSet<String>,
     pub(super) forbidden_commands: HashSet<String>,
     pub(super) read_allow_set: GlobSet,
@@ -38,11 +34,8 @@ impl PermissionManager {
     pub fn new(workspace: PathBuf) -> Result<Self> {
         let local_settings_path = workspace.join(LOCAL_CONFIG_FILE);
 
-        let global_settings_path =
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(GLOBAL_CONFIG_FILE));
-
-        let mut settings = if let Some(ref global_path) = global_settings_path {
-            Self::load_settings(global_path)?
+        let mut settings = if let Some(global_path) = global_config_path() {
+            Self::load_settings(&global_path)?
         } else {
             PermissionSettings::default()
         };
@@ -233,7 +226,6 @@ impl PermissionManager {
             settings,
             local_settings,
             local_settings_path,
-            global_settings_path,
             allowed_commands,
             forbidden_commands,
             read_allow_set,
@@ -253,9 +245,12 @@ impl PermissionManager {
         // the user knows where to look; the local-only path stays
         // unambiguous.
         if self.global_rules.contains(rule) {
-            "~/.sofos/config.toml (or .sofos/config.local.toml if overridden)".to_string()
+            format!(
+                "~/{} (or {} if overridden)",
+                GLOBAL_CONFIG_FILE, LOCAL_CONFIG_FILE
+            )
         } else {
-            ".sofos/config.local.toml".to_string()
+            LOCAL_CONFIG_FILE.to_string()
         }
     }
 
@@ -335,35 +330,37 @@ impl PermissionManager {
             })?;
         }
 
-        // Write only the local settings — never the merged view — so the
-        // global `~/.sofos/config.toml` rules are not copied into the
-        // local file.
-        let content = toml::to_string_pretty(&self.local_settings)
+        // Read the file as a generic table and overwrite only the
+        // permissions, so other sections (notably [mcp-servers]) survive;
+        // serializing local_settings alone would drop them. Only the local
+        // permissions are written, never the merged global view.
+        let mut document = if self.local_settings_path.exists() {
+            let existing = fs::read_to_string(&self.local_settings_path).map_err(|e| {
+                SofosError::ToolExecution(format!("Failed to read config file: {}", e))
+            })?;
+            toml::from_str::<toml::Table>(&existing).map_err(|e| {
+                SofosError::ToolExecution(format!("Failed to parse config file: {}", e))
+            })?
+        } else {
+            toml::Table::new()
+        };
+
+        let local = toml::Value::try_from(&self.local_settings)
+            .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
+        if let toml::Value::Table(table) = local {
+            for (key, value) in table {
+                document.insert(key, value);
+            }
+        }
+
+        let content = toml::to_string_pretty(&document)
             .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
 
-        fs::write(&self.local_settings_path, content).map_err(|e| {
-            SofosError::ToolExecution(format!("Failed to write config file: {}", e))
-        })?;
+        crate::tools::filesystem::write_atomic(&self.local_settings_path, &content).map_err(
+            |e| SofosError::ToolExecution(format!("Failed to write config file: {}", e)),
+        )?;
 
         Ok(())
-    }
-
-    /// Look up the user's home directory in a way that works on both
-    /// Unix (`$HOME`) and Windows (`%USERPROFILE%`). `std::env::home_dir`
-    /// was re-stabilised with a correct Windows implementation in Rust
-    /// 1.85, but reading the platform-native env var directly keeps us
-    /// compatible with older toolchains and makes the per-platform
-    /// choice explicit. Returns `None` when the env var is unset, which
-    /// is the same "fall through unexpanded" signal the caller uses.
-    pub(super) fn home_dir() -> Option<PathBuf> {
-        #[cfg(windows)]
-        {
-            std::env::var_os("USERPROFILE").map(PathBuf::from)
-        }
-        #[cfg(not(windows))]
-        {
-            std::env::var_os("HOME").map(PathBuf::from)
-        }
     }
 
     /// Expand a leading `~` or `~/` to the user's home directory. Uses
@@ -382,12 +379,12 @@ impl PermissionManager {
     /// absolute and would likewise replace the home prefix.
     pub(super) fn expand_tilde(path: &str) -> String {
         if path == "~" {
-            return Self::home_dir()
+            return home_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string());
         }
         if let Some(rest) = path.strip_prefix("~/") {
-            if let Some(mut home) = Self::home_dir() {
+            if let Some(mut home) = home_dir() {
                 let rest = rest.trim_start_matches(['/', '\\']);
                 // Push each segment so the join uses the platform's
                 // native separator on both sides. A single `push(rest)`
@@ -735,6 +732,24 @@ impl PermissionManager {
         let (confirmed, remember) = Self::ask_three_way(&prompt)?;
         if remember {
             self.remember_rule(Self::normalize_web_fetch(host), confirmed);
+            self.save_settings()?;
+        }
+        Ok((confirmed, remember))
+    }
+
+    /// Ask whether the model may use tools from MCP `server` (it is calling
+    /// `tool`). The grant is server-wide: a "yes", or a remembered
+    /// `Mcp(<server>)` rule, covers every tool from that server. Returns
+    /// `(confirmed, remember)`. MCP rules match by a direct server-name
+    /// scan, so no glob rebuild is needed.
+    pub fn ask_user_mcp_permission(&mut self, server: &str, tool: &str) -> Result<(bool, bool)> {
+        let prompt = format!(
+            "Allow tools from MCP server `{}`? (requested `{}`)",
+            server, tool
+        );
+        let (confirmed, remember) = Self::ask_three_way(&prompt)?;
+        if remember {
+            self.remember_rule(Self::normalize_mcp(server), confirmed);
             self.save_settings()?;
         }
         Ok((confirmed, remember))

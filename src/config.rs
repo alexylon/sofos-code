@@ -522,6 +522,46 @@ impl PermissionPreset {
     }
 }
 
+/// Workspace-local config file, relative to the workspace root. Holds
+/// project-specific permission rules and MCP servers, and overrides the
+/// global config on conflict.
+pub(crate) const LOCAL_CONFIG_FILE: &str = ".sofos/config.local.toml";
+
+/// Global config file, relative to the user's home directory. Holds
+/// defaults shared across every workspace.
+pub(crate) const GLOBAL_CONFIG_FILE: &str = ".sofos/config.toml";
+
+/// The user's home directory: `HOME` on Unix, `USERPROFILE` on Windows.
+/// Returns `None` when the variable is unset. Reading the platform
+/// variable directly — rather than `std::env::home_dir`, which was only
+/// re-stabilised with a correct Windows implementation in Rust 1.85 —
+/// keeps older toolchains working and makes the per-platform choice
+/// explicit.
+pub(crate) fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
+    }
+}
+
+/// Absolute path to the global config file, or `None` when the home
+/// directory is unknown. Both the permission system and the MCP loader
+/// resolve the global config through this so the two never diverge.
+pub(crate) fn global_config_path() -> Option<std::path::PathBuf> {
+    home_dir().map(|home| home.join(GLOBAL_CONFIG_FILE))
+}
+
+/// The two config file locations as written in user-facing hint messages:
+/// `.sofos/config.local.toml or ~/.sofos/config.toml`. The global file is
+/// shown with the `~/` shorthand the user types.
+pub(crate) fn config_files_hint() -> String {
+    format!("{} or ~/{}", LOCAL_CONFIG_FILE, GLOBAL_CONFIG_FILE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

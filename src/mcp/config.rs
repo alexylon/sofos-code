@@ -78,38 +78,24 @@ impl McpServerConfig {
     }
 }
 
-/// Locate the user's home directory using the platform-native variable.
-/// Previously this read `HOME` directly, which is correct on Unix but
-/// always missing on Windows (Windows uses `USERPROFILE`), so the global
-/// MCP config at `~/.sofos/config.toml` was silently skipped for every
-/// Windows user. Returns `None` when the variable is unset.
-fn user_home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(PathBuf::from)
-    }
-}
-
-/// Load MCP configuration from both global and local config files
+/// Load MCP configuration from the global and local config files. The
+/// local file overrides the global one when both define a server with the
+/// same name. A file that cannot be read or parsed is reported and
+/// skipped, so one broken file does not hide the servers in the other.
 pub fn load_mcp_config(workspace: &Path) -> HashMap<String, McpServerConfig> {
     let mut servers = HashMap::new();
 
-    // Try to load global config from ~/.sofos/config.toml
-    if let Some(home) = user_home_dir() {
-        let global_config_path = home.join(".sofos/config.toml");
-        if let Ok(global_servers) = load_mcp_config_from_file(&global_config_path) {
-            servers.extend(global_servers);
+    if let Some(global_config_path) = crate::config::global_config_path() {
+        match load_mcp_config_from_file(&global_config_path) {
+            Ok(global_servers) => servers.extend(global_servers),
+            Err(e) => tracing::warn!(error = %e, "failed to read global MCP config"),
         }
     }
 
-    // Try to load local config from .sofos/config.local.toml (overrides global)
-    let local_config_path = workspace.join(".sofos/config.local.toml");
-    if let Ok(local_servers) = load_mcp_config_from_file(&local_config_path) {
-        servers.extend(local_servers);
+    let local_config_path = workspace.join(crate::config::LOCAL_CONFIG_FILE);
+    match load_mcp_config_from_file(&local_config_path) {
+        Ok(local_servers) => servers.extend(local_servers),
+        Err(e) => tracing::warn!(error = %e, "failed to read local MCP config"),
     }
 
     servers

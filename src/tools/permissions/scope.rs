@@ -204,6 +204,27 @@ impl PermissionManager {
         }
     }
 
+    /// Resolve whether the model may call tools from MCP `server` from the
+    /// configured rules: a matching `Mcp(...)` deny wins, then a matching
+    /// allow, otherwise `Ask` so the caller prompts. The server name is
+    /// matched case-insensitively against each rule.
+    pub fn check_mcp_permission(&self, server: &str) -> CommandPermission {
+        let server = Self::canonical_mcp_server(server);
+        let any_match = |entries: &[String]| {
+            entries
+                .iter()
+                .filter_map(|entry| Self::extract_mcp_server(entry))
+                .any(|s| s == server)
+        };
+        if any_match(&self.settings.permissions.deny) {
+            CommandPermission::Denied
+        } else if any_match(&self.settings.permissions.allow) {
+            CommandPermission::Allowed
+        } else {
+            CommandPermission::Ask
+        }
+    }
+
     pub fn check_write_permission(&self, path: &str) -> CommandPermission {
         self.check_scope_permission(
             path,

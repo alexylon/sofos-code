@@ -41,7 +41,7 @@ const ATOMIC_TMP_MAX_RETRIES: usize = 8;
 /// On Unix we also copy the existing file's permission bits onto the
 /// temp file before the swap, so an executable script stays executable
 /// and private files (`0600`) stay private after the edit.
-fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     // Resolve symlinks so we write to the real target. `canonicalize`
     // errors for paths that don't exist yet — new files have no link
     // to preserve, so fall back to the caller-supplied path.

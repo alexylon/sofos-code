@@ -2,7 +2,7 @@ use crate::api::MorphClient;
 use crate::config::SandboxMode;
 use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
-use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
+use crate::mcp::manager::{ImageData, MCP_NAME_SEPARATOR, ToolResult as McpToolResult};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
 use crate::tools::codesearch::CodeSearchTool;
@@ -217,6 +217,10 @@ pub struct ToolExecutor {
     /// so a non-remembered choice is not re-asked for the same host.
     web_fetch_session_allowed: Arc<Mutex<HashSet<String>>>,
     web_fetch_session_denied: Arc<Mutex<HashSet<String>>>,
+    /// MCP servers the user allowed/declined once this session, so a
+    /// non-remembered choice is not re-asked for the same server.
+    mcp_session_allowed: Arc<Mutex<HashSet<String>>>,
+    mcp_session_denied: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Apply both MCP-response caps (image count/bytes and text tokens) in
@@ -384,6 +388,8 @@ impl ToolExecutor {
             write_path_session_denied: Arc::new(Mutex::new(HashSet::new())),
             web_fetch_session_allowed: Arc::new(Mutex::new(HashSet::new())),
             web_fetch_session_denied: Arc::new(Mutex::new(HashSet::new())),
+            mcp_session_allowed: Arc::new(Mutex::new(HashSet::new())),
+            mcp_session_denied: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
@@ -554,7 +560,7 @@ impl ToolExecutor {
                 let config_source = if let Some(ref rule) = matched_rule {
                     permission_manager.get_rule_source(rule)
                 } else {
-                    ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                    crate::config::config_files_hint()
                 };
                 return Err(SofosError::ToolExecution(format!(
                     "Read access denied for path '{}'\n\
@@ -610,8 +616,9 @@ impl ToolExecutor {
         {
             return Err(SofosError::ToolExecution(format!(
                 "Write access denied for path '{}'\n\
-                 Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
-                path
+                 Hint: Blocked by deny rule in {}",
+                path,
+                crate::config::config_files_hint()
             )));
         }
 
@@ -686,16 +693,30 @@ impl ToolExecutor {
         // Check if this is an MCP tool first
         if let Some(mcp_manager) = &self.mcp_manager {
             if mcp_manager.is_mcp_tool(tool_name) {
-                if self.mode.is_readonly() {
-                    if let Some(server) = mcp_manager.server_for_tool(tool_name) {
-                        if !mcp_manager.is_server_available_in_readonly(server) {
-                            return Err(SofosError::ToolExecution(format!(
-                                "MCP tool '{}' is filtered out in read-only mode because its server is not marked for read-only access.",
-                                tool_name
-                            )));
-                        }
-                    }
+                let server = mcp_manager.server_for_tool(tool_name).ok_or_else(|| {
+                    SofosError::ToolExecution(format!("Unknown MCP tool: {}", tool_name))
+                })?;
+                if self.mode.is_readonly() && !mcp_manager.is_server_available_in_readonly(server) {
+                    return Err(SofosError::ToolExecution(format!(
+                        "MCP tool '{}' is filtered out in read-only mode because its server is not marked for read-only access.",
+                        tool_name
+                    )));
                 }
+                // MCP servers run unconfined with open network, so a server's
+                // first tool call is gated behind approval; the grant is
+                // remembered for the session or saved as an `Mcp(<server>)`
+                // rule.
+                let bare_tool = tool_name
+                    .strip_prefix(&format!("{}{}", server, MCP_NAME_SEPARATOR))
+                    .unwrap_or(tool_name);
+                permissions::check_mcp_session_access(
+                    self.fs_tool.workspace(),
+                    server,
+                    bare_tool,
+                    self.interactive,
+                    &self.mcp_session_allowed,
+                    &self.mcp_session_denied,
+                )?;
                 let mut result = mcp_manager.execute_tool(tool_name, input).await?;
                 cap_mcp_response(&mut result);
                 return Ok(ToolExecutionResult::Structured(result));

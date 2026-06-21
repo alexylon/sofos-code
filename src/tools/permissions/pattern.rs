@@ -23,6 +23,10 @@ pub(super) const WEB_FETCH_SCOPE: &str = "WebFetch";
 /// hand-edited `WebFetch(example.com)` is accepted as well.
 pub(super) const WEB_FETCH_DOMAIN_PREFIX: &str = "domain:";
 
+/// Scope token for the `Mcp(<server>)` rule that gates whether the model
+/// may call tools from a given MCP server.
+pub(super) const MCP_SCOPE: &str = "Mcp";
+
 impl PermissionManager {
     /// Extract path patterns from Bash() entries.
     /// Only treats entries as path grants if the content is absolute or
@@ -106,5 +110,30 @@ impl PermissionManager {
             "{WEB_FETCH_SCOPE}({WEB_FETCH_DOMAIN_PREFIX}{})",
             Self::canonical_web_fetch_host(host)
         )
+    }
+
+    /// Canonical comparison form for an MCP server name: trimmed and
+    /// lower-cased, so a rule matches the server regardless of letter case.
+    pub(super) fn canonical_mcp_server(server: &str) -> String {
+        server.trim().to_ascii_lowercase()
+    }
+
+    /// Extract the server name from an `Mcp(<server>)` rule, in canonical
+    /// form. Returns `None` for any entry that is not an MCP rule or whose
+    /// server name is empty.
+    pub(super) fn extract_mcp_server(entry: &str) -> Option<String> {
+        let inner = entry
+            .trim()
+            .strip_prefix(MCP_SCOPE)?
+            .strip_prefix('(')?
+            .strip_suffix(')')?;
+        let server = Self::canonical_mcp_server(inner);
+        (!server.is_empty()).then_some(server)
+    }
+
+    /// The canonical rule string persisted and looked up for an MCP
+    /// `server`.
+    pub(super) fn normalize_mcp(server: &str) -> String {
+        format!("{MCP_SCOPE}({})", Self::canonical_mcp_server(server))
     }
 }

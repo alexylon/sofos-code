@@ -6,6 +6,8 @@ pub mod settings;
 
 pub use manager::PermissionManager;
 
+use crate::config::LOCAL_CONFIG_FILE;
+
 use crate::error::{Result, SofosError};
 use crate::tools::permissions::pattern::WEB_FETCH_SCOPE;
 use std::collections::HashSet;
@@ -77,8 +79,8 @@ pub fn check_external_path_session_access(
     if !interactive {
         return Err(SofosError::ToolExecution(format!(
             "Path '{}' is outside workspace and not explicitly allowed\n\
-             Hint: Add {}({}/**) to 'allow' list in .sofos/config.local.toml",
-            canonical_path, scope, dir_to_grant
+             Hint: Add {}({}/**) to 'allow' list in {}",
+            canonical_path, scope, dir_to_grant, LOCAL_CONFIG_FILE
         )));
     }
 
@@ -197,8 +199,8 @@ pub fn check_web_fetch_session_access(
     match manager.check_web_fetch_permission(&host_key) {
         CommandPermission::Denied => {
             return Err(SofosError::ToolExecution(format!(
-                "web_fetch to '{}' is blocked by a {} deny rule in .sofos/config.local.toml",
-                host, WEB_FETCH_SCOPE
+                "web_fetch to '{}' is blocked by a {} deny rule in {}",
+                host, WEB_FETCH_SCOPE, LOCAL_CONFIG_FILE
             )));
         }
         CommandPermission::Allowed => return Ok(()),
@@ -230,9 +232,10 @@ pub fn check_web_fetch_session_access(
     if !interactive {
         return Err(SofosError::ToolExecution(format!(
             "web_fetch to '{}' needs approval, which is unavailable in a non-interactive \
-             session.\nHint: add {} to the 'allow' list in .sofos/config.local.toml",
+             session.\nHint: add {} to the 'allow' list in {}",
             host,
-            PermissionManager::normalize_web_fetch(&host_key)
+            PermissionManager::normalize_web_fetch(&host_key),
+            LOCAL_CONFIG_FILE
         )));
     }
 
@@ -253,6 +256,80 @@ pub fn check_web_fetch_session_access(
         Err(SofosError::ToolExecution(format!(
             "web_fetch to '{}' was declined",
             host
+        )))
+    }
+}
+
+/// Gate an MCP `tool` call from `server`, mirroring the `web_fetch` gate.
+/// A configured `Mcp(...)` deny refuses and an allow passes; otherwise a
+/// per-session grant is consulted, then the user is prompted (interactive)
+/// or given a config hint (non-interactive). "Remember" persists an
+/// `Mcp(<server>)` rule covering the whole server; a one-off choice is kept
+/// in the session sets so the same server is not asked about again.
+pub fn check_mcp_session_access(
+    workspace: &Path,
+    server: &str,
+    tool: &str,
+    interactive: bool,
+    session_allowed: &Arc<Mutex<HashSet<String>>>,
+    session_denied: &Arc<Mutex<HashSet<String>>>,
+) -> Result<()> {
+    let server_key = PermissionManager::canonical_mcp_server(server);
+
+    let mut manager = PermissionManager::new(workspace.to_path_buf())?;
+    match manager.check_mcp_permission(&server_key) {
+        CommandPermission::Denied => {
+            return Err(SofosError::ToolExecution(format!(
+                "MCP tool '{}' from server '{}' is blocked by a deny rule in {}",
+                tool, server, LOCAL_CONFIG_FILE
+            )));
+        }
+        CommandPermission::Allowed => return Ok(()),
+        CommandPermission::Ask => {}
+    }
+
+    if let Ok(allowed) = session_allowed.lock() {
+        if allowed.contains(&server_key) {
+            return Ok(());
+        }
+    }
+    if let Ok(denied) = session_denied.lock() {
+        if denied.contains(&server_key) {
+            return Err(SofosError::ToolExecution(format!(
+                "MCP server '{}' was declined earlier this session",
+                server
+            )));
+        }
+    }
+
+    if !interactive {
+        return Err(SofosError::ToolExecution(format!(
+            "MCP tool '{}' from server '{}' needs approval, which is unavailable in a \
+             non-interactive session.\nHint: add {} to the 'allow' list in {}",
+            tool,
+            server,
+            PermissionManager::normalize_mcp(&server_key),
+            LOCAL_CONFIG_FILE
+        )));
+    }
+
+    let (allowed, remember) = manager.ask_user_mcp_permission(server, tool)?;
+    if allowed {
+        if !remember {
+            if let Ok(mut set) = session_allowed.lock() {
+                set.insert(server_key);
+            }
+        }
+        Ok(())
+    } else {
+        if !remember {
+            if let Ok(mut set) = session_denied.lock() {
+                set.insert(server_key);
+            }
+        }
+        Err(SofosError::ToolExecution(format!(
+            "MCP tool '{}' from server '{}' was declined",
+            tool, server
         )))
     }
 }
@@ -291,7 +368,6 @@ mod tests {
             settings,
             local_settings: PermissionSettings::default(),
             local_settings_path: temp_dir.path().join(".sofos/config.local.toml"),
-            global_settings_path: None,
             allowed_commands: HashSet::new(),
             forbidden_commands: HashSet::new(),
             read_allow_set: read_allow,
@@ -499,6 +575,373 @@ mod tests {
         assert!(
             unknown,
             "an unconfigured host is refused in a non-interactive session"
+        );
+    }
+
+    #[test]
+    fn mcp_rule_parses_and_normalizes() {
+        assert_eq!(
+            PermissionManager::extract_mcp_server("Mcp(GitHub)"),
+            Some("github".to_string()),
+            "the server name is parsed and lower-cased"
+        );
+        assert_eq!(
+            PermissionManager::extract_mcp_server("Read(./secret)"),
+            None,
+            "a non-MCP rule is ignored"
+        );
+        assert_eq!(
+            PermissionManager::extract_mcp_server("Mcp()"),
+            None,
+            "an empty server name is rejected"
+        );
+        assert_eq!(
+            PermissionManager::normalize_mcp("GitHub"),
+            "Mcp(github)",
+            "persisted rules use the canonical lower-cased form"
+        );
+    }
+
+    #[test]
+    fn mcp_permission_matches_server_with_deny_winning() {
+        let temp = TempDir::new().unwrap();
+        let mut settings = PermissionSettings::default();
+        settings.permissions.allow.push("Mcp(docs)".to_string());
+        settings.permissions.allow.push("Mcp(github)".to_string());
+        // Deny beats allow for the same server.
+        settings.permissions.deny.push("Mcp(github)".to_string());
+        let manager = create_test_manager(settings, &temp);
+
+        assert_eq!(
+            manager.check_mcp_permission("docs"),
+            CommandPermission::Allowed,
+            "an allowed server passes"
+        );
+        assert_eq!(
+            manager.check_mcp_permission("GitHub"),
+            CommandPermission::Denied,
+            "a denied server is refused even when also allowed, matched case-insensitively"
+        );
+        assert_eq!(
+            manager.check_mcp_permission("other"),
+            CommandPermission::Ask,
+            "an unconfigured server prompts"
+        );
+    }
+
+    #[test]
+    fn mcp_session_access_applies_config_rules_and_refuses_when_non_interactive() {
+        // Isolate HOME so only the workspace local config supplies rules.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[permissions]\n\
+             allow = [\"Mcp(docs)\"]\n\
+             deny = [\"Mcp(secrets)\"]\n\
+             ask = []\n",
+        )
+        .unwrap();
+
+        let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let denied = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let check = |server: &str| {
+            check_mcp_session_access(
+                workspace.path(),
+                server,
+                "some_tool",
+                false,
+                &allowed,
+                &denied,
+            )
+        };
+        let allowed_server = check("docs").is_ok();
+        let denied_server = check("secrets").is_err();
+        let unknown = check("other").is_err();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(allowed_server, "an allowed server passes");
+        assert!(denied_server, "a denied server is refused");
+        assert!(
+            unknown,
+            "an unconfigured server is refused in a non-interactive session"
+        );
+    }
+
+    #[test]
+    fn mcp_session_grant_passes_and_session_denial_refuses() {
+        // Isolate HOME so no global config supplies rules; the session sets
+        // below are then the only thing that can decide.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        let denied = std::sync::Arc::new(Mutex::new(HashSet::new()));
+        // One-off choices made earlier this session, stored lower-cased.
+        allowed.lock().unwrap().insert("docs".to_string());
+        denied.lock().unwrap().insert("secrets".to_string());
+        let check = |server: &str| {
+            check_mcp_session_access(
+                workspace.path(),
+                server,
+                "some_tool",
+                false,
+                &allowed,
+                &denied,
+            )
+        };
+        let granted = check("docs").is_ok();
+        let refused = check("secrets").is_err();
+        let granted_mixed_case = check("Docs").is_ok();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(granted, "a session-allowed server passes without asking");
+        assert!(refused, "a session-denied server is refused");
+        assert!(
+            granted_mixed_case,
+            "a session grant matches the server case-insensitively"
+        );
+    }
+
+    #[test]
+    fn mcp_remember_round_trips_through_local_config() {
+        // Isolate HOME so the saved local rule is the only source.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        // Persist an allow the way the prompt's "Yes and remember" does.
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("Docs"), true);
+        manager.save_settings().unwrap();
+
+        // A fresh manager reads the saved rule back and honours it.
+        let reloaded = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        let decision = reloaded.check_mcp_permission("docs");
+        let written =
+            std::fs::read_to_string(workspace.path().join(".sofos/config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(
+            decision,
+            CommandPermission::Allowed,
+            "a remembered server is allowed after reload"
+        );
+        assert!(
+            written.contains("Mcp(docs)"),
+            "the rule is saved in canonical lower-cased form: {written}"
+        );
+    }
+
+    #[test]
+    fn save_settings_preserves_other_sections() {
+        // Remembering a rule must not wipe the [mcp-servers] section that
+        // shares the same local config file.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[mcp-servers.docs]\n\
+             command = \"/srv/docs\"\n\n\
+             [permissions]\n\
+             allow = [\"Read(./a)\"]\n\
+             deny = []\n",
+        )
+        .unwrap();
+
+        // Remember a rule and save, the way an approval prompt does.
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            written.contains("mcp-servers"),
+            "the [mcp-servers] section must survive a permission write: {written}"
+        );
+        assert!(
+            written.contains("/srv/docs"),
+            "the MCP server command must survive: {written}"
+        );
+        assert!(
+            written.contains("Mcp(docs)"),
+            "the remembered rule must be written: {written}"
+        );
+    }
+
+    #[test]
+    fn save_settings_keeps_file_valid_with_top_level_keys() {
+        // The save path serialises a generic table that can mix a
+        // top-level key with `[section]` tables. TOML requires bare keys
+        // before any table header, so the written file must re-parse.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "schema = \"1\"\n\n[mcp-servers.docs]\ncommand = \"/srv\"\n",
+        )
+        .unwrap();
+
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+        let reparsed: toml::Table = toml::from_str(&written)
+            .unwrap_or_else(|e| panic!("save produced invalid TOML: {e}\n---\n{written}"));
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert_eq!(reparsed.get("schema").and_then(|v| v.as_str()), Some("1"));
+        assert!(reparsed.contains_key("mcp-servers"));
+        assert!(reparsed.contains_key("permissions"));
+    }
+
+    #[test]
+    fn remember_adds_permissions_to_mcp_only_config() {
+        // The reported scenario: a config with only MCP servers, then the
+        // user remembers an MCP approval. The section must be kept and a
+        // permissions section added.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[mcp-servers.docs]\ncommand = \"/srv\"\n",
+        )
+        .unwrap();
+
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            written.contains("mcp-servers"),
+            "MCP section kept: {written}"
+        );
+        assert!(written.contains("/srv"), "MCP command kept: {written}");
+        assert!(written.contains("Mcp(docs)"), "rule added: {written}");
+    }
+
+    #[test]
+    fn permissions_section_allows_omitting_lists() {
+        // Each list defaults to empty, so a section that sets only one of
+        // them still parses instead of failing the whole config load.
+        let only_allow: PermissionSettings =
+            toml::from_str("[permissions]\nallow = [\"Bash(echo)\"]\n").unwrap();
+        assert_eq!(only_allow.permissions.allow, vec!["Bash(echo)".to_string()]);
+        assert!(only_allow.permissions.deny.is_empty());
+        assert!(only_allow.permissions.ask.is_empty());
+
+        let only_deny: PermissionSettings =
+            toml::from_str("[permissions]\ndeny = [\"Bash(rm)\"]\n").unwrap();
+        assert_eq!(only_deny.permissions.deny, vec!["Bash(rm)".to_string()]);
+        assert!(only_deny.permissions.allow.is_empty());
+
+        // An empty section is valid too.
+        let empty: PermissionSettings = toml::from_str("[permissions]\n").unwrap();
+        assert!(empty.permissions.allow.is_empty());
+        assert!(empty.permissions.deny.is_empty());
+    }
+
+    #[test]
+    fn config_without_permissions_section_loads() {
+        // A config that configures only MCP servers (no [permissions]
+        // section) must still load — the whole section defaults instead of
+        // failing with a missing-field error.
+        let parsed: PermissionSettings =
+            toml::from_str("[mcp-servers.docs]\ncommand = \"/srv\"\n").unwrap();
+        assert!(parsed.permissions.allow.is_empty());
+        assert!(parsed.permissions.deny.is_empty());
+        assert!(parsed.permissions.ask.is_empty());
+    }
+
+    #[test]
+    fn manager_loads_with_mcp_only_local_config() {
+        // The MCP approval gate builds a PermissionManager on every MCP
+        // tool call, so a local config that has servers but no
+        // [permissions] section must still load.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[mcp-servers.docs]\ncommand = \"/srv/docs\"\n",
+        )
+        .unwrap();
+
+        let result = PermissionManager::new(workspace.path().to_path_buf());
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            result.is_ok(),
+            "a local config with only MCP servers must load: {:?}",
+            result.err()
         );
     }
 

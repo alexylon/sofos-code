@@ -6,6 +6,7 @@
 //! workspace's permission state — including the per-command rejection
 //! messages the executor surfaces to the model.
 
+use crate::config::{LOCAL_CONFIG_FILE, config_files_hint};
 use crate::error::{Result, SofosError};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
@@ -878,8 +879,9 @@ impl BashExecutor {
             if permission_manager.is_bash_path_denied(cand) {
                 return Err(SofosError::ToolExecution(format!(
                     "Bash access denied for path '{}'\n\
-                     Hint: Blocked by deny rule in .sofos/config.local.toml or ~/.sofos/config.toml",
-                    cand
+                     Hint: Blocked by deny rule in {}",
+                    cand,
+                    config_files_hint()
                 )));
             }
         }
@@ -918,8 +920,8 @@ impl BashExecutor {
         if !self.interactive {
             return Err(SofosError::ToolExecution(format!(
                 "Command references path '{}' outside workspace\n\
-                 Hint: Add Bash({}/**) to 'allow' list in .sofos/config.local.toml",
-                check_path, grant_dir
+                 Hint: Add Bash({}/**) to 'allow' list in {}",
+                check_path, grant_dir, LOCAL_CONFIG_FILE
             )));
         }
 
@@ -1015,7 +1017,7 @@ impl BashExecutor {
                         let config_source = if let Some(ref rule) = matched_rule {
                             permission_manager.get_rule_source(rule)
                         } else {
-                            ".sofos/config.local.toml or ~/.sofos/config.toml".to_string()
+                            config_files_hint()
                         };
                         return Err(SofosError::ToolExecution(format!(
                             "Read access denied for path '{}' in command\n\
