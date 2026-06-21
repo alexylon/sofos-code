@@ -1,7 +1,6 @@
-//! Short preview string for the session index. Picks the first
-//! non-empty user message and trims it to the per-entry display
-//! budget — the index UI uses this as the row label when listing
-//! saved sessions.
+//! Short preview string for the session index: the first non-empty user
+//! message — skipping injected `[SYSTEM:` preambles — trimmed to the
+//! per-entry display budget used as each saved-session row label.
 
 use crate::api::Message;
 use crate::session::history::HistoryManager;
@@ -27,7 +26,8 @@ impl HistoryManager {
                 };
 
                 let preview = text.trim();
-                if preview.is_empty() {
+                // Skip injected `[SYSTEM:` preambles; title by the first real message.
+                if preview.is_empty() || preview.starts_with(crate::config::SYSTEM_MESSAGE_PREFIX) {
                     continue;
                 }
 

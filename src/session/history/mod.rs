@@ -168,6 +168,22 @@ mod tests {
         }
     }
 
+    /// The preamble rides in as the first user message; the preview must
+    /// skip it and title by the first real one.
+    #[test]
+    fn preview_skips_injected_system_preamble() {
+        let preamble = format!(
+            "{} The sandbox is on (...)]",
+            crate::config::SYSTEM_MESSAGE_PREFIX
+        );
+        let messages = vec![
+            Message::user(preamble),
+            Message::user("actual first prompt"),
+        ];
+        let preview = HistoryManager::extract_preview(&messages);
+        assert_eq!(preview, "actual first prompt");
+    }
+
     /// Every persisted token counter must survive save/load. Without
     /// this, a `--resume` would reset the displayed cost (totals stay
     /// at 0 until the next API call replenishes them) and the cliff

@@ -416,7 +416,7 @@ impl Repl {
             .add_user_message(mode_preamble_for(self.mode, self.approval_policy));
         self.session_state
             .conversation
-            .add_user_message("The session history has been cleared".to_string());
+            .add_user_message("[SYSTEM: The session history has been cleared.]".to_string());
         println!("\n{}\n", "Conversation history cleared.".bright_yellow());
         Ok(())
     }

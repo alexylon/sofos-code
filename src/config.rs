@@ -92,6 +92,11 @@ pub fn auto_compact_token_limit_for(model: &str) -> usize {
     crate::api::model_info::lookup(model).auto_compact_at() as usize
 }
 
+/// Opening marker of the injected `[SYSTEM: ...]` preambles below. They
+/// ride in as `user` messages, so the session preview skips them to title
+/// by the first real user message.
+pub const SYSTEM_MESSAGE_PREFIX: &str = "[SYSTEM:";
+
 /// Read-only mode preamble shown to the assistant. Must stay in sync
 /// with the tool set returned by `tools::get_read_only_tools()` (+ the
 /// optional `search_code` tool wired in when ripgrep is on PATH).
