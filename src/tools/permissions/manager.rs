@@ -351,9 +351,11 @@ impl PermissionManager {
             .map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to re-parse serialized config: {}", e))
             })?;
-        let new_permissions = serialized["permissions"]
-            .as_table()
-            .expect("serialized PermissionSettings always has a [permissions] table");
+        let new_permissions = serialized["permissions"].as_table().ok_or_else(|| {
+            SofosError::ToolExecution(
+                "serialized permission config is missing its [permissions] table".to_string(),
+            )
+        })?;
 
         // Rewrite only the permission lists, leaving the rest of the
         // [permissions] section — comments, blank lines, keys we don't model

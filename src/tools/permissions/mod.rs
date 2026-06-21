@@ -200,7 +200,9 @@ pub fn check_web_fetch_session_access(
         CommandPermission::Denied => {
             return Err(SofosError::ToolExecution(format!(
                 "web_fetch to '{}' is blocked by a {} deny rule in {}",
-                host, WEB_FETCH_SCOPE, LOCAL_CONFIG_FILE
+                host,
+                WEB_FETCH_SCOPE,
+                crate::config::config_files_hint()
             )));
         }
         CommandPermission::Allowed => return Ok(()),
