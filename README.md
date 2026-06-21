@@ -106,6 +106,22 @@ Optional tools and keys:
 - `ripgrep`, recommended for fast code search through `search_code`;
 - `MORPH_API_KEY`, required for the `morph_edit_file` tool.
 
+On Linux, the `sandboxed-*` presets need Bubblewrap (`bwrap`) for operating-system command confinement. Without it, Sofos starts `unsandboxed` and the sandboxed presets are disabled. Install it with your distribution's package manager:
+
+```bash
+# Debian / Ubuntu
+sudo apt update
+sudo apt install bubblewrap
+
+# Fedora / RHEL
+sudo dnf install bubblewrap
+
+# Arch
+sudo pacman -S bubblewrap
+```
+
+Bubblewrap also relies on kernel support for user namespaces, which is enabled by default on most modern distributions.
+
 ### Prebuilt binary
 
 Download the latest binary from [GitHub Releases](https://github.com/alexylon/sofos-code/releases).
