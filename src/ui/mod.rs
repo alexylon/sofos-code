@@ -186,10 +186,13 @@ impl UI {
                 let _ = stdout().flush();
             }
         } else {
+            // MCP tools carry the internal `server<sep>tool` identifier; show
+            // it as `server::tool` rather than leaking the raw separator.
+            let label = tool_name.replace(crate::mcp::manager::MCP_NAME_SEPARATOR, "::");
             println!(
                 "{} {}",
                 "Using tool:".bright_yellow().bold(),
-                tool_name.bright_yellow()
+                label.bright_yellow()
             );
         }
     }
