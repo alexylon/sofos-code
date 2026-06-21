@@ -27,7 +27,7 @@ All notable changes to Sofos are documented in this file.
 - **Markdown tables in assistant replies now display correctly.** Tables render as aligned columns with all rows preserved instead of collapsing while streaming.
 - **External-path permission prompts now save only valid, correctly scoped rules.** Top-level paths are scoped to the path itself, impossible-to-save grants no longer offer a remember option, and duplicate local rules are not written.
 - **Remembering a permission no longer copies global rules into the project.** A remembered choice saves only the new rule to the local project config; existing global rules stay in the global config.
-- **Remembering a permission no longer erases the rest of the project configuration.** Saving a remembered allow or deny choice now keeps every other section of the local project configuration, including configured MCP servers, instead of replacing it with only the permission rules.
+- **Remembering a permission no longer erases the rest of the project configuration.** Saving a remembered allow or deny choice now keeps the rest of the local project configuration — including configured MCP servers, comments, and formatting — instead of replacing it with only the permission rules.
 - **A missing or partial permission section no longer fails to load.** A config with no `permissions` block — for example one that configures only MCP servers — or one that lists only some of `allow`, `deny`, or `ask`, now loads with the unset values treated as empty, instead of refusing the whole configuration.
 
 ### Security

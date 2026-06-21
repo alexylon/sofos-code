@@ -802,6 +802,10 @@ mod tests {
             written.contains("Mcp(docs)"),
             "the remembered rule must be written: {written}"
         );
+        assert!(
+            written.contains("Read(./a)"),
+            "the pre-existing permission rule must survive: {written}"
+        );
     }
 
     #[test]
@@ -876,6 +880,52 @@ mod tests {
             "MCP section kept: {written}"
         );
         assert!(written.contains("/srv"), "MCP command kept: {written}");
+        assert!(written.contains("Mcp(docs)"), "rule added: {written}");
+    }
+
+    #[test]
+    fn save_settings_preserves_comments() {
+        // toml_edit edits in place, so user comments and the formatting of
+        // untouched sections survive a remembered permission.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "# top of file\n\n# the docs server\n[mcp-servers.docs]\n\
+             command = \"/srv/docs\" # inline note\n\n\
+             [permissions]\nallow = [\"Read(./a)\"]\ndeny = []\n",
+        )
+        .unwrap();
+
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            written.contains("# top of file"),
+            "top comment kept: {written}"
+        );
+        assert!(
+            written.contains("# the docs server"),
+            "section comment kept: {written}"
+        );
+        assert!(
+            written.contains("# inline note"),
+            "inline comment kept: {written}"
+        );
         assert!(written.contains("Mcp(docs)"), "rule added: {written}");
     }
 

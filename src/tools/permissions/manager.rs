@@ -330,35 +330,30 @@ impl PermissionManager {
             })?;
         }
 
-        // Read the file as a generic table and overwrite only the
-        // permissions, so other sections (notably [mcp-servers]) survive;
-        // serializing local_settings alone would drop them. Only the local
-        // permissions are written, never the merged global view.
+        // Edit in place with toml_edit so comments, formatting, and other
+        // sections (notably [mcp-servers]) survive; only [permissions] is
+        // replaced, from the local settings alone, never the merged view.
         let mut document = if self.local_settings_path.exists() {
             let existing = fs::read_to_string(&self.local_settings_path).map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to read config file: {}", e))
             })?;
-            toml::from_str::<toml::Table>(&existing).map_err(|e| {
+            existing.parse::<toml_edit::DocumentMut>().map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to parse config file: {}", e))
             })?
         } else {
-            toml::Table::new()
+            toml_edit::DocumentMut::new()
         };
 
-        let local = toml::Value::try_from(&self.local_settings)
+        let serialized: toml_edit::DocumentMut = toml::to_string(&self.local_settings)
+            .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?
+            .parse()
             .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
-        if let toml::Value::Table(table) = local {
-            for (key, value) in table {
-                document.insert(key, value);
-            }
-        }
+        document["permissions"] = serialized["permissions"].clone();
 
-        let content = toml::to_string_pretty(&document)
-            .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
-
-        crate::tools::filesystem::write_atomic(&self.local_settings_path, &content).map_err(
-            |e| SofosError::ToolExecution(format!("Failed to write config file: {}", e)),
-        )?;
+        crate::tools::filesystem::write_atomic(&self.local_settings_path, &document.to_string())
+            .map_err(|e| {
+                SofosError::ToolExecution(format!("Failed to write config file: {}", e))
+            })?;
 
         Ok(())
     }
