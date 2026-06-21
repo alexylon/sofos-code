@@ -1594,4 +1594,45 @@ mod tests {
             "out-of-workspace Write deny should not be added"
         );
     }
+
+    /// An explicit `Write(.git)` deny re-protects `.git` even for a git-only
+    /// command, which would otherwise earn the metadata write carve-out: the
+    /// write-deny rules are applied after the carve-out is lifted, so the
+    /// user's deny wins.
+    #[cfg(unix)]
+    #[test]
+    fn confined_policy_explicit_git_write_deny_overrides_carveout() {
+        let (_temp, path) = crate::tools::test_support::workspace();
+        let executor = BashExecutor::new(path, false, false).unwrap();
+        let git_dir = executor.workspace.join(".git");
+        // `confined_policy` reloads the permission rules on every call.
+        let git_dir_protected = || {
+            executor
+                .confined_policy("git checkout other")
+                .unwrap()
+                .write_protect_subpaths
+                .contains(&git_dir)
+        };
+
+        // Baseline: with no deny, a git-only command earns the carve-out and
+        // may write `.git`.
+        assert!(
+            !git_dir_protected(),
+            "a git-only command should be able to write .git without an explicit deny"
+        );
+
+        // An explicit `Write(.git)` deny puts the protection back, overriding
+        // the carve-out, so even `git checkout` can no longer write `.git`.
+        let config_dir = executor.workspace.join(".sofos");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.local.toml"),
+            "[permissions]\nallow = []\ndeny = [\"Write(./.git)\"]\nask = []\n",
+        )
+        .unwrap();
+        assert!(
+            git_dir_protected(),
+            "an explicit Write(.git) deny must re-protect .git for a git-only command"
+        );
+    }
 }

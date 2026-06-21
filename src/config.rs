@@ -494,6 +494,32 @@ impl PermissionPreset {
             },
         }
     }
+
+    /// Whether resuming into `self` loosens access compared with `other`. The
+    /// access mode is compared first (read-only is tightest, then sandboxed,
+    /// then unsandboxed); when both are sandboxed, the escalation policy
+    /// decides, so `sandboxed-ask` over `sandboxed-strict` is a loosening even
+    /// though the mode is unchanged. Lets a resume that relaxes either one be
+    /// surfaced instead of applied silently.
+    pub fn is_more_permissive_than(self, other: Self) -> bool {
+        if self.mode() != other.mode() {
+            return self.mode().is_more_permissive_than(other.mode());
+        }
+        self.escalation_rank() < other.escalation_rank()
+    }
+
+    /// Escalation restrictiveness, higher meaning more locked down:
+    /// `sandboxed-strict` never lifts the sandbox, so it outranks the two
+    /// presets that can lift it. Those two rank equal — switching between
+    /// `sandboxed-ask` and `sandboxed-retry` is neither a loosening nor a
+    /// tightening. Read-only and unsandboxed reach this only when compared
+    /// with themselves.
+    fn escalation_rank(self) -> u8 {
+        match self.escalation() {
+            Some(ApprovalPolicy::Never) => 1,
+            _ => 0,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -511,6 +537,26 @@ mod tests {
         assert!(!ReadOnly.is_more_permissive_than(Unsandboxed));
         assert!(!Sandboxed.is_more_permissive_than(Unsandboxed));
         assert!(!Sandboxed.is_more_permissive_than(Sandboxed));
+    }
+
+    #[test]
+    fn preset_is_more_permissive_than_covers_both_axes() {
+        use PermissionPreset::*;
+        // Access mode: read-only is tightest, unsandboxed is loosest.
+        assert!(Unsandboxed.is_more_permissive_than(SandboxedAsk));
+        assert!(SandboxedAsk.is_more_permissive_than(ReadOnly));
+        assert!(!ReadOnly.is_more_permissive_than(Unsandboxed));
+
+        // Escalation policy within sandboxed mode: strict never lifts the
+        // sandbox, so resuming ask or retry over it loosens access.
+        assert!(SandboxedAsk.is_more_permissive_than(SandboxedStrict));
+        assert!(SandboxedRetry.is_more_permissive_than(SandboxedStrict));
+        // Tightening onto strict, switching between ask and retry, or the
+        // same preset is not a loosening.
+        assert!(!SandboxedStrict.is_more_permissive_than(SandboxedAsk));
+        assert!(!SandboxedAsk.is_more_permissive_than(SandboxedRetry));
+        assert!(!SandboxedRetry.is_more_permissive_than(SandboxedAsk));
+        assert!(!SandboxedAsk.is_more_permissive_than(SandboxedAsk));
     }
 
     #[test]
