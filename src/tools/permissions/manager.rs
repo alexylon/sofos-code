@@ -331,8 +331,9 @@ impl PermissionManager {
         }
 
         // Edit in place with toml_edit so comments, formatting, and other
-        // sections (notably [mcp-servers]) survive; only [permissions] is
-        // replaced, from the local settings alone, never the merged view.
+        // sections (notably [mcp-servers]) survive; only the permission
+        // lists are rewritten, from the local settings alone, never the
+        // merged view.
         let mut document = if self.local_settings_path.exists() {
             let existing = fs::read_to_string(&self.local_settings_path).map_err(|e| {
                 SofosError::ToolExecution(format!("Failed to read config file: {}", e))
@@ -347,8 +348,34 @@ impl PermissionManager {
         let serialized: toml_edit::DocumentMut = toml::to_string(&self.local_settings)
             .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?
             .parse()
-            .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?;
-        document["permissions"] = serialized["permissions"].clone();
+            .map_err(|e| {
+                SofosError::ToolExecution(format!("Failed to re-parse serialized config: {}", e))
+            })?;
+        let new_permissions = serialized["permissions"]
+            .as_table()
+            .expect("serialized PermissionSettings always has a [permissions] table");
+
+        // Rewrite only the permission lists, leaving the rest of the
+        // [permissions] section — comments, blank lines, keys we don't model
+        // — in place. A brand-new section gets a blank line before it.
+        let doc = document.as_table_mut();
+        let had_section = doc.contains_key("permissions");
+        let had_content = !doc.is_empty();
+        if !had_section {
+            doc.insert("permissions", toml_edit::table());
+        }
+        if let Some(section) = doc
+            .get_mut("permissions")
+            .and_then(|item| item.as_table_mut())
+        {
+            section.set_implicit(false);
+            for (key, value) in new_permissions.iter() {
+                section[key] = value.clone();
+            }
+            if !had_section && had_content {
+                section.decor_mut().set_prefix("\n");
+            }
+        }
 
         crate::tools::filesystem::write_atomic(&self.local_settings_path, &document.to_string())
             .map_err(|e| {

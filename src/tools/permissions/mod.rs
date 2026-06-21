@@ -281,7 +281,9 @@ pub fn check_mcp_session_access(
         CommandPermission::Denied => {
             return Err(SofosError::ToolExecution(format!(
                 "MCP tool '{}' from server '{}' is blocked by a deny rule in {}",
-                tool, server, LOCAL_CONFIG_FILE
+                tool,
+                server,
+                crate::config::config_files_hint()
             )));
         }
         CommandPermission::Allowed => return Ok(()),
@@ -927,6 +929,95 @@ mod tests {
             "inline comment kept: {written}"
         );
         assert!(written.contains("Mcp(docs)"), "rule added: {written}");
+    }
+
+    #[test]
+    fn save_settings_preserves_permissions_section_decor() {
+        // A blank line before [permissions], a comment on a permissions key,
+        // and a key we don't model must all survive a remembered rule.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[mcp-servers.docs]\ncommand = \"/srv\"\n\n\
+             [permissions]\n\
+             # my read rules\n\
+             allow = [\"Read(./a)\"]\n\
+             # my deny rules\n\
+             deny = []\n\
+             future_key = \"keep me\"\n",
+        )
+        .unwrap();
+
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            written.contains("\n\n[permissions]"),
+            "blank line before [permissions] kept: {written}"
+        );
+        assert!(
+            written.contains("# my read rules"),
+            "comment on the allow key kept: {written}"
+        );
+        assert!(
+            written.contains("# my deny rules"),
+            "comment on the deny key kept: {written}"
+        );
+        assert!(
+            written.contains("future_key = \"keep me\""),
+            "unmodeled key under [permissions] kept: {written}"
+        );
+        assert!(written.contains("Mcp(docs)"), "rule added: {written}");
+    }
+
+    #[test]
+    fn save_settings_separates_a_new_permissions_section() {
+        // Adding [permissions] to a config that lacks one must leave a blank
+        // line before it, not jam it against the previous section.
+        let _lock = HOME_MUTEX.lock().unwrap();
+        let original_home = std::env::var_os("HOME");
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let workspace = TempDir::new().unwrap();
+        let sofos = workspace.path().join(".sofos");
+        std::fs::create_dir_all(&sofos).unwrap();
+        std::fs::write(
+            sofos.join("config.local.toml"),
+            "[mcp-servers.docs]\ncommand = \"/srv\"\n",
+        )
+        .unwrap();
+
+        let mut manager = PermissionManager::new(workspace.path().to_path_buf()).unwrap();
+        manager.remember_rule(PermissionManager::normalize_mcp("docs"), true);
+        manager.save_settings().unwrap();
+
+        let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
+
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(
+            written.contains("\n\n[permissions]"),
+            "new [permissions] section is set off by a blank line: {written}"
+        );
     }
 
     #[test]

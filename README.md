@@ -494,29 +494,20 @@ Example permission configuration:
 
 ```toml
 [permissions]
+# Allowed reads, writes, bash paths and commands, web hosts, and MCP servers.
 allow = [
-  # Read permissions.
   "Read(~/.zshrc)",
   "Read(~/.config/**)",
   "Read(/etc/hosts)",
-
-  # Write permissions.
   "Write(/tmp/sofos-output/**)",
-
-  # Bash path permissions.
   "Bash(/var/log/**)",
-
-  # Bash command permissions.
   "Bash(custom_tool)",
   "Bash(cargo:*)",
-
-  # Web fetch permissions for a host and its subdomains.
   "WebFetch(domain:blog.rust-lang.org)",
-
-  # MCP server permissions (every tool from the server).
   "Mcp(docs)",
 ]
 
+# Deny always wins over allow.
 deny = [
   "Read(./.env)",
   "Read(./.env.*)",
@@ -526,11 +517,13 @@ deny = [
   "Mcp(untrusted-server)",
 ]
 
+# Ask applies only to Bash commands.
 ask = [
-  # Ask only applies to Bash commands.
   "Bash(unknown_tool)",
 ]
 ```
+
+Remembering a permission rewrites the `allow`, `deny`, and `ask` lists, so keep comments on their own line before a list (as above); a comment placed between entries is not preserved.
 
 Rules:
 

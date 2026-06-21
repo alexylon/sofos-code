@@ -88,14 +88,28 @@ pub fn load_mcp_config(workspace: &Path) -> HashMap<String, McpServerConfig> {
     if let Some(global_config_path) = crate::config::global_config_path() {
         match load_mcp_config_from_file(&global_config_path) {
             Ok(global_servers) => servers.extend(global_servers),
-            Err(e) => tracing::warn!(error = %e, "failed to read global MCP config"),
+            Err(e) => {
+                // The raw error can quote a config line holding a secret, so
+                // log it only at DEBUG, not in the default WARN output.
+                tracing::warn!(
+                    path = %global_config_path.display(),
+                    "failed to read global MCP config; skipping"
+                );
+                tracing::debug!(error = %e, "global MCP config read error");
+            }
         }
     }
 
     let local_config_path = workspace.join(crate::config::LOCAL_CONFIG_FILE);
     match load_mcp_config_from_file(&local_config_path) {
         Ok(local_servers) => servers.extend(local_servers),
-        Err(e) => tracing::warn!(error = %e, "failed to read local MCP config"),
+        Err(e) => {
+            tracing::warn!(
+                path = %local_config_path.display(),
+                "failed to read local MCP config; skipping"
+            );
+            tracing::debug!(error = %e, "local MCP config read error");
+        }
     }
 
     servers

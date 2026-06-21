@@ -288,6 +288,12 @@ impl Repl {
                 );
                 println!();
             }
+            // Resume skips the startup banner's preset notice, so show the
+            // restored preset here — with the reads-not-confined note when
+            // sandboxed, matching startup.
+            if preset_after.mode() == SandboxMode::Sandboxed {
+                println!("{}", super::permission_preset_notice(preset_after));
+            }
         }
 
         println!(

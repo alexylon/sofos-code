@@ -2,7 +2,7 @@ use crate::api::MorphClient;
 use crate::config::SandboxMode;
 use crate::error::{DEFAULT_PARENT_DIR, Result, SofosError};
 use crate::mcp::McpManager;
-use crate::mcp::manager::{ImageData, MCP_NAME_SEPARATOR, ToolResult as McpToolResult};
+use crate::mcp::manager::{ImageData, ToolResult as McpToolResult};
 use crate::tools::ToolName;
 use crate::tools::bash::BashExecutor;
 use crate::tools::codesearch::CodeSearchTool;
@@ -706,9 +706,7 @@ impl ToolExecutor {
                 // first tool call is gated behind approval; the grant is
                 // remembered for the session or saved as an `Mcp(<server>)`
                 // rule.
-                let bare_tool = tool_name
-                    .strip_prefix(&format!("{}{}", server, MCP_NAME_SEPARATOR))
-                    .unwrap_or(tool_name);
+                let bare_tool = crate::mcp::manager::bare_tool_name(server, tool_name);
                 permissions::check_mcp_session_access(
                     self.fs_tool.workspace(),
                     server,

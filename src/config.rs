@@ -510,10 +510,11 @@ impl PermissionPreset {
 
     /// Escalation restrictiveness, higher meaning more locked down:
     /// `sandboxed-strict` never lifts the sandbox, so it outranks the two
-    /// presets that can lift it. Those two rank equal — switching between
-    /// `sandboxed-ask` and `sandboxed-retry` is neither a loosening nor a
-    /// tightening. Read-only and unsandboxed reach this only when compared
-    /// with themselves.
+    /// presets that can lift it. Those two rank equal — ask lifts proactively
+    /// and retry only after a sandbox-looking failure, but both lift only with
+    /// the user's approval, so switching between them neither loosens nor
+    /// tightens access. Read-only and unsandboxed reach this only when
+    /// compared with themselves.
     fn escalation_rank(self) -> u8 {
         match self.escalation() {
             Some(ApprovalPolicy::Never) => 1,

@@ -214,8 +214,8 @@ fn main() -> Result<()> {
     // `/permissions` sandboxed presets, not from the command line.
     let approval_policy = crate::config::ApprovalPolicy::default();
     // Startup enters the default preset without the `/permissions` notice,
-    // so show it here. Skip on resume, which restores and announces its own
-    // mode after the banner is built.
+    // so show it here. Resume skips this and prints the notice for its
+    // restored preset from the resume flow instead.
     if interactive_mode && !cli.resume && mode == crate::config::SandboxMode::Sandboxed {
         let preset = crate::config::PermissionPreset::current(mode, approval_policy);
         startup_banner.push_str(&format!(

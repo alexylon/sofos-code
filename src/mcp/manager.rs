@@ -96,6 +96,14 @@ pub fn prefixed_tool_name(server: &str, tool: &str) -> String {
     format!("{}{}{}", server, MCP_NAME_SEPARATOR, tool)
 }
 
+/// Strip the `server<sep>` prefix from a namespaced tool name. Returns the
+/// name unchanged when the prefix is absent.
+pub fn bare_tool_name<'a>(server: &str, tool_name: &'a str) -> &'a str {
+    tool_name
+        .strip_prefix(&format!("{}{}", server, MCP_NAME_SEPARATOR))
+        .unwrap_or(tool_name)
+}
+
 impl McpManager {
     /// Returns the manager and a pre-formatted startup block for the
     /// caller to fold into the TUI banner. The block is empty when no
@@ -273,9 +281,7 @@ impl McpManager {
             })?
         };
 
-        let original_tool_name = tool_name
-            .strip_prefix(&format!("{}{}", server_name, MCP_NAME_SEPARATOR))
-            .unwrap_or(tool_name);
+        let original_tool_name = bare_tool_name(server_name, tool_name);
 
         let result = client
             .call_tool(original_tool_name, Some(input.clone()))
