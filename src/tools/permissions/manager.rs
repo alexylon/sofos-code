@@ -345,7 +345,7 @@ impl PermissionManager {
             toml_edit::DocumentMut::new()
         };
 
-        let serialized: toml_edit::DocumentMut = toml::to_string(&self.local_settings)
+        let serialized: toml_edit::DocumentMut = toml::to_string_pretty(&self.local_settings)
             .map_err(|e| SofosError::ToolExecution(format!("Failed to serialize config: {}", e)))?
             .parse()
             .map_err(|e| {

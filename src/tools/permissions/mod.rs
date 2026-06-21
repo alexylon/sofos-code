@@ -810,6 +810,10 @@ mod tests {
             written.contains("Read(./a)"),
             "the pre-existing permission rule must survive: {written}"
         );
+        assert!(
+            written.contains("allow = [\n"),
+            "a populated array is written one entry per line: {written}"
+        );
     }
 
     #[test]
