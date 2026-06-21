@@ -36,6 +36,7 @@ Sofos runs on macOS, Linux, and Windows. On macOS and Linux, the default shell m
 - [Security model](#security-model)
   - [Workspace and external paths](#workspace-and-external-paths)
   - [Access modes](#access-modes)
+  - [Sandboxing: reads vs. writes](#sandboxing-reads-vs-writes)
   - [Bash command permissions](#bash-command-permissions)
   - [Destructive operations](#destructive-operations)
 - [Configuration](#configuration)
@@ -414,8 +415,6 @@ Use `/permissions` to choose what the assistant may do. The current preset appea
 - **`sandboxed-strict`** — Same confinement, with no sandbox lift. A blocked command fails.
 - **`unsandboxed`** (also `--no-sandbox`) — Shell commands run without operating-system confinement. Unfamiliar commands prompt for approval. The prompt shows `#`.
 
-Sandboxing confines writes and network access. It does not block all reads. A sandboxed command can still read files outside the project unless a `Read(...)` deny rule or an external-path permission prompt stops it. Lifting the sandbox for one command always requires your approval, and clearly destructive commands remain refused.
-
 Where no operating-system sandbox can run, the `sandboxed-*` presets are unavailable. This includes Windows and Linux hosts without Bubblewrap, user-namespace support, or the required network filter. In those cases, the default is `unsandboxed`, the picker greys out the sandboxed presets, and the status line reports `unsandboxed`.
 
 Operating-system confinement uses the available platform mechanism:
@@ -425,6 +424,25 @@ Operating-system confinement uses the available platform mechanism:
 - **Windows** does not use operating-system command confinement in this release. The default preset is `unsandboxed`, the `sandboxed-*` presets are disabled, familiar commands run automatically, destructive commands are always refused, and any other command prompts for approval before running. The destructive-command blocklist, `Read(...)` deny rules for named paths, and external-path prompts still apply.
 
 On macOS and Linux, the project `.sofos`, `.agents`, `.claude`, and `.codex` directories stay read-only inside the sandbox, even though the rest of the workspace is writable. The `.git` directory is also read-only for any command other than plain Git commands that need to update repository state, so branch switches and local Git configuration still work while other commands cannot write Git hooks. These directories remain readable.
+
+### Sandboxing: reads vs. writes
+
+Sandboxing handles **writes** and **reads** differently, and that distinction is important.
+
+**Writes are fully confined automatically.** The operating system blocks all writes outside the project, regardless of how the command is written. Network access is also closed.
+
+**Reads are not confined in the same way by default.** An out-of-project read is checked only when the command explicitly names the external path. In that case, you'll see an external-path prompt asking you to approve access.
+
+However, reads that reach files indirectly are not prompted or blocked by default. For example:
+
+- a path stored in a variable
+- a recursive directory walk that follows a symlink outside the project
+
+Because of this, out-of-project secrets are **not protected by default**.
+
+To give a path the same kernel-level, unevadable protection that writes have, add a `Read(...)` deny rule for that path. See [Permissions](#permissions). Once configured, the sandbox refuses every read of that path, including indirect reads.
+
+Lifting the sandbox for a single command always requires your approval, and clearly destructive commands remain refused.
 
 ### Bash command permissions
 

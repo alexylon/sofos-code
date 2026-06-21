@@ -213,6 +213,16 @@ fn main() -> Result<()> {
     // Escalation starts at the default; it is changed in-session through the
     // `/permissions` sandboxed presets, not from the command line.
     let approval_policy = crate::config::ApprovalPolicy::default();
+    // Startup enters the default preset without the `/permissions` notice,
+    // so show it here. Skip on resume, which restores and announces its own
+    // mode after the banner is built.
+    if interactive_mode && !cli.resume && mode == crate::config::SandboxMode::Sandboxed {
+        let preset = crate::config::PermissionPreset::current(mode, approval_policy);
+        startup_banner.push_str(&format!(
+            "{}\n",
+            crate::repl::permission_preset_notice(preset)
+        ));
+    }
     let config = ReplConfig::new(
         cli.model,
         cli.max_tokens,

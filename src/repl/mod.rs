@@ -47,15 +47,23 @@ fn mode_preamble_for(mode: SandboxMode, policy: ApprovalPolicy) -> String {
     }
 }
 
-/// One-line notice printed when a `/permissions` preset becomes active,
-/// coloured by access mode. Only ever called with a preset available on
-/// this host, since `apply_permission_preset` refuses the rest.
-fn permission_preset_notice(preset: PermissionPreset) -> colored::ColoredString {
-    let text = format!("Permissions: {} — {}", preset.label(), preset.description());
-    match preset.mode() {
-        SandboxMode::ReadOnly => text.bright_yellow(),
-        SandboxMode::Unsandboxed => text.bright_red(),
-        SandboxMode::Sandboxed => text.bright_green(),
+/// Notice shown when a `/permissions` preset becomes active and in the
+/// startup banner, coloured by access mode. Sandboxed presets add a line:
+/// the sandbox bounds writes but not reads.
+pub(crate) fn permission_preset_notice(preset: PermissionPreset) -> String {
+    let headline = format!("Permissions: {} — {}", preset.label(), preset.description());
+    let headline = match preset.mode() {
+        SandboxMode::ReadOnly => headline.bright_yellow(),
+        SandboxMode::Unsandboxed => headline.bright_red(),
+        SandboxMode::Sandboxed => headline.bright_green(),
+    };
+    if preset.mode() == SandboxMode::Sandboxed {
+        let note = "Writes outside the project are blocked; out-of-project reads are not \
+                    confined by default — add a Read(...) deny rule to protect a path."
+            .dimmed();
+        format!("{headline}\n{note}")
+    } else {
+        headline.to_string()
     }
 }
 
@@ -780,4 +788,43 @@ fn format_mcp_readonly_summary(excluded: &[String], included: &[String]) -> Stri
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sandboxed presets carry the read/write-asymmetry line; read-only and
+    /// unsandboxed do not. `.contains` holds whether or not colour wraps it.
+    #[test]
+    fn sandboxed_preset_notice_explains_that_reads_are_not_confined() {
+        const NOTE: &str = "out-of-project reads are not confined by default";
+
+        for preset in [
+            PermissionPreset::SandboxedAsk,
+            PermissionPreset::SandboxedRetry,
+            PermissionPreset::SandboxedStrict,
+        ] {
+            let notice = permission_preset_notice(preset);
+            assert!(
+                notice.contains(NOTE),
+                "{} must explain reads are not confined; got: {notice:?}",
+                preset.label()
+            );
+            assert!(
+                notice.contains('\n'),
+                "{} note must be a second line, not appended inline",
+                preset.label()
+            );
+        }
+
+        for preset in [PermissionPreset::ReadOnly, PermissionPreset::Unsandboxed] {
+            let notice = permission_preset_notice(preset);
+            assert!(
+                !notice.contains(NOTE),
+                "{} must not carry the sandbox read/write note; got: {notice:?}",
+                preset.label()
+            );
+        }
+    }
 }
