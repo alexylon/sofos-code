@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-22
+
 ### Added
 
 - **Shell commands now run inside an operating-system sandbox by default on macOS and Linux.** Every command Sofos runs, including familiar build tools and unfamiliar commands, is confined so it can write only inside the project and temporary directories, cannot reach the network, and cannot read paths blocked by `Read(...)` deny rules. Familiar commands still run without interruption, and unfamiliar commands run without a prompt while confined. Commands that need the network or must write outside the project now fail unless you approve a one-command sandbox lift or switch to `unsandboxed` for a trusted operation. If no usable sandbox is available, such as on Windows or on Linux without the required Bubblewrap support, Sofos starts in `unsandboxed` instead.
