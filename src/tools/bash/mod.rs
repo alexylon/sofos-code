@@ -333,7 +333,10 @@ ask = []
         }
     }
 
-    /// Serialises tests that mutate process-wide environment variables.
+    /// Serialises tests that mutate process-wide environment variables. Only
+    /// the `#[cfg(unix)]` test below uses it, so it carries the same gate to
+    /// stay out of the Windows build, where it would otherwise be dead code.
+    #[cfg(unix)]
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The audit's S5 attack: a command reads Sofos's API key out of its

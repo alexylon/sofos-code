@@ -632,8 +632,9 @@ mod tests {
         );
         assert_eq!(policy.read_deny_globs.len(), 1, "the glob deny is kept");
         let glob = &policy.read_deny_globs[0];
+        let sep = std::path::MAIN_SEPARATOR;
         assert!(
-            glob.ends_with("/*/passwd") && glob.contains("etc"),
+            glob.ends_with(&format!("{sep}*{sep}passwd")) && glob.contains("etc"),
             "the kept glob keeps its pattern with the prefix canonicalized: {glob}"
         );
     }

@@ -348,8 +348,45 @@ mod tests {
     use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // Tests that mutate HOME must not run in parallel
+    // Tests that mutate the home-directory variable must not run in parallel
     static HOME_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// The environment variable [`crate::config::home_dir`] reads to locate
+    /// the user's home directory: `USERPROFILE` on Windows, `HOME` elsewhere.
+    /// Tests redirect this one — not a hardcoded `HOME` — so that pointing the
+    /// home directory at a temporary location also redirects the global config
+    /// on Windows, where `HOME` is ignored.
+    #[cfg(windows)]
+    const HOME_ENV_VAR: &str = "USERPROFILE";
+    #[cfg(not(windows))]
+    const HOME_ENV_VAR: &str = "HOME";
+
+    /// Redirects the platform home directory ([`HOME_ENV_VAR`]) to a chosen
+    /// path for the lifetime of the guard, restoring the previous value — or
+    /// unsetting it when there was none — when the guard is dropped. Restoring
+    /// on drop keeps the variable correct even if the test panics. Hold
+    /// [`HOME_MUTEX`] for as long as a guard is alive so the process-wide
+    /// change cannot race another test.
+    struct HomeDirGuard {
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl HomeDirGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let previous = std::env::var_os(HOME_ENV_VAR);
+            std::env::set_var(HOME_ENV_VAR, path);
+            Self { previous }
+        }
+    }
+
+    impl Drop for HomeDirGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(HOME_ENV_VAR, value),
+                None => std::env::remove_var(HOME_ENV_VAR),
+            }
+        }
+    }
 
     fn create_test_manager(settings: PermissionSettings, temp_dir: &TempDir) -> PermissionManager {
         let (read_allow, read_deny) = PermissionManager::build_scope_globs(
@@ -495,9 +532,8 @@ mod tests {
         // Isolate HOME so the merged-in global config is empty and the
         // local file the remember path writes is the only rule source.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         // Persist an allow the way the prompt's "Yes and remember" does.
@@ -514,11 +550,6 @@ mod tests {
         let subdomain = reloaded.check_web_fetch_permission("cdn.blog.example.com");
         let written =
             std::fs::read_to_string(workspace.path().join(".sofos/config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert_eq!(
             exact,
@@ -542,9 +573,8 @@ mod tests {
         // PermissionManager the gate builds; the workspace local config
         // below is then the only rule source.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -567,11 +597,6 @@ mod tests {
         let subdomain = check("docs.allowed.example.com").is_ok();
         let blocked = check("blocked.example.com").is_err();
         let unknown = check("unknown.example.com").is_err();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(exact, "an allowed host passes");
         assert!(subdomain, "a subdomain of an allowed host passes");
@@ -637,9 +662,8 @@ mod tests {
     fn mcp_session_access_applies_config_rules_and_refuses_when_non_interactive() {
         // Isolate HOME so only the workspace local config supplies rules.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -669,11 +693,6 @@ mod tests {
         let denied_server = check("secrets").is_err();
         let unknown = check("other").is_err();
 
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-
         assert!(allowed_server, "an allowed server passes");
         assert!(denied_server, "a denied server is refused");
         assert!(
@@ -687,9 +706,8 @@ mod tests {
         // Isolate HOME so no global config supplies rules; the session sets
         // below are then the only thing that can decide.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
@@ -711,11 +729,6 @@ mod tests {
         let refused = check("secrets").is_err();
         let granted_mixed_case = check("Docs").is_ok();
 
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-
         assert!(granted, "a session-allowed server passes without asking");
         assert!(refused, "a session-denied server is refused");
         assert!(
@@ -728,9 +741,8 @@ mod tests {
     fn mcp_remember_round_trips_through_local_config() {
         // Isolate HOME so the saved local rule is the only source.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         // Persist an allow the way the prompt's "Yes and remember" does.
@@ -743,11 +755,6 @@ mod tests {
         let decision = reloaded.check_mcp_permission("docs");
         let written =
             std::fs::read_to_string(workspace.path().join(".sofos/config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert_eq!(
             decision,
@@ -765,9 +772,8 @@ mod tests {
         // Remembering a rule must not wipe the [mcp-servers] section that
         // shares the same local config file.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -788,11 +794,6 @@ mod tests {
         manager.save_settings().unwrap();
 
         let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             written.contains("mcp-servers"),
@@ -822,9 +823,8 @@ mod tests {
         // top-level key with `[section]` tables. TOML requires bare keys
         // before any table header, so the written file must re-parse.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -843,11 +843,6 @@ mod tests {
         let reparsed: toml::Table = toml::from_str(&written)
             .unwrap_or_else(|e| panic!("save produced invalid TOML: {e}\n---\n{written}"));
 
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-
         assert_eq!(reparsed.get("schema").and_then(|v| v.as_str()), Some("1"));
         assert!(reparsed.contains_key("mcp-servers"));
         assert!(reparsed.contains_key("permissions"));
@@ -859,9 +854,8 @@ mod tests {
         // user remembers an MCP approval. The section must be kept and a
         // permissions section added.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -878,11 +872,6 @@ mod tests {
 
         let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
 
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
-
         assert!(
             written.contains("mcp-servers"),
             "MCP section kept: {written}"
@@ -896,9 +885,8 @@ mod tests {
         // toml_edit edits in place, so user comments and the formatting of
         // untouched sections survive a remembered permission.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -916,11 +904,6 @@ mod tests {
         manager.save_settings().unwrap();
 
         let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             written.contains("# top of file"),
@@ -942,9 +925,8 @@ mod tests {
         // A blank line before [permissions], a comment on a permissions key,
         // and a key we don't model must all survive a remembered rule.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -966,11 +948,6 @@ mod tests {
         manager.save_settings().unwrap();
 
         let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             written.contains("\n\n[permissions]"),
@@ -996,9 +973,8 @@ mod tests {
         // Adding [permissions] to a config that lacks one must leave a blank
         // line before it, not jam it against the previous section.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -1014,11 +990,6 @@ mod tests {
         manager.save_settings().unwrap();
 
         let written = std::fs::read_to_string(sofos.join("config.local.toml")).unwrap();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             written.contains("\n\n[permissions]"),
@@ -1065,9 +1036,8 @@ mod tests {
         // tool call, so a local config that has servers but no
         // [permissions] section must still load.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -1079,11 +1049,6 @@ mod tests {
         .unwrap();
 
         let result = PermissionManager::new(workspace.path().to_path_buf());
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             result.is_ok(),
@@ -1097,9 +1062,8 @@ mod tests {
         // Isolate HOME so no global config supplies rules; the session set
         // below is then the only thing that can allow a host.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let allowed = std::sync::Arc::new(Mutex::new(HashSet::new()));
@@ -1112,11 +1076,6 @@ mod tests {
         let exact = check("example.com").is_ok();
         let subdomain = check("cdn.example.com").is_ok();
         let lookalike = check("evilexample.com").is_err();
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(exact, "the exact session-allowed host passes");
         assert!(
@@ -1199,9 +1158,8 @@ mod tests {
     fn web_fetch_internal_block_overrides_allow_rule_and_session_grant() {
         // Isolate HOME so no global config feeds rules into the manager.
         let _lock = HOME_MUTEX.lock().unwrap();
-        let original_home = std::env::var_os("HOME");
         let home = TempDir::new().unwrap();
-        std::env::set_var("HOME", home.path());
+        let _home_guard = HomeDirGuard::set(home.path());
 
         let workspace = TempDir::new().unwrap();
         let sofos = workspace.path().join(".sofos");
@@ -1231,11 +1189,6 @@ mod tests {
         );
         let loopback =
             check_web_fetch_session_access(workspace.path(), "localhost", true, &allowed, &denied);
-
-        match original_home {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             metadata.is_err(),
@@ -1691,17 +1644,11 @@ ask = []
         let _lock = HOME_MUTEX.lock().unwrap();
         let _temp_dir = TempDir::new().unwrap();
 
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/home/testuser");
+        let _home_guard = HomeDirGuard::set(std::path::Path::new("/home/testuser"));
 
         let expanded = PermissionManager::expand_tilde_pub("~/file.txt");
         let expanded_dir = PermissionManager::expand_tilde_pub("~");
         let not_tilde = PermissionManager::expand_tilde_pub("./file.txt");
-
-        match original_home {
-            Some(home) => std::env::set_var("HOME", home),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert_eq!(expanded, "/home/testuser/file.txt");
         assert_eq!(expanded_dir, "/home/testuser");
@@ -1721,17 +1668,11 @@ ask = []
         let _lock = HOME_MUTEX.lock().unwrap();
         let _temp_dir = TempDir::new().unwrap();
 
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/home/testuser");
+        let _home_guard = HomeDirGuard::set(std::path::Path::new("/home/testuser"));
 
         let single = PermissionManager::expand_tilde_pub("~/foo");
         let double = PermissionManager::expand_tilde_pub("~//foo");
         let triple = PermissionManager::expand_tilde_pub("~///foo");
-
-        match original_home {
-            Some(home) => std::env::set_var("HOME", home),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert_eq!(single, "/home/testuser/foo");
         assert_eq!(
@@ -1776,8 +1717,7 @@ ask = []
         let _lock = HOME_MUTEX.lock().unwrap();
         let temp_dir = TempDir::new().unwrap();
 
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", "/home/testuser");
+        let _home_guard = HomeDirGuard::set(std::path::Path::new("/home/testuser"));
 
         let mut settings = PermissionSettings::default();
         settings
@@ -1790,11 +1730,6 @@ ask = []
         // HOME must still be /home/testuser for expand_tilde in is_read_explicit_allow
         let check_tilde = manager.is_read_explicit_allow("~/.zshrc");
         let check_abs = manager.is_read_explicit_allow("/home/testuser/.zshrc");
-
-        match original_home {
-            Some(home) => std::env::set_var("HOME", home),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(check_tilde);
         assert!(check_abs);
@@ -1936,15 +1871,9 @@ ask = []
         )
         .unwrap();
 
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home_dir);
+        let _home_guard = HomeDirGuard::set(&home_dir);
 
         let manager = PermissionManager::new(workspace.clone()).unwrap();
-
-        match original_home {
-            Some(home) => std::env::set_var("HOME", home),
-            None => std::env::remove_var("HOME"),
-        }
 
         assert!(
             manager
@@ -1999,15 +1928,9 @@ ask = []
         )
         .unwrap();
 
-        let original_home = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home_dir);
+        let _home_guard = HomeDirGuard::set(&home_dir);
 
         let manager = PermissionManager::new(workspace.clone()).unwrap();
-
-        match original_home {
-            Some(home) => std::env::set_var("HOME", home),
-            None => std::env::remove_var("HOME"),
-        }
 
         let global_rule_source = manager.get_rule_source("Read(./global_denied)");
         assert!(global_rule_source.contains("~/.sofos/config.toml"));
