@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-10
+
 ### Added
 
 - **OpenAI's new GPT-5.6 models are supported.** `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` can be selected with `--model` or `/model`. They are the first OpenAI models to accept the full reasoning range up to `max`.
