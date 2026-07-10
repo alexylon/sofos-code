@@ -81,8 +81,7 @@ pub struct Model {
     /// Reasoning-effort levels this model accepts on the wire.
     /// Startup validation and the `/effort` handler use this list to
     /// reject mismatched pairs (for example `xhigh` on a model that
-    /// tops out at `high`, or `max` on any OpenAI model) before they
-    /// reach the server.
+    /// tops out at `high`) before they reach the server.
     pub supported_efforts: &'static [ReasoningEffort],
     /// Per-million-token USD price for non-cached input.
     pub price_input_per_m: f64,
@@ -171,8 +170,11 @@ const OPENAI_PREMIUM_INPUT_THRESHOLD: u32 = 272_000;
 /// the same reason: a rename never touches an identifier or its uses.
 pub const CLAUDE_FABLE: &str = "claude-fable-5";
 pub const CLAUDE_OPUS: &str = "claude-opus-4-8";
-pub const CLAUDE_SONNET: &str = "claude-sonnet-4-6";
+pub const CLAUDE_SONNET: &str = "claude-sonnet-5";
 pub const CLAUDE_HAIKU: &str = "claude-haiku-4-5";
+pub const GPT_SOL: &str = "gpt-5.6-sol";
+pub const GPT_TERRA: &str = "gpt-5.6-terra";
+pub const GPT_LUNA: &str = "gpt-5.6-luna";
 pub const GPT_FLAGSHIP: &str = "gpt-5.5";
 pub const GPT_MID_TIER: &str = "gpt-5.4";
 pub const GPT_MINI: &str = "gpt-5.4-mini";
@@ -237,6 +239,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
+            ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
         price_input_per_m: 3.0,
@@ -261,6 +264,69 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         price_output_per_m: 5.0,
         premium_tier: None,
     },
+    // The newest OpenAI family (sol/terra/luna) bills flat at every
+    // prompt size — no premium cliff — unlike the older 1M-context
+    // OpenAI models below.
+    Model {
+        name: GPT_SOL,
+        description: "OpenAI frontier model for complex professional work",
+        provider: Provider::OpenAI,
+        context_window: 1_050_000,
+        auto_compact_token_limit: Some(250_000),
+        requires_adaptive_thinking: false,
+        supports_server_compaction: false,
+        supported_efforts: &[
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        price_input_per_m: 5.0,
+        price_output_per_m: 30.0,
+        premium_tier: None,
+    },
+    Model {
+        name: GPT_TERRA,
+        description: "Balanced OpenAI model - intelligence at mid-tier cost",
+        provider: Provider::OpenAI,
+        context_window: 1_050_000,
+        auto_compact_token_limit: Some(250_000),
+        requires_adaptive_thinking: false,
+        supports_server_compaction: false,
+        supported_efforts: &[
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        price_input_per_m: 2.5,
+        price_output_per_m: 15.0,
+        premium_tier: None,
+    },
+    Model {
+        name: GPT_LUNA,
+        description: "OpenAI model optimised for cost-sensitive workloads",
+        provider: Provider::OpenAI,
+        context_window: 1_050_000,
+        auto_compact_token_limit: Some(250_000),
+        requires_adaptive_thinking: false,
+        supports_server_compaction: false,
+        supported_efforts: &[
+            ReasoningEffort::Off,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        price_input_per_m: 1.0,
+        price_output_per_m: 6.0,
+        premium_tier: None,
+    },
     // The premium-tier OpenAI models charge 2x input / 1.5x output for
     // the *entire session* once any single prompt crosses
     // `OPENAI_PREMIUM_INPUT_THRESHOLD` input tokens. The 250K
@@ -272,7 +338,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     // cliff is tripped (e.g. by a huge pasted file).
     Model {
         name: GPT_FLAGSHIP,
-        description: "OpenAI flagship - strongest GPT for code and long context",
+        description: "Previous OpenAI flagship - strong GPT for code and long context",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
         auto_compact_token_limit: Some(250_000),
@@ -437,6 +503,9 @@ mod tests {
         assert_eq!(provider_for(CLAUDE_OPUS), Provider::Anthropic);
         assert_eq!(provider_for(CLAUDE_SONNET), Provider::Anthropic);
         assert_eq!(provider_for(CLAUDE_HAIKU), Provider::Anthropic);
+        assert_eq!(provider_for(GPT_SOL), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_TERRA), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_LUNA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_FLAGSHIP), Provider::OpenAI);
         assert_eq!(provider_for(GPT_MID_TIER), Provider::OpenAI);
         assert_eq!(provider_for(GPT_MINI), Provider::OpenAI);
@@ -467,6 +536,9 @@ mod tests {
                 CLAUDE_OPUS,
                 CLAUDE_SONNET,
                 CLAUDE_HAIKU,
+                GPT_SOL,
+                GPT_TERRA,
+                GPT_LUNA,
                 GPT_FLAGSHIP,
                 GPT_MID_TIER,
                 GPT_MINI,
@@ -625,21 +697,27 @@ mod tests {
             }
         }
 
-        // `xhigh`: the larger Anthropic models plus every OpenAI
-        // reasoning model.
+        // `xhigh`: every model except the fastest Anthropic one.
         assert!(supports(CLAUDE_FABLE, XHigh));
         assert!(supports(CLAUDE_OPUS, XHigh));
+        assert!(supports(CLAUDE_SONNET, XHigh));
+        assert!(supports(GPT_SOL, XHigh));
+        assert!(supports(GPT_TERRA, XHigh));
+        assert!(supports(GPT_LUNA, XHigh));
         assert!(supports(GPT_FLAGSHIP, XHigh));
         assert!(supports(GPT_MID_TIER, XHigh));
         assert!(supports(GPT_MINI, XHigh));
         assert!(supports(GPT_CODEX, XHigh));
-        assert!(!supports(CLAUDE_SONNET, XHigh));
         assert!(!supports(CLAUDE_HAIKU, XHigh));
 
-        // `max`: Anthropic adaptive models only.
+        // `max`: Anthropic adaptive models plus the newest OpenAI
+        // family; the older OpenAI models top out at `xhigh`.
         assert!(supports(CLAUDE_FABLE, Max));
         assert!(supports(CLAUDE_OPUS, Max));
         assert!(supports(CLAUDE_SONNET, Max));
+        assert!(supports(GPT_SOL, Max));
+        assert!(supports(GPT_TERRA, Max));
+        assert!(supports(GPT_LUNA, Max));
         assert!(!supports(CLAUDE_HAIKU, Max));
         assert!(!supports(GPT_FLAGSHIP, Max));
         assert!(!supports(GPT_MINI, Max));
@@ -659,24 +737,26 @@ mod tests {
         for label in ["off", "low", "medium", "high", "xhigh"] {
             assert!(listed.contains(label), "expected {label} in {listed}");
         }
-        // OpenAI models don't accept `max`, so the supported-list tail
-        // must not mention it.
+        // This model tops out at `xhigh`, so the supported-list tail
+        // must not mention `max`.
         assert!(!listed.contains("max"));
 
-        let err = effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh)
-            .expect("xhigh on the default Anthropic model should be rejected");
-        assert!(err.contains(CLAUDE_SONNET));
+        let err = effort_support_error(CLAUDE_HAIKU, ReasoningEffort::XHigh)
+            .expect("xhigh on the fastest Anthropic model should be rejected");
+        assert!(err.contains(CLAUDE_HAIKU));
         assert!(err.contains("`xhigh`"));
-        // The default Anthropic model supports `max` but not `xhigh`.
+        // The fastest Anthropic model stops at `high`, so neither of the
+        // extra-capability rungs may appear in the supported list.
         let listed = err
             .split("Supported levels: ")
             .nth(1)
             .expect("error message lists supported levels");
-        assert!(listed.contains("max"));
         assert!(!listed.contains("xhigh"));
+        assert!(!listed.contains("max"));
 
         // Supported combinations: no error.
         assert!(effort_support_error(CLAUDE_OPUS, ReasoningEffort::Max).is_none());
+        assert!(effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh).is_none());
         assert!(effort_support_error(GPT_FLAGSHIP, ReasoningEffort::XHigh).is_none());
         assert!(effort_support_error(CLAUDE_HAIKU, ReasoningEffort::High).is_none());
     }

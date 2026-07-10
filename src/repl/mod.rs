@@ -192,10 +192,10 @@ impl Repl {
             )));
         }
 
-        // Reject `(model, effort)` pairs the active provider won't
-        // accept, e.g. `xhigh` on a model that tops out at `high`, or
-        // `max` on any OpenAI model. Catching it here turns a runtime
-        // 400 into a clear startup error.
+        // Reject `(model, effort)` pairs the active model won't
+        // accept, e.g. `xhigh` on a model that tops out at `high`.
+        // Catching it here turns a runtime 400 into a clear startup
+        // error.
         if let Some(msg) =
             crate::api::model_info::effort_support_error(&config.model, config.reasoning_effort)
         {

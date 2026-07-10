@@ -72,20 +72,17 @@ impl<'a> RequestBuilder<'a> {
         };
 
         let reasoning_config = if matches!(self.client, OpenAI(_)) {
-            // `Max` is rejected upstream (startup validation + `/effort`
-            // gate) because OpenAI's wire schema doesn't accept it.
-            // Clamping `Max` defensively to the highest accepted level
-            // here keeps the request well-formed if validation is ever
-            // bypassed; the user would see the request go through with
-            // `xhigh` rather than a 400.
+            // Every effort seen here already passed the per-model gate
+            // (startup validation + `/effort`), so each level maps
+            // straight onto its OpenAI wire label; `Off` maps to
+            // `minimal`, the lowest level the API accepts.
             Some(match self.reasoning_effort {
                 ReasoningEffort::Off => crate::api::Reasoning::minimal(),
                 ReasoningEffort::Low => crate::api::Reasoning::with_effort("low"),
                 ReasoningEffort::Medium => crate::api::Reasoning::with_effort("medium"),
                 ReasoningEffort::High => crate::api::Reasoning::with_effort("high"),
-                ReasoningEffort::XHigh | ReasoningEffort::Max => {
-                    crate::api::Reasoning::with_effort("xhigh")
-                }
+                ReasoningEffort::XHigh => crate::api::Reasoning::with_effort("xhigh"),
+                ReasoningEffort::Max => crate::api::Reasoning::with_effort("max"),
             })
         } else {
             None
@@ -276,6 +273,32 @@ mod tests {
         .build();
 
         assert_eq!(request.prompt_cache_key.as_deref(), Some("session-abc"));
+    }
+
+    #[test]
+    fn openai_reasoning_effort_maps_straight_onto_wire_labels() {
+        let conv = ConversationHistory::new();
+        let effort_on_wire = |effort| {
+            RequestBuilder::new(
+                &openai_client(),
+                crate::api::model_info::GPT_SOL,
+                8192,
+                &conv,
+                one_regular_tool(),
+                effort,
+                "s1",
+            )
+            .build()
+            .reasoning
+            .expect("OpenAI requests always carry a reasoning config")
+            .effort
+        };
+        assert_eq!(effort_on_wire(ReasoningEffort::Off), "minimal");
+        assert_eq!(effort_on_wire(ReasoningEffort::Low), "low");
+        assert_eq!(effort_on_wire(ReasoningEffort::Medium), "medium");
+        assert_eq!(effort_on_wire(ReasoningEffort::High), "high");
+        assert_eq!(effort_on_wire(ReasoningEffort::XHigh), "xhigh");
+        assert_eq!(effort_on_wire(ReasoningEffort::Max), "max");
     }
 
     #[test]

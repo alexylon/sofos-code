@@ -59,9 +59,9 @@ pub struct Cli {
     /// minimal, summary suppressed) and disables Anthropic extended
     /// thinking on non-adaptive models. Anthropic adaptive models
     /// collapse `Off` to the lowest accepted level (`low`). `xhigh` is
-    /// accepted by the larger Anthropic models and the OpenAI reasoning
-    /// models only; `max` is accepted by Anthropic adaptive models
-    /// only. Sofos refuses to start with an unsupported
+    /// accepted by every model except the fastest Anthropic one; `max`
+    /// is accepted by Anthropic adaptive models and the newest OpenAI
+    /// models. Sofos refuses to start with an unsupported
     /// `(model, effort)` pair.
     //
     // Parsed as a raw `String` here, then validated and converted in

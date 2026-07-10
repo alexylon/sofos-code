@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **OpenAI's new GPT-5.6 models are supported.** `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` can be selected with `--model` or `/model`. They are the first OpenAI models to accept the full reasoning range up to `max`.
+
+### Changed
+
+- **The default model is now `claude-sonnet-5`**, replacing `claude-sonnet-4-6`. Sonnet 5 also accepts the `xhigh` reasoning effort, which the previous Sonnet did not.
+
 ## [0.4.0] - 2026-06-22
 
 ### Added
