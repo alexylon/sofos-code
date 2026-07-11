@@ -52,10 +52,8 @@ pub(super) fn anthropic_beta_for(model: &str) -> &'static str {
 }
 
 /// Legacy `thinking.budget_tokens` values used by models that don't
-/// accept the adaptive `output_config` reasoning request shape. The
-/// four-tier mapping mirrors the reasoning-effort enum: `Off` → no
-/// budget at all (no thinking block), `Low` / `Medium` / `High` →
-/// these three constants.
+/// accept the adaptive `output_config` reasoning request shape.
+/// `Low` / `Medium` / `High` map to these three constants.
 pub const LEGACY_THINKING_BUDGET_LOW: u32 = 1024;
 pub const LEGACY_THINKING_BUDGET_MEDIUM: u32 = 5120;
 pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
@@ -66,12 +64,11 @@ pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
 pub const COMPACTION_TRIGGER_FLOOR: u32 = 50_000;
 
 /// Map a reasoning effort tier to its legacy `thinking.budget_tokens`
-/// value. Returns 0 for `Off` so callers can branch on it to omit
-/// the thinking block entirely. Used by request_builder when the
-/// target model doesn't speak adaptive thinking.
+/// value. Used by request_builder when the target model doesn't speak
+/// adaptive thinking.
 pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
     match effort {
-        ReasoningEffort::Off | ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
+        ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
         ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
         // Legacy-thinking models only expose budget tiers up to High.
         // `XHigh` and `Max` are adaptive-only rungs that upstream
@@ -85,14 +82,10 @@ pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
 }
 
 /// Maps a reasoning-effort level to the `output_config.effort` label
-/// for adaptive-thinking requests. `Off` collapses to `"low"`: an
-/// adaptive model rejects a request that carries signed thinking
-/// blocks without an effort label, so there is no "no thinking" path
-/// here. For no thinking at all, run a model whose
-/// `requires_adaptive_thinking` is false with `--reasoning-effort off`.
+/// for adaptive-thinking requests.
 pub fn effort_label(effort: ReasoningEffort) -> &'static str {
     match effort {
-        ReasoningEffort::Off | ReasoningEffort::Low => "low",
+        ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
         ReasoningEffort::XHigh => "xhigh",

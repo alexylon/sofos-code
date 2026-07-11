@@ -178,15 +178,13 @@ impl Repl {
         // thinking budget we might send. The budget is picked per-effort
         // in `request_builder` (Low=1024, Medium=5120, High=16384), so
         // the invariant we need is `max_tokens > HIGH`. We check
-        // unconditionally on enabled-thinking sessions rather than
-        // probing the model id, because the model can be swapped mid-
-        // session via `/model` and we don't want a runtime 400.
-        if config.reasoning_effort.is_enabled()
-            && config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
-        {
+        // unconditionally rather than probing the model id, because the
+        // model can be swapped mid-session via `/model` and we don't
+        // want a runtime 400.
+        if config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH {
             return Err(SofosError::Config(format!(
                 "max_tokens ({}) must exceed the legacy thinking-budget ceiling ({}). \
-                 Use a higher --max-tokens or set --reasoning-effort off.",
+                 Use a higher --max-tokens.",
                 config.max_tokens,
                 crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
             )));
@@ -316,16 +314,12 @@ impl Repl {
             // `output_config.effort` value we actually send instead.
             format!("effort: {}", crate::api::anthropic::effort_label(effort))
         } else if matches!(self.client, Anthropic(_)) {
-            if effort.is_enabled() {
-                // The legacy non-adaptive shape's `budget_tokens` comes
-                // from the effort tier (mapping in `request_builder`).
-                // Show the value we actually send so the status line
-                // matches reality.
-                let budget = crate::api::anthropic::legacy_thinking_budget(effort);
-                format!("thinking: {} tok", budget)
-            } else {
-                "thinking: off".to_string()
-            }
+            // The legacy non-adaptive shape's `budget_tokens` comes
+            // from the effort tier (mapping in `request_builder`).
+            // Show the value we actually send so the status line
+            // matches reality.
+            let budget = crate::api::anthropic::legacy_thinking_budget(effort);
+            format!("thinking: {} tok", budget)
         } else {
             format!("effort: {}", effort.as_label())
         };
@@ -439,16 +433,12 @@ impl Repl {
                 crate::api::anthropic::effort_label(effort)
             );
         } else if matches!(self.client, Anthropic(_)) {
-            if effort.is_enabled() {
-                let budget = crate::api::anthropic::legacy_thinking_budget(effort);
-                println!(
-                    "\n{} (budget: {} tokens)\n",
-                    "Extended thinking: enabled".bright_green(),
-                    budget
-                );
-            } else {
-                println!("\n{}\n", "Extended thinking: disabled".bright_yellow());
-            }
+            let budget = crate::api::anthropic::legacy_thinking_budget(effort);
+            println!(
+                "\n{} (budget: {} tokens)\n",
+                "Extended thinking: enabled".bright_green(),
+                budget
+            );
         } else {
             println!(
                 "\n{} {}\n",
@@ -471,7 +461,6 @@ impl Repl {
         // max_tokens above the budget ceiling.
         if matches!(self.client, Anthropic(_))
             && !self.uses_adaptive_thinking()
-            && effort.is_enabled()
             && self.model_config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
         {
             println!();

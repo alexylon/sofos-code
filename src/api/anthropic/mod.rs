@@ -149,12 +149,6 @@ mod tests {
             legacy_thinking_budget(ReasoningEffort::Max),
             LEGACY_THINKING_BUDGET_HIGH
         );
-        // Defensive default: `Off` collapses to `LOW` rather than
-        // panicking, even though the legacy branch is upstream-guarded.
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::Off),
-            LEGACY_THINKING_BUDGET_LOW
-        );
         // Compile-time guard: the three tier values must stay strictly
         // increasing. Runtime `assert!` would be a tautology on consts
         // (clippy::assertions_on_constants), so check at const-eval time.
@@ -166,7 +160,6 @@ mod tests {
 
     #[test]
     fn effort_label_maps_reasoning_levels() {
-        assert_eq!(effort_label(ReasoningEffort::Off), "low");
         assert_eq!(effort_label(ReasoningEffort::Low), "low");
         assert_eq!(effort_label(ReasoningEffort::Medium), "medium");
         assert_eq!(effort_label(ReasoningEffort::High), "high");

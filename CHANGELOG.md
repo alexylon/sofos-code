@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- **The `off` reasoning effort is gone; `low` is now the minimum on every model.** Passing `-e off` (or `/effort off`) prints an error listing the supported levels. This removes the no-extended-thinking path on Claude Haiku 4.5 — use `low` for the fastest setting.
+
 ## [0.4.1] - 2026-07-10
 
 ### Added

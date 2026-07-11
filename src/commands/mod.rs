@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn slash_effort_with_unknown_level_returns_none() {
         // Unlike `/model <name>`, the effort argument has a fixed
-        // alphabet (off/low/medium/high/xhigh/max); anything else
+        // alphabet (low/medium/high/xhigh/max); anything else
         // can't be turned into a `ReasoningEffort` so we surface the
         // generic "unknown command" message instead of guessing.
         assert!(Command::from_str("/effort turbo").is_none());

@@ -114,7 +114,7 @@ impl Model {
     }
 
     /// Comma-separated lowercase labels of every effort level this
-    /// model accepts (`"off, low, medium, high, xhigh"` and so on).
+    /// model accepts (`"low, medium, high, xhigh"` and so on).
     /// Surfaced verbatim in the CLI startup error and in
     /// [`effort_support_error`] so both messages list the same set.
     pub fn supported_efforts_label(&self) -> String {
@@ -195,7 +195,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -215,7 +214,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -235,7 +233,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -255,7 +252,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -276,7 +272,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -296,7 +291,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -316,7 +310,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -345,7 +338,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -368,7 +360,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -391,7 +382,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -410,7 +400,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supported_efforts: &[
-            ReasoningEffort::Off,
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
             ReasoningEffort::High,
@@ -692,7 +681,7 @@ mod tests {
 
         // Basic tiers are universal across every supported model.
         for m in SUPPORTED_MODELS {
-            for e in [Off, Low, Medium, High] {
+            for e in [Low, Medium, High] {
                 assert!(supports(m.name, e), "{} should accept {e:?}", m.name);
             }
         }
@@ -734,7 +723,7 @@ mod tests {
             .split("Supported levels: ")
             .nth(1)
             .expect("error message lists supported levels");
-        for label in ["off", "low", "medium", "high", "xhigh"] {
+        for label in ["low", "medium", "high", "xhigh"] {
             assert!(listed.contains(label), "expected {label} in {listed}");
         }
         // This model tops out at `xhigh`, so the supported-list tail

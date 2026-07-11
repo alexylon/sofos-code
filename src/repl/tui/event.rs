@@ -35,7 +35,7 @@ pub struct StatusSnapshot {
     pub mode: crate::config::SandboxMode,
     pub approval: crate::config::ApprovalPolicy,
     /// Human label for the reasoning config (e.g. "thinking: 10k tok",
-    /// "thinking: off", "effort: high"). Empty string hides the field.
+    /// "effort: high"). Empty string hides the field.
     pub reasoning: String,
     pub input_tokens: u32,
     pub output_tokens: u32,

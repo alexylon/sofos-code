@@ -182,7 +182,7 @@ impl SofosError {
                     // picked per-effort tier in `request_builder`, not
                     // from the flag value.
                     Some(format!(
-                        "Increase --max-tokens above {} or set --reasoning-effort off",
+                        "Increase --max-tokens above {}",
                         crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
                     ))
                 } else {
@@ -336,7 +336,7 @@ mod tests {
         // a future rewording on either side breaks this test loudly.
         let err = SofosError::Config(format!(
             "max_tokens ({}) must exceed the legacy thinking-budget ceiling ({}). \
-             Use a higher --max-tokens or set --reasoning-effort off.",
+             Use a higher --max-tokens.",
             crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH,
             crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
         ));

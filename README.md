@@ -214,7 +214,7 @@ sofos --resume
 | `/clear` | Clear the current conversation history and start a new session id. |
 | `/compact` | Compact older context to reduce token usage. |
 | `/effort` | Open the reasoning-effort picker. The picker lists only the levels supported by the active model. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
-| `/effort off\|low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
+| `/effort low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
 | `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models from the other provider are greyed out because the API client is fixed at startup. |
 | `/model <name>` | Switch directly to a model on the active provider. To switch provider, restart Sofos with `--model <name>`. |
 | `/permissions` | Open the permission preset picker. The presets are `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Where sandboxing is unavailable, such as Windows, the `sandboxed-*` presets are shown but disabled. |
@@ -283,7 +283,7 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
     --model <MODEL>          Model to use. Default: claude-sonnet-5.
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
     --max-tokens <N>         Maximum output tokens per response. Default: 32768.
--e, --reasoning-effort <LV>  off, low, medium, high, xhigh, or max. Default: medium.
+-e, --reasoning-effort <LV>  low, medium, high, xhigh, or max. Default: medium.
 ```
 
 `--max-tokens` must be greater than `16384` when reasoning effort is enabled. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
@@ -310,10 +310,10 @@ Sofos supports these models, shown in `/model` picker order:
 
 `--model <name>` accepts only the values above. Any other value is refused at startup and Sofos prints the supported list. The same list drives the `/model` picker, so the CLI and picker stay consistent.
 
-Sofos exposes six reasoning levels:
+Sofos exposes five reasoning levels:
 
 ```text
-off, low, medium, high, xhigh, max
+low, medium, high, xhigh, max
 ```
 
 The active model determines which levels are valid. Sofos validates the level at startup and when `/effort` is used, so unsupported combinations fail before a provider request is sent.
@@ -322,7 +322,6 @@ Examples:
 
 ```bash
 sofos -e medium                       # Default balance.
-sofos -e off                          # Lowest-cost path.
 sofos -e high                         # More reasoning for hard tasks.
 sofos -e max --model claude-opus-4-8  # Highest Anthropic adaptive level.
 sofos -e max --model gpt-5.6-sol      # Highest level on the GPT-5.6 family.
@@ -333,7 +332,6 @@ Support matrix:
 
 | Effort | Fable 5 | Opus 4.8 | Sonnet 5 | Haiku 4.5 | GPT-5.6 (sol/terra/luna) | Older OpenAI gpt-5 models |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-| `off` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `low` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `medium` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `high` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -342,9 +340,9 @@ Support matrix:
 
 Provider mapping:
 
-- **OpenAI** sends `reasoning.effort`. `off` maps to minimal reasoning and suppresses reasoning summaries.
+- **OpenAI** sends `reasoning.effort` directly.
 - **Claude Fable 5, Opus 4.8, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
-- **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`. `off` disables extended thinking.
+- **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
 
 ---
 

@@ -54,21 +54,17 @@ pub struct Cli {
     #[arg(long, default_value = "32768")]
     pub max_tokens: u32,
 
-    /// Reasoning effort: off, low, medium, high, xhigh, max. Default
-    /// `medium`. `Off` skips reasoning entirely on OpenAI (effort=
-    /// minimal, summary suppressed) and disables Anthropic extended
-    /// thinking on non-adaptive models. Anthropic adaptive models
-    /// collapse `Off` to the lowest accepted level (`low`). `xhigh` is
-    /// accepted by every model except the fastest Anthropic one; `max`
-    /// is accepted by Anthropic adaptive models and the newest OpenAI
-    /// models. Sofos refuses to start with an unsupported
-    /// `(model, effort)` pair.
+    /// Reasoning effort: low, medium, high, xhigh, max. Default
+    /// `medium`. `xhigh` is accepted by every model except the fastest
+    /// Anthropic one; `max` is accepted by Anthropic adaptive models
+    /// and the newest OpenAI models. Sofos refuses to start with an
+    /// unsupported `(model, effort)` pair.
     //
     // Parsed as a raw `String` here, then validated and converted in
     // `main`, so the per-model rejection and the parse-failure
     // rejection both render in the same hand-rolled clap-style
     // format. `ValueEnum` would auto-emit a `[possible values: ...]`
-    // line that always listed all six levels, which is misleading on
+    // line that always listed all five levels, which is misleading on
     // models that only accept a subset.
     #[arg(short = 'e', long, default_value = "medium")]
     pub reasoning_effort: String,

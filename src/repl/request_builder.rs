@@ -44,21 +44,19 @@ impl<'a> RequestBuilder<'a> {
         // `output_config.effort`; some of them outright reject the
         // legacy `enabled` shape, and others accept it but Anthropic
         // recommends adaptive. Non-adaptive Anthropic models still take
-        // the manual `budget_tokens` shape. On adaptive models we
-        // *always* send `thinking: adaptive` even when the user picked
-        // `Off` — dropping it would 400 the next turn if the
-        // conversation history already contains echoed thinking blocks
-        // from an earlier turn (Anthropic rejects requests carrying
-        // thinking blocks without a matching top-level thinking config).
-        // The level is expressed through `output_config.effort` instead,
-        // which collapses `Off` to `low` for the same reason.
+        // the manual `budget_tokens` shape. On adaptive models we always
+        // send `thinking: adaptive`: dropping it would 400 the next turn
+        // if the conversation history already contains echoed thinking
+        // blocks from an earlier turn (Anthropic rejects requests
+        // carrying thinking blocks without a matching top-level thinking
+        // config). The level rides in `output_config.effort`.
         let (thinking_config, output_config) = if is_anthropic && adaptive {
             let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
             (
                 Some(crate::api::Thinking::adaptive()),
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
-        } else if is_anthropic && self.reasoning_effort.is_enabled() {
+        } else if is_anthropic {
             // Non-adaptive Anthropic models take the legacy
             // `{type: "enabled", budget_tokens}` shape.
             // The per-tier mapping lives in `crate::api::anthropic` so
@@ -74,10 +72,8 @@ impl<'a> RequestBuilder<'a> {
         let reasoning_config = if matches!(self.client, OpenAI(_)) {
             // Every effort seen here already passed the per-model gate
             // (startup validation + `/effort`), so each level maps
-            // straight onto its OpenAI wire label; `Off` maps to
-            // `minimal`, the lowest level the API accepts.
+            // straight onto its OpenAI wire label.
             Some(match self.reasoning_effort {
-                ReasoningEffort::Off => crate::api::Reasoning::minimal(),
                 ReasoningEffort::Low => crate::api::Reasoning::with_effort("low"),
                 ReasoningEffort::Medium => crate::api::Reasoning::with_effort("medium"),
                 ReasoningEffort::High => crate::api::Reasoning::with_effort("high"),
@@ -267,7 +263,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "session-abc",
         )
         .build();
@@ -293,7 +289,6 @@ mod tests {
             .expect("OpenAI requests always carry a reasoning config")
             .effort
         };
-        assert_eq!(effort_on_wire(ReasoningEffort::Off), "minimal");
         assert_eq!(effort_on_wire(ReasoningEffort::Low), "low");
         assert_eq!(effort_on_wire(ReasoningEffort::Medium), "medium");
         assert_eq!(effort_on_wire(ReasoningEffort::High), "high");
@@ -315,7 +310,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();
@@ -336,7 +331,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();
@@ -488,7 +483,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();
@@ -527,7 +522,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();
@@ -587,7 +582,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();
@@ -602,7 +597,7 @@ mod tests {
             8192,
             &conv,
             one_regular_tool(),
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             "s1",
         )
         .build();

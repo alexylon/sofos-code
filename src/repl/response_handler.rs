@@ -746,7 +746,7 @@ mod truncation_tests {
             conversation,
             crate::api::model_info::CLAUDE_SONNET.to_string(),
             8_192,
-            ReasoningEffort::Off,
+            ReasoningEffort::Medium,
             Vec::new(),
             interrupt,
             steer,

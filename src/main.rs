@@ -176,7 +176,7 @@ fn main() -> Result<()> {
             "Adaptive thinking effort:".bright_green(),
             crate::api::anthropic::effort_label(reasoning_effort)
         ));
-    } else if reasoning_effort.is_enabled() {
+    } else {
         // Show the per-effort tier budget so the startup banner matches
         // what hits the API.
         let budget = crate::api::anthropic::legacy_thinking_budget(reasoning_effort);

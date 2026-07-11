@@ -745,12 +745,8 @@ mod tests {
 
     #[test]
     fn effort_picker_lands_cursor_on_current_level() {
-        use crate::api::ReasoningEffort::{High, Low, Medium, Off};
+        use crate::api::ReasoningEffort::{High, Low, Medium};
         let entries = vec![
-            EffortPickerEntry {
-                effort: Off,
-                is_current: false,
-            },
             EffortPickerEntry {
                 effort: Low,
                 is_current: false,
@@ -765,20 +761,20 @@ mod tests {
             },
         ];
         let p = EffortPicker::new(entries);
-        assert_eq!(p.cursor, 2);
+        assert_eq!(p.cursor, 1);
         assert_eq!(p.selected().unwrap().effort, Medium);
     }
 
     #[test]
     fn effort_picker_navigation_clamps_at_edges() {
-        use crate::api::ReasoningEffort::{Low, Off};
+        use crate::api::ReasoningEffort::{Low, Medium};
         let entries = vec![
             EffortPickerEntry {
-                effort: Off,
+                effort: Low,
                 is_current: true,
             },
             EffortPickerEntry {
-                effort: Low,
+                effort: Medium,
                 is_current: false,
             },
         ];

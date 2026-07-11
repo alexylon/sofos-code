@@ -256,9 +256,7 @@ impl OutputConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reasoning {
     pub effort: String,
-    /// Omitted when `None` so the model returns no summary blocks at all.
-    /// Reasoning summaries bill as output tokens, so we suppress them on
-    /// the thinking-off path.
+    /// Omitted from the request body when `None` rather than sent as null.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 }
@@ -270,21 +268,12 @@ impl Reasoning {
             summary: Some("auto".to_string()),
         }
     }
-
-    /// Lowest-cost reasoning configuration for the thinking-off path:
-    /// minimal hidden reasoning and no summary stream.
-    pub fn minimal() -> Self {
-        Self {
-            effort: "minimal".to_string(),
-            summary: None,
-        }
-    }
 }
 
 /// User-facing reasoning level. Default is `Medium`; `High` is opt-in
 /// because it materially raises hidden-reasoning token cost on routine
-/// coding work, and `Off` skips reasoning entirely (cheapest). `XHigh`
-/// and `Max` are the extra-capability rungs and have model-specific
+/// coding work. `XHigh` and `Max` are the extra-capability rungs and
+/// have model-specific
 /// support — see [`crate::api::model_info::effort_support_error`] for
 /// the per-model matrix. Picking an unsupported combination is
 /// rejected at startup (in `main.rs`) and at the `/effort` command, so
@@ -293,7 +282,6 @@ impl Reasoning {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 #[clap(rename_all = "lower")]
 pub enum ReasoningEffort {
-    Off,
     Low,
     #[default]
     Medium,
@@ -305,7 +293,6 @@ pub enum ReasoningEffort {
 impl ReasoningEffort {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "off" | "none" | "disabled" => Some(Self::Off),
             "low" => Some(Self::Low),
             "medium" | "med" => Some(Self::Medium),
             "high" => Some(Self::High),
@@ -317,17 +304,12 @@ impl ReasoningEffort {
 
     pub fn as_label(self) -> &'static str {
         match self {
-            Self::Off => "off",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
             Self::XHigh => "xhigh",
             Self::Max => "max",
         }
-    }
-
-    pub fn is_enabled(self) -> bool {
-        !matches!(self, Self::Off)
     }
 }
 
@@ -336,7 +318,7 @@ impl std::str::FromStr for ReasoningEffort {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::parse(s).ok_or_else(|| {
             format!(
-                "invalid reasoning effort `{}`; expected one of: off, low, medium, high, xhigh, max",
+                "invalid reasoning effort `{}`; expected one of: low, medium, high, xhigh, max",
                 s
             )
         })
@@ -617,8 +599,8 @@ mod block_serde_tests {
     #[test]
     fn reasoning_block_deserializes_with_only_id_field() {
         // Edge case: reasoning items can arrive without a summary
-        // array (effort=minimal) and without encrypted_content (when
-        // include flag wasn't set on the prior request). Both fields
+        // array, and without encrypted_content when the include flag
+        // wasn't set on the prior request. Both fields
         // are marked `#[serde(default)]`, so the bare item should
         // round-trip.
         let json = r#"{"type":"reasoning","id":"rs_only"}"#;
