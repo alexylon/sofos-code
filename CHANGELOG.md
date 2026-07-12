@@ -10,6 +10,8 @@ All notable changes to Sofos are documented in this file.
 
 ### Changed
 
+- **Destructive confirmation prompts now open with `Yes` highlighted.** Pressing Enter immediately confirms the action, while Esc or Ctrl+C still cancels it.
+- **Status-line fields now use consistent label and value styling.** Model, reasoning, token, and cache values are easier to scan, and `pro` mode has a distinct colour.
 - **The status line now labels the permission preset `permissions:` instead of `mode:`**, so `mode:` can show the reasoning mode (standard or pro) on the GPT-5.6 models.
 
 ### Removed
