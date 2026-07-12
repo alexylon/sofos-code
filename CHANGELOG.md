@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-12
+
 ### Added
 
 - **Pro mode for the GPT-5.6 models.** `--reasoning-mode pro`, or the `/mode` picker at runtime, makes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` do additional work before answering — higher quality at higher latency and cost. `standard` remains the default, and the active mode shows in the startup banner and the status line. Other models reject `pro` with a clear error.
