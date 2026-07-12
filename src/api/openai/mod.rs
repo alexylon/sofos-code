@@ -79,6 +79,27 @@ mod tests {
     }
 
     #[test]
+    fn responses_body_serializes_pro_mode_and_omits_standard() {
+        // Verify the request body itself, not just the in-memory struct:
+        // pro is sent in `reasoning.mode`, standard leaves the field out
+        // so the OpenAI default applies.
+        let mut pro = req_with_cache_key(None);
+        let mut reasoning = crate::api::Reasoning::with_effort("medium");
+        reasoning.mode = Some("pro".to_string());
+        pro.reasoning = Some(reasoning);
+        let body = build_responses_body(&pro);
+        assert_eq!(body["reasoning"]["mode"], "pro");
+
+        let mut standard = req_with_cache_key(None);
+        standard.reasoning = Some(crate::api::Reasoning::with_effort("medium"));
+        let body = build_responses_body(&standard);
+        assert!(
+            body["reasoning"].get("mode").is_none(),
+            "standard mode must not send a `reasoning.mode` field"
+        );
+    }
+
+    #[test]
     fn reasoning_block_serializes_back_with_encrypted_content() {
         use crate::api::{CreateMessageRequest, Message, MessageContent, MessageContentBlock};
         let req = CreateMessageRequest {

@@ -561,6 +561,7 @@ It contains:
 - context-window sizes;
 - auto-compaction thresholds;
 - supported reasoning-effort levels;
+- pro-mode support (the GPT-5.6 family);
 - adaptive-thinking support;
 - server-side compaction support;
 - token pricing and tiered-pricing rules.
@@ -615,7 +616,7 @@ It contains:
 - available-tool refresh;
 - one-shot prompt execution;
 - status-line snapshots;
-- `/effort`, `/permissions`, and `/clear` state handlers;
+- `/effort`, `/mode`, `/permissions`, and `/clear` state handlers;
 - shared interrupt and mid-turn steering buffers.
 
 Rules:
@@ -1321,6 +1322,7 @@ Built-in commands include:
 - `/clear`;
 - `/compact`;
 - `/effort`;
+- `/mode`;
 - `/model`;
 - `/permissions`;
 - `/exit`, `/quit`, `/q`.

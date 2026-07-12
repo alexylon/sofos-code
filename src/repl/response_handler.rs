@@ -22,6 +22,7 @@ pub struct ResponseHandler {
     model: String,
     max_tokens: u32,
     reasoning_effort: crate::api::ReasoningEffort,
+    reasoning_mode: crate::api::ReasoningMode,
     config: SofosConfig,
     available_tools: Vec<crate::api::Tool>,
     interrupt_flag: Arc<AtomicBool>,
@@ -38,6 +39,7 @@ impl ResponseHandler {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
+        reasoning_mode: crate::api::ReasoningMode,
         available_tools: Vec<crate::api::Tool>,
         interrupt_flag: Arc<AtomicBool>,
         steer_buffer: SteerBuffer,
@@ -51,6 +53,7 @@ impl ResponseHandler {
             model,
             max_tokens,
             reasoning_effort,
+            reasoning_mode,
             config: SofosConfig::default(),
             available_tools,
             interrupt_flag,
@@ -706,6 +709,7 @@ impl ResponseHandler {
             self.reasoning_effort,
             &self.session_id,
         )
+        .with_reasoning_mode(self.reasoning_mode)
         .build()
     }
 
@@ -747,6 +751,7 @@ mod truncation_tests {
             crate::api::model_info::CLAUDE_SONNET.to_string(),
             8_192,
             ReasoningEffort::Medium,
+            crate::api::ReasoningMode::Standard,
             Vec::new(),
             interrupt,
             steer,

@@ -259,6 +259,10 @@ pub struct Reasoning {
     /// Omitted from the request body when `None` rather than sent as null.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// `Some("pro")` selects OpenAI's GPT-5.6 pro reasoning path.
+    /// Omitted for standard mode, which is the API default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 impl Reasoning {
@@ -266,6 +270,7 @@ impl Reasoning {
         Self {
             effort: effort.into(),
             summary: Some("auto".to_string()),
+            mode: None,
         }
     }
 }
@@ -322,6 +327,49 @@ impl std::str::FromStr for ReasoningEffort {
                 s
             )
         })
+    }
+}
+
+/// Standard vs Pro reasoning for OpenAI's GPT-5.6 family. `Pro` asks the
+/// model to do additional work before returning a single answer —
+/// higher quality at higher latency and token cost. It is sent in the
+/// `reasoning.mode` field and is independent of [`ReasoningEffort`].
+/// Only models whose `supports_pro_mode` capability is set accept `Pro`;
+/// every other model rejects it at startup and at `/mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReasoningMode {
+    #[default]
+    Standard,
+    Pro,
+}
+
+impl ReasoningMode {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "standard" | "std" => Some(Self::Standard),
+            "pro" => Some(Self::Pro),
+            _ => None,
+        }
+    }
+
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Pro => "pro",
+        }
+    }
+
+    /// The `reasoning.mode` wire value, or `None` for standard — the API
+    /// default, which we omit rather than send explicitly.
+    pub fn wire_value(self) -> Option<&'static str> {
+        match self {
+            Self::Standard => None,
+            Self::Pro => Some("pro"),
+        }
+    }
+
+    pub fn is_pro(self) -> bool {
+        matches!(self, Self::Pro)
     }
 }
 
@@ -594,6 +642,24 @@ mod block_serde_tests {
             }
             other => panic!("expected Compaction, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn reasoning_mode_parses_labels_and_maps_to_wire() {
+        use ReasoningMode::{Pro, Standard};
+        assert_eq!(ReasoningMode::parse("pro"), Some(Pro));
+        assert_eq!(ReasoningMode::parse("PRO"), Some(Pro));
+        assert_eq!(ReasoningMode::parse("standard"), Some(Standard));
+        assert_eq!(ReasoningMode::parse("std"), Some(Standard));
+        assert_eq!(ReasoningMode::parse("turbo"), None);
+        // Labels drive the status line and `/mode` output.
+        assert_eq!(Standard.as_label(), "standard");
+        assert_eq!(Pro.as_label(), "pro");
+        // Only pro is sent on the wire; standard omits `reasoning.mode`.
+        assert_eq!(Standard.wire_value(), None);
+        assert_eq!(Pro.wire_value(), Some("pro"));
+        assert!(Pro.is_pro() && !Standard.is_pro());
+        assert_eq!(ReasoningMode::default(), Standard);
     }
 
     #[test]

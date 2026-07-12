@@ -71,6 +71,7 @@ pub struct ReplConfig {
     pub model: String,
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
+    pub reasoning_mode: crate::api::ReasoningMode,
     pub mode: SandboxMode,
     pub approval_policy: ApprovalPolicy,
 }
@@ -80,6 +81,7 @@ impl ReplConfig {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
+        reasoning_mode: crate::api::ReasoningMode,
         mode: SandboxMode,
         approval_policy: ApprovalPolicy,
     ) -> Self {
@@ -87,6 +89,7 @@ impl ReplConfig {
             model,
             max_tokens,
             reasoning_effort,
+            reasoning_mode,
             mode,
             approval_policy,
         }
@@ -200,6 +203,14 @@ impl Repl {
             return Err(SofosError::Config(msg));
         }
 
+        // Reject `pro` mode on models that don't support it (everything
+        // outside the GPT-5.6 family), mirroring the effort gate above.
+        if let Some(msg) =
+            crate::api::model_info::mode_support_error(&config.model, config.reasoning_mode)
+        {
+            return Err(SofosError::Config(msg));
+        }
+
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
         conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
@@ -231,8 +242,12 @@ impl Repl {
 
         let session_id = history_manager.generate_unique_session_id();
         let session_state = SessionState::new(session_id, conversation);
-        let model_config =
-            ModelConfig::new(config.model, config.max_tokens, config.reasoning_effort);
+        let model_config = ModelConfig::new(
+            config.model,
+            config.max_tokens,
+            config.reasoning_effort,
+            config.reasoning_mode,
+        );
 
         let ui = UI::new();
 
@@ -305,6 +320,10 @@ impl Repl {
         self.model_config.reasoning_effort
     }
 
+    pub fn current_reasoning_mode(&self) -> crate::api::ReasoningMode {
+        self.model_config.reasoning_mode
+    }
+
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
         let effort = self.model_config.reasoning_effort;
@@ -324,11 +343,17 @@ impl Repl {
             format!("effort: {}", effort.as_label())
         };
 
+        // Only the GPT-5.6 family has a switchable standard/pro mode; on
+        // every other model the status line omits the field.
+        let reasoning_mode = crate::api::model_info::supports_pro_mode(&self.model_config.model)
+            .then_some(self.model_config.reasoning_mode);
+
         tui::event::StatusSnapshot {
             model: self.model_config.model.clone(),
             mode: self.mode,
             approval: self.approval_policy,
             reasoning,
+            reasoning_mode,
             input_tokens: self.session_state.total_input_tokens,
             output_tokens: self.session_state.total_output_tokens,
             cache_read_tokens: self.session_state.total_cache_read_tokens,
@@ -347,6 +372,7 @@ impl Repl {
             self.model_config.reasoning_effort,
             &self.session_state.session_id,
         )
+        .with_reasoning_mode(self.model_config.reasoning_mode)
         .build()
     }
 
@@ -478,6 +504,48 @@ impl Repl {
         self.print_reasoning_state();
     }
 
+    pub fn handle_mode_set(&mut self, mode: crate::api::ReasoningMode) {
+        if let Some(msg) =
+            crate::api::model_info::mode_support_error(&self.model_config.model, mode)
+        {
+            println!();
+            UI::print_error(&msg);
+            println!();
+            return;
+        }
+        self.model_config.set_reasoning_mode(mode);
+        println!(
+            "\n{} {}\n",
+            "Reasoning mode:".bright_green(),
+            mode.as_label()
+        );
+    }
+
+    /// Non-interactive fallback for `/mode`. The TUI opens the picker;
+    /// this path prints the current mode and the available options in
+    /// `--prompt` mode.
+    pub fn handle_mode_picker_fallback(&self) {
+        println!();
+        println!(
+            "{} {}",
+            "Reasoning mode:".bright_green(),
+            self.model_config.reasoning_mode.as_label().bright_white()
+        );
+        if crate::api::model_info::supports_pro_mode(&self.model_config.model) {
+            println!(
+                "{} standard, pro  (switch with `/mode <standard|pro>`)",
+                "Available:".bright_cyan()
+            );
+        } else {
+            println!(
+                "{} pro mode is available on: {}",
+                "Note:".bright_yellow(),
+                crate::api::model_info::pro_capable_models_label()
+            );
+        }
+        println!();
+    }
+
     /// Non-interactive fallback for `/effort`. The TUI opens the
     /// picker; this path lists supported levels in `--prompt` mode.
     pub fn handle_effort_picker_fallback(&self) {
@@ -558,6 +626,16 @@ impl Repl {
                 "{} Run `/effort <level>` to pick a supported level before switching.",
                 msg
             ));
+            println!();
+            return;
+        }
+
+        if let Some(msg) = crate::api::model_info::mode_support_error(
+            choice.name,
+            self.model_config.reasoning_mode,
+        ) {
+            println!();
+            UI::print_error(&format!("{} Run `/mode standard` before switching.", msg));
             println!();
             return;
         }

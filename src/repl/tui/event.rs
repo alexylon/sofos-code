@@ -1,6 +1,6 @@
 //! Shared event types for the TUI event loop and worker thread.
 
-use crate::api::ReasoningEffort;
+use crate::api::{ReasoningEffort, ReasoningMode};
 use crate::clipboard::PastedImage;
 use crate::commands::Command;
 use crate::session::SessionMetadata;
@@ -37,6 +37,10 @@ pub struct StatusSnapshot {
     /// Human label for the reasoning config (e.g. "thinking: 10k tok",
     /// "effort: high"). Empty string hides the field.
     pub reasoning: String,
+    /// Reasoning mode for the models that have one (the GPT-5.6 family);
+    /// `None` on models where pro mode does not apply, which hides the
+    /// status-line field.
+    pub reasoning_mode: Option<ReasoningMode>,
     pub input_tokens: u32,
     pub output_tokens: u32,
     /// Cumulative cache-read tokens for the session — exposed in the
@@ -74,6 +78,8 @@ pub enum Job {
     EffortSelected(Option<ReasoningEffort>),
     /// Access preset chosen in the `/permissions` picker; `None` on cancel.
     PermissionsSelected(Option<crate::config::PermissionPreset>),
+    /// Reasoning mode chosen in the `/mode` picker; `None` on cancel.
+    ModeSelected(Option<ReasoningMode>),
     /// Graceful shutdown — save session, print summary, exit worker loop.
     Shutdown,
 }
@@ -119,6 +125,16 @@ pub struct PermissionsPickerEntry {
     pub is_available: bool,
 }
 
+/// One row in the inline `/mode` picker. `pro` is unavailable off the
+/// GPT-5.6 family; disabled rows stay visible and the cursor skips over
+/// them, just like the other-provider rows in the model picker.
+#[derive(Debug, Clone, Copy)]
+pub struct ModePickerEntry {
+    pub mode: ReasoningMode,
+    pub is_current: bool,
+    pub is_available: bool,
+}
+
 /// Event pushed to the UI thread. Sources: output readers, keyboard reader,
 /// worker thread, periodic tick.
 #[derive(Debug)]
@@ -152,6 +168,8 @@ pub enum UiEvent {
     ShowPermissionsPicker {
         entries: Vec<PermissionsPickerEntry>,
     },
+    /// Worker wants the UI to show the `/mode` reasoning-mode picker.
+    ShowModePicker { entries: Vec<ModePickerEntry> },
     /// Worker pushes a fresh status snapshot (model / mode / reasoning).
     Status(StatusSnapshot),
     /// A tool call needs user confirmation. The UI renders a modal list of

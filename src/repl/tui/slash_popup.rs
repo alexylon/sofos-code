@@ -184,11 +184,17 @@ impl SlashPopup {
 /// case-insensitive so users can type `/Cl` and still see `/clear`.
 fn filter_commands(prefix: &str) -> Vec<CommandEntry> {
     let lower = prefix.to_lowercase();
-    COMMAND_CATALOG
+    let mut matches: Vec<CommandEntry> = COMMAND_CATALOG
         .iter()
         .copied()
         .filter(|entry| entry.name.to_lowercase().starts_with(&lower))
-        .collect()
+        .collect();
+    // A fully-typed command sorts to the front so it wins the highlight
+    // over a longer command it is a prefix of — otherwise `/mode` would
+    // be shadowed by `/model` and Enter would open the wrong picker. The
+    // sort is stable, so every other match keeps its catalog order.
+    matches.sort_by_key(|entry| entry.name.to_lowercase() != lower);
+    matches
 }
 
 #[cfg(test)]
@@ -219,6 +225,20 @@ mod tests {
         assert!(popup.is_visible());
         assert!(popup.matches().iter().any(|e| e.name == "/clear"));
         assert!(popup.matches().iter().all(|e| e.name.starts_with("/cl")));
+    }
+
+    #[test]
+    fn exact_command_is_highlighted_over_a_longer_command_it_prefixes() {
+        let mut popup = SlashPopup::new();
+        // `/mode` is a prefix of `/model`; the fully-typed command must
+        // win the highlight so Enter runs it, not the model picker.
+        popup.sync("/mode");
+        assert!(popup.is_visible());
+        assert_eq!(popup.selected().map(|e| e.name), Some("/mode"));
+        assert!(popup.matches().iter().any(|e| e.name == "/model"));
+        // `/model` typed in full still selects itself.
+        popup.sync("/model");
+        assert_eq!(popup.selected().map(|e| e.name), Some("/model"));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::api::LlmClient::{Anthropic, OpenAI};
-use crate::api::{CreateMessageRequest, LlmClient, ReasoningEffort, Tool};
+use crate::api::{CreateMessageRequest, LlmClient, ReasoningEffort, ReasoningMode, Tool};
 use crate::repl::conversation::ConversationHistory;
 
 pub struct RequestBuilder<'a> {
@@ -9,6 +9,7 @@ pub struct RequestBuilder<'a> {
     conversation: &'a ConversationHistory,
     tools: Vec<Tool>,
     reasoning_effort: ReasoningEffort,
+    reasoning_mode: ReasoningMode,
     /// Stable per-session identifier sent as `prompt_cache_key` on the
     /// OpenAI Responses path. Anthropic ignores it.
     session_id: &'a str,
@@ -31,8 +32,17 @@ impl<'a> RequestBuilder<'a> {
             conversation,
             tools,
             reasoning_effort,
+            reasoning_mode: ReasoningMode::default(),
             session_id,
         }
+    }
+
+    /// Override the reasoning mode (defaults to
+    /// [`ReasoningMode::Standard`]). Only affects OpenAI requests, and
+    /// only takes effect on pro-capable models.
+    pub fn with_reasoning_mode(mut self, mode: ReasoningMode) -> Self {
+        self.reasoning_mode = mode;
+        self
     }
 
     pub fn build(self) -> CreateMessageRequest {
@@ -49,7 +59,7 @@ impl<'a> RequestBuilder<'a> {
         // if the conversation history already contains echoed thinking
         // blocks from an earlier turn (Anthropic rejects requests
         // carrying thinking blocks without a matching top-level thinking
-        // config). The level rides in `output_config.effort`.
+        // config). The level is sent in `output_config.effort`.
         let (thinking_config, output_config) = if is_anthropic && adaptive {
             let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
             (
@@ -73,13 +83,18 @@ impl<'a> RequestBuilder<'a> {
             // Every effort seen here already passed the per-model gate
             // (startup validation + `/effort`), so each level maps
             // straight onto its OpenAI wire label.
-            Some(match self.reasoning_effort {
+            let mut reasoning = match self.reasoning_effort {
                 ReasoningEffort::Low => crate::api::Reasoning::with_effort("low"),
                 ReasoningEffort::Medium => crate::api::Reasoning::with_effort("medium"),
                 ReasoningEffort::High => crate::api::Reasoning::with_effort("high"),
                 ReasoningEffort::XHigh => crate::api::Reasoning::with_effort("xhigh"),
                 ReasoningEffort::Max => crate::api::Reasoning::with_effort("max"),
-            })
+            };
+            // `mode: "pro"` on the GPT-5.6 family; standard omits the
+            // field. Startup and `/mode` validation guarantee `pro`
+            // only reaches a pro-capable model.
+            reasoning.mode = self.reasoning_mode.wire_value().map(str::to_string);
+            Some(reasoning)
         } else {
             None
         };
@@ -294,6 +309,34 @@ mod tests {
         assert_eq!(effort_on_wire(ReasoningEffort::High), "high");
         assert_eq!(effort_on_wire(ReasoningEffort::XHigh), "xhigh");
         assert_eq!(effort_on_wire(ReasoningEffort::Max), "max");
+    }
+
+    #[test]
+    fn openai_pro_mode_sets_reasoning_mode_field() {
+        let conv = ConversationHistory::new();
+        let mode_on_wire = |mode| {
+            RequestBuilder::new(
+                &openai_client(),
+                crate::api::model_info::GPT_SOL,
+                8192,
+                &conv,
+                one_regular_tool(),
+                ReasoningEffort::Medium,
+                "s1",
+            )
+            .with_reasoning_mode(mode)
+            .build()
+            .reasoning
+            .expect("OpenAI requests always carry a reasoning config")
+            .mode
+        };
+        // Pro is sent in `reasoning.mode`; standard omits the field so
+        // the API applies its default.
+        assert_eq!(
+            mode_on_wire(crate::api::ReasoningMode::Pro).as_deref(),
+            Some("pro")
+        );
+        assert_eq!(mode_on_wire(crate::api::ReasoningMode::Standard), None);
     }
 
     #[test]

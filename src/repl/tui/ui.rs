@@ -7,7 +7,9 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
 
-use super::app::{App, ConfirmationPrompt, EffortPicker, ModelPicker, PermissionsPicker, Picker};
+use super::app::{
+    App, ConfirmationPrompt, EffortPicker, ModePicker, ModelPicker, PermissionsPicker, Picker,
+};
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
 use crate::config::{PermissionPreset, SandboxMode};
@@ -85,6 +87,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(picker) = &app.permissions_picker {
         draw_permissions_picker(frame, area, picker);
     }
+    if let Some(picker) = &app.mode_picker {
+        draw_mode_picker(frame, area, picker);
+    }
     if let Some(confirmation) = &app.confirmation {
         draw_confirmation(frame, area, confirmation);
     }
@@ -137,6 +142,11 @@ pub fn desired_viewport_height(app: &mut App, area_width: u16) -> u16 {
             .min(PICKER_MAX_VISIBLE_ENTRIES);
         PICKER_CHROME_ROWS.saturating_add(rows)
     } else if let Some(picker) = &app.permissions_picker {
+        let rows = u16::try_from(picker.entries.len())
+            .unwrap_or(u16::MAX)
+            .min(PICKER_MAX_VISIBLE_ENTRIES);
+        PICKER_CHROME_ROWS.saturating_add(rows)
+    } else if let Some(picker) = &app.mode_picker {
         let rows = u16::try_from(picker.entries.len())
             .unwrap_or(u16::MAX)
             .min(PICKER_MAX_VISIBLE_ENTRIES);
@@ -269,6 +279,7 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
         || app.model_picker.is_some()
         || app.effort_picker.is_some()
         || app.permissions_picker.is_some()
+        || app.mode_picker.is_some()
     {
         let label = if app.model_picker.is_some() {
             "pick a model"
@@ -276,6 +287,8 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
             "pick an effort"
         } else if app.permissions_picker.is_some() {
             "pick what the assistant may do"
+        } else if app.mode_picker.is_some() {
+            "pick a reasoning mode"
         } else {
             "pick a session"
         };
@@ -395,13 +408,22 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(STATUS_VAL).add_modifier(Modifier::BOLD),
         ),
         Span::styled(SEP, Style::default().fg(Color::DarkGray)),
-        Span::styled("mode: ", Style::default().fg(STATUS_KEY)),
+        Span::styled("permissions: ", Style::default().fg(STATUS_KEY)),
         Span::styled(preset.label(), mode_style),
     ];
 
     if !reasoning.is_empty() {
         spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(reasoning, Style::default().fg(MODEL_FG)));
+    }
+
+    if let Some(reasoning_mode) = app.status.as_ref().and_then(|s| s.reasoning_mode) {
+        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("mode: ", Style::default().fg(STATUS_KEY)));
+        spans.push(Span::styled(
+            reasoning_mode.as_label(),
+            Style::default().fg(MODEL_FG),
+        ));
     }
 
     if in_tok > 0 || out_tok > 0 {
@@ -885,6 +907,60 @@ fn draw_effort_picker(frame: &mut Frame, area: Rect, picker: &EffortPicker) {
         .collect();
 
     let list = List::new(items).block(picker_block(" Select effort "));
+    frame.render_widget(list, popup);
+}
+
+fn draw_mode_picker(frame: &mut Frame, area: Rect, picker: &ModePicker) {
+    let popup = picker_popup_rect(area);
+    frame.render_widget(Clear, popup);
+
+    let (scroll, visible) =
+        picker_visible_window(popup.height, picker.cursor, picker.entries.len());
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, entry)| {
+            let selected = i == picker.cursor;
+            let marker = if selected {
+                ROW_MARKER_SELECTED
+            } else {
+                ROW_MARKER_PLAIN
+            };
+            let name_style = if !entry.is_available {
+                Style::default().fg(Color::DarkGray)
+            } else if selected {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            let mut spans: Vec<Span> = vec![
+                Span::raw(marker),
+                Span::styled(entry.mode.as_label(), name_style),
+            ];
+            if entry.is_current {
+                spans.push(Span::styled(
+                    "  (current)",
+                    Style::default().fg(HINT_KEY).add_modifier(Modifier::ITALIC),
+                ));
+            } else if !entry.is_available {
+                spans.push(Span::styled(
+                    "  (GPT-5.6 only)",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let list = List::new(items).block(picker_block(" Select reasoning mode "));
     frame.render_widget(list, popup);
 }
 

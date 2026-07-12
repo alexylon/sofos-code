@@ -69,6 +69,17 @@ pub struct Cli {
     #[arg(short = 'e', long, default_value = "medium")]
     pub reasoning_effort: String,
 
+    /// Reasoning mode: standard or pro. Default `standard`. `pro` asks
+    /// OpenAI's GPT-5.6 models to do additional work before answering
+    /// (higher quality, higher latency and cost) and is accepted only
+    /// by that family; every other model rejects it at startup. This is
+    /// independent of `--reasoning-effort`.
+    //
+    // Parsed as a raw `String` here, then validated and converted in
+    // `main`, mirroring `--reasoning-effort`.
+    #[arg(long, default_value = "standard")]
+    pub reasoning_mode: String,
+
     /// Deprecated. The flag has no effect on any path: legacy Anthropic
     /// uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
     /// adaptive Anthropic uses `output_config.effort`, and

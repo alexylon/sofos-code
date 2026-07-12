@@ -14,7 +14,7 @@
 //! the order it should appear in the picker). Removing a model is
 //! one deletion in the same array.
 
-use crate::api::ReasoningEffort;
+use crate::api::{ReasoningEffort, ReasoningMode};
 
 /// Tiered-pricing rule. Some OpenAI models charge a premium for the
 /// *entire session* once a single prompt's input crosses a documented
@@ -83,6 +83,10 @@ pub struct Model {
     /// reject mismatched pairs (for example `xhigh` on a model that
     /// tops out at `high`) before they reach the server.
     pub supported_efforts: &'static [ReasoningEffort],
+    /// True for models that accept OpenAI's `reasoning.mode: "pro"` (the
+    /// GPT-5.6 family). Startup validation and the `/mode` handler reject
+    /// `Pro` on any model without this capability.
+    pub supports_pro_mode: bool,
     /// Per-million-token USD price for non-cached input.
     pub price_input_per_m: f64,
     /// Per-million-token USD price for output (including hidden
@@ -201,6 +205,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 10.0,
         price_output_per_m: 50.0,
         premium_tier: None,
@@ -220,6 +225,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 5.0,
         price_output_per_m: 25.0,
         premium_tier: None,
@@ -239,6 +245,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 3.0,
         price_output_per_m: 15.0,
         premium_tier: None,
@@ -256,6 +263,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Medium,
             ReasoningEffort::High,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 1.0,
         price_output_per_m: 5.0,
         premium_tier: None,
@@ -278,6 +286,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: true,
         price_input_per_m: 5.0,
         price_output_per_m: 30.0,
         premium_tier: None,
@@ -297,6 +306,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: true,
         price_input_per_m: 2.5,
         price_output_per_m: 15.0,
         premium_tier: None,
@@ -316,6 +326,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::XHigh,
             ReasoningEffort::Max,
         ],
+        supports_pro_mode: true,
         price_input_per_m: 1.0,
         price_output_per_m: 6.0,
         premium_tier: None,
@@ -343,6 +354,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::High,
             ReasoningEffort::XHigh,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 5.0,
         price_output_per_m: 30.0,
         premium_tier: Some(PremiumPricingTier {
@@ -365,6 +377,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::High,
             ReasoningEffort::XHigh,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 2.5,
         price_output_per_m: 15.0,
         premium_tier: Some(PremiumPricingTier {
@@ -387,6 +400,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::High,
             ReasoningEffort::XHigh,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 0.75,
         price_output_per_m: 4.5,
         premium_tier: None,
@@ -405,6 +419,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::High,
             ReasoningEffort::XHigh,
         ],
+        supports_pro_mode: false,
         price_input_per_m: 1.75,
         price_output_per_m: 14.0,
         premium_tier: None,
@@ -480,6 +495,40 @@ pub fn effort_support_error(name: &str, effort: ReasoningEffort) -> Option<Strin
         effort.as_label(),
         info.supported_efforts_label(),
     ))
+}
+
+/// Comma-separated list of every model that accepts `reasoning.mode:
+/// "pro"`, in catalog order. Surfaced in [`mode_support_error`] so the
+/// user sees which models to switch to.
+pub fn pro_capable_models_label() -> String {
+    SUPPORTED_MODELS
+        .iter()
+        .filter(|m| m.supports_pro_mode)
+        .map(|m| m.name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Human-readable rejection message for an unsupported `(model, mode)`
+/// pair, or `None` if the pair is supported. `Standard` is accepted by
+/// every model; `Pro` only by the models whose `supports_pro_mode` is
+/// set. Surfaced from the startup validator, the `/mode` handler, and
+/// `/model` switching so the failure mode is the same everywhere.
+pub fn mode_support_error(name: &str, mode: ReasoningMode) -> Option<String> {
+    if !mode.is_pro() || lookup(name).supports_pro_mode {
+        return None;
+    }
+    Some(format!(
+        "Model `{}` does not support pro mode. Pro mode is available on: {}.",
+        name,
+        pro_capable_models_label(),
+    ))
+}
+
+/// Whether `name` accepts `reasoning.mode: "pro"`. Thin wrapper over the
+/// model-info table so callers do not compare model slugs by hand.
+pub fn supports_pro_mode(name: &str) -> bool {
+    lookup(name).supports_pro_mode
 }
 
 #[cfg(test)]
@@ -748,5 +797,27 @@ mod tests {
         assert!(effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh).is_none());
         assert!(effort_support_error(GPT_FLAGSHIP, ReasoningEffort::XHigh).is_none());
         assert!(effort_support_error(CLAUDE_HAIKU, ReasoningEffort::High).is_none());
+    }
+
+    #[test]
+    fn pro_mode_only_supported_on_gpt_5_6_family() {
+        use ReasoningMode::{Pro, Standard};
+        // Standard is accepted by every model.
+        for m in SUPPORTED_MODELS {
+            assert!(mode_support_error(m.name, Standard).is_none());
+        }
+        // Pro on the GPT-5.6 family: accepted.
+        assert!(mode_support_error(GPT_SOL, Pro).is_none());
+        assert!(mode_support_error(GPT_TERRA, Pro).is_none());
+        assert!(mode_support_error(GPT_LUNA, Pro).is_none());
+        // Pro elsewhere: rejected, and the message names the capable models.
+        let err = mode_support_error(GPT_FLAGSHIP, Pro)
+            .expect("pro on a non-5.6 model should be rejected");
+        assert!(err.contains(GPT_FLAGSHIP));
+        assert!(err.contains(GPT_SOL));
+        assert!(mode_support_error(CLAUDE_OPUS, Pro).is_some());
+        // The capability helper agrees with the table.
+        assert!(supports_pro_mode(GPT_SOL));
+        assert!(!supports_pro_mode(GPT_FLAGSHIP));
     }
 }

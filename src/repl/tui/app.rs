@@ -20,7 +20,8 @@ use crate::session::SessionMetadata;
 use crate::tools::utils::ConfirmationType;
 
 use super::event::{
-    EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, PermissionsPickerEntry, StatusSnapshot,
+    EffortPickerEntry, ExitSummary, Job, ModePickerEntry, ModelPickerEntry, PermissionsPickerEntry,
+    StatusSnapshot,
 };
 use super::slash_popup::SlashPopup;
 
@@ -49,6 +50,8 @@ pub struct App {
     pub effort_picker: Option<EffortPicker>,
     /// If Some, render the `/permissions` access-preset picker overlay.
     pub permissions_picker: Option<PermissionsPicker>,
+    /// If Some, render the `/mode` reasoning-mode picker overlay.
+    pub mode_picker: Option<ModePicker>,
     /// If Some, render a confirmation modal blocking the worker thread
     /// until the user answers. Used by destructive tool prompts like
     /// `delete_file`.
@@ -226,6 +229,41 @@ impl PermissionsPicker {
     }
 }
 
+/// Inline overlay shown by `/mode`. The `pro` row is disabled off the
+/// GPT-5.6 family, so the cursor skips it just like the permissions
+/// picker skips unavailable sandbox rows.
+pub struct ModePicker {
+    pub entries: Vec<ModePickerEntry>,
+    pub cursor: usize,
+}
+
+impl ModePicker {
+    pub fn new(entries: Vec<ModePickerEntry>) -> Self {
+        let cursor = entries
+            .iter()
+            .position(|e| e.is_current && e.is_available)
+            .or_else(|| entries.iter().position(|e| e.is_available))
+            .unwrap_or(0);
+        Self { entries, cursor }
+    }
+
+    pub fn move_up(&mut self) {
+        self.cursor = step_to_available(self.cursor, self.entries.len(), -1, |i| {
+            self.entries[i].is_available
+        });
+    }
+
+    pub fn move_down(&mut self) {
+        self.cursor = step_to_available(self.cursor, self.entries.len(), 1, |i| {
+            self.entries[i].is_available
+        });
+    }
+
+    pub fn selected(&self) -> Option<&ModePickerEntry> {
+        self.entries.get(self.cursor)
+    }
+}
+
 /// In-flight confirmation dialog driven by a synchronous tool (`delete_file`,
 /// `delete_directory`, permission grants). The worker thread is blocked on
 /// the receiving end of `responder`; when the user picks a choice (or
@@ -257,6 +295,7 @@ impl App {
             model_picker: None,
             effort_picker: None,
             permissions_picker: None,
+            mode_picker: None,
             model_label,
             should_quit: false,
             exit_summary: None,
@@ -575,6 +614,7 @@ mod tests {
             mode: SandboxMode::ReadOnly,
             approval: crate::config::ApprovalPolicy::OnRequest,
             reasoning: String::new(),
+            reasoning_mode: None,
             input_tokens: 0,
             output_tokens: 0,
             cache_read_tokens: 0,
@@ -788,6 +828,52 @@ mod tests {
         assert_eq!(p.cursor, 1);
     }
 
+    #[test]
+    fn mode_picker_skips_unavailable_pro_row() {
+        use crate::api::ReasoningMode::{Pro, Standard};
+        // Off the GPT-5.6 family, `pro` is disabled: the cursor starts on
+        // `standard` and cannot move onto `pro`.
+        let entries = vec![
+            ModePickerEntry {
+                mode: Standard,
+                is_current: true,
+                is_available: true,
+            },
+            ModePickerEntry {
+                mode: Pro,
+                is_current: false,
+                is_available: false,
+            },
+        ];
+        let mut p = ModePicker::new(entries);
+        assert_eq!(p.cursor, 0);
+        p.move_down();
+        assert_eq!(p.cursor, 0, "cursor must not land on the disabled pro row");
+        assert_eq!(p.selected().unwrap().mode, Standard);
+    }
+
+    #[test]
+    fn mode_picker_lands_cursor_on_current_when_pro_available() {
+        use crate::api::ReasoningMode::{Pro, Standard};
+        // On a GPT-5.6 model both rows are selectable; the cursor parks on
+        // the current mode.
+        let entries = vec![
+            ModePickerEntry {
+                mode: Standard,
+                is_current: false,
+                is_available: true,
+            },
+            ModePickerEntry {
+                mode: Pro,
+                is_current: true,
+                is_available: true,
+            },
+        ];
+        let p = ModePicker::new(entries);
+        assert_eq!(p.cursor, 1);
+        assert_eq!(p.selected().unwrap().mode, Pro);
+    }
+
     fn permissions_entry(
         preset: crate::config::PermissionPreset,
         is_current: bool,
@@ -866,6 +952,7 @@ mod tests {
             mode: SandboxMode::ReadOnly,
             approval: crate::config::ApprovalPolicy::OnRequest,
             reasoning: "thinking: 10000 tok".into(),
+            reasoning_mode: None,
             input_tokens: 123,
             output_tokens: 456,
             cache_read_tokens: 0,

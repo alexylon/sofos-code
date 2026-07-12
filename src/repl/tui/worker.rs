@@ -17,7 +17,8 @@ use crate::repl::Repl;
 use crate::ui::UI;
 
 use super::event::{
-    EffortPickerEntry, ExitSummary, Job, ModelPickerEntry, PermissionsPickerEntry, UiEvent,
+    EffortPickerEntry, ExitSummary, Job, ModePickerEntry, ModelPickerEntry, PermissionsPickerEntry,
+    UiEvent,
 };
 
 /// Flush both stdout and stderr before signalling a turn is over.
@@ -215,6 +216,18 @@ fn run(
                 flush_captured_streams();
                 let _ = ui_tx.send(UiEvent::WorkerIdle);
             }
+            Job::ModeSelected(Some(mode)) => {
+                interrupt.store(false, Ordering::SeqCst);
+                let _ = ui_tx.send(UiEvent::WorkerBusy("switching mode".into()));
+                repl.handle_mode_set(mode);
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::Status(repl.status_snapshot()));
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
+            Job::ModeSelected(None) => {
+                flush_captured_streams();
+                let _ = ui_tx.send(UiEvent::WorkerIdle);
+            }
             Job::PermissionsSelected(Some(preset)) => {
                 interrupt.store(false, Ordering::SeqCst);
                 let _ = ui_tx.send(UiEvent::WorkerBusy("switching permissions".into()));
@@ -276,6 +289,11 @@ fn run_command(
             let _ = ui_tx.send(UiEvent::ShowPermissionsPicker { entries });
             Ok(CommandResult::Continue)
         }
+        Command::ModePicker => {
+            let entries = build_mode_picker_entries(repl);
+            let _ = ui_tx.send(UiEvent::ShowModePicker { entries });
+            Ok(CommandResult::Continue)
+        }
         _ => cmd.execute(repl),
     }
 }
@@ -303,6 +321,20 @@ fn build_permissions_picker_entries(repl: &Repl) -> Vec<PermissionsPickerEntry> 
             preset,
             is_current: preset == current,
             is_available: preset.is_available(available),
+        })
+        .collect()
+}
+
+fn build_mode_picker_entries(repl: &Repl) -> Vec<ModePickerEntry> {
+    use crate::api::{ReasoningMode, model_info};
+    let current = repl.current_reasoning_mode();
+    let pro_available = model_info::supports_pro_mode(&repl.model_label());
+    [ReasoningMode::Standard, ReasoningMode::Pro]
+        .into_iter()
+        .map(|mode| ModePickerEntry {
+            mode,
+            is_current: mode == current,
+            is_available: mode == ReasoningMode::Standard || pro_available,
         })
         .collect()
 }

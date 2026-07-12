@@ -71,3 +71,15 @@ pub fn model_set_command(repl: &mut Repl, name: &str) -> Result<CommandResult> {
     repl.handle_model_set(name);
     Ok(CommandResult::Continue)
 }
+
+pub fn mode_picker_command(repl: &mut Repl) -> Result<CommandResult> {
+    // The TUI worker intercepts this and opens the inline picker; this
+    // fallback only runs in non-interactive mode.
+    repl.handle_mode_picker_fallback();
+    Ok(CommandResult::Continue)
+}
+
+pub fn mode_set_command(repl: &mut Repl, mode: crate::api::ReasoningMode) -> Result<CommandResult> {
+    repl.handle_mode_set(mode);
+    Ok(CommandResult::Continue)
+}

@@ -7,10 +7,12 @@ use tokio::time::{Interval, interval};
 
 use crate::error::Result;
 use crate::repl::SteerBuffer;
-use crate::repl::tui::app::{self, App, EffortPicker, ModelPicker, PermissionsPicker, Picker};
+use crate::repl::tui::app::{
+    self, App, EffortPicker, ModePicker, ModelPicker, PermissionsPicker, Picker,
+};
 use crate::repl::tui::event::{Job, UiEvent};
 use crate::repl::tui::input::{
-    handle_effort_picker_key, handle_idle_key, handle_model_picker_key,
+    handle_effort_picker_key, handle_idle_key, handle_mode_picker_key, handle_model_picker_key,
     handle_permissions_picker_key, handle_picker_key,
 };
 use crate::repl::tui::keymap::handle_confirmation_key;
@@ -108,6 +110,8 @@ pub(super) async fn event_loop(
                         handle_effort_picker_key(app, key, &job_tx);
                     } else if app.permissions_picker.is_some() {
                         handle_permissions_picker_key(app, key, &job_tx);
+                    } else if app.mode_picker.is_some() {
+                        handle_mode_picker_key(app, key, &job_tx);
                     } else {
                         handle_idle_key(app, key, &job_tx, &interrupt, &steer_buffer);
                     }
@@ -125,6 +129,7 @@ pub(super) async fn event_loop(
                         && app.model_picker.is_none()
                         && app.effort_picker.is_none()
                         && app.permissions_picker.is_none()
+                        && app.mode_picker.is_none()
                     {
                         app.textarea.insert_str(text);
                         app.sync_slash_popup();
@@ -151,6 +156,7 @@ pub(super) async fn event_loop(
                         && app.model_picker.is_none()
                         && app.effort_picker.is_none()
                         && app.permissions_picker.is_none()
+                        && app.mode_picker.is_none()
                     {
                         // Steer messages the tool loop didn't consume —
                         // e.g. the turn ended without ever hitting a
@@ -197,6 +203,10 @@ pub(super) async fn event_loop(
                 }
                 UiEvent::ShowPermissionsPicker { entries } => {
                     app.permissions_picker = Some(PermissionsPicker::new(entries));
+                    break;
+                }
+                UiEvent::ShowModePicker { entries } => {
+                    app.mode_picker = Some(ModePicker::new(entries));
                     break;
                 }
                 UiEvent::ConfirmRequest {

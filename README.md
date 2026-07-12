@@ -215,6 +215,8 @@ sofos --resume
 | `/compact` | Compact older context to reduce token usage. |
 | `/effort` | Open the reasoning-effort picker. The picker lists only the levels supported by the active model. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
 | `/effort low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
+| `/mode` | Open the reasoning-mode picker. `standard` and `pro`; `pro` is disabled outside the GPT-5.6 family. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
+| `/mode standard\|pro` | Switch reasoning mode. `pro` is accepted only on the GPT-5.6 models; other models print a clear error. |
 | `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models from the other provider are greyed out because the API client is fixed at startup. |
 | `/model <name>` | Switch directly to a model on the active provider. To switch provider, restart Sofos with `--model <name>`. |
 | `/permissions` | Open the permission preset picker. The presets are `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Where sandboxing is unavailable, such as Windows, the `sandboxed-*` presets are shown but disabled. |
@@ -284,6 +286,7 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
     --max-tokens <N>         Maximum output tokens per response. Default: 32768.
 -e, --reasoning-effort <LV>  low, medium, high, xhigh, or max. Default: medium.
+    --reasoning-mode <MODE>  standard or pro (GPT-5.6 only). Default: standard.
 ```
 
 `--max-tokens` must be greater than `16384` when reasoning effort is enabled. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
@@ -340,7 +343,7 @@ Support matrix:
 
 Provider mapping:
 
-- **OpenAI** sends `reasoning.effort` directly.
+- **OpenAI** sends `reasoning.effort` directly. On the **GPT-5.6** models (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
 - **Claude Fable 5, Opus 4.8, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
 

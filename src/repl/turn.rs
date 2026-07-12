@@ -291,6 +291,7 @@ impl Repl {
             self.model_config.model.clone(),
             self.model_config.max_tokens,
             self.model_config.reasoning_effort,
+            self.model_config.reasoning_mode,
             self.available_tools.clone(),
             Arc::clone(&self.interrupt_flag),
             Arc::clone(&self.steer_buffer),

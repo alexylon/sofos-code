@@ -37,6 +37,12 @@ pub enum Command {
     /// handler so the rejection message matches the one the CLI
     /// surfaces for `--model`.
     ModelSet(String),
+    /// `/mode` — open the reasoning-mode picker.
+    ModePicker,
+    /// `/mode <standard|pro>` — switch the reasoning mode directly. Pro
+    /// mode is validated per-model (the GPT-5.6 family), matching
+    /// `--reasoning-mode`.
+    ModeSet(crate::api::ReasoningMode),
 }
 
 /// Slash-command names, defined once so the parser and the catalog (and
@@ -47,6 +53,7 @@ const CMD_QUIT_SHORT: &str = "/q";
 const CMD_CLEAR: &str = "/clear";
 const CMD_RESUME: &str = "/resume";
 const CMD_EFFORT: &str = "/effort";
+const CMD_MODE: &str = "/mode";
 const CMD_MODEL: &str = "/model";
 const CMD_COMPACT: &str = "/compact";
 const CMD_PERMISSIONS: &str = "/permissions";
@@ -59,6 +66,7 @@ impl Command {
             CMD_CLEAR => Some(Command::Clear),
             CMD_RESUME => Some(Command::Resume),
             CMD_EFFORT => Some(Command::EffortPicker),
+            CMD_MODE => Some(Command::ModePicker),
             CMD_PERMISSIONS => Some(Command::PermissionsPicker),
             CMD_COMPACT => Some(Command::Compact),
             CMD_MODEL => Some(Command::ModelPicker),
@@ -69,6 +77,13 @@ impl Command {
                         Some(Command::EffortPicker)
                     } else {
                         crate::api::ReasoningEffort::parse(trimmed).map(Command::EffortSet)
+                    }
+                } else if let Some(arg) = lower.strip_prefix("/mode ") {
+                    let trimmed = arg.trim();
+                    if trimmed.is_empty() {
+                        Some(Command::ModePicker)
+                    } else {
+                        crate::api::ReasoningMode::parse(trimmed).map(Command::ModeSet)
                     }
                 } else if let Some(arg) = lower.strip_prefix("/model ") {
                     let trimmed = arg.trim();
@@ -103,6 +118,8 @@ impl Command {
             Command::Compact => builtin::compact_command(repl),
             Command::ModelPicker => builtin::model_picker_command(repl),
             Command::ModelSet(name) => builtin::model_set_command(repl, name),
+            Command::ModePicker => builtin::mode_picker_command(repl),
+            Command::ModeSet(mode) => builtin::mode_set_command(repl, *mode),
         }
     }
 }
@@ -138,6 +155,10 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
         description: "switch the reasoning effort (opens a picker)",
     },
     CommandEntry {
+        name: CMD_MODE,
+        description: "switch standard/pro reasoning mode (GPT-5.6)",
+    },
+    CommandEntry {
         name: CMD_RESUME,
         description: "resume a previously saved session",
     },
@@ -162,6 +183,38 @@ mod tests {
     #[test]
     fn bare_slash_model_opens_picker() {
         assert_eq!(Command::from_str("/model"), Some(Command::ModelPicker));
+    }
+
+    #[test]
+    fn bare_slash_mode_opens_picker() {
+        assert_eq!(Command::from_str("/mode"), Some(Command::ModePicker));
+        assert_eq!(Command::from_str("/mode   "), Some(Command::ModePicker));
+    }
+
+    #[test]
+    fn slash_mode_with_level_parses_to_mode_set() {
+        assert_eq!(
+            Command::from_str("/mode pro"),
+            Some(Command::ModeSet(crate::api::ReasoningMode::Pro))
+        );
+        assert_eq!(
+            Command::from_str("/mode standard"),
+            Some(Command::ModeSet(crate::api::ReasoningMode::Standard))
+        );
+    }
+
+    #[test]
+    fn slash_mode_with_unknown_value_returns_none() {
+        assert!(Command::from_str("/mode turbo").is_none());
+    }
+
+    #[test]
+    fn slash_mode_is_not_confused_with_slash_model() {
+        // `/mode ` and `/model ` share a prefix; ensure they route apart.
+        match Command::from_str(&format!("/model {}", crate::api::model_info::GPT_SOL)) {
+            Some(Command::ModelSet(_)) => {}
+            other => panic!("expected ModelSet, got {other:?}"),
+        }
     }
 
     #[test]

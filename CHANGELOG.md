@@ -4,6 +4,14 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Pro mode for the GPT-5.6 models.** `--reasoning-mode pro`, or the `/mode` picker at runtime, makes `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` do additional work before answering — higher quality at higher latency and cost. `standard` remains the default, and the active mode shows in the startup banner and the status line. Other models reject `pro` with a clear error.
+
+### Changed
+
+- **The status line now labels the permission preset `permissions:` instead of `mode:`**, so `mode:` can show the reasoning mode (standard or pro) on the GPT-5.6 models.
+
 ### Removed
 
 - **The `off` reasoning effort is gone; `low` is now the minimum on every model.** Passing `-e off` (or `/effort off`) prints an error listing the supported levels. This removes the no-extended-thinking path on Claude Haiku 4.5 — use `low` for the fastest setting.

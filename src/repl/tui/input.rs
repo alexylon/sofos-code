@@ -373,6 +373,39 @@ pub(super) fn handle_permissions_picker_key(
     }
 }
 
+/// Key handler used while the `/mode` picker overlay is open. Up/Down
+/// skip the disabled `pro` row on non-GPT-5.6 models; Enter sends the
+/// highlighted mode back to the worker; Esc / Ctrl+C cancel.
+pub(super) fn handle_mode_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc::Sender<Job>) {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
+        return;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let Some(picker) = app.mode_picker.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => picker.move_up(),
+        KeyCode::Down | KeyCode::Char('j') => picker.move_down(),
+        KeyCode::Enter => {
+            // The cursor only lands on selectable rows, but filter on
+            // `is_available` anyway so a disabled row can never be sent.
+            let mode = picker.selected().filter(|e| e.is_available).map(|e| e.mode);
+            app.mode_picker = None;
+            let _ = job_tx.send(Job::ModeSelected(mode));
+        }
+        KeyCode::Esc => {
+            app.mode_picker = None;
+            let _ = job_tx.send(Job::ModeSelected(None));
+        }
+        KeyCode::Char('c') if ctrl => {
+            app.mode_picker = None;
+            let _ = job_tx.send(Job::ModeSelected(None));
+        }
+        _ => {}
+    }
+}
+
 /// Key handler used while the `/model` picker overlay is open.
 /// Up/Down skip disabled (other-provider) rows; Enter sends the
 /// highlighted model name back to the worker; Esc / Ctrl+C cancel.

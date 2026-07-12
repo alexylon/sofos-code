@@ -112,6 +112,26 @@ fn main() -> Result<()> {
         )),
     };
 
+    // `--reasoning-mode` is validated separately from `bail` because its
+    // failure lists pro-capable models, not effort levels.
+    let reasoning_mode = match crate::api::ReasoningMode::parse(&cli.reasoning_mode) {
+        Some(m) => {
+            if let Some(msg) = crate::api::model_info::mode_support_error(&cli.model, m) {
+                eprintln!("{} {}", "error:".bright_red().bold(), msg);
+                std::process::exit(2);
+            }
+            m
+        }
+        None => {
+            eprintln!(
+                "{} invalid reasoning mode '{}'; expected one of: standard, pro",
+                "error:".bright_red().bold(),
+                cli.reasoning_mode
+            );
+            std::process::exit(2);
+        }
+    };
+
     // Historically the logo printed here, up front. It's now deferred:
     // in interactive mode the banner text is collected into
     // `startup_banner` below and replayed through the TUI's capture
@@ -187,6 +207,14 @@ fn main() -> Result<()> {
         ));
     }
 
+    if crate::api::model_info::supports_pro_mode(&cli.model) {
+        startup_banner.push_str(&format!(
+            "{} {}\n",
+            "Reasoning mode:".bright_green(),
+            reasoning_mode.as_label()
+        ));
+    }
+
     let morph_client = cli.morph_api_key.as_ref().and_then(|key| {
         match MorphClient::new(key.clone(), Some(cli.morph_model.clone())) {
             Ok(client) => {
@@ -227,6 +255,7 @@ fn main() -> Result<()> {
         cli.model,
         cli.max_tokens,
         reasoning_effort,
+        reasoning_mode,
         mode,
         approval_policy,
     );

@@ -54,6 +54,7 @@ pub struct ModelConfig {
     pub model: String,
     pub max_tokens: u32,
     pub reasoning_effort: crate::api::ReasoningEffort,
+    pub reasoning_mode: crate::api::ReasoningMode,
 }
 
 impl ModelConfig {
@@ -61,16 +62,22 @@ impl ModelConfig {
         model: String,
         max_tokens: u32,
         reasoning_effort: crate::api::ReasoningEffort,
+        reasoning_mode: crate::api::ReasoningMode,
     ) -> Self {
         Self {
             model,
             max_tokens,
             reasoning_effort,
+            reasoning_mode,
         }
     }
 
     pub fn set_reasoning_effort(&mut self, effort: crate::api::ReasoningEffort) {
         self.reasoning_effort = effort;
+    }
+
+    pub fn set_reasoning_mode(&mut self, mode: crate::api::ReasoningMode) {
+        self.reasoning_mode = mode;
     }
 }
 
