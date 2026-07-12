@@ -216,16 +216,20 @@ pub(super) async fn event_loop(
                     kind,
                     responder,
                 } => {
-                    // Permission prompts list "Yes" as the first choice and
-                    // we want that highlighted on open so a bare Enter
-                    // approves. The Esc/Ctrl+C fallback still resolves to
-                    // `default_index` ("No"), so cancelling stays safe.
-                    let initial_cursor =
-                        if matches!(kind, crate::tools::utils::ConfirmationType::Permission) {
-                            0
-                        } else {
-                            default_index.min(choices.len().saturating_sub(1))
-                        };
+                    // Permission and destructive prompts list the affirmative
+                    // choice ("Yes"/"Allow") first; highlight it on open so a
+                    // bare Enter takes it. The Esc/Ctrl+C fallback still
+                    // resolves to the safe `default_index`, so cancelling
+                    // stays safe.
+                    let initial_cursor = if matches!(
+                        kind,
+                        crate::tools::utils::ConfirmationType::Permission
+                            | crate::tools::utils::ConfirmationType::Destructive
+                    ) {
+                        0
+                    } else {
+                        default_index.min(choices.len().saturating_sub(1))
+                    };
                     app.confirmation = Some(app::ConfirmationPrompt {
                         prompt,
                         cursor: initial_cursor,
