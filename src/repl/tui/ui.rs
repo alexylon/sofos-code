@@ -20,11 +20,11 @@ const BORDER_IDLE: Color = Color::Rgb(120, 120, 120);
 const TITLE_FG: Color = Color::Rgb(180, 180, 180);
 const HINT_KEY: Color = Color::Rgb(120, 180, 120);
 const QUEUE_FG: Color = Color::Rgb(0xCC, 0xCC, 0x66);
-const MODEL_FG: Color = Color::Rgb(110, 110, 110);
 const STATUS_KEY: Color = Color::Rgb(150, 150, 150);
 const STATUS_VAL: Color = Color::Rgb(200, 200, 200);
 const READONLY_MODE_FG: Color = Color::Rgb(0xFF, 0xA5, 0x00);
 const SANDBOX_OFF_FG: Color = Color::Rgb(0xFF, 0x55, 0x55);
+const PRO_MODE_FG: Color = Color::Rgb(0xC0, 0x9B, 0xF0);
 const PICKER_BORDER: Color = Color::Rgb(140, 140, 140);
 const SLASH_POPUP_BORDER: Color = Color::Rgb(120, 120, 120);
 const SLASH_POPUP_NAME_FG: Color = Color::Rgb(200, 200, 200);
@@ -360,6 +360,12 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
+    frame.render_widget(Paragraph::new(Line::from(status_spans(app))), area);
+}
+
+/// Build the status-line spans. Split out from [`draw_status`] so the
+/// label/value styling can be asserted in tests without a live terminal.
+fn status_spans(app: &App) -> Vec<Span<'_>> {
     // Fall back to the model name we already know if the worker hasn't
     // pushed a full snapshot yet (e.g. very first frame).
     // `app.mode()` is honest before the first snapshot too (it falls back to
@@ -401,37 +407,50 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
             .fg(SANDBOX_OFF_FG)
             .add_modifier(Modifier::BOLD),
     };
+    // Every field label shares one style and every plain value another,
+    // so the line reads as a single system. The permission preset and
+    // `pro` keep a distinct value colour to flag an elevated, higher-cost
+    // state, but they stay at the same brightness as the other values.
+    let label_style = Style::default().fg(STATUS_KEY);
+    let value_style = Style::default().fg(STATUS_VAL);
+    let sep = || Span::styled(SEP, Style::default().fg(Color::DarkGray));
+
     let mut spans: Vec<Span> = vec![
-        Span::styled(" model: ", Style::default().fg(STATUS_KEY)),
-        Span::styled(
-            model,
-            Style::default().fg(STATUS_VAL).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(SEP, Style::default().fg(Color::DarkGray)),
-        Span::styled("permissions: ", Style::default().fg(STATUS_KEY)),
+        Span::styled(" model: ", label_style),
+        Span::styled(model, value_style),
+        sep(),
+        Span::styled("permissions: ", label_style),
         Span::styled(preset.label(), mode_style),
     ];
 
     if !reasoning.is_empty() {
-        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(reasoning, Style::default().fg(MODEL_FG)));
+        // `reasoning` arrives as a "label: value" string (e.g. "effort:
+        // high"); split it so its label matches every other field label.
+        spans.push(sep());
+        match reasoning.split_once(": ") {
+            Some((label, value)) => {
+                spans.push(Span::styled(format!("{label}: "), label_style));
+                spans.push(Span::styled(value.to_string(), value_style));
+            }
+            None => spans.push(Span::styled(reasoning, value_style)),
+        }
     }
 
     if let Some(reasoning_mode) = app.status.as_ref().and_then(|s| s.reasoning_mode) {
-        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled("mode: ", Style::default().fg(STATUS_KEY)));
-        spans.push(Span::styled(
-            reasoning_mode.as_label(),
-            Style::default().fg(MODEL_FG),
-        ));
+        spans.push(sep());
+        spans.push(Span::styled("mode: ", label_style));
+        let mode_value_style = if reasoning_mode.is_pro() {
+            Style::default().fg(PRO_MODE_FG)
+        } else {
+            value_style
+        };
+        spans.push(Span::styled(reasoning_mode.as_label(), mode_value_style));
     }
 
     if in_tok > 0 || out_tok > 0 {
-        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            format!("tokens: {}↑ {}↓", in_tok, out_tok),
-            Style::default().fg(MODEL_FG),
-        ));
+        spans.push(sep());
+        spans.push(Span::styled("tokens: ", label_style));
+        spans.push(Span::styled(format!("{in_tok}↑ {out_tok}↓"), value_style));
     }
 
     // Surface the cache numbers when either side has a non-zero
@@ -439,14 +458,15 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
     // the user has and they otherwise can't see it without
     // dropping out of the session.
     if cache_read > 0 || cache_create > 0 {
-        spans.push(Span::styled(SEP, Style::default().fg(Color::DarkGray)));
+        spans.push(sep());
+        spans.push(Span::styled("cache: ", label_style));
         spans.push(Span::styled(
-            format!("cache: {}r {}w", cache_read, cache_create),
-            Style::default().fg(MODEL_FG),
+            format!("{cache_read}r {cache_create}w"),
+            value_style,
         ));
     }
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    spans
 }
 
 /// Per-frame layout decisions for the confirmation modal, derived once
@@ -1078,6 +1098,55 @@ mod tests {
 
     fn app() -> App {
         App::new("test-model".into())
+    }
+
+    #[test]
+    fn status_line_labels_and_values_share_uniform_styles() {
+        let mut a = app();
+        a.status = Some(crate::repl::tui::event::StatusSnapshot {
+            model: "gpt-5.6-sol".into(),
+            mode: crate::config::SandboxMode::Sandboxed,
+            approval: crate::config::ApprovalPolicy::OnRequest,
+            reasoning: "effort: high".into(),
+            reasoning_mode: Some(crate::api::ReasoningMode::Pro),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 5,
+            cache_creation_tokens: 3,
+        });
+        let spans = status_spans(&a);
+        let fg = |content: &str| {
+            spans
+                .iter()
+                .find(|s| s.content.as_ref() == content)
+                .unwrap_or_else(|| panic!("missing span {content:?}"))
+                .style
+                .fg
+        };
+
+        // Every label (a span ending in ": ") shares the one label colour.
+        let labels: Vec<_> = spans.iter().filter(|s| s.content.ends_with(": ")).collect();
+        assert_eq!(
+            labels.len(),
+            6,
+            "model/permissions/effort/mode/tokens/cache"
+        );
+        for label in labels {
+            assert_eq!(
+                label.style.fg,
+                Some(STATUS_KEY),
+                "label {:?}",
+                label.content
+            );
+        }
+
+        // Plain values share one bright colour, not the old dim one.
+        assert_eq!(fg("gpt-5.6-sol"), Some(STATUS_VAL));
+        assert_eq!(fg("high"), Some(STATUS_VAL));
+        assert_eq!(fg("10↑ 20↓"), Some(STATUS_VAL));
+
+        // `pro` keeps its own distinct colour.
+        assert_eq!(fg("pro"), Some(PRO_MODE_FG));
     }
 
     #[test]
