@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Redirecting output to a file or another program no longer writes terminal escape codes into it.** Streamed replies, reasoning summaries, and the cursor-shape sequence were emitted regardless of where output went, so a piped run collected colour codes alongside the text. Output aimed at a terminal is unchanged.
+
 ### Added
 
 - **The cost estimate is now priced per response, at the rates of the model that produced it.** A session that switches model with `/model`, or has a request answered on a fallback model after a refusal, previously priced every token at the rates of whichever model was configured at the end. Each response is now costed as it arrives and added to a running total. Sessions saved before this release are priced the old way on resume, since a per-response breakdown was never recorded for them.

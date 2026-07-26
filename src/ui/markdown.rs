@@ -29,8 +29,14 @@ fn restore_faint(out: &mut impl io::Write, dimmed: bool) -> io::Result<()> {
 
 impl UI {
     pub fn print_markdown_highlighted(&self, md: &str) -> io::Result<()> {
+        // Rendered into a buffer rather than straight to the stream so
+        // the escapes can be dropped when styling is off. Callers pass
+        // a whole message, so nothing is lost by not writing through.
+        let mut buf = Vec::new();
+        self.render_markdown_to(&mut buf, md, false)?;
+        let rendered = String::from_utf8_lossy(&buf);
         let mut out = stdout().lock();
-        self.render_markdown_to(&mut out, md, false)?;
+        write!(out, "{}", crate::ui::styled(&rendered))?;
         out.flush()
     }
 

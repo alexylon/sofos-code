@@ -248,6 +248,8 @@ sofos -p "Find the likely cause of the failing tests"
 sofos -p "Create a high-level summary of this crate" --readonly
 ```
 
+Redirecting the output to a file or another program produces plain text: colour and other terminal escape sequences are written only when the output is going to a terminal.
+
 ### Image vision
 
 Ask about an image by mentioning the file path or URL in your message. Sofos will call `view_image` to open it.

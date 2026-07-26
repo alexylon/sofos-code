@@ -1243,6 +1243,7 @@ It contains:
 Rules:
 
 - User-facing output should go through this layer where practical so wording and colour semantics stay consistent.
+- Styling is decided once, in `ui/mod.rs`, from the same signal `colored` uses. The markdown and diff renderers write escapes directly because they track style state across streamed chunks, so their output is filtered at the print boundary rather than at each write.
 
 ### 9.2 `ui/markdown.rs`
 

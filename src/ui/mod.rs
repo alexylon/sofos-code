@@ -9,7 +9,7 @@ use crate::ui::syntax::SyntaxHighlighter;
 use colored::Colorize;
 use crossterm::cursor::SetCursorStyle;
 use crossterm::execute;
-use std::io::{self, Write, stdout};
+use std::io::{self, IsTerminal, Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -198,11 +198,76 @@ impl UI {
     }
 
     pub fn print_tool_output(&self, tool_output: &str) {
-        if tool_output.contains('\x1b') {
+        // Two sources of escapes reach here: our own coloured diffs, and
+        // whatever a command wrote. Both are dropped when styling is
+        // off. Output that already carries colour is left undimmed, so
+        // the faint pair doesn't fight it.
+        if !styling_enabled() {
+            println!("{}\n", strip_ansi(tool_output));
+        } else if tool_output.contains('\x1b') {
             println!("{}\n", tool_output);
         } else {
             println!("{}\n", tool_output.dimmed());
         }
+    }
+}
+/// True when output should carry ANSI escapes. Mirrors the decision
+/// `colored` makes, so the TUI's override keeps styling flowing through
+/// its capture pipe (which its SGR parser reads) while a redirected
+/// stdout stays plain.
+pub(crate) fn styling_enabled() -> bool {
+    colored::control::SHOULD_COLORIZE.should_colorize()
+}
+
+/// Remove ANSI control sequences: CSI (`ESC [` … final byte) and OSC
+/// (`ESC ]` … BEL or string terminator), plus the two-byte escapes.
+/// The markdown and diff renderers write escapes straight into their
+/// output because they track style state across streamed chunks, which
+/// `colored`'s per-string wrapping cannot express — so they cannot rely
+/// on its suppression and are filtered here instead.
+pub(super) fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // A control sequence runs until its final byte, which is
+            // the first character in the 0x40..=0x7E range.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // An operating-system command ends at a bell, or at the
+            // two-character string terminator.
+            Some(']') => {
+                let mut after_escape = false;
+                for c in chars.by_ref() {
+                    if c == '\x07' || (after_escape && c == '\\') {
+                        break;
+                    }
+                    after_escape = c == '\x1b';
+                }
+            }
+            // Anything else is a two-character escape; both are gone.
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `text` as it should reach the stream: untouched when styling is on,
+/// stripped of control sequences when it is off.
+pub(super) fn styled(text: &str) -> std::borrow::Cow<'_, str> {
+    if styling_enabled() {
+        std::borrow::Cow::Borrowed(text)
+    } else {
+        std::borrow::Cow::Owned(strip_ansi(text))
     }
 }
 
@@ -270,7 +335,7 @@ impl StreamPrinter {
             renderer.commit().unwrap_or_default()
         };
         if !to_print.is_empty() {
-            print!("{}", to_print);
+            print!("{}", styled(&to_print));
             let _ = stdout().flush();
         }
     }
@@ -279,7 +344,7 @@ impl StreamPrinter {
         if self.text_started.load(Ordering::SeqCst) {
             let to_print = self.lock_text_renderer().finalize().unwrap_or_default();
             if !to_print.is_empty() {
-                print!("{}", to_print);
+                print!("{}", styled(&to_print));
             }
             // The finalised buffer ends with a newline, so the cursor
             // is already at column 0 — no extra println! needed for
@@ -330,10 +395,20 @@ impl StreamPrinter {
 /// the prose dim cleanly and leaves those inner sequences intact
 /// where they apply.
 fn print_dim(text: &str) {
-    print!("\x1b[2m{text}\x1b[22m");
+    if styling_enabled() {
+        print!("\x1b[2m{text}\x1b[22m");
+    } else {
+        print!("{}", strip_ansi(text));
+    }
 }
 
 fn set_cursor_style(style: SetCursorStyle) -> io::Result<()> {
+    // Only a terminal acts on this. Under the TUI's captured stdout, or
+    // with output redirected, writing it would leave stray bytes in the
+    // stream instead of reshaping any cursor.
+    if !stdout().is_terminal() {
+        return Ok(());
+    }
     let mut out = stdout();
     execute!(out, style)?;
     out.flush()?;
@@ -349,4 +424,48 @@ pub fn set_readonly_cursor_style() -> io::Result<()> {
 /// read-only mode can put the cursor shape back.
 pub fn set_default_cursor_style() -> io::Result<()> {
     set_cursor_style(SetCursorStyle::DefaultUserShape)
+}
+
+#[cfg(test)]
+mod strip_tests {
+    use super::strip_ansi;
+
+    #[test]
+    fn strip_ansi_removes_colour_and_leaves_text() {
+        // The exact shapes the markdown renderer emits: a plain SGR
+        // pair, a truecolor foreground, and the faint pair that wraps a
+        // streamed thinking block.
+        assert_eq!(strip_ansi("\x1b[1mbold\x1b[0m"), "bold");
+        assert_eq!(
+            strip_ansi("run \x1b[38;2;175;215;255m/model\x1b[0m now"),
+            "run /model now"
+        );
+        assert_eq!(strip_ansi("\x1b[2mfaint\x1b[22m"), "faint");
+    }
+
+    #[test]
+    fn strip_ansi_removes_hyperlinks_and_cursor_shapes() {
+        // OSC-8 hyperlinks close on BEL; the label between the two
+        // sequences is the part a reader wants to keep.
+        assert_eq!(
+            strip_ansi("\x1b]8;;https://example.com\x07label\x1b]8;;\x07"),
+            "label"
+        );
+        // DECSCUSR carries a space before its final byte.
+        assert_eq!(strip_ansi("\x1b[3 qprompt"), "prompt");
+    }
+
+    #[test]
+    fn strip_ansi_leaves_plain_text_untouched() {
+        let plain = "no escapes here — just text with a [bracket] and a \\ backslash";
+        assert_eq!(strip_ansi(plain), plain);
+    }
+
+    #[test]
+    fn strip_ansi_terminates_on_a_truncated_sequence() {
+        // A stream can be cut mid-escape. The parser must consume what
+        // it has and stop rather than loop or panic.
+        assert_eq!(strip_ansi("text\x1b["), "text");
+        assert_eq!(strip_ansi("text\x1b]8;;unterminated"), "text");
+    }
 }
