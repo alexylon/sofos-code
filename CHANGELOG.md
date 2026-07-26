@@ -6,6 +6,7 @@ All notable changes to Sofos are documented in this file.
 
 ### Added
 
+- **The Claude models now show their reasoning while they work.** A summary of the model's thinking is printed under a dimmed `Thinking:` heading before the answer begins, instead of the long silent pause that came before. This changes only what is shown: these models already carried the same reasoning through the conversation, and it is billed the same whether the summary is returned or not.
 - **A declined request now says so.** When a model's safety classifier refuses, Sofos reports that the model declined and names the reason it gave, instead of the old "I've completed the tool operations but didn't generate a response" line. Any partial answer written before the refusal stays on screen.
 
 ### Changed

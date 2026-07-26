@@ -603,6 +603,10 @@ mod tests {
             )
             .build();
             let thinking = req.thinking.expect("legacy Anthropic enables thinking");
+            assert!(
+                thinking.display.is_none(),
+                "the legacy shape returns the reasoning in full and takes no display setting"
+            );
             thinking
                 .budget_tokens
                 .expect("legacy thinking carries budget_tokens")

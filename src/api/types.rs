@@ -239,6 +239,10 @@ pub struct Thinking {
     pub thinking_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
+    /// How much of the reasoning the model returns. Omitted on the
+    /// legacy shape, which always returns the reasoning in full.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 impl Thinking {
@@ -246,16 +250,22 @@ impl Thinking {
         Self {
             thinking_type: "enabled".to_string(),
             budget_tokens: Some(budget_tokens),
+            display: None,
         }
     }
 
     /// Adaptive-thinking models let the server pick the budget based on
     /// the prompt; the caller expresses intent via
     /// [`OutputConfig::effort`] on the request instead of a token count.
+    ///
+    /// Asks for a readable summary of the reasoning. Without it these
+    /// models return thinking blocks whose text is empty, which reads
+    /// as a long silent pause before the answer starts.
     pub fn adaptive() -> Self {
         Self {
             thinking_type: "adaptive".to_string(),
             budget_tokens: None,
+            display: Some("summarized".to_string()),
         }
     }
 }

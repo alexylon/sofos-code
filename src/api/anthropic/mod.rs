@@ -47,6 +47,9 @@ mod tests {
         let json = serde_json::to_value(&thinking).unwrap();
         assert_eq!(json["type"], "enabled");
         assert_eq!(json["budget_tokens"], 5120);
+        // The legacy shape returns the reasoning in full and has no
+        // display setting to send.
+        assert!(json.get("display").is_none());
     }
 
     #[test]
@@ -56,6 +59,8 @@ mod tests {
         assert_eq!(json["type"], "adaptive");
         // `budget_tokens` must be omitted for adaptive — adaptive models reject it.
         assert!(json.get("budget_tokens").is_none());
+        // Without this the models return thinking blocks with no text.
+        assert_eq!(json["display"], "summarized");
     }
 
     #[test]
@@ -186,6 +191,7 @@ mod tests {
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["thinking"]["type"], "adaptive");
         assert!(json["thinking"].get("budget_tokens").is_none());
+        assert_eq!(json["thinking"]["display"], "summarized");
         assert_eq!(json["output_config"]["effort"], "high");
     }
 

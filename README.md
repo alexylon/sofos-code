@@ -343,6 +343,8 @@ Provider mapping:
 - **Claude Fable 5, Opus 5, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
 
+On the Anthropic models, Sofos asks for a readable summary of the model's reasoning and prints it under a dimmed `Thinking:` heading while the answer is being prepared. Asking for the summary does not change what a conversation costs: these models carry their reasoning between turns either way, and Anthropic bills it the same whether the summary is returned or withheld.
+
 ---
 
 ## Tools

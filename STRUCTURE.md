@@ -497,6 +497,7 @@ It contains:
 Rules:
 
 - This module is the common contract between `repl/`, `api/anthropic/`, `api/openai/`, `tools/`, and `session/`.
+- Adaptive thinking asks for a summary of the reasoning; without it the provider returns thinking blocks with no text.
 - Provider modules convert from these types to wire format and back.
 - Session persistence stores these shapes or display projections, so changes here can affect backwards compatibility.
 

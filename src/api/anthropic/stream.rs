@@ -342,9 +342,8 @@ where
                             // block — echoing it back on the next turn would
                             // fail server-side verification and 400 the whole
                             // request. Drop the block; an empty-thinking
-                            // adaptive block *with* a real signature (an
-                            // adaptive model with `display: "omitted"`) is
-                            // still preserved.
+                            // block that carries a real signature is still
+                            // preserved.
                             if !current_signature.is_empty() {
                                 content_blocks.push(ContentBlock::Thinking {
                                     thinking: current_thinking.clone(),

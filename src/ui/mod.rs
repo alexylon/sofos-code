@@ -231,10 +231,9 @@ impl StreamPrinter {
     }
 
     pub fn on_thinking_delta(&self, delta: &str) {
-        // Skip empty deltas (an adaptive model with `display: omitted`
-        // can emit a thinking block that never carries any body).
-        // Claiming we've started printing thinking would leave a bare
-        // "Thinking:" label with no content below it.
+        // A thinking block can arrive without any body. Printing the
+        // header for it would leave a bare "Thinking:" label with
+        // nothing below it.
         if delta.is_empty() {
             return;
         }
