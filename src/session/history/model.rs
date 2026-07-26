@@ -38,7 +38,7 @@ pub struct SessionMetadata {
 /// persistence behaviour. Files written after persistence was added
 /// round-trip every counter, so the cost summary stays accurate
 /// across a `--resume`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SessionTokenCounters {
     #[serde(default)]
     pub total_input_tokens: u32,
@@ -51,6 +51,12 @@ pub struct SessionTokenCounters {
     /// Largest input-token count observed on any single API call.
     #[serde(default)]
     pub peak_single_turn_input_tokens: u32,
+    /// Running USD estimate priced per response. `None` in files
+    /// written before the session tracked it, where the only estimate
+    /// available is one derived from the totals at the saved model's
+    /// rates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

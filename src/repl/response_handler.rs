@@ -62,14 +62,28 @@ impl ResponseHandler {
         }
     }
 
+    /// Fold one response's usage into the running totals. `served_by`
+    /// is the model that produced the response, which a refusal
+    /// fallback can make different from `configured`.
+    #[allow(clippy::too_many_arguments)]
     fn accumulate_usage(
         usage: &crate::api::Usage,
+        served_by: &str,
+        configured: &str,
         total_input: &mut u32,
         total_output: &mut u32,
         total_cache_read: &mut u32,
         total_cache_creation: &mut u32,
         peak_single_turn_input: &mut u32,
+        total_cost: &mut f64,
     ) {
+        let priced_as = crate::api::model_info::pricing_model(served_by, configured);
+        *total_cost += crate::api::model_info::lookup(priced_as).turn_cost(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_input_tokens.unwrap_or(0),
+            usage.cache_creation_input_tokens.unwrap_or(0),
+        );
         *total_input += usage.input_tokens;
         *total_output += usage.output_tokens;
         *total_cache_read += usage.cache_read_input_tokens.unwrap_or(0);
@@ -109,6 +123,7 @@ impl ResponseHandler {
         total_cache_read_tokens: &mut u32,
         total_cache_creation_tokens: &mut u32,
         peak_single_turn_input_tokens: &mut u32,
+        total_cost: &mut f64,
     ) -> Result<()> {
         let mut iteration = 0;
 
@@ -131,6 +146,7 @@ impl ResponseHandler {
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
                     peak_single_turn_input_tokens,
+                    total_cost,
                 )
                 .await?;
                 return Ok(());
@@ -211,11 +227,14 @@ impl ResponseHandler {
 
                 Self::accumulate_usage(
                     &response.usage,
+                    &response.model,
+                    &self.model,
                     total_input_tokens,
                     total_output_tokens,
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
                     peak_single_turn_input_tokens,
+                    total_cost,
                 );
 
                 if response.content.is_empty()
@@ -305,11 +324,14 @@ impl ResponseHandler {
 
             Self::accumulate_usage(
                 &response.usage,
+                &response.model,
+                &self.model,
                 total_input_tokens,
                 total_output_tokens,
                 total_cache_read_tokens,
                 total_cache_creation_tokens,
                 peak_single_turn_input_tokens,
+                total_cost,
             );
 
             if std::env::var("SOFOS_DEBUG").is_ok() {
@@ -666,6 +688,7 @@ impl ResponseHandler {
         total_cache_read_tokens: &mut u32,
         total_cache_creation_tokens: &mut u32,
         peak_single_turn_input_tokens: &mut u32,
+        total_cost: &mut f64,
     ) -> Result<()> {
         UI::print_warning("Maximum tool iterations reached. Stopping to prevent infinite loop.");
 
@@ -697,11 +720,14 @@ impl ResponseHandler {
             Ok(response) => {
                 Self::accumulate_usage(
                     &response.usage,
+                    &response.model,
+                    &self.model,
                     total_input_tokens,
                     total_output_tokens,
                     total_cache_read_tokens,
                     total_cache_creation_tokens,
                     peak_single_turn_input_tokens,
+                    total_cost,
                 );
 
                 for block in &response.content {
@@ -844,6 +870,7 @@ mod truncation_tests {
     fn call_handler(handler: &mut ResponseHandler, blocks: Vec<ContentBlock>, stop: Option<&str>) {
         let mut display = Vec::new();
         let (mut a, mut b, mut c, mut d, mut e) = (0, 0, 0, 0, 0);
+        let mut cost = 0.0;
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -858,6 +885,7 @@ mod truncation_tests {
             &mut c,
             &mut d,
             &mut e,
+            &mut cost,
         ))
         .expect("handle_response should not error on the truncation early-return paths");
     }

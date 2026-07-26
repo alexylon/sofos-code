@@ -88,6 +88,7 @@ impl Repl {
             // a long-running conversation, so server-side compaction
             // would be a no-op even on supported models.
             context_management: None,
+            fallbacks: None,
         };
 
         let interrupt_flag = Arc::clone(&self.interrupt_flag);
@@ -116,7 +117,11 @@ impl Repl {
                 // Bill the summary call before the length gate; the
                 // tokens are spent regardless of whether the summary
                 // ends up being used or discarded by the fallback.
-                self.session_state.add_usage(&response.usage);
+                self.session_state.add_usage(
+                    &response.usage,
+                    &response.model,
+                    &self.model_config.model,
+                );
 
                 let summary_text: String = response
                     .content

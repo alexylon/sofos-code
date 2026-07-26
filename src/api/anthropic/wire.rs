@@ -23,32 +23,31 @@ pub(super) const BETA_TOKEN_EFFICIENT: &str = "token-efficient-tools-2025-02-19"
 /// the request input grows past the model's per-request threshold,
 /// returning a `compaction` content block in the next assistant
 /// response that we round-trip on subsequent calls.
-///
-/// Only ships when the target model supports it — older models 400
-/// on the unknown beta token.
-/// Referenced by name only inside the cross-check test
-/// `beta_with_compact_matches_components`; the production header is
-/// served as the literal in `BETA_TOKEN_EFFICIENT_AND_COMPACT`.
-#[allow(dead_code)]
 pub(super) const BETA_COMPACT: &str = "compact-2026-01-12";
 
-/// Compound beta token list used when the target model supports both
-/// token-efficient tools and server-side compaction. Anthropic
-/// accepts a comma-separated list in the single header.
-pub(super) const BETA_TOKEN_EFFICIENT_AND_COMPACT: &str =
-    "token-efficient-tools-2025-02-19,compact-2026-01-12";
+/// Server-side fallback beta — lets Anthropic answer a request its
+/// safety classifiers decline on a model of its choosing instead of
+/// returning the refusal. Pairs with the `fallbacks` request field;
+/// this header is the one that accepts the `"default"` form.
+pub(super) const BETA_SERVER_SIDE_FALLBACK: &str = "server-side-fallback-2026-07-01";
 
-/// Pick the `anthropic-beta` value for `model`. Compaction is gated
-/// off the same `Model::supports_server_compaction` flag the
-/// request builder uses to attach the `context_management` field, so
-/// the beta header and the body field can never disagree about which
-/// models speak server-side compaction.
-pub(super) fn anthropic_beta_for(model: &str) -> &'static str {
-    if crate::api::model_info::lookup(model).supports_server_compaction {
-        BETA_TOKEN_EFFICIENT_AND_COMPACT
-    } else {
-        BETA_TOKEN_EFFICIENT
+/// Build the `anthropic-beta` value for `model`: token-efficient tools
+/// on every request, plus one token per capability the model
+/// advertises. Each capability reads the same `Model` flag the request
+/// builder uses to populate its body field, so the header and the body
+/// can never disagree about which features are in play. Models that
+/// support nothing extra get the single universal token rather than
+/// relying on Anthropic ignoring unknown ones.
+pub(super) fn anthropic_beta_for(model: &str) -> String {
+    let info = crate::api::model_info::lookup(model);
+    let mut tokens = vec![BETA_TOKEN_EFFICIENT];
+    if info.supports_server_compaction {
+        tokens.push(BETA_COMPACT);
     }
+    if info.supports_refusal_fallback {
+        tokens.push(BETA_SERVER_SIDE_FALLBACK);
+    }
+    tokens.join(",")
 }
 
 /// Legacy `thinking.budget_tokens` values used by models that don't

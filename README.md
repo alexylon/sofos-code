@@ -87,7 +87,7 @@ The assistant acts through visible tool calls. Dangerous commands are blocked, d
 - **Image vision** — Local image files, remote image URLs, and pasted clipboard images.
 - **MCP integration** — Tools from stdio or streamable HTTP MCP servers.
 - **Session persistence** — Saved conversations with compatible model, permission preset, and cost counters restored.
-- **Cost visibility** — Token totals, cache usage, and provider-specific cost estimates.
+- **Cost visibility** — Token totals, cache usage, and cost estimates priced per response at the rates of the model that answered it.
 - **Context compaction** — Local and provider-supported compaction for older conversation context.
 
 ---
@@ -342,6 +342,8 @@ Provider mapping:
 - **OpenAI** sends `reasoning.effort` directly. On the **GPT-5.6** models (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
 - **Claude Fable 5, Opus 5, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
+
+Claude Fable 5 and Claude Opus 5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.
 
 On the Anthropic models, Sofos asks for a readable summary of the model's reasoning and prints it under a dimmed `Thinking:` heading while the answer is being prepared. Asking for the summary does not change what a conversation costs: these models carry their reasoning between turns either way, and Anthropic bills it the same whether the summary is returned or withheld.
 
@@ -601,7 +603,7 @@ A saved session includes:
 - system prompt;
 - model name where available;
 - permission preset, with read-only state restored for older sessions;
-- token counters and cache counters.
+- token counters, cache counters, and the running cost estimate.
 
 Resume from the command line:
 
@@ -616,6 +618,8 @@ Or resume from inside Sofos:
 ```
 
 On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available, and accounts for provider cache discounts and cache-write premiums.
+
+Each response is priced as it arrives, using the rates of the model that produced it, so switching model mid-session with `/model` — or having a request answered on a fallback model after a refusal — is costed correctly rather than at whichever model happens to be active at the end. If a fallback lands on a model Sofos has no prices for, that response is priced at the configured model's rates and the estimate is approximate for that turn.
 
 ---
 

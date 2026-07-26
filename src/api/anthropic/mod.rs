@@ -24,9 +24,9 @@ mod tests {
     use super::*;
     use crate::api::anthropic::stream::parse_stream;
     use crate::api::anthropic::wire::{
-        BETA_COMPACT, BETA_TOKEN_EFFICIENT, BETA_TOKEN_EFFICIENT_AND_COMPACT,
-        LEGACY_THINKING_BUDGET_LOW, LEGACY_THINKING_BUDGET_MEDIUM, anthropic_beta_for,
-        prepare_request, sanitize_messages_for_anthropic,
+        BETA_COMPACT, BETA_SERVER_SIDE_FALLBACK, BETA_TOKEN_EFFICIENT, LEGACY_THINKING_BUDGET_LOW,
+        LEGACY_THINKING_BUDGET_MEDIUM, anthropic_beta_for, prepare_request,
+        sanitize_messages_for_anthropic,
     };
     use crate::api::types::*;
     use std::sync::Arc;
@@ -119,15 +119,19 @@ mod tests {
     }
 
     #[test]
-    fn beta_with_compact_matches_components() {
-        // `BETA_TOKEN_EFFICIENT_AND_COMPACT` is a literal that must
-        // stay in lockstep with its two component consts. Catch drift
-        // here so renaming one component without the other is a test
-        // failure rather than a silent header mismatch in production.
-        assert_eq!(
-            BETA_TOKEN_EFFICIENT_AND_COMPACT,
-            format!("{BETA_TOKEN_EFFICIENT},{BETA_COMPACT}")
-        );
+    fn anthropic_beta_for_gates_refusal_fallback_to_supported_models() {
+        // The header and the request body's `fallbacks` field read the
+        // same `Model::supports_refusal_fallback` flag, so cross-check
+        // every model rather than pinning one pair. Drift shows up here
+        // instead of as a 400 on the wire.
+        for m in crate::api::model_info::SUPPORTED_MODELS {
+            assert_eq!(
+                anthropic_beta_for(m.name).contains(BETA_SERVER_SIDE_FALLBACK),
+                m.supports_refusal_fallback,
+                "{}: beta header must agree with model info on refusal fallback",
+                m.name
+            );
+        }
     }
 
     #[test]
@@ -186,6 +190,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: None,
             context_management: None,
+            fallbacks: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -210,6 +215,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: None,
             context_management: None,
+            fallbacks: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
@@ -232,6 +238,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: Some("session-1".to_string()),
             context_management: None,
+            fallbacks: None,
         };
 
         let prepared = prepare_request(request);
@@ -277,6 +284,64 @@ mod tests {
 
         fn flag() -> Arc<AtomicBool> {
             Arc::new(AtomicBool::new(false))
+        }
+
+        /// A mid-stream refusal fallback re-points the response at the
+        /// model that actually answered, and drops the declined model's
+        /// internal blocks — echoing those back on the next turn is
+        /// rejected, while its plain text stays as context.
+        #[tokio::test]
+        async fn fallback_block_reports_the_serving_model_and_drops_internal_blocks() {
+            let events = vec![
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "id": "msg_fallback",
+                        "model": crate::api::model_info::CLAUDE_OPUS,
+                        "usage": {"input_tokens": 5}
+                    }
+                }),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Partial"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1, "content_block": {"type": "thinking", "thinking": ""}}),
+                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "signature_delta", "signature": "sig"}}),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {
+                        "type": "fallback",
+                        "from": {"model": crate::api::model_info::CLAUDE_OPUS},
+                        "to": {"model": crate::api::model_info::CLAUDE_SONNET}
+                    }
+                }),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 3}}),
+                json!({"type": "message_stop"}),
+            ];
+
+            let response = parse_stream(sse_stream_from_events(events), |_| {}, |_| {}, flag())
+                .await
+                .expect("a fallback block must not fail the stream");
+
+            // The cost line and any later turn have to name the model
+            // that actually produced the answer.
+            assert_eq!(response.model, crate::api::model_info::CLAUDE_SONNET);
+            let kinds: Vec<&str> = response
+                .content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text { .. } => "text",
+                    ContentBlock::Thinking { .. } => "thinking",
+                    _ => "other",
+                })
+                .collect();
+            assert_eq!(
+                kinds,
+                vec!["text"],
+                "the declined model's thinking must not survive"
+            );
         }
 
         #[tokio::test]

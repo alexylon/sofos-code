@@ -16,6 +16,16 @@
 
 use crate::api::{ReasoningEffort, ReasoningMode};
 
+/// Fraction of the base input price charged for tokens served from the
+/// provider prompt cache. Anthropic and OpenAI both publish this at 10%
+/// across the current families, so one constant covers both.
+const CACHE_READ_RATE: f64 = 0.10;
+/// Multiplier on the base input price for tokens written to a 5-minute
+/// Anthropic cache breakpoint. OpenAI has no creation charge. The
+/// 1-hour breakpoint bills at 2x, not 1.25x, so the estimate
+/// under-reports that anchor.
+const CACHE_CREATION_RATE: f64 = 1.25;
+
 /// LLM vendor a model belongs to. Used to pick the right API client
 /// at startup and to detect a cross-provider resume without
 /// instantiating both clients.
@@ -77,6 +87,11 @@ pub struct Model {
     /// reject mismatched pairs (for example `xhigh` on a model that
     /// tops out at `high`) before they reach the server.
     pub supported_efforts: &'static [ReasoningEffort],
+    /// True for Anthropic models whose safety classifiers can decline a
+    /// request. Those models take the server-side `fallbacks` parameter,
+    /// which lets Anthropic answer a declined request on another model
+    /// instead of returning the refusal.
+    pub supports_refusal_fallback: bool,
     /// True for models that accept OpenAI's `reasoning.mode: "pro"` (the
     /// GPT-5.6 family). Startup validation and the `/mode` handler reject
     /// `Pro` on any model without this capability.
@@ -106,6 +121,30 @@ impl Model {
     /// messages are dropped without summary as a last resort.
     pub fn effective_window(&self) -> u32 {
         ((self.context_window as u64).saturating_mul(95) / 100) as u32
+    }
+
+    /// USD cost of one response at this model's rates.
+    ///
+    /// `input_tokens` follows the provider's own meaning: OpenAI counts
+    /// cached tokens inside it, Anthropic reports only the uncached
+    /// ones, so the cached share is subtracted first on OpenAI to reach
+    /// the tokens actually billed at the full rate.
+    pub fn turn_cost(
+        &self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    ) -> f64 {
+        let uncached = match self.provider {
+            Provider::OpenAI => input_tokens.saturating_sub(cache_read_tokens),
+            Provider::Anthropic => input_tokens,
+        };
+        let per_million = |tokens: u32, price: f64| (tokens as f64 / 1_000_000.0) * price;
+        per_million(uncached, self.price_input_per_m)
+            + per_million(cache_read_tokens, self.price_input_per_m) * CACHE_READ_RATE
+            + per_million(cache_creation_tokens, self.price_input_per_m) * CACHE_CREATION_RATE
+            + per_million(output_tokens, self.price_output_per_m)
     }
 
     /// Comma-separated lowercase labels of every effort level this
@@ -179,6 +218,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
+        supports_refusal_fallback: true,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -199,6 +239,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
+        supports_refusal_fallback: true,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -219,6 +260,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
+        supports_refusal_fallback: false,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -239,6 +281,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(170_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
+        supports_refusal_fallback: false,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -257,6 +300,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
+        supports_refusal_fallback: false,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -277,6 +321,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
+        supports_refusal_fallback: false,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -297,6 +342,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
+        supports_refusal_fallback: false,
         supported_efforts: &[
             ReasoningEffort::Low,
             ReasoningEffort::Medium,
@@ -381,6 +427,18 @@ pub fn effort_support_error(name: &str, effort: ReasoningEffort) -> Option<Strin
     ))
 }
 
+/// Model whose rates should price a response. Anthropic can answer a
+/// declined request on a model outside [`SUPPORTED_MODELS`], and there
+/// are no prices on file for one of those, so the configured model
+/// stands in and the estimate is approximate for that turn.
+pub fn pricing_model<'a>(served_by: &'a str, configured: &'a str) -> &'a str {
+    if canonical_model(served_by).is_some() {
+        served_by
+    } else {
+        configured
+    }
+}
+
 /// Human-readable rejection message when `max_tokens` asks for more
 /// output than the model can produce, or `None` when the value fits.
 /// Surfaced from the startup validator and from `/model` switching, so
@@ -433,6 +491,80 @@ pub fn supports_pro_mode(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Price a response the way the session does: resolve the slug
+    /// through the table, then apply that model's rates.
+    fn cost_of(model: &str, input: u32, output: u32, cache_read: u32, cache_creation: u32) -> f64 {
+        lookup(model).turn_cost(input, output, cache_read, cache_creation)
+    }
+
+    fn approx(a: f64, b: f64) {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "expected ≈{}, got {} (delta {})",
+            b,
+            a,
+            (a - b).abs()
+        );
+    }
+
+    #[test]
+    fn openai_cost_uses_full_rate_when_no_cache() {
+        // 100k input @ $5/M, 5k output @ $30/M, no cache.
+        let cost = cost_of(crate::api::model_info::GPT_SOL, 100_000, 5_000, 0, 0);
+        approx(cost, 100_000.0 / 1e6 * 5.0 + 5_000.0 / 1e6 * 30.0);
+    }
+
+    #[test]
+    fn openai_cost_discounts_cache_reads_at_10pct() {
+        let cost = cost_of(crate::api::model_info::GPT_SOL, 100_000, 5_000, 75_000, 0);
+        approx(cost, 0.1625 + 0.15);
+    }
+
+    #[test]
+    fn openai_cost_3x_lower_than_pre_fix_at_75pct_hit_input_only() {
+        let pre_fix_input = 100_000.0 / 1e6 * 5.0;
+        let post_fix_input = cost_of(crate::api::model_info::GPT_SOL, 100_000, 0, 75_000, 0);
+        let ratio = pre_fix_input / post_fix_input;
+        assert!(
+            (2.9..=3.2).contains(&ratio),
+            "expected pre/post ratio ≈3x at 75% hit, got {:.2}x",
+            ratio
+        );
+    }
+
+    #[test]
+    fn anthropic_cost_input_tokens_already_excludes_cache() {
+        let cost = cost_of(
+            crate::api::model_info::CLAUDE_OPUS,
+            25_000,
+            5_000,
+            75_000,
+            0,
+        );
+        approx(cost, 0.1625 + 0.125);
+    }
+
+    #[test]
+    fn anthropic_cost_charges_creation_at_125pct() {
+        let cost = cost_of(crate::api::model_info::CLAUDE_OPUS, 0, 0, 0, 50_000);
+        approx(cost, 50_000.0 / 1e6 * 5.0 * 1.25);
+    }
+
+    #[test]
+    fn cache_hit_does_not_underflow_when_read_exceeds_input() {
+        let cost = cost_of(crate::api::model_info::GPT_SOL, 50_000, 0, 100_000, 0);
+        approx(cost, 100_000.0 / 1e6 * 5.0 * 0.10);
+    }
+
+    #[test]
+    fn unknown_model_falls_back_without_panic() {
+        // Default fallback uses the application-default model's pricing
+        // ($3 / $15) and the Anthropic semantics branch (input_tokens
+        // is uncached).
+        let cost = cost_of("some-future-model", 1_000, 1_000, 0, 0);
+        approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
+    }
 
     #[test]
     fn provider_routes_supported_models_correctly() {

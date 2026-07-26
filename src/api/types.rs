@@ -80,6 +80,13 @@ pub struct CreateMessageRequest {
     /// every message before it. Cleared on the OpenAI path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<ContextManagement>,
+    /// Anthropic-only. `Some("default")` asks Anthropic to answer a
+    /// request its safety classifiers decline on a fallback model of
+    /// its choosing, rather than returning the refusal. Set only for
+    /// the models that advertise the capability; the OpenAI client
+    /// builds its own request body and never reads this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallbacks: Option<String>,
 }
 
 /// Anthropic `context_management` configuration. Currently models a

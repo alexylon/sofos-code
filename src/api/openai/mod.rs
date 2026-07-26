@@ -41,6 +41,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: key.map(str::to_string),
             context_management: None,
+            fallbacks: None,
         }
     }
 
@@ -124,6 +125,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: None,
             context_management: None,
+            fallbacks: None,
         };
         let body = build_responses_body(&req);
         let inputs = body
@@ -180,6 +182,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: None,
             context_management: None,
+            fallbacks: None,
         };
         let body = build_responses_body(&req);
         let inputs = body.get("input").and_then(|v| v.as_array()).unwrap();

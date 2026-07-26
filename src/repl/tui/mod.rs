@@ -346,6 +346,7 @@ pub fn run(mut repl: Repl) -> Result<()> {
             summary.output_tokens,
             summary.cache_read_tokens,
             summary.cache_creation_tokens,
+            summary.estimated_cost,
         );
         // The summary emits its own leading newline when it prints; if
         // it short-circuited, the cursor is still parked at the end of

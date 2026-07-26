@@ -9,6 +9,7 @@ use crate::api::types::*;
 use crate::api::utils;
 use crate::api::utils::MAX_SSE_BUFFER_BYTES;
 use crate::error::{Result, SofosError};
+use colored::Colorize;
 use futures::stream::{Stream, StreamExt};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -210,6 +211,56 @@ where
                             "text" => {
                                 current_text.clear();
                                 Some(StreamBlockKind::Text)
+                            }
+                            // A safety classifier declined the request
+                            // and Anthropic answered it on another
+                            // model. The block is an audit marker we
+                            // don't round-trip, but the switch has to
+                            // reach the user: the answer now comes from
+                            // a model they did not choose, and it bills
+                            // at that model's rates.
+                            "fallback" => {
+                                let served_by = block
+                                    .get("to")
+                                    .and_then(|t| t.get("model"))
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or_default();
+                                let declined_by = block
+                                    .get("from")
+                                    .and_then(|f| f.get("model"))
+                                    .and_then(|m| m.as_str())
+                                    .unwrap_or(model_name.as_str())
+                                    .to_string();
+                                let answered_by = if served_by.is_empty() {
+                                    "another model".to_string()
+                                } else {
+                                    model_name = served_by.to_string();
+                                    served_by.to_string()
+                                };
+                                println!(
+                                    "\n{}",
+                                    format!(
+                                        "Request flagged by {declined_by}'s safety check — \
+                                         answering with {answered_by} instead."
+                                    )
+                                    .bright_yellow()
+                                    .bold()
+                                );
+                                // Anything the declined model had
+                                // already produced internally is not
+                                // the fallback model's to continue
+                                // from, and echoing it back on the next
+                                // turn is rejected. Its plain text
+                                // stays as context.
+                                content_blocks.retain(|b| {
+                                    !matches!(
+                                        b,
+                                        ContentBlock::Thinking { .. }
+                                            | ContentBlock::ToolUse { .. }
+                                            | ContentBlock::ServerToolUse { .. }
+                                    )
+                                });
+                                None
                             }
                             "thinking" => {
                                 current_thinking.clear();

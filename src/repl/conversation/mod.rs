@@ -366,6 +366,7 @@ mod tests {
             reasoning: None,
             prompt_cache_key: None,
             context_management: None,
+            fallbacks: None,
         };
         let openai_input = build_response_input(&request);
         let mut seen_call_ids: HashSet<String> = HashSet::new();

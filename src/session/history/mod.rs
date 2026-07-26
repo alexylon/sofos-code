@@ -200,6 +200,7 @@ mod tests {
             total_cache_read_tokens: 65_000,
             total_cache_creation_tokens: 4_321,
             peak_single_turn_input_tokens: 300_000,
+            total_cost: Some(1.25),
         };
 
         manager

@@ -15,6 +15,9 @@ pub struct ExitSummary {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_creation_tokens: u32,
+    /// Running USD estimate, priced per response at the rates of the
+    /// model that produced it.
+    pub estimated_cost: f64,
     /// True when the worker exits because it panicked rather than via
     /// the normal shutdown path. Lets the UI prefix the goodbye line
     /// with a "Session ended unexpectedly" notice instead of pretending

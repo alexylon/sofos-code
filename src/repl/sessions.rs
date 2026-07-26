@@ -76,6 +76,7 @@ impl Repl {
                 total_cache_read_tokens: self.session_state.total_cache_read_tokens,
                 total_cache_creation_tokens: self.session_state.total_cache_creation_tokens,
                 peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
+                total_cost: Some(self.session_state.total_cost),
             },
             &self.model_config.model,
             self.mode.is_readonly(),
@@ -234,6 +235,18 @@ impl Repl {
             session.token_counters.total_cache_creation_tokens;
         self.session_state.peak_single_turn_input_tokens =
             session.token_counters.peak_single_turn_input_tokens;
+        // Files written before per-response pricing carry no total, so
+        // fall back to the old behaviour for them: price the restored
+        // counters once at the saved model's rates.
+        self.session_state.total_cost = session.token_counters.total_cost.unwrap_or_else(|| {
+            let priced_as = session.model.as_deref().unwrap_or(&self.model_config.model);
+            crate::api::model_info::lookup(priced_as).turn_cost(
+                session.token_counters.total_input_tokens,
+                session.token_counters.total_output_tokens,
+                session.token_counters.total_cache_read_tokens,
+                session.token_counters.total_cache_creation_tokens,
+            )
+        });
 
         // Restore the model the session was running under so streaming
         // continuity holds across providers. `None` means the file was

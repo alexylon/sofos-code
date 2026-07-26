@@ -16,6 +16,50 @@ mod tests {
         }
     }
 
+    /// A session can span more than one model — a `/model` switch, or a
+    /// refusal answered on a fallback. Each response has to be priced at
+    /// the rates of whichever model produced it, which a single total
+    /// derived from the counters cannot express.
+    #[test]
+    fn cost_is_priced_per_response_at_the_serving_model() {
+        use crate::api::model_info::{CLAUDE_HAIKU, CLAUDE_OPUS, lookup};
+
+        let mut state = SessionState::new("test".to_string(), ConversationHistory::new());
+        state.add_usage(&usage_with_inputs(1_000, 100), CLAUDE_OPUS, CLAUDE_OPUS);
+        state.add_usage(&usage_with_inputs(1_000, 100), CLAUDE_HAIKU, CLAUDE_OPUS);
+
+        let expected = lookup(CLAUDE_OPUS).turn_cost(1_000, 100, 0, 0)
+            + lookup(CLAUDE_HAIKU).turn_cost(1_000, 100, 0, 0);
+        assert!(
+            (state.total_cost - expected).abs() < 1e-12,
+            "expected {expected}, got {}",
+            state.total_cost
+        );
+        // Pricing everything at the configured model would overcharge,
+        // since the second response ran on the cheaper one.
+        let all_at_configured = lookup(CLAUDE_OPUS).turn_cost(2_000, 200, 0, 0);
+        assert!(state.total_cost < all_at_configured);
+    }
+
+    /// Anthropic can answer a declined request on a model that is not in
+    /// the table, and there are no rates on file for one of those. The
+    /// configured model stands in rather than the lookup silently
+    /// falling through to the default model's prices.
+    #[test]
+    fn an_unpriceable_serving_model_falls_back_to_the_configured_one() {
+        use crate::api::model_info::{CLAUDE_HAIKU, lookup};
+
+        let mut state = SessionState::new("test".to_string(), ConversationHistory::new());
+        state.add_usage(
+            &usage_with_inputs(1_000, 100),
+            "some-unlisted-model",
+            CLAUDE_HAIKU,
+        );
+
+        let expected = lookup(CLAUDE_HAIKU).turn_cost(1_000, 100, 0, 0);
+        assert!((state.total_cost - expected).abs() < 1e-12);
+    }
+
     #[test]
     fn add_usage_saturates_at_u32_ceiling() {
         // A long-running session that crosses 2^32 tokens used to wrap
@@ -25,7 +69,11 @@ mod tests {
         state.total_input_tokens = u32::MAX - 5;
         state.total_output_tokens = u32::MAX - 5;
 
-        state.add_usage(&usage_with_inputs(10, 10));
+        state.add_usage(
+            &usage_with_inputs(10, 10),
+            crate::api::model_info::CLAUDE_SONNET,
+            crate::api::model_info::CLAUDE_SONNET,
+        );
 
         assert_eq!(state.total_input_tokens, u32::MAX);
         assert_eq!(state.total_output_tokens, u32::MAX);
@@ -37,8 +85,16 @@ mod tests {
         // shift to `saturating_add` doesn't perturb cost reporting in
         // the common case.
         let mut state = SessionState::new("test".to_string(), ConversationHistory::new());
-        state.add_usage(&usage_with_inputs(1_000, 200));
-        state.add_usage(&usage_with_inputs(2_500, 600));
+        state.add_usage(
+            &usage_with_inputs(1_000, 200),
+            crate::api::model_info::CLAUDE_SONNET,
+            crate::api::model_info::CLAUDE_SONNET,
+        );
+        state.add_usage(
+            &usage_with_inputs(2_500, 600),
+            crate::api::model_info::CLAUDE_SONNET,
+            crate::api::model_info::CLAUDE_SONNET,
+        );
 
         assert_eq!(state.total_input_tokens, 3_500);
         assert_eq!(state.total_output_tokens, 800);
@@ -63,7 +119,8 @@ pub struct SessionState {
     /// - Anthropic Messages API: this is **uncached** new tokens only;
     ///   cache read/creation are tracked separately and disjoint.
     ///
-    /// `calculate_cost` normalizes this when computing the bill.
+    /// [`Model::turn_cost`](crate::api::model_info::Model::turn_cost)
+    /// normalises the difference when pricing a response.
     pub total_input_tokens: u32,
     /// Total output tokens generated in this session
     pub total_output_tokens: u32,
@@ -79,12 +136,19 @@ pub struct SessionState {
     /// session. Recorded as a session statistic; no supported model
     /// prices off it today.
     ///
-    /// All five counters above are persisted through
+    /// All five counters above, and the running cost below, are
+    /// persisted through
     /// [`SessionTokenCounters`](crate::session::SessionTokenCounters)
-    /// so a `--resume` keeps the cost summary accurate. Session files
+    /// so a `--resume` keeps the summary accurate. Session files
     /// written before persistence was added default every counter to 0
     /// via `#[serde(default)]`.
     pub peak_single_turn_input_tokens: u32,
+    /// Running USD estimate, accumulated per response at the rates of
+    /// the model that actually produced it. Kept as a total rather than
+    /// derived from the counters above because one session can span
+    /// several models — a `/model` switch, or a request answered on a
+    /// fallback model after a refusal — and each is priced differently.
+    pub total_cost: f64,
 }
 
 impl SessionState {
@@ -98,6 +162,7 @@ impl SessionState {
             total_cache_read_tokens: 0,
             total_cache_creation_tokens: 0,
             peak_single_turn_input_tokens: 0,
+            total_cost: 0.0,
         }
     }
 
@@ -110,9 +175,20 @@ impl SessionState {
         self.total_cache_read_tokens = 0;
         self.total_cache_creation_tokens = 0;
         self.peak_single_turn_input_tokens = 0;
+        self.total_cost = 0.0;
     }
 
-    pub fn add_usage(&mut self, usage: &crate::api::Usage) {
+    /// Fold one response's usage into the session totals. `served_by`
+    /// is the model that produced it, which is not always the model the
+    /// session is configured with.
+    pub fn add_usage(&mut self, usage: &crate::api::Usage, served_by: &str, configured: &str) {
+        let priced_as = crate::api::model_info::pricing_model(served_by, configured);
+        self.total_cost += crate::api::model_info::lookup(priced_as).turn_cost(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_input_tokens.unwrap_or(0),
+            usage.cache_creation_input_tokens.unwrap_or(0),
+        );
         // `saturating_add` instead of `+=`: each counter is `u32`, and a
         // session that survives across `--resume` invocations
         // accumulates over multiple turns. The 4.29-billion ceiling is

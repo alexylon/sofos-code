@@ -565,9 +565,10 @@ It contains:
 - auto-compaction thresholds;
 - supported reasoning-effort levels;
 - pro-mode support (the GPT-5.6 family);
+- refusal-fallback support, for the models whose safety classifiers can decline a request;
 - adaptive-thinking support;
 - server-side compaction support;
-- token pricing.
+- token pricing, and the per-response cost arithmetic that applies it.
 
 Rules:
 
@@ -1291,18 +1292,17 @@ Rules:
 
 ### 9.5 `ui/cost.rs`
 
-`ui/cost.rs` owns token usage and cost calculation display.
+`ui/cost.rs` owns token usage and cost display.
 
 It contains:
 
-- provider pricing application;
-- cache-read and cache-write accounting;
+- token-total and cache-hit presentation;
 - session summary rendering.
 
 Rules:
 
-- Cost display reads model pricing from `api/model_info.rs`.
-- Pricing calculations must account for provider cache discounts and premiums.
+- The pricing arithmetic lives with the prices in `api/model_info.rs`; this module renders the running total the session accumulated and does not recompute it.
+- A session can span several models, so cost is accumulated per response rather than derived from the session totals.
 
 ### 9.6 `ui/session_display.rs`
 

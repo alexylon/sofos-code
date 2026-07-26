@@ -282,7 +282,8 @@ impl Repl {
             }
         };
 
-        self.session_state.add_usage(&response.usage);
+        self.session_state
+            .add_usage(&response.usage, &response.model, &self.model_config.model);
 
         let mut handler = ResponseHandler::new(
             self.client.clone(),
@@ -308,6 +309,7 @@ impl Repl {
             &mut self.session_state.total_cache_read_tokens,
             &mut self.session_state.total_cache_creation_tokens,
             &mut self.session_state.peak_single_turn_input_tokens,
+            &mut self.session_state.total_cost,
         ));
 
         // Always preserve conversation state so the AI retains context on retry

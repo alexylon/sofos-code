@@ -419,6 +419,7 @@ impl Repl {
             self.session_state.total_output_tokens,
             self.session_state.total_cache_read_tokens,
             self.session_state.total_cache_creation_tokens,
+            self.session_state.total_cost,
         );
 
         Ok(())
@@ -431,6 +432,7 @@ impl Repl {
             output_tokens: self.session_state.total_output_tokens,
             cache_read_tokens: self.session_state.total_cache_read_tokens,
             cache_creation_tokens: self.session_state.total_cache_creation_tokens,
+            estimated_cost: self.session_state.total_cost,
             panicked: false,
         }
     }

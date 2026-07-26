@@ -133,6 +133,14 @@ impl<'a> RequestBuilder<'a> {
             None
         };
 
+        // Server-side refusal fallback. Only the Anthropic models whose
+        // classifiers can decline accept the field; `"default"` lets
+        // Anthropic pick the substitute by refusal category so we never
+        // maintain a model list of our own.
+        let fallbacks = (is_anthropic
+            && crate::api::model_info::lookup(self.model).supports_refusal_fallback)
+            .then(|| "default".to_string());
+
         let mut request = CreateMessageRequest {
             model: self.model.to_string(),
             max_tokens: self.max_tokens,
@@ -145,6 +153,7 @@ impl<'a> RequestBuilder<'a> {
             reasoning: reasoning_config,
             prompt_cache_key: Some(self.session_id.to_string()),
             context_management,
+            fallbacks,
         };
 
         // Anthropic prompt caching is opt-in per content block. We mark
@@ -582,6 +591,54 @@ mod tests {
             trigger_value >= 50_000,
             "Anthropic rejects triggers below 50K"
         );
+    }
+
+    /// The `fallbacks` field and the `server-side-fallback` beta header
+    /// are gated off the same model flag. This covers the body half;
+    /// `anthropic_beta_for_gates_refusal_fallback_to_supported_models`
+    /// covers the header, so neither can be sent without the other.
+    #[test]
+    fn refusal_fallback_field_matches_model_support() {
+        let conv = ConversationHistory::new();
+        for m in crate::api::model_info::SUPPORTED_MODELS {
+            if m.provider != crate::api::model_info::Provider::Anthropic {
+                continue;
+            }
+            let req = RequestBuilder::new(
+                &anthropic_client(),
+                m.name,
+                65_536,
+                &conv,
+                one_regular_tool(),
+                ReasoningEffort::Medium,
+                "s1",
+            )
+            .build();
+            assert_eq!(
+                req.fallbacks.as_deref() == Some("default"),
+                m.supports_refusal_fallback,
+                "{}: the fallbacks field must agree with model info",
+                m.name
+            );
+        }
+    }
+
+    /// OpenAI has no equivalent parameter, and its client builds a body
+    /// of its own, so the field must never be populated there.
+    #[test]
+    fn openai_requests_carry_no_refusal_fallback() {
+        let conv = ConversationHistory::new();
+        let req = RequestBuilder::new(
+            &openai_client(),
+            crate::api::model_info::GPT_SOL,
+            8192,
+            &conv,
+            one_regular_tool(),
+            ReasoningEffort::Medium,
+            "s1",
+        )
+        .build();
+        assert!(req.fallbacks.is_none());
     }
 
     #[test]
