@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-26
+
 ### Fixed
 
 - **Redirecting output to a file or another program no longer writes terminal escape codes into it.** Streamed replies, reasoning summaries, and the cursor-shape sequence were emitted regardless of where output went, so a piped run collected colour codes alongside the text. Output aimed at a terminal is unchanged.
