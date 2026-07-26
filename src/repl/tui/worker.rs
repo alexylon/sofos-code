@@ -341,16 +341,13 @@ fn build_mode_picker_entries(repl: &Repl) -> Vec<ModePickerEntry> {
 fn build_model_picker_entries(repl: &Repl) -> Vec<ModelPickerEntry> {
     use crate::api::model_info;
     let current_model = repl.model_label();
-    // Other-provider rows are unreachable mid-session — the LlmClient
-    // is built once at startup.
-    let current_provider = model_info::provider_for(&current_model);
     model_info::SUPPORTED_MODELS
         .iter()
         .map(|choice| ModelPickerEntry {
             name: choice.name,
             description: choice.description,
             is_current: choice.name == current_model,
-            is_available: choice.provider == current_provider,
+            is_available: repl.model_config.switch_blocker(choice).is_none(),
         })
         .collect()
 }

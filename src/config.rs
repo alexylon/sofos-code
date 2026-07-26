@@ -72,6 +72,51 @@ impl ModelConfig {
         }
     }
 
+    /// Why this session cannot switch to `choice`, or `None` when the
+    /// switch is allowed. Each reason names the step that unblocks it.
+    /// The `/model` handler prints it as an error and the picker greys
+    /// out the row, so the two can never disagree about which models
+    /// are reachable.
+    ///
+    /// The model already in use always passes, because every check here
+    /// also ran against it at startup — the picker relies on that when
+    /// it parks the cursor on the current row.
+    pub fn switch_blocker(&self, choice: &crate::api::model_info::Model) -> Option<String> {
+        let current_provider = crate::api::model_info::provider_for(&self.model);
+        if choice.provider != current_provider {
+            return Some(format!(
+                "Cannot switch to `{}` ({}) from the current {} session. \
+                 Re-launch with `--model {}` to use it.",
+                choice.name,
+                choice.provider.label(),
+                current_provider.label(),
+                choice.name
+            ));
+        }
+        if let Some(msg) =
+            crate::api::model_info::effort_support_error(choice.name, self.reasoning_effort)
+        {
+            return Some(format!(
+                "{} Run `/effort <level>` to pick a supported level before switching.",
+                msg
+            ));
+        }
+        if let Some(msg) =
+            crate::api::model_info::mode_support_error(choice.name, self.reasoning_mode)
+        {
+            return Some(format!("{} Run `/mode standard` before switching.", msg));
+        }
+        if let Some(msg) =
+            crate::api::model_info::max_tokens_support_error(choice.name, self.max_tokens)
+        {
+            return Some(format!(
+                "{} Re-launch with a lower --max-tokens to use this model.",
+                msg
+            ));
+        }
+        None
+    }
+
     pub fn set_reasoning_effort(&mut self, effort: crate::api::ReasoningEffort) {
         self.reasoning_effort = effort;
     }
@@ -578,6 +623,7 @@ pub(crate) fn config_files_hint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::DEFAULT_MAX_TOKENS;
 
     #[test]
     fn is_more_permissive_than_orders_modes_by_restrictiveness() {
@@ -761,6 +807,70 @@ mod tests {
         for preset in PERMISSION_PRESETS {
             let policy = preset.escalation().unwrap_or_default();
             assert_eq!(PermissionPreset::current(preset.mode(), policy), preset);
+        }
+    }
+
+    /// The `/model` handler and the picker both read `switch_blocker`,
+    /// so a model the handler would refuse must also come back as
+    /// unavailable in the picker. These cover each reason in turn.
+    #[test]
+    fn switch_blocker_reports_each_reason_a_model_is_unreachable() {
+        use crate::api::model_info::{CLAUDE_HAIKU, CLAUDE_SONNET, GPT_SOL, lookup};
+        use crate::api::{ReasoningEffort, ReasoningMode};
+
+        let config = |model: &str, effort, max_tokens| ModelConfig {
+            model: model.to_string(),
+            max_tokens,
+            reasoning_effort: effort,
+            reasoning_mode: ReasoningMode::Standard,
+        };
+
+        // Same provider, every setting supported: reachable.
+        let anthropic = config(CLAUDE_SONNET, ReasoningEffort::Medium, DEFAULT_MAX_TOKENS);
+        assert!(anthropic.switch_blocker(lookup(CLAUDE_HAIKU)).is_none());
+
+        // The other provider needs a relaunch, so it stays unreachable.
+        let blocked = anthropic
+            .switch_blocker(lookup(GPT_SOL))
+            .expect("an OpenAI model is unreachable from an Anthropic session");
+        assert!(blocked.contains("Re-launch"));
+
+        // An effort the target model does not accept.
+        let blocked = config(CLAUDE_SONNET, ReasoningEffort::Max, DEFAULT_MAX_TOKENS)
+            .switch_blocker(lookup(CLAUDE_HAIKU))
+            .expect("the fastest model does not accept max effort");
+        assert!(blocked.contains("/effort"));
+
+        // A ceiling above what the target model can produce.
+        let blocked = config(
+            CLAUDE_SONNET,
+            ReasoningEffort::Medium,
+            lookup(CLAUDE_HAIKU).max_output_tokens + 1,
+        )
+        .switch_blocker(lookup(CLAUDE_HAIKU))
+        .expect("a ceiling above the target model's own limit");
+        assert!(blocked.contains("--max-tokens"));
+    }
+
+    #[test]
+    fn switch_blocker_always_clears_the_model_already_in_use() {
+        use crate::api::model_info::{SUPPORTED_MODELS, lookup};
+        use crate::api::{ReasoningEffort, ReasoningMode};
+
+        // The picker parks its cursor on the current row, so the model
+        // already running must never come back blocked.
+        for m in SUPPORTED_MODELS {
+            let config = ModelConfig {
+                model: m.name.to_string(),
+                max_tokens: DEFAULT_MAX_TOKENS,
+                reasoning_effort: ReasoningEffort::Low,
+                reasoning_mode: ReasoningMode::Standard,
+            };
+            assert!(
+                config.switch_blocker(lookup(m.name)).is_none(),
+                "{} should be reachable from itself",
+                m.name
+            );
         }
     }
 }

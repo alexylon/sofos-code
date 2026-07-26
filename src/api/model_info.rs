@@ -36,8 +36,8 @@ impl Provider {
 
 /// A model the application knows about. Carries everything any other
 /// module needs to know to talk to the provider: the slug sent on the
-/// wire, the user-facing description, the LLM vendor, context-window
-/// and compaction limits, reasoning-effort support, and pricing.
+/// wire, the user-facing description, the LLM vendor, context-window,
+/// output and compaction limits, reasoning-effort support, and pricing.
 #[derive(Debug, Clone, Copy)]
 pub struct Model {
     /// Slug the user types and the provider sees on the wire.
@@ -50,6 +50,11 @@ pub struct Model {
     pub provider: Provider,
     /// API context-window ceiling in tokens.
     pub context_window: u32,
+    /// Largest `max_tokens` the model accepts on one response. Thinking
+    /// counts against it alongside the answer, and a request above it is
+    /// rejected by the provider, so startup and `/model` switching check
+    /// the configured value against this first.
+    pub max_output_tokens: u32,
     /// Cost-shaping override for the auto-compact trigger. When
     /// `Some`, auto-compaction fires at `min(override, 90% of
     /// context_window)`. When `None`, falls back to 90% of
@@ -170,6 +175,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "Anthropic's most capable model - demanding reasoning, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
@@ -189,6 +195,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "Powerful Anthropic reasoning model, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
@@ -208,6 +215,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "Balanced Anthropic model - default for day-to-day coding",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: true,
         supports_server_compaction: true,
@@ -227,6 +235,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "Fastest, cheapest Anthropic model - 200k context",
         provider: Provider::Anthropic,
         context_window: 200_000,
+        max_output_tokens: 64_000,
         auto_compact_token_limit: Some(170_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
@@ -244,6 +253,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "OpenAI frontier model for complex professional work",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
@@ -263,6 +273,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "Balanced OpenAI model - intelligence at mid-tier cost",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
@@ -282,6 +293,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         description: "OpenAI model optimised for cost-sensitive workloads",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
+        max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
         requires_adaptive_thinking: false,
         supports_server_compaction: false,
@@ -366,6 +378,21 @@ pub fn effort_support_error(name: &str, effort: ReasoningEffort) -> Option<Strin
         name,
         effort.as_label(),
         info.supported_efforts_label(),
+    ))
+}
+
+/// Human-readable rejection message when `max_tokens` asks for more
+/// output than the model can produce, or `None` when the value fits.
+/// Surfaced from the startup validator and from `/model` switching, so
+/// an over-large ceiling is reported before it reaches the provider.
+pub fn max_tokens_support_error(name: &str, max_tokens: u32) -> Option<String> {
+    let info = lookup(name);
+    if max_tokens <= info.max_output_tokens {
+        return None;
+    }
+    Some(format!(
+        "Model `{}` produces at most {} output tokens, but `--max-tokens` is {}.",
+        name, info.max_output_tokens, max_tokens
     ))
 }
 
@@ -510,6 +537,36 @@ mod tests {
         let info = lookup("some-future-model-2099");
         assert_eq!(info.name, Model::default().name);
         assert_eq!(info.price_input_per_m, Model::default().price_input_per_m);
+    }
+
+    #[test]
+    fn max_tokens_support_error_accepts_up_to_the_model_ceiling() {
+        for m in SUPPORTED_MODELS {
+            assert!(
+                max_tokens_support_error(m.name, m.max_output_tokens).is_none(),
+                "{} should accept its own ceiling",
+                m.name
+            );
+            let err = max_tokens_support_error(m.name, m.max_output_tokens + 1)
+                .expect("one token past the ceiling is rejected");
+            assert!(err.contains(m.name));
+        }
+    }
+
+    #[test]
+    fn default_max_tokens_fits_every_supported_model() {
+        // The CLI ships one default for every model, so the smallest
+        // ceiling in the table is what that default has to clear.
+        let smallest = SUPPORTED_MODELS
+            .iter()
+            .map(|m| m.max_output_tokens)
+            .min()
+            .expect("the table is never empty");
+        assert!(
+            crate::cli::DEFAULT_MAX_TOKENS <= smallest,
+            "default --max-tokens ({}) exceeds the smallest model ceiling ({smallest})",
+            crate::cli::DEFAULT_MAX_TOKENS
+        );
     }
 
     #[test]

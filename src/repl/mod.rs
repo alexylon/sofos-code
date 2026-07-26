@@ -211,6 +211,19 @@ impl Repl {
             return Err(SofosError::Config(msg));
         }
 
+        // Reject a `--max-tokens` the active model cannot produce. The
+        // ceilings differ per model, so this one is checked against the
+        // chosen model rather than unconditionally like the legacy
+        // thinking-budget floor above.
+        if let Some(msg) =
+            crate::api::model_info::max_tokens_support_error(&config.model, config.max_tokens)
+        {
+            return Err(SofosError::Config(format!(
+                "{} Use a lower --max-tokens.",
+                msg
+            )));
+        }
+
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
         conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
@@ -600,40 +613,9 @@ impl Repl {
             return;
         }
 
-        let current_provider = crate::api::model_info::provider_for(&self.model_config.model);
-        if choice.provider != current_provider {
+        if let Some(msg) = self.model_config.switch_blocker(choice) {
             println!();
-            UI::print_error(&format!(
-                "Cannot switch to `{}` ({}) from the current {} session. \
-                 Re-launch with `--model {}` to use it.",
-                choice.name,
-                choice.provider.label(),
-                current_provider.label(),
-                choice.name
-            ));
-            println!();
-            return;
-        }
-
-        if let Some(msg) = crate::api::model_info::effort_support_error(
-            choice.name,
-            self.model_config.reasoning_effort,
-        ) {
-            println!();
-            UI::print_error(&format!(
-                "{} Run `/effort <level>` to pick a supported level before switching.",
-                msg
-            ));
-            println!();
-            return;
-        }
-
-        if let Some(msg) = crate::api::model_info::mode_support_error(
-            choice.name,
-            self.model_config.reasoning_mode,
-        ) {
-            println!();
-            UI::print_error(&format!("{} Run `/mode standard` before switching.", msg));
+            UI::print_error(&msg);
             println!();
             return;
         }
@@ -670,10 +652,18 @@ impl Repl {
             } else {
                 " "
             };
+            // Pad before colouring: the escape codes would otherwise
+            // count toward the field width and stagger the column.
+            let name = format!("{:<20}", choice.name);
+            let name = if self.model_config.switch_blocker(choice).is_none() {
+                name.bright_white()
+            } else {
+                name.dimmed()
+            };
             println!(
-                "  {} {:<20} {}",
+                "  {} {} {}",
                 marker.bright_green(),
-                choice.name.bright_white(),
+                name,
                 choice.description.dimmed()
             );
         }

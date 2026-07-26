@@ -7,10 +7,13 @@ All notable changes to Sofos are documented in this file.
 ### Added
 
 - **The Claude models now show their reasoning while they work.** A summary of the model's thinking is printed under a dimmed `Thinking:` heading before the answer begins, instead of the long silent pause that came before. This changes only what is shown: these models already carried the same reasoning through the conversation, and it is billed the same whether the summary is returned or not.
+- **The `/model` picker now greys out models this session cannot switch to.** A model is dimmed and skipped by the cursor when it belongs to the other provider, or when it rejects the active reasoning effort, reasoning mode, or output-token ceiling — instead of looking selectable and then refusing. The plain text listing shown in non-interactive runs dims the same rows.
+- **`--max-tokens` is now checked against the model's own output limit.** A value larger than the chosen model can produce is refused at startup with the model's ceiling named, and `/model` refuses to switch to a model whose limit is below the configured value, rather than letting the next request fail at the provider.
 - **A declined request now says so.** When a model's safety classifier refuses, Sofos reports that the model declined and names the reason it gave, instead of the old "I've completed the tool operations but didn't generate a response" line. Any partial answer written before the refusal stays on screen.
 
 ### Changed
 
+- **Default `--max-tokens` raised from 32768 to 64000.** Thinking counts toward this ceiling alongside the answer, so the old default left little room at the higher reasoning efforts. 64000 is accepted by every supported model. Raising the ceiling does not by itself cost more, because only the tokens actually generated are billed.
 - **Claude Opus is now `claude-opus-5`**, replacing `claude-opus-4-8`.
 
 ### Removed

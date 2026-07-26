@@ -217,7 +217,7 @@ sofos --resume
 | `/effort low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
 | `/mode` | Open the reasoning-mode picker. `standard` and `pro`; `pro` is disabled outside the GPT-5.6 family. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
 | `/mode standard\|pro` | Switch reasoning mode. `pro` is accepted only on the GPT-5.6 models; other models print a clear error. |
-| `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models from the other provider are greyed out because the API client is fixed at startup. |
+| `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models this session cannot switch to are greyed out and skipped: the other provider's models, because the API client is fixed at startup, and any model that rejects the active reasoning effort, reasoning mode, or output-token ceiling. Type `/model <name>` to see the reason a particular model is unavailable. |
 | `/model <name>` | Switch directly to a model on the active provider. To switch provider, restart Sofos with `--model <name>`. |
 | `/permissions` | Open the permission preset picker. The presets are `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Where sandboxing is unavailable, such as Windows, the `sandboxed-*` presets are shown but disabled. |
 | `/permissions <preset>` | Switch directly to a permission preset. |
@@ -284,12 +284,12 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
     --morph-api-key <KEY>    Morph API key. Overrides MORPH_API_KEY.
     --model <MODEL>          Model to use. Default: claude-sonnet-5.
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
-    --max-tokens <N>         Maximum output tokens per response. Default: 32768.
+    --max-tokens <N>         Maximum output tokens per response. Default: 64000.
 -e, --reasoning-effort <LV>  low, medium, high, xhigh, or max. Default: medium.
     --reasoning-mode <MODE>  standard or pro (GPT-5.6 only). Default: standard.
 ```
 
-`--max-tokens` must be greater than `16384` when reasoning effort is enabled. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
+`--max-tokens` must be greater than `16384` when reasoning effort is enabled, and must not exceed the chosen model's own output limit — 64000 tokens on Claude Haiku 4.5, 128000 on every other supported model. Both limits are checked at startup and when switching model with `/model`. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
 
 ---
 

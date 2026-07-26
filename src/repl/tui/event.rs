@@ -94,9 +94,10 @@ pub struct ModelPickerEntry {
     /// "(current)" tag so the user can see what they are about to
     /// replace.
     pub is_current: bool,
-    /// False when the row is on the other provider — the running
-    /// session can't switch there without a relaunch. Disabled rows
-    /// stay visible; the cursor skips over them.
+    /// False when the running session cannot switch to this model:
+    /// it belongs to the other provider, or it rejects the active
+    /// reasoning effort, reasoning mode, or output-token ceiling.
+    /// Disabled rows stay visible; the cursor skips over them.
     pub is_available: bool,
 }
 

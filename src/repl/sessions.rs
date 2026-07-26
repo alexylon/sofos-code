@@ -190,6 +190,17 @@ impl Repl {
                             msg
                         )));
                     }
+                    // The saved model replaces the one startup checked,
+                    // so its own output ceiling has to be checked too.
+                    if let Some(msg) = crate::api::model_info::max_tokens_support_error(
+                        saved_model,
+                        self.model_config.max_tokens,
+                    ) {
+                        return Err(SofosError::Config(format!(
+                            "{} Re-launch with a lower --max-tokens to resume this session.",
+                            msg
+                        )));
+                    }
                 }
             }
         }

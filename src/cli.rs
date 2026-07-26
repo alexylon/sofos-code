@@ -8,6 +8,12 @@ use clap::Parser;
 /// goes.
 pub const THINKING_BUDGET_DEFAULT: u32 = 5120;
 
+/// Default output-token ceiling. One value serves every model, so it is
+/// held at or below the smallest ceiling in the model table — currently
+/// Claude Haiku 4.5. A test in `api::model_info` fails if a future model
+/// entry drops below it.
+pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "sofos",
@@ -43,15 +49,11 @@ pub struct Cli {
     #[arg(long, default_value = "morph-v3-fast")]
     pub morph_model: String,
 
-    /// Maximum output tokens per API response. 8192 is too low for
-    /// modern frontier models writing long files — a `write_file` call
-    /// with multi-KB content hits this limit mid-stream and truncates
-    /// the tool-call JSON, surfacing as "Missing 'path' parameter".
-    /// Modern frontier models support 32k+; smaller models cap at
-    /// their own limit so this is safe as a default.
-    /// Must be > 16384 when reasoning effort is enabled (the legacy
-    /// Anthropic thinking-budget ceiling); the default 32768 satisfies it.
-    #[arg(long, default_value = "32768")]
+    /// Maximum output tokens per API response. Thinking counts toward
+    /// this ceiling alongside the answer, so a high reasoning effort
+    /// needs room for both. Must stay above 16384 and within the chosen
+    /// model's own output limit; both are checked at startup.
+    #[arg(long, default_value_t = DEFAULT_MAX_TOKENS)]
     pub max_tokens: u32,
 
     /// Reasoning effort: low, medium, high, xhigh, max. Default

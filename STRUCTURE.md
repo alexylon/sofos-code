@@ -419,6 +419,7 @@ It does not validate provider wire compatibility beyond what can be expressed as
 It contains:
 
 - model configuration values passed into request building;
+- the rule deciding whether the running session can switch to a given model, shared by `/model` and the model picker so both agree;
 - read-only, sandboxed, and unsandboxed mode system messages, plus the `PermissionPreset` enum that pairs each mode with its escalation policy;
 - context and auto-compaction thresholds derived from model information;
 - global defaults for the response-handler loop;
@@ -560,6 +561,7 @@ It contains:
 - helpers `canonical_model`, `model_support_error`, and `supported_models_label` that share one source of truth with the CLI rejection message and the picker rows;
 - model registry entries;
 - context-window sizes;
+- per-model output-token ceilings;
 - auto-compaction thresholds;
 - supported reasoning-effort levels;
 - pro-mode support (the GPT-5.6 family);
@@ -572,6 +574,7 @@ Rules:
 - Model capability checks should use this registry instead of hard-coded scattered checks.
 - Adding a supported model is one struct literal in `SUPPORTED_MODELS` — the `Model` struct carries the user-facing description and provider alongside the context window, effort matrix, and pricing, so there is no separate `lookup` table to keep in sync.
 - Removing a model is one deletion in `SUPPORTED_MODELS`. The CLI and the picker share that array as their source of truth, so nothing else has to be touched.
+- A model entry whose output ceiling is below the default `--max-tokens` breaks the shipped default, so the two are checked against each other in tests.
 
 ### 4.7 `api/truncate.rs`
 
