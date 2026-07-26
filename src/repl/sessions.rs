@@ -153,6 +153,24 @@ impl Repl {
         // current Repl untouched.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
+                // The saved model is about to override `--model` further
+                // down, so refuse the resume if that override would land
+                // on a slug the application no longer supports. The
+                // resumed session would otherwise send an unrecognised
+                // model id on the wire and fail at request time. This
+                // runs before the provider comparison because an
+                // unknown slug reports the default model's provider,
+                // which would otherwise blame a provider mismatch and
+                // tell the user to re-launch with a model that no
+                // longer exists.
+                if crate::api::model_info::canonical_model(saved_model).is_none() {
+                    return Err(SofosError::Config(format!(
+                        "Session was saved under model '{}', which is no longer supported. \
+                         Supported models: {}.",
+                        saved_model,
+                        crate::api::model_info::supported_models_label()
+                    )));
+                }
                 let saved_provider = provider_of(saved_model);
                 let current_provider = self.client.provider_name();
                 if saved_provider != current_provider {
@@ -160,19 +178,6 @@ impl Repl {
                         "Session was saved under model '{}' ({}), but the current client is {}. \
                          Re-launch with `--model {}` to resume.",
                         saved_model, saved_provider, current_provider, saved_model
-                    )));
-                }
-                // The saved model is about to override `--model` further
-                // down, so refuse the resume if that override would land
-                // on a slug the application no longer supports. The
-                // resumed session would otherwise send an unrecognised
-                // model id on the wire and fail at request time.
-                if crate::api::model_info::canonical_model(saved_model).is_none() {
-                    return Err(SofosError::Config(format!(
-                        "Session was saved under model '{}', which is no longer supported. \
-                         Supported models: {}.",
-                        saved_model,
-                        crate::api::model_info::supported_models_label()
                     )));
                 }
                 if saved_model != self.model_config.model {

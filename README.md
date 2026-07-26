@@ -180,8 +180,8 @@ sofos
 Use a different model:
 
 ```bash
-sofos --model gpt-5.5
-sofos --model claude-opus-4-8 -e high
+sofos --model gpt-5.6-sol
+sofos --model claude-opus-5 -e high
 ```
 
 Run one prompt and exit:
@@ -300,16 +300,12 @@ Sofos supports these models, shown in `/model` picker order:
 | Model | Provider |
 |---|---|
 | `claude-fable-5` | Anthropic |
-| `claude-opus-4-8` | Anthropic |
+| `claude-opus-5` | Anthropic |
 | `claude-sonnet-5` (default) | Anthropic |
 | `claude-haiku-4-5` | Anthropic |
 | `gpt-5.6-sol` | OpenAI |
 | `gpt-5.6-terra` | OpenAI |
 | `gpt-5.6-luna` | OpenAI |
-| `gpt-5.5` | OpenAI |
-| `gpt-5.4` | OpenAI |
-| `gpt-5.4-mini` | OpenAI |
-| `gpt-5.3-codex` | OpenAI |
 
 `--model <name>` accepts only the values above. Any other value is refused at startup and Sofos prints the supported list. The same list drives the `/model` picker, so the CLI and picker stay consistent.
 
@@ -326,25 +322,25 @@ Examples:
 ```bash
 sofos -e medium                       # Default balance.
 sofos -e high                         # More reasoning for hard tasks.
-sofos -e max --model claude-opus-4-8  # Highest Anthropic adaptive level.
+sofos -e max --model claude-opus-5    # Highest Anthropic adaptive level.
 sofos -e max --model gpt-5.6-sol      # Highest level on the GPT-5.6 family.
-sofos -e xhigh --model gpt-5.5        # Highest level on older OpenAI gpt-5 models.
+sofos -e high --model claude-haiku-4-5 # Highest level on Haiku 4.5.
 ```
 
 Support matrix:
 
-| Effort | Fable 5 | Opus 4.8 | Sonnet 5 | Haiku 4.5 | GPT-5.6 (sol/terra/luna) | Older OpenAI gpt-5 models |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| `low` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `high` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ | ✓ | ✓ | ✗ | ✓ | ✓ |
-| `max` | ✓ | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Effort | Fable 5 | Opus 5 | Sonnet 5 | Haiku 4.5 | GPT-5.6 (sol/terra/luna) |
+|---|:---:|:---:|:---:|:---:|:---:|
+| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `xhigh` | ✓ | ✓ | ✓ | ✗ | ✓ |
+| `max` | ✓ | ✓ | ✓ | ✗ | ✓ |
 
 Provider mapping:
 
 - **OpenAI** sends `reasoning.effort` directly. On the **GPT-5.6** models (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
-- **Claude Fable 5, Opus 4.8, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
+- **Claude Fable 5, Opus 5, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
 - **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
 
 ---
@@ -617,7 +613,7 @@ Or resume from inside Sofos:
 /resume
 ```
 
-On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available, and accounts for provider cache discounts and cache-write premiums. For OpenAI models with tiered pricing, Sofos tracks the largest single-turn input and switches the estimate when the premium threshold is crossed.
+On exit, Sofos prints token usage and an estimated cost. The summary includes cache-read information when available, and accounts for provider cache discounts and cache-write premiums.
 
 ---
 

@@ -157,8 +157,30 @@ pub struct CreateMessageResponse {
     pub content: Vec<ContentBlock>,
     pub model: String,
     pub stop_reason: Option<String>,
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
     pub usage: Usage,
 }
+
+/// Why the model stopped, when the reason needs more than the
+/// [`CreateMessageResponse::stop_reason`] label. Both fields are
+/// absent unless the stop reason is [`STOP_REASON_REFUSAL`], and the
+/// provider may omit either one even then.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StopDetails {
+    /// Policy area the request fell into, such as `cyber`.
+    pub category: Option<String>,
+    /// Sentence the provider supplied about the decision.
+    pub explanation: Option<String>,
+}
+
+/// The response ran into the output-token limit and stopped part-way
+/// through. Any tool call it contains may be incomplete.
+pub const STOP_REASON_MAX_TOKENS: &str = "max_tokens";
+/// A safety classifier declined the request. The call still succeeds,
+/// and the content is either empty or a partial answer, so callers
+/// must check the stop reason before treating the content as complete.
+pub const STOP_REASON_REFUSAL: &str = "refusal";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

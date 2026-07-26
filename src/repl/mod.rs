@@ -406,7 +406,6 @@ impl Repl {
             self.session_state.total_output_tokens,
             self.session_state.total_cache_read_tokens,
             self.session_state.total_cache_creation_tokens,
-            self.session_state.peak_single_turn_input_tokens,
         );
 
         Ok(())
@@ -419,7 +418,6 @@ impl Repl {
             output_tokens: self.session_state.total_output_tokens,
             cache_read_tokens: self.session_state.total_cache_read_tokens,
             cache_creation_tokens: self.session_state.total_cache_creation_tokens,
-            peak_single_turn_input_tokens: self.session_state.peak_single_turn_input_tokens,
             panicked: false,
         }
     }

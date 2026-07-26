@@ -698,7 +698,7 @@ mod tests {
                 is_available: true,
             },
             ModelPickerEntry {
-                name: crate::api::model_info::GPT_FLAGSHIP,
+                name: crate::api::model_info::GPT_SOL,
                 description: "openai",
                 is_current: false,
                 is_available: true,

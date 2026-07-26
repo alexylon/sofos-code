@@ -274,7 +274,7 @@ mod tests {
         let conv = ConversationHistory::new();
         let request = RequestBuilder::new(
             &openai_client(),
-            crate::api::model_info::GPT_FLAGSHIP,
+            crate::api::model_info::GPT_SOL,
             8192,
             &conv,
             one_regular_tool(),
@@ -370,7 +370,7 @@ mod tests {
 
         let oai = RequestBuilder::new(
             &openai_client(),
-            crate::api::model_info::GPT_FLAGSHIP,
+            crate::api::model_info::GPT_SOL,
             8192,
             &conv,
             one_regular_tool(),
@@ -636,7 +636,7 @@ mod tests {
 
         let openai_req = RequestBuilder::new(
             &openai_client(),
-            crate::api::model_info::GPT_FLAGSHIP,
+            crate::api::model_info::GPT_SOL,
             8192,
             &conv,
             one_regular_tool(),

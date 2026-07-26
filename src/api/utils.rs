@@ -1,4 +1,4 @@
-use super::types::{ContentBlock, CreateMessageResponse, Usage};
+use super::types::{ContentBlock, CreateMessageResponse, StopDetails, Usage};
 use crate::error::{Result, SofosError};
 use colored::Colorize;
 use rand::RngExt;
@@ -75,6 +75,7 @@ pub fn build_message_response(
     model: String,
     content: Vec<ContentBlock>,
     stop_reason: Option<String>,
+    stop_details: Option<StopDetails>,
     usage: Usage,
 ) -> CreateMessageResponse {
     CreateMessageResponse {
@@ -84,6 +85,7 @@ pub fn build_message_response(
         content,
         model,
         stop_reason,
+        stop_details,
         usage,
     }
 }
@@ -942,6 +944,7 @@ mod tests {
             "test-model".into(),
             vec![],
             Some("max_tokens".into()),
+            None,
             Usage {
                 input_tokens: 100,
                 output_tokens: 50,

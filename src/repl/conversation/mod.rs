@@ -355,7 +355,7 @@ mod tests {
         // OpenAI Responses path: every function_call_output must
         // reference a prior function_call with the same call_id.
         let request = CreateMessageRequest {
-            model: crate::api::model_info::GPT_FLAGSHIP.to_string(),
+            model: crate::api::model_info::GPT_SOL.to_string(),
             max_tokens: 100,
             messages: history.messages().to_vec(),
             system: None,

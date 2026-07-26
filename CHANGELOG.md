@@ -4,6 +4,19 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A declined request now says so.** When a model's safety classifier refuses, Sofos reports that the model declined and names the reason it gave, instead of the old "I've completed the tool operations but didn't generate a response" line. Any partial answer written before the refusal stays on screen.
+
+### Changed
+
+- **Claude Opus is now `claude-opus-5`**, replacing `claude-opus-4-8`.
+
+### Removed
+
+- **The older OpenAI models are gone.** `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.3-codex` are no longer accepted by `--model` or `/model`, and no longer appear in the picker. Use `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` instead. Resuming a session saved under a removed model now fails with a message naming the models you can switch to, instead of blaming a provider mismatch.
+- **The session summary no longer reports a premium-pricing tier.** Only the removed OpenAI models had the 272K per-prompt cliff that flipped the cost estimate to premium rates for the rest of the session; every supported model now bills at one flat rate.
+
 ## [0.4.2] - 2026-07-12
 
 ### Added

@@ -531,7 +531,7 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
             .and_then(|d| d.reason.as_deref()),
     ) {
         (Some("incomplete"), Some("max_output_tokens" | "max_tokens")) => {
-            Some("max_tokens".to_string())
+            Some(crate::api::STOP_REASON_MAX_TOKENS.to_string())
         }
         (Some("incomplete"), Some(other)) => Some(other.to_string()),
         // OpenAI sometimes reports `status: "incomplete"` without
@@ -540,7 +540,7 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
         // "max_tokens"`, so mapping the missing-reason case there
         // keeps the warning firing instead of letting a half-formed
         // tool call enter the conversation history.
-        (Some("incomplete"), None) => Some("max_tokens".to_string()),
+        (Some("incomplete"), None) => Some(crate::api::STOP_REASON_MAX_TOKENS.to_string()),
         // Anthropic always sets `stop_reason` on a normal stop. Map the
         // OpenAI `status: "completed"` to the same `"end_turn"` value
         // so downstream `if let Some(stop_reason) = ...` branches treat
@@ -556,6 +556,9 @@ pub(super) fn build_response(response_parsed: OpenAIResponse) -> Result<CreateMe
         response_parsed.model,
         content_blocks,
         stop_reason,
+        // OpenAI reports a refusal as response content, not as a
+        // stop reason, so there are no stop details to carry.
+        None,
         Usage {
             input_tokens: usage.input_tokens.unwrap_or(0),
             output_tokens: usage.output_tokens.unwrap_or(0),

@@ -88,7 +88,6 @@ impl<'a> ShutdownSender<'a> {
             output_tokens: 0,
             cache_read_tokens: 0,
             cache_creation_tokens: 0,
-            peak_single_turn_input_tokens: 0,
             panicked: true,
         });
         let _ = self.ui_tx.send(UiEvent::WorkerShutdown(summary));

@@ -301,6 +301,7 @@ impl Repl {
         let result = runtime.block_on(handler.handle_response(
             response.content,
             response.stop_reason,
+            response.stop_details,
             &mut self.session_state.display_messages,
             &mut self.session_state.total_input_tokens,
             &mut self.session_state.total_output_tokens,

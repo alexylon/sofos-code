@@ -119,6 +119,7 @@ where
     let mut cache_read_input_tokens: Option<u32> = None;
     let mut cache_creation_input_tokens: Option<u32> = None;
     let mut stop_reason: Option<String> = None;
+    let mut stop_details: Option<crate::api::StopDetails> = None;
 
     let mut current_block_type: Option<StreamBlockKind> = None;
     let mut current_text = String::new();
@@ -379,6 +380,11 @@ where
                             .get("stop_reason")
                             .and_then(|v| v.as_str())
                             .map(String::from);
+                        // Sent only with a refusal stop reason, and
+                        // the provider may still leave it null there.
+                        stop_details = delta
+                            .get("stop_details")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok());
                     }
                     if let Some(u) = event.get("usage") {
                         output_tokens = saturate_u32(
@@ -450,6 +456,7 @@ where
         model_name,
         content_blocks,
         stop_reason,
+        stop_details,
         Usage {
             input_tokens,
             output_tokens,

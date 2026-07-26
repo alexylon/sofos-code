@@ -5,7 +5,7 @@
 //! cost calculator all reach for the same table through [`lookup`].
 //!
 //! Every model id lives in exactly one place: the version-free
-//! constants below (`CLAUDE_OPUS`, `GPT_FLAGSHIP`, and so on). Their
+//! constants below (`CLAUDE_OPUS`, `GPT_SOL`, and so on). Their
 //! value is the slug sent on the wire, so renaming a model is a
 //! one-line change to that value — the table, the request builders,
 //! and the tests all reference the constant, never the raw string.
@@ -15,17 +15,6 @@
 //! one deletion in the same array.
 
 use crate::api::{ReasoningEffort, ReasoningMode};
-
-/// Tiered-pricing rule. Some OpenAI models charge a premium for the
-/// *entire session* once a single prompt's input crosses a documented
-/// threshold. Once tripped, every subsequent turn in the session is
-/// billed at the premium rate, not just the triggering turn.
-#[derive(Debug, Clone, Copy)]
-pub struct PremiumPricingTier {
-    pub input_threshold: u32,
-    pub price_input_per_m: f64,
-    pub price_output_per_m: f64,
-}
 
 /// LLM vendor a model belongs to. Used to pick the right API client
 /// at startup and to detect a cross-provider resume without
@@ -92,9 +81,6 @@ pub struct Model {
     /// Per-million-token USD price for output (including hidden
     /// reasoning tokens on OpenAI reasoning models).
     pub price_output_per_m: f64,
-    /// Tiered-pricing rule when the model has one. `None` for models
-    /// that bill at a flat per-token rate regardless of prompt size.
-    pub premium_tier: Option<PremiumPricingTier>,
 }
 
 impl Model {
@@ -159,13 +145,6 @@ pub const DEFAULT_MODEL_NAME: &str = SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name;
 /// instead of panicking at runtime when the first request hits.
 const _: () = assert!(DEFAULT_MODEL_INDEX < SUPPORTED_MODELS.len());
 
-/// Input-token threshold at which OpenAI's premium-pricing cliff
-/// fires. Sessions that cross this on any single prompt are billed at
-/// the premium rate for every subsequent turn, so the auto-compact
-/// triggers on the premium-tier OpenAI models are kept below it on
-/// purpose.
-const OPENAI_PREMIUM_INPUT_THRESHOLD: u32 = 272_000;
-
 /// Canonical model-id strings — the slug each model is known by on the
 /// wire. Every reference to a model id (the [`SUPPORTED_MODELS`] table,
 /// the request builders, the tests) goes through one of these
@@ -173,16 +152,12 @@ const OPENAI_PREMIUM_INPUT_THRESHOLD: u32 = 272_000;
 /// the value here. The identifiers are deliberately version-free for
 /// the same reason: a rename never touches an identifier or its uses.
 pub const CLAUDE_FABLE: &str = "claude-fable-5";
-pub const CLAUDE_OPUS: &str = "claude-opus-4-8";
+pub const CLAUDE_OPUS: &str = "claude-opus-5";
 pub const CLAUDE_SONNET: &str = "claude-sonnet-5";
 pub const CLAUDE_HAIKU: &str = "claude-haiku-4-5";
 pub const GPT_SOL: &str = "gpt-5.6-sol";
 pub const GPT_TERRA: &str = "gpt-5.6-terra";
 pub const GPT_LUNA: &str = "gpt-5.6-luna";
-pub const GPT_FLAGSHIP: &str = "gpt-5.5";
-pub const GPT_MID_TIER: &str = "gpt-5.4";
-pub const GPT_MINI: &str = "gpt-5.4-mini";
-pub const GPT_CODEX: &str = "gpt-5.3-codex";
 
 /// Every model the application accepts on `--model`, in the order they
 /// appear in the `/model` picker. The strongest models come first; the
@@ -208,7 +183,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: false,
         price_input_per_m: 10.0,
         price_output_per_m: 50.0,
-        premium_tier: None,
     },
     Model {
         name: CLAUDE_OPUS,
@@ -228,7 +202,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: false,
         price_input_per_m: 5.0,
         price_output_per_m: 25.0,
-        premium_tier: None,
     },
     Model {
         name: CLAUDE_SONNET,
@@ -248,7 +221,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: false,
         price_input_per_m: 3.0,
         price_output_per_m: 15.0,
-        premium_tier: None,
     },
     Model {
         name: CLAUDE_HAIKU,
@@ -266,11 +238,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: false,
         price_input_per_m: 1.0,
         price_output_per_m: 5.0,
-        premium_tier: None,
     },
-    // The newest OpenAI family (sol/terra/luna) bills flat at every
-    // prompt size — no premium cliff — unlike the older 1M-context
-    // OpenAI models below.
     Model {
         name: GPT_SOL,
         description: "OpenAI frontier model for complex professional work",
@@ -289,7 +257,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: true,
         price_input_per_m: 5.0,
         price_output_per_m: 30.0,
-        premium_tier: None,
     },
     Model {
         name: GPT_TERRA,
@@ -309,7 +276,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: true,
         price_input_per_m: 2.5,
         price_output_per_m: 15.0,
-        premium_tier: None,
     },
     Model {
         name: GPT_LUNA,
@@ -329,100 +295,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: true,
         price_input_per_m: 1.0,
         price_output_per_m: 6.0,
-        premium_tier: None,
-    },
-    // The premium-tier OpenAI models charge 2x input / 1.5x output for
-    // the *entire session* once any single prompt crosses
-    // `OPENAI_PREMIUM_INPUT_THRESHOLD` input tokens. The 250K
-    // auto-compact trigger sits below that cliff, so the listed
-    // `price_*` values stay on the standard tier — by design. Raising
-    // the override past the threshold would silently double the input
-    // bill and is the wrong knob to pull for cost. The `premium_tier`
-    // value is what `ui::calculate_cost` uses to bill honestly when the
-    // cliff is tripped (e.g. by a huge pasted file).
-    Model {
-        name: GPT_FLAGSHIP,
-        description: "Previous OpenAI flagship - strong GPT for code and long context",
-        provider: Provider::OpenAI,
-        context_window: 1_050_000,
-        auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
-        supports_server_compaction: false,
-        supported_efforts: &[
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::XHigh,
-        ],
-        supports_pro_mode: false,
-        price_input_per_m: 5.0,
-        price_output_per_m: 30.0,
-        premium_tier: Some(PremiumPricingTier {
-            input_threshold: OPENAI_PREMIUM_INPUT_THRESHOLD,
-            price_input_per_m: 10.0,
-            price_output_per_m: 45.0,
-        }),
-    },
-    Model {
-        name: GPT_MID_TIER,
-        description: "Mid-tier OpenAI reasoning model - cheaper than the flagship",
-        provider: Provider::OpenAI,
-        context_window: 1_050_000,
-        auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
-        supports_server_compaction: false,
-        supported_efforts: &[
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::XHigh,
-        ],
-        supports_pro_mode: false,
-        price_input_per_m: 2.5,
-        price_output_per_m: 15.0,
-        premium_tier: Some(PremiumPricingTier {
-            input_threshold: OPENAI_PREMIUM_INPUT_THRESHOLD,
-            price_input_per_m: 5.0,
-            price_output_per_m: 22.5,
-        }),
-    },
-    Model {
-        name: GPT_MINI,
-        description: "Compact OpenAI model - best price for coding and tool use",
-        provider: Provider::OpenAI,
-        context_window: 400_000,
-        auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
-        supports_server_compaction: false,
-        supported_efforts: &[
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::XHigh,
-        ],
-        supports_pro_mode: false,
-        price_input_per_m: 0.75,
-        price_output_per_m: 4.5,
-        premium_tier: None,
-    },
-    Model {
-        name: GPT_CODEX,
-        description: "Code-specialised OpenAI model for software engineering",
-        provider: Provider::OpenAI,
-        context_window: 400_000,
-        auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
-        supports_server_compaction: false,
-        supported_efforts: &[
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-            ReasoningEffort::XHigh,
-        ],
-        supports_pro_mode: false,
-        price_input_per_m: 1.75,
-        price_output_per_m: 14.0,
-        premium_tier: None,
     },
 ];
 
@@ -544,10 +416,6 @@ mod tests {
         assert_eq!(provider_for(GPT_SOL), Provider::OpenAI);
         assert_eq!(provider_for(GPT_TERRA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_LUNA), Provider::OpenAI);
-        assert_eq!(provider_for(GPT_FLAGSHIP), Provider::OpenAI);
-        assert_eq!(provider_for(GPT_MID_TIER), Provider::OpenAI);
-        assert_eq!(provider_for(GPT_MINI), Provider::OpenAI);
-        assert_eq!(provider_for(GPT_CODEX), Provider::OpenAI);
         // Case insensitivity covers an upper-cased `--model` argument.
         assert_eq!(
             provider_for(&CLAUDE_OPUS.to_uppercase()),
@@ -577,10 +445,6 @@ mod tests {
                 GPT_SOL,
                 GPT_TERRA,
                 GPT_LUNA,
-                GPT_FLAGSHIP,
-                GPT_MID_TIER,
-                GPT_MINI,
-                GPT_CODEX,
             ]
         );
     }
@@ -649,17 +513,12 @@ mod tests {
     }
 
     #[test]
-    fn gpt_mini_uses_its_own_pricing_not_full_size() {
-        let mini = lookup(GPT_MINI);
-        let full = lookup(GPT_MID_TIER);
-        assert!(
-            mini.price_input_per_m < full.price_input_per_m,
-            "mini should be cheaper than full"
-        );
-        // The mini variant should not inherit the full-size premium
-        // tier.
-        assert!(mini.premium_tier.is_none());
-        assert!(full.premium_tier.is_some());
+    fn openai_tiers_are_priced_cheapest_last() {
+        let sol = lookup(GPT_SOL);
+        let terra = lookup(GPT_TERRA);
+        let luna = lookup(GPT_LUNA);
+        assert!(luna.price_input_per_m < terra.price_input_per_m);
+        assert!(terra.price_input_per_m < sol.price_input_per_m);
     }
 
     #[test]
@@ -689,19 +548,6 @@ mod tests {
             ..Model::default()
         };
         assert_eq!(info.effective_window(), 950_000);
-    }
-
-    #[test]
-    fn cliff_models_compact_below_premium_threshold() {
-        for slug in [GPT_FLAGSHIP, GPT_MID_TIER] {
-            let info = lookup(slug);
-            assert!(info.auto_compact_at() < OPENAI_PREMIUM_INPUT_THRESHOLD);
-            let tier = info
-                .premium_tier
-                .expect("cliff models carry a premium tier");
-            assert_eq!(tier.input_threshold, OPENAI_PREMIUM_INPUT_THRESHOLD);
-            assert!(tier.price_input_per_m > info.price_input_per_m);
-        }
     }
 
     #[test]
@@ -735,67 +581,48 @@ mod tests {
             }
         }
 
-        // `xhigh`: every model except the fastest Anthropic one.
-        assert!(supports(CLAUDE_FABLE, XHigh));
-        assert!(supports(CLAUDE_OPUS, XHigh));
-        assert!(supports(CLAUDE_SONNET, XHigh));
-        assert!(supports(GPT_SOL, XHigh));
-        assert!(supports(GPT_TERRA, XHigh));
-        assert!(supports(GPT_LUNA, XHigh));
-        assert!(supports(GPT_FLAGSHIP, XHigh));
-        assert!(supports(GPT_MID_TIER, XHigh));
-        assert!(supports(GPT_MINI, XHigh));
-        assert!(supports(GPT_CODEX, XHigh));
+        // `xhigh` and `max`: every model except the fastest Anthropic
+        // one, which tops out at `high`.
+        for slug in [
+            CLAUDE_FABLE,
+            CLAUDE_OPUS,
+            CLAUDE_SONNET,
+            GPT_SOL,
+            GPT_TERRA,
+            GPT_LUNA,
+        ] {
+            assert!(supports(slug, XHigh), "{slug} should accept xhigh");
+            assert!(supports(slug, Max), "{slug} should accept max");
+        }
         assert!(!supports(CLAUDE_HAIKU, XHigh));
-
-        // `max`: Anthropic adaptive models plus the newest OpenAI
-        // family; the older OpenAI models top out at `xhigh`.
-        assert!(supports(CLAUDE_FABLE, Max));
-        assert!(supports(CLAUDE_OPUS, Max));
-        assert!(supports(CLAUDE_SONNET, Max));
-        assert!(supports(GPT_SOL, Max));
-        assert!(supports(GPT_TERRA, Max));
-        assert!(supports(GPT_LUNA, Max));
         assert!(!supports(CLAUDE_HAIKU, Max));
-        assert!(!supports(GPT_FLAGSHIP, Max));
-        assert!(!supports(GPT_MINI, Max));
-        assert!(!supports(GPT_CODEX, Max));
     }
 
     #[test]
     fn effort_support_error_lists_supported_levels_for_the_model() {
-        let err = effort_support_error(GPT_FLAGSHIP, ReasoningEffort::Max)
-            .expect("max on an OpenAI model should be rejected");
-        assert!(err.contains(GPT_FLAGSHIP));
-        assert!(err.contains("`max`"));
-        let listed = err
-            .split("Supported levels: ")
-            .nth(1)
-            .expect("error message lists supported levels");
-        for label in ["low", "medium", "high", "xhigh"] {
-            assert!(listed.contains(label), "expected {label} in {listed}");
+        // The fastest Anthropic model stops at `high`, so both extra
+        // rungs are rejected and neither may appear in the list the
+        // error offers as alternatives.
+        for rejected in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
+            let err = effort_support_error(CLAUDE_HAIKU, rejected)
+                .expect("effort above the model's ceiling should be rejected");
+            assert!(err.contains(CLAUDE_HAIKU));
+            assert!(err.contains(&format!("`{}`", rejected.as_label())));
+            let listed = err
+                .split("Supported levels: ")
+                .nth(1)
+                .expect("error message lists supported levels");
+            for label in ["low", "medium", "high"] {
+                assert!(listed.contains(label), "expected {label} in {listed}");
+            }
+            assert!(!listed.contains("xhigh"));
+            assert!(!listed.contains("max"));
         }
-        // This model tops out at `xhigh`, so the supported-list tail
-        // must not mention `max`.
-        assert!(!listed.contains("max"));
-
-        let err = effort_support_error(CLAUDE_HAIKU, ReasoningEffort::XHigh)
-            .expect("xhigh on the fastest Anthropic model should be rejected");
-        assert!(err.contains(CLAUDE_HAIKU));
-        assert!(err.contains("`xhigh`"));
-        // The fastest Anthropic model stops at `high`, so neither of the
-        // extra-capability rungs may appear in the supported list.
-        let listed = err
-            .split("Supported levels: ")
-            .nth(1)
-            .expect("error message lists supported levels");
-        assert!(!listed.contains("xhigh"));
-        assert!(!listed.contains("max"));
 
         // Supported combinations: no error.
         assert!(effort_support_error(CLAUDE_OPUS, ReasoningEffort::Max).is_none());
         assert!(effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh).is_none());
-        assert!(effort_support_error(GPT_FLAGSHIP, ReasoningEffort::XHigh).is_none());
+        assert!(effort_support_error(GPT_SOL, ReasoningEffort::XHigh).is_none());
         assert!(effort_support_error(CLAUDE_HAIKU, ReasoningEffort::High).is_none());
     }
 
@@ -811,13 +638,12 @@ mod tests {
         assert!(mode_support_error(GPT_TERRA, Pro).is_none());
         assert!(mode_support_error(GPT_LUNA, Pro).is_none());
         // Pro elsewhere: rejected, and the message names the capable models.
-        let err = mode_support_error(GPT_FLAGSHIP, Pro)
+        let err = mode_support_error(CLAUDE_OPUS, Pro)
             .expect("pro on a non-5.6 model should be rejected");
-        assert!(err.contains(GPT_FLAGSHIP));
+        assert!(err.contains(CLAUDE_OPUS));
         assert!(err.contains(GPT_SOL));
-        assert!(mode_support_error(CLAUDE_OPUS, Pro).is_some());
         // The capability helper agrees with the table.
         assert!(supports_pro_mode(GPT_SOL));
-        assert!(!supports_pro_mode(GPT_FLAGSHIP));
+        assert!(!supports_pro_mode(CLAUDE_OPUS));
     }
 }

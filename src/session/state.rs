@@ -76,19 +76,14 @@ pub struct SessionState {
     /// this at 0.
     pub total_cache_creation_tokens: u32,
     /// Largest input-token count observed on any single API call this
-    /// session. Used to detect tiered-pricing cliffs (premium-tier
-    /// models flip the entire session to premium rates once any prompt
-    /// crosses 272K input tokens). Compared against
-    /// `Model::premium_tier.input_threshold` in `calculate_cost`
-    /// so the displayed cost reflects what the provider actually
-    /// bills, not the standard-tier rate.
+    /// session. Recorded as a session statistic; no supported model
+    /// prices off it today.
     ///
     /// All five counters above are persisted through
     /// [`SessionTokenCounters`](crate::session::SessionTokenCounters)
-    /// so a `--resume` keeps the cost summary accurate and the cliff
-    /// detector remembers whether the threshold had already been
-    /// crossed. Session files written before persistence was added
-    /// default every counter to 0 via `#[serde(default)]`.
+    /// so a `--resume` keeps the cost summary accurate. Session files
+    /// written before persistence was added default every counter to 0
+    /// via `#[serde(default)]`.
     pub peak_single_turn_input_tokens: u32,
 }
 
@@ -134,12 +129,10 @@ impl SessionState {
         self.total_cache_creation_tokens = self
             .total_cache_creation_tokens
             .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-        // Per-call high-water mark on input tokens. For OpenAI, the
-        // figure already includes cached input (the provider's
-        // documented basis for the 272K premium cliff); for Anthropic,
-        // cache reads come on a separate counter, so this is uncached
-        // input only — neither model has a documented Anthropic cliff,
-        // so the asymmetry doesn't matter today.
+        // Per-call high-water mark on input tokens. For OpenAI the
+        // figure already includes cached input; for Anthropic cache
+        // reads come on a separate counter, so this is uncached input
+        // only.
         if usage.input_tokens > self.peak_single_turn_input_tokens {
             self.peak_single_turn_input_tokens = usage.input_tokens;
         }

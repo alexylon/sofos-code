@@ -102,6 +102,7 @@ impl ResponseHandler {
         &mut self,
         mut content_blocks: Vec<ContentBlock>,
         mut stop_reason: Option<String>,
+        mut stop_details: Option<crate::api::StopDetails>,
         display_messages: &mut Vec<DisplayMessage>,
         total_input_tokens: &mut u32,
         total_output_tokens: &mut u32,
@@ -135,7 +136,11 @@ impl ResponseHandler {
                 return Ok(());
             }
 
-            let truncated_by_max_tokens = matches!(stop_reason.as_deref(), Some("max_tokens"));
+            let truncated_by_max_tokens = matches!(
+                stop_reason.as_deref(),
+                Some(crate::api::STOP_REASON_MAX_TOKENS)
+            );
+            let declined = Self::was_declined(stop_reason.as_deref());
 
             let (text_output, tool_uses, had_reasoning) =
                 self.process_content_blocks(&content_blocks);
@@ -188,6 +193,14 @@ impl ResponseHandler {
                 return Ok(());
             }
 
+            // Checked after the blocks above have been recorded so a
+            // partial answer written before the refusal stays in the
+            // transcript and in the conversation the next turn sends.
+            if declined {
+                UI::print_warning(&Self::refusal_notice(stop_details.as_ref()));
+                return Ok(());
+            }
+
             // OpenAI can return reasoning/summary-only blocks; auto-continue once to get real text
             if tool_uses.is_empty()
                 && text_output.is_empty()
@@ -205,7 +218,9 @@ impl ResponseHandler {
                     peak_single_turn_input_tokens,
                 );
 
-                if response.content.is_empty() {
+                if response.content.is_empty()
+                    && !Self::was_declined(response.stop_reason.as_deref())
+                {
                     println!(
                         "{}",
                         "Assistant returned reasoning but no visible response.".dimmed()
@@ -215,6 +230,7 @@ impl ResponseHandler {
                 }
 
                 stop_reason = response.stop_reason;
+                stop_details = response.stop_details;
                 content_blocks = response.content;
                 continue;
             }
@@ -305,7 +321,11 @@ impl ResponseHandler {
             }
 
             if response.content.is_empty()
-                && !matches!(response.stop_reason.as_deref(), Some("max_tokens"))
+                && !matches!(
+                    response.stop_reason.as_deref(),
+                    Some(crate::api::STOP_REASON_MAX_TOKENS)
+                )
+                && !Self::was_declined(response.stop_reason.as_deref())
             {
                 println!("{}", "Assistant:".bright_blue().bold());
                 println!("{}", "I've completed the tool operations but didn't generate a response. Please let me know if you need any clarification.".dimmed());
@@ -317,8 +337,31 @@ impl ResponseHandler {
             // check picks up `max_tokens` truncation uniformly for both
             // the initial response and any follow-up.
             stop_reason = response.stop_reason;
+            stop_details = response.stop_details;
             content_blocks = response.content;
         }
+    }
+
+    /// True when a safety classifier declined the request. Both
+    /// empty and partial responses can carry this stop reason, so it
+    /// is checked separately from whether any content arrived.
+    fn was_declined(stop_reason: Option<&str>) -> bool {
+        stop_reason == Some(crate::api::STOP_REASON_REFUSAL)
+    }
+
+    /// Reason shown for a declined request. Any partial answer already
+    /// streamed to the terminal stays on screen; this adds the policy
+    /// category and explanation when the API supplies them.
+    fn refusal_notice(details: Option<&crate::api::StopDetails>) -> String {
+        let mut notice = "The model declined this request.".to_string();
+        if let Some(category) = details.and_then(|d| d.category.as_deref()) {
+            notice.push_str(&format!(" Category: {}.", category));
+        }
+        if let Some(explanation) = details.and_then(|d| d.explanation.as_deref()) {
+            notice.push(' ');
+            notice.push_str(explanation);
+        }
+        notice
     }
 
     /// Process content blocks into text output and tool uses
@@ -808,6 +851,7 @@ mod truncation_tests {
         rt.block_on(handler.handle_response(
             blocks,
             stop.map(str::to_string),
+            None,
             &mut display,
             &mut a,
             &mut b,
@@ -840,6 +884,47 @@ mod truncation_tests {
 
         let kinds = block_kinds(&assistant_blocks(&handler));
         assert_eq!(kinds, vec!["text"], "tool_use must not survive truncation");
+    }
+
+    #[test]
+    fn refusal_notice_names_category_and_explanation_when_present() {
+        assert_eq!(
+            ResponseHandler::refusal_notice(None),
+            "The model declined this request."
+        );
+        let details = crate::api::StopDetails {
+            category: Some("cyber".to_string()),
+            explanation: Some("Request matches a restricted category.".to_string()),
+        };
+        assert_eq!(
+            ResponseHandler::refusal_notice(Some(&details)),
+            "The model declined this request. Category: cyber. \
+             Request matches a restricted category."
+        );
+    }
+
+    /// A classifier can decline part-way through an answer. The text
+    /// written before that point has already been shown to the user, so
+    /// it has to reach the conversation too — otherwise the next user
+    /// message would follow the previous one with no assistant turn in
+    /// between, which the provider rejects.
+    #[test]
+    fn declined_response_keeps_the_partial_answer() {
+        let (_ws, mut handler) = build_handler();
+        let blocks = vec![ContentBlock::Text {
+            text: "Here is the first step".to_string(),
+        }];
+
+        call_handler(&mut handler, blocks, Some("refusal"));
+
+        let assistant = assistant_blocks(&handler);
+        assert_eq!(block_kinds(&assistant), vec!["text"]);
+        match &assistant[0] {
+            MessageContentBlock::Text { text, .. } => {
+                assert_eq!(text, "Here is the first step");
+            }
+            other => panic!("expected the partial answer, got {other:?}"),
+        }
     }
 
     /// When the only block in a truncated response is a `tool_use`,

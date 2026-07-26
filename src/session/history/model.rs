@@ -49,9 +49,6 @@ pub struct SessionTokenCounters {
     #[serde(default)]
     pub total_cache_creation_tokens: u32,
     /// Largest input-token count observed on any single API call.
-    /// Used by `calculate_cost` to detect tiered-pricing cliffs
-    /// (premium-tier models flip the entire session to premium rates
-    /// once any prompt crosses 272K input tokens).
     #[serde(default)]
     pub peak_single_turn_input_tokens: u32,
 }

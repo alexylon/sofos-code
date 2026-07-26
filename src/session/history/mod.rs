@@ -185,9 +185,8 @@ mod tests {
     }
 
     /// Every persisted token counter must survive save/load. Without
-    /// this, a `--resume` would reset the displayed cost (totals stay
-    /// at 0 until the next API call replenishes them) and the cliff
-    /// detector would forget that a premium-tier model had already crossed 272K.
+    /// this, a `--resume` would reset the displayed cost — totals stay
+    /// at 0 until the next API call replenishes them.
     #[test]
     fn all_token_counters_survive_save_and_load() {
         let temp_dir = TempDir::new().unwrap();
@@ -200,14 +199,13 @@ mod tests {
             total_output_tokens: 7_890,
             total_cache_read_tokens: 65_000,
             total_cache_creation_tokens: 4_321,
-            // > 272K — the premium-tier cliff.
             peak_single_turn_input_tokens: 300_000,
         };
 
         manager
             .save_session(
                 &session_id,
-                &[Message::user("crossed the cliff")],
+                &[Message::user("counted some tokens")],
                 &[],
                 std::slice::from_ref(&system_prompt),
                 counters,

@@ -555,7 +555,7 @@ Rules:
 It contains:
 
 - the `SUPPORTED_MODELS` whitelist — every model id accepted by `--model` and shown in the `/model` picker, with its description and provider;
-- version-free model-id constants (`CLAUDE_OPUS`, `GPT_FLAGSHIP`, and so on) that every model id in the codebase refers to, so renaming a model on the wire is a one-line change to the constant's value;
+- version-free model-id constants (`CLAUDE_OPUS`, `GPT_SOL`, and so on) that every model id in the codebase refers to, so renaming a model on the wire is a one-line change to the constant's value;
 - helpers `canonical_model`, `model_support_error`, and `supported_models_label` that share one source of truth with the CLI rejection message and the picker rows;
 - model registry entries;
 - context-window sizes;
@@ -564,7 +564,7 @@ It contains:
 - pro-mode support (the GPT-5.6 family);
 - adaptive-thinking support;
 - server-side compaction support;
-- token pricing and tiered-pricing rules.
+- token pricing.
 
 Rules:
 
@@ -687,7 +687,8 @@ It contains:
 - follow-up request generation;
 - max-tool-iteration protection;
 - OpenAI reasoning-only continuation;
-- max-token truncation stop handling.
+- max-token truncation stop handling;
+- declined-request stop handling.
 
 Rules:
 
@@ -696,6 +697,7 @@ Rules:
 - Every tool-use block must be followed by a matching tool-result block before the next provider request.
 - If a deletion is cancelled mid-batch, skipped tools still receive synthetic tool results.
 - A response cut off by `max_tokens` must not feed half-formed tool calls back into execution.
+- A request declined by the provider ends the turn with the reason shown, after any partial answer has been recorded.
 
 ### 5.5 `repl/compaction.rs`
 
@@ -798,7 +800,7 @@ It contains:
 - current `ConversationHistory`;
 - token counters;
 - cache-read and cache-creation counters;
-- peak single-turn input counter used by tiered pricing;
+- peak single-turn input counter;
 - state-reset helpers.
 
 Rules:
@@ -1291,7 +1293,6 @@ It contains:
 
 - provider pricing application;
 - cache-read and cache-write accounting;
-- tiered-pricing detection display;
 - session summary rendering.
 
 Rules:
@@ -1473,7 +1474,7 @@ Rules:
 - Display messages are for replaying previous sessions to the user.
 - The saved system prompt prevents resumed sessions from silently changing context.
 - The saved model prevents provider-incompatible resumes.
-- Token counters must survive resume so cost and tiered-pricing state remain honest.
+- Token counters must survive resume so the cost summary remains honest.
 - The index file is a summary cache, not the source of full conversation truth.
 
 ---
