@@ -32,10 +32,9 @@ pub struct StatusSnapshot {
     pub model: String,
     pub mode: crate::config::SandboxMode,
     pub approval: crate::config::ApprovalPolicy,
-    /// Human label for the reasoning config (e.g. "thinking: 10k tok",
-    /// "effort: high"). Empty string hides the field.
+    /// Reasoning label such as "effort: high". Empty hides it.
     pub reasoning: String,
-    /// Reasoning mode for the models that have one (the GPT-5.6 family);
+    /// Reasoning mode for the models that have one (the OpenAI models);
     /// `None` on models where pro mode does not apply, which hides the
     /// status-line field.
     pub reasoning_mode: Option<ReasoningMode>,
@@ -124,8 +123,8 @@ pub struct PermissionsPickerEntry {
     pub is_available: bool,
 }
 
-/// One row in the inline `/mode` picker. `pro` is unavailable off the
-/// GPT-5.6 family; disabled rows stay visible and the cursor skips over
+/// One row in the inline `/mode` picker. `pro` is unavailable on the
+/// Anthropic models; disabled rows stay visible and the cursor skips over
 /// them, just like the other-provider rows in the model picker.
 #[derive(Debug, Clone, Copy)]
 pub struct ModePickerEntry {

@@ -374,7 +374,7 @@ pub(super) fn handle_permissions_picker_key(
 }
 
 /// Key handler used while the `/mode` picker overlay is open. Up/Down
-/// skip the disabled `pro` row on non-GPT-5.6 models; Enter sends the
+/// skip the disabled `pro` row on Anthropic models; Enter sends the
 /// highlighted mode back to the worker; Esc / Ctrl+C cancel.
 pub(super) fn handle_mode_picker_key(app: &mut App, key: KeyEvent, job_tx: &std_mpsc::Sender<Job>) {
     if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {

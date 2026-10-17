@@ -970,7 +970,7 @@ fn draw_mode_picker(frame: &mut Frame, area: Rect, picker: &ModePicker) {
                 ));
             } else if !entry.is_available {
                 spans.push(Span::styled(
-                    "  (GPT-5.6 only)",
+                    "  (OpenAI only)",
                     Style::default()
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::ITALIC),
@@ -1104,7 +1104,7 @@ mod tests {
     fn status_line_labels_and_values_share_uniform_styles() {
         let mut a = app();
         a.status = Some(crate::repl::tui::event::StatusSnapshot {
-            model: "gpt-5.6-sol".into(),
+            model: crate::api::model_info::GPT_SOL.into(),
             mode: crate::config::SandboxMode::Sandboxed,
             approval: crate::config::ApprovalPolicy::OnRequest,
             reasoning: "effort: high".into(),
@@ -1141,7 +1141,7 @@ mod tests {
         }
 
         // Plain values share one bright colour, not the old dim one.
-        assert_eq!(fg("gpt-5.6-sol"), Some(STATUS_VAL));
+        assert_eq!(fg(crate::api::model_info::GPT_SOL), Some(STATUS_VAL));
         assert_eq!(fg("high"), Some(STATUS_VAL));
         assert_eq!(fg("10↑ 20↓"), Some(STATUS_VAL));
 

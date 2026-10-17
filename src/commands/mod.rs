@@ -40,7 +40,7 @@ pub enum Command {
     /// `/mode` — open the reasoning-mode picker.
     ModePicker,
     /// `/mode <standard|pro>` — switch the reasoning mode directly. Pro
-    /// mode is validated per-model (the GPT-5.6 family), matching
+    /// mode is validated per-model (the OpenAI models), matching
     /// `--reasoning-mode`.
     ModeSet(crate::api::ReasoningMode),
 }
@@ -156,7 +156,7 @@ pub static COMMAND_CATALOG: &[CommandEntry] = &[
     },
     CommandEntry {
         name: CMD_MODE,
-        description: "switch standard/pro reasoning mode (GPT-5.6)",
+        description: "switch standard/pro reasoning mode (OpenAI)",
     },
     CommandEntry {
         name: CMD_RESUME,

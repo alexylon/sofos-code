@@ -229,8 +229,8 @@ impl PermissionsPicker {
     }
 }
 
-/// Inline overlay shown by `/mode`. The `pro` row is disabled off the
-/// GPT-5.6 family, so the cursor skips it just like the permissions
+/// Inline overlay shown by `/mode`. The `pro` row is disabled on the
+/// Anthropic models, so the cursor skips it just like the permissions
 /// picker skips unavailable sandbox rows.
 pub struct ModePicker {
     pub entries: Vec<ModePickerEntry>,
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn mode_picker_skips_unavailable_pro_row() {
         use crate::api::ReasoningMode::{Pro, Standard};
-        // Off the GPT-5.6 family, `pro` is disabled: the cursor starts on
+        // On an Anthropic model, `pro` is disabled: the cursor starts on
         // `standard` and cannot move onto `pro`.
         let entries = vec![
             ModePickerEntry {
@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn mode_picker_lands_cursor_on_current_when_pro_available() {
         use crate::api::ReasoningMode::{Pro, Standard};
-        // On a GPT-5.6 model both rows are selectable; the cursor parks on
+        // On an OpenAI model both rows are selectable; the cursor parks on
         // the current mode.
         let entries = vec![
             ModePickerEntry {
@@ -951,7 +951,7 @@ mod tests {
             model: crate::api::model_info::CLAUDE_OPUS.into(),
             mode: SandboxMode::ReadOnly,
             approval: crate::config::ApprovalPolicy::OnRequest,
-            reasoning: "thinking: 10000 tok".into(),
+            reasoning: "effort: high".into(),
             reasoning_mode: None,
             input_tokens: 123,
             output_tokens: 456,
