@@ -62,6 +62,7 @@ pub const COMPACTION_TRIGGER_FLOOR: u32 = 50_000;
 /// don't 400 the request. Used by both the streaming and
 /// non-streaming call paths.
 pub(super) fn prepare_request(mut request: CreateMessageRequest) -> CreateMessageRequest {
+    request.model = crate::api::model_info::api_id_for(&request.model).to_string();
     request.messages = sanitize_messages_for_anthropic(request.messages);
 
     // OpenAI-only; drop before serializing for Anthropic.

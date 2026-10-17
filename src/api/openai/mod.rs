@@ -46,6 +46,15 @@ mod tests {
     }
 
     #[test]
+    fn responses_body_sends_the_versioned_model_id() {
+        let body = build_responses_body(&req_with_cache_key(None));
+        assert_eq!(
+            body["model"],
+            crate::api::model_info::api_id_for(crate::api::model_info::GPT_SOL)
+        );
+    }
+
+    #[test]
     fn responses_body_includes_prompt_cache_key_when_set() {
         let body = build_responses_body(&req_with_cache_key(Some("session-xyz")));
         assert_eq!(body["prompt_cache_key"], "session-xyz");

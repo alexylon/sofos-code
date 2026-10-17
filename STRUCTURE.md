@@ -556,9 +556,10 @@ Rules:
 
 It contains:
 
-- the `SUPPORTED_MODELS` whitelist — every model id accepted by `--model` and shown in the `/model` picker, with its description and provider;
-- version-free model-id constants (`CLAUDE_OPUS`, `GPT_SOL`, and so on) that every model id in the codebase refers to, so renaming a model on the wire is a one-line change to the constant's value;
-- helpers `canonical_model`, `model_support_error`, and `supported_models_label` that share one source of truth with the CLI rejection message and the picker rows;
+- the `SUPPORTED_MODELS` list — every model `--model` accepts and the `/model` picker shows, with its short name, API id, description and provider;
+- short model names without versions (`CLAUDE_OPUS` is `claude-opus`, and so on) that users type and the code refers to, with each model's versioned API id kept in its table row, so moving to a new version is a one-line change;
+- `selectable_model`, which resolves a name the user typed (short names and the `claude` / `gpt` shortcuts only), and `canonical_model`, which also accepts versioned API ids for internal use;
+- `api_id_for`, which the provider request code uses to send the versioned id, and `model_support_error` / `supported_models_label` for the `--model` and `/model` error messages;
 - model registry entries;
 - context-window sizes;
 - per-model output-token ceilings;

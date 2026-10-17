@@ -19,7 +19,7 @@ pub(super) fn build_responses_body(request: &CreateMessageRequest) -> serde_json
     let inputs = build_response_input(request);
 
     let mut body = json!({
-        "model": request.model,
+        "model": crate::api::model_info::api_id_for(&request.model),
         "input": inputs,
         "max_output_tokens": request.max_tokens,
         "reasoning": request.reasoning,

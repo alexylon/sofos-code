@@ -68,12 +68,10 @@ fn main() -> Result<()> {
         );
     }
 
-    // Reject `--model` values outside the supported whitelist before
-    // anything else looks at the slug, and normalise the case to the
-    // canonical form so internal state and the provider wire payload
-    // never carry a mixed-case spelling.
+    // Resolve `--model` to a short model name before anything else
+    // reads it.
     let mut cli = cli;
-    match crate::api::model_info::canonical_model(&cli.model) {
+    match crate::api::model_info::selectable_model(&cli.model) {
         Some(choice) => cli.model = choice.name.to_string(),
         None => {
             let reason = crate::api::model_info::model_support_error(&cli.model)
@@ -179,7 +177,12 @@ fn main() -> Result<()> {
         "Workspace:".bright_cyan(),
         workspace.display().to_string().dimmed()
     ));
-    startup_banner.push_str(&format!("{} {}\n", "Model:".bright_green(), cli.model));
+    startup_banner.push_str(&format!(
+        "{} {} {}\n",
+        "Model:".bright_green(),
+        cli.model,
+        format!("({})", model_info.api_id).dimmed()
+    ));
 
     if matches!(client, LlmClient::OpenAI(_)) {
         startup_banner.push_str(&format!(

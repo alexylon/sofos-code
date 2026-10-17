@@ -45,6 +45,8 @@ pub struct Cli {
     #[arg(long)]
     pub check_connection: bool,
 
+    /// Model to use, by short name such as `claude-opus` or `gpt-sol`.
+    /// `claude` and `gpt` pick that provider's default model.
     #[arg(long, default_value = crate::api::model_info::DEFAULT_MODEL_NAME)]
     pub model: String,
 

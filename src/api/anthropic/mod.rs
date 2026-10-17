@@ -24,6 +24,7 @@ mod tests {
         BETA_COMPACT, BETA_SERVER_SIDE_FALLBACK, BETA_TOKEN_EFFICIENT, anthropic_beta_for,
         beta_header_for, prepare_request, sanitize_messages_for_anthropic,
     };
+    use crate::api::model_info::{CLAUDE_OPUS, CLAUDE_SONNET, api_id_for};
     use crate::api::types::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -140,6 +141,7 @@ mod tests {
 
         let prepared = prepare_request(request);
         assert!(prepared.prompt_cache_key.is_none());
+        assert_eq!(prepared.model, api_id_for(CLAUDE_SONNET));
     }
 
     #[test]
@@ -194,7 +196,7 @@ mod tests {
                     "type": "message_start",
                     "message": {
                         "id": "msg_fallback",
-                        "model": crate::api::model_info::CLAUDE_OPUS,
+                        "model": api_id_for(CLAUDE_OPUS),
                         "usage": {"input_tokens": 5}
                     }
                 }),
@@ -209,8 +211,8 @@ mod tests {
                     "index": 2,
                     "content_block": {
                         "type": "fallback",
-                        "from": {"model": crate::api::model_info::CLAUDE_OPUS},
-                        "to": {"model": crate::api::model_info::CLAUDE_SONNET}
+                        "from": {"model": api_id_for(CLAUDE_OPUS)},
+                        "to": {"model": api_id_for(CLAUDE_SONNET)}
                     }
                 }),
                 json!({"type": "content_block_stop", "index": 2}),
@@ -224,7 +226,7 @@ mod tests {
 
             // The cost line and any later turn have to name the model
             // that actually produced the answer.
-            assert_eq!(response.model, crate::api::model_info::CLAUDE_SONNET);
+            assert_eq!(response.model, api_id_for(CLAUDE_SONNET));
             let kinds: Vec<&str> = response
                 .content
                 .iter()
@@ -248,7 +250,7 @@ mod tests {
                     "type": "message_start",
                     "message": {
                         "id": "msg_test",
-                        "model": crate::api::model_info::CLAUDE_SONNET,
+                        "model": api_id_for(CLAUDE_SONNET),
                         "usage": {"input_tokens": 12, "cache_read_input_tokens": 3}
                     }
                 }),
@@ -299,7 +301,7 @@ mod tests {
             // parser drops thinking blocks without one because echoing
             // unsigned thinking back to the server 400s the next turn.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_t", "model": crate::api::model_info::CLAUDE_OPUS, "usage": {"input_tokens": 5}}}),
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": api_id_for(CLAUDE_OPUS), "usage": {"input_tokens": 5}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "let me think..."}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "abc123sig"}}),
@@ -339,7 +341,7 @@ mod tests {
             // echoed back on the next turn, so the parser must not
             // include it in the response.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_t", "model": crate::api::model_info::CLAUDE_OPUS, "usage": {"input_tokens": 5}}}),
+                json!({"type": "message_start", "message": {"id": "msg_t", "model": api_id_for(CLAUDE_OPUS), "usage": {"input_tokens": 5}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking"}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "unsigned"}}),
                 json!({"type": "content_block_stop", "index": 0}),
@@ -360,7 +362,7 @@ mod tests {
         #[tokio::test]
         async fn error_event_returns_api_error() {
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_e", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}}),
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": api_id_for(CLAUDE_SONNET), "usage": {"input_tokens": 1}}}),
                 json!({"type": "error", "error": {"message": "overloaded"}}),
             ];
 
@@ -379,7 +381,7 @@ mod tests {
             // A mid-stream error must keep the reply text already
             // streamed to the screen so the next turn is not blind to it.
             let events = vec![
-                json!({"type": "message_start", "message": {"id": "msg_e", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}}),
+                json!({"type": "message_start", "message": {"id": "msg_e", "model": api_id_for(CLAUDE_SONNET), "usage": {"input_tokens": 1}}}),
                 json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Here is the fix: "}}),
                 json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "rename the field"}}),
@@ -437,7 +439,7 @@ mod tests {
                 "data: {}\n",
                 serde_json::to_string(&json!({
                     "type": "message_start",
-                    "message": {"id": "msg_mb", "model": crate::api::model_info::CLAUDE_SONNET, "usage": {"input_tokens": 1}}
+                    "message": {"id": "msg_mb", "model": api_id_for(CLAUDE_SONNET), "usage": {"input_tokens": 1}}
                 }))
                 .unwrap()
             )
@@ -509,7 +511,7 @@ mod tests {
                     "type": "message_start",
                     "message": {
                         "id": "msg_big",
-                        "model": crate::api::model_info::CLAUDE_SONNET,
+                        "model": api_id_for(CLAUDE_SONNET),
                         "usage": {"input_tokens": 9_999_999_999u64}
                     }
                 }),

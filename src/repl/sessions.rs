@@ -245,15 +245,14 @@ impl Repl {
         // continuity holds across providers. `None` means the file was
         // written before this field existed — keep whatever the CLI
         // selected in that case so old sessions don't lose the user's
-        // current `--model` choice. Saved slugs land in canonical form
-        // so a mixed-case file still compares equal to the picker rows
-        // and the wire payload uses the spelling the provider expects.
+        // current `--model` choice. The saved name, which older files
+        // store as a versioned API id, is converted to the short name.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
                 let canonical = crate::api::model_info::resume_model(saved_model)
                     .map(|c| c.name.to_string())
                     .unwrap_or_else(|| saved_model.to_string());
-                if !canonical.eq_ignore_ascii_case(saved_model) {
+                if crate::api::model_info::canonical_model(saved_model).is_none() {
                     let instead = if canonical != self.model_config.model {
                         format!(" instead of '{}'", self.model_config.model)
                     } else {

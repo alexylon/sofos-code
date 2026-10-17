@@ -521,7 +521,7 @@ impl Repl {
     /// per-model context-window and auto-compact thresholds are
     /// refreshed so the new ceilings take effect immediately.
     pub fn handle_model_set(&mut self, name: &str) {
-        let Some(choice) = crate::api::model_info::canonical_model(name) else {
+        let Some(choice) = crate::api::model_info::selectable_model(name) else {
             println!();
             UI::print_error(
                 &crate::api::model_info::model_support_error(name)

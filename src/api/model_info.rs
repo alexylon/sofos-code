@@ -1,14 +1,12 @@
 //! Per-model metadata. The application only accepts the entries in
-//! [`SUPPORTED_MODELS`] — everywhere a model is named, the slug
-//! resolves to one of those entries. `--model` rejects anything else
-//! at startup, and the `/model` picker, the request builder, and the
-//! cost calculator all reach for the same table through [`lookup`].
+//! [`SUPPORTED_MODELS`]. `--model`, the `/model` picker, the request
+//! builder, and the cost calculator all read the same table.
 //!
-//! Every model id lives in exactly one place: the version-free
-//! constants below (`CLAUDE_OPUS`, `GPT_SOL`, and so on). Their
-//! value is the slug sent on the wire, so renaming a model is a
-//! one-line change to that value — the table, the request builders,
-//! and the tests all reference the constant, never the raw string.
+//! Each model has a short name without a version, which users type and
+//! see, and a versioned API id, which only the provider sees. To move a
+//! model to a new version, change its `api_id` and add the old id to
+//! [`RETIRED_MODELS`] so sessions and responses that name it still
+//! resolve.
 //!
 //! Adding a model is one struct literal in [`SUPPORTED_MODELS`] (in
 //! the order it should appear in the picker). Removing a model is
@@ -60,14 +58,14 @@ pub struct LongPromptPrices {
     pub prices: Prices,
 }
 
-/// A model the application knows about. Carries everything any other
-/// module needs to know to talk to the provider: the slug sent on the
-/// wire, the user-facing description, the LLM vendor, context-window,
-/// output and compaction limits, reasoning-effort support, and pricing.
+/// A model the application knows about, with everything needed to
+/// talk to its provider and price its usage.
 #[derive(Debug, Clone, Copy)]
 pub struct Model {
-    /// Slug the user types and the provider sees on the wire.
+    /// Short name the user types and sees, without a version.
     pub name: &'static str,
+    /// Versioned id sent to the provider.
+    pub api_id: &'static str,
     /// Short blurb rendered next to the name inside the `/model`
     /// picker.
     pub description: &'static str,
@@ -207,11 +205,8 @@ impl Model {
 }
 
 impl Default for Model {
-    /// Default model returned by [`lookup`] when the caller passes a
-    /// slug outside the whitelist. Matches the CLI's `--model`
-    /// default, so any path that runs before the user has chosen a
-    /// model (`SofosConfig::default`, internal helpers) starts on the
-    /// same numbers the default model would produce.
+    /// The application's default model, also returned by [`lookup`] for
+    /// an unknown name.
     fn default() -> Self {
         SUPPORTED_MODELS[DEFAULT_MODEL_INDEX]
     }
@@ -221,12 +216,9 @@ impl Default for Model {
 /// [`SUPPORTED_MODELS`]. Kept as a named index so the array order can
 /// be reshuffled without losing track of which entry the rest of the
 /// code treats as the default.
-const DEFAULT_MODEL_INDEX: usize = 2;
+const DEFAULT_MODEL_INDEX: usize = 1;
 
-/// Slug of the application-wide default model. Exposed as a `const`
-/// so the CLI `default_value` attribute and the `Model::default`
-/// fallback can share one source of truth without duplicating the
-/// string.
+/// Short name of the application's default model.
 pub const DEFAULT_MODEL_NAME: &str = SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name;
 
 /// Compile-time guard: the default-model index must stay inside the
@@ -235,28 +227,26 @@ pub const DEFAULT_MODEL_NAME: &str = SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name;
 /// instead of panicking at runtime when the first request hits.
 const _: () = assert!(DEFAULT_MODEL_INDEX < SUPPORTED_MODELS.len());
 
-/// Canonical model-id strings — the slug each model is known by on the
-/// wire. Every reference to a model id (the [`SUPPORTED_MODELS`] table,
-/// the request builders, the tests) goes through one of these
-/// constants, so changing what a model is called is a one-line edit to
-/// the value here. The identifiers are deliberately version-free for
-/// the same reason: a rename never touches an identifier or its uses.
-pub const CLAUDE_FABLE: &str = "claude-fable-5-1";
-pub const CLAUDE_OPUS: &str = "claude-opus-5-5";
-pub const CLAUDE_SONNET: &str = "claude-sonnet-5-5";
-pub const CLAUDE_HAIKU: &str = "claude-haiku-5-5";
-pub const GPT_ASTRA: &str = "gpt-6-astra";
-pub const GPT_SOL: &str = "gpt-6.1-sol";
-pub const GPT_LUNA: &str = "gpt-6-luna";
+/// Short model names. Code and tests refer to models through these, so
+/// renaming one is a one-line change.
+pub const CLAUDE_FABLE: &str = "claude-fable";
+pub const CLAUDE_OPUS: &str = "claude-opus";
+pub const CLAUDE_SONNET: &str = "claude-sonnet";
+pub const CLAUDE_HAIKU: &str = "claude-haiku";
+pub const GPT_ASTRA: &str = "gpt-astra";
+pub const GPT_SOL: &str = "gpt-sol";
+pub const GPT_TERRA: &str = "gpt-terra";
+pub const GPT_LUNA: &str = "gpt-luna";
 
-/// Every model the application accepts on `--model`, in the order they
-/// appear in the `/model` picker. The strongest models come first; the
-/// default model sits just below them, so a user without a preference
-/// lands on a balanced everyday model rather than the most expensive
-/// one.
+/// Names that pick a provider's default model, as in `--model claude`.
+const PROVIDER_DEFAULTS: &[(&str, &str)] = &[("claude", CLAUDE_OPUS), ("gpt", GPT_SOL)];
+
+/// Every model the application accepts, in `/model` picker order,
+/// strongest first within each provider.
 pub const SUPPORTED_MODELS: &[Model] = &[
     Model {
         name: CLAUDE_FABLE,
+        api_id: "claude-fable-5-1",
         description: "Anthropic's most capable model - demanding reasoning, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
@@ -281,6 +271,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: CLAUDE_OPUS,
+        api_id: "claude-opus-5-5",
         description: "Powerful Anthropic reasoning model, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
@@ -305,7 +296,8 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: CLAUDE_SONNET,
-        description: "Balanced Anthropic model - default for day-to-day coding",
+        api_id: "claude-sonnet-5-5",
+        description: "Balanced Anthropic model for day-to-day coding",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
         max_output_tokens: 128_000,
@@ -322,13 +314,14 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         supports_pro_mode: false,
         prices: Prices {
             input_per_m: 2.0,
-            cache_read_per_m: 0.20,
+            cache_read_per_m: 0.10,
             output_per_m: 10.0,
         },
         long_prompt: None,
     },
     Model {
         name: CLAUDE_HAIKU,
+        api_id: "claude-haiku-5-5",
         description: "Fastest, cheapest Anthropic model - 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
@@ -362,6 +355,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: GPT_ASTRA,
+        api_id: "gpt-6-astra",
         description: "OpenAI frontier model for complex professional work",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -393,6 +387,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: GPT_SOL,
+        api_id: "gpt-6.1-sol",
         description: "Balanced OpenAI model - intelligence at mid-tier cost",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -423,7 +418,40 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         }),
     },
     Model {
+        name: GPT_TERRA,
+        api_id: "gpt-5.6-terra",
+        description: "Previous-generation mid-tier OpenAI model",
+        provider: Provider::OpenAI,
+        context_window: 1_050_000,
+        max_output_tokens: 128_000,
+        auto_compact_token_limit: Some(250_000),
+        supports_server_compaction: false,
+        supports_refusal_fallback: false,
+        supported_efforts: &[
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        supports_pro_mode: true,
+        prices: Prices {
+            input_per_m: 2.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 12.0,
+        },
+        long_prompt: Some(LongPromptPrices {
+            above_tokens: 272_000,
+            prices: Prices {
+                input_per_m: 4.0,
+                cache_read_per_m: 0.40,
+                output_per_m: 18.0,
+            },
+        }),
+    },
+    Model {
         name: GPT_LUNA,
+        api_id: "gpt-6-luna",
         description: "OpenAI model optimised for cost-sensitive workloads",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -455,20 +483,34 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
 ];
 
-/// Comma-separated list of every supported model id, in catalog
-/// order. Used by [`model_support_error`] and surfaced in the CLI
-/// startup error so the user sees the same labels both places.
+/// Comma-separated names `--model` and `/model` accept, in picker
+/// order, followed by the provider shortcuts. Shown in their error
+/// messages.
 pub fn supported_models_label() -> String {
-    SUPPORTED_MODELS
+    let names: Vec<&str> = SUPPORTED_MODELS
         .iter()
         .map(|m| m.name)
-        .collect::<Vec<_>>()
-        .join(", ")
+        .chain(PROVIDER_DEFAULTS.iter().map(|(alias, _)| *alias))
+        .collect();
+    names.join(", ")
 }
 
-/// A model name Sofos used to accept.
+/// Versioned API id for a model name, or `name` unchanged when it isn't
+/// a supported model.
+pub fn api_id_for(name: &str) -> &str {
+    canonical_model(name).map_or(name, |m| m.api_id)
+}
+
+/// Short name for a model name or API id, or `name` unchanged when it
+/// isn't a supported model.
+pub fn short_name_for(name: &str) -> &str {
+    canonical_model(name).map_or(name, |m| m.name)
+}
+
+/// A model name or API id Sofos no longer uses. When a model is
+/// dropped, list both its short name and its last API id.
 struct Retired {
-    name: &'static str,
+    id: &'static str,
     /// The model that replaced it. Saved sessions resume on this one.
     successor: &'static str,
     /// Prices Sofos used for it while it was supported.
@@ -477,7 +519,7 @@ struct Retired {
 
 const RETIRED_MODELS: &[Retired] = &[
     Retired {
-        name: "claude-fable-5",
+        id: "claude-fable-5",
         successor: CLAUDE_FABLE,
         prices: Prices {
             input_per_m: 10.0,
@@ -486,7 +528,7 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
-        name: "claude-opus-5",
+        id: "claude-opus-5",
         successor: CLAUDE_OPUS,
         prices: Prices {
             input_per_m: 5.0,
@@ -495,7 +537,7 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
-        name: "claude-sonnet-5",
+        id: "claude-sonnet-5",
         successor: CLAUDE_SONNET,
         prices: Prices {
             input_per_m: 3.0,
@@ -504,7 +546,7 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
-        name: "claude-haiku-4-5",
+        id: "claude-haiku-4-5",
         successor: CLAUDE_HAIKU,
         prices: Prices {
             input_per_m: 1.0,
@@ -513,7 +555,7 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
-        name: "gpt-5.6-sol",
+        id: "gpt-5.6-sol",
         successor: GPT_ASTRA,
         prices: Prices {
             input_per_m: 5.0,
@@ -522,16 +564,7 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
-        name: "gpt-5.6-terra",
-        successor: GPT_SOL,
-        prices: Prices {
-            input_per_m: 2.5,
-            cache_read_per_m: 0.25,
-            output_per_m: 15.0,
-        },
-    },
-    Retired {
-        name: "gpt-5.6-luna",
+        id: "gpt-5.6-luna",
         successor: GPT_LUNA,
         prices: Prices {
             input_per_m: 1.0,
@@ -550,7 +583,7 @@ pub fn resume_model(name: &str) -> Option<&'static Model> {
 fn retired(name: &str) -> Option<&'static Retired> {
     RETIRED_MODELS
         .iter()
-        .find(|r| r.name.eq_ignore_ascii_case(name))
+        .find(|r| r.id.eq_ignore_ascii_case(name))
 }
 
 /// Replacement for a retired model name.
@@ -625,25 +658,37 @@ pub fn session_totals_cost(
     )
 }
 
-/// Canonical entry for `name` when the slug (case-insensitively)
-/// matches one of [`SUPPORTED_MODELS`]. Returns `None` otherwise so
-/// the caller can refuse the value at the boundary.
+/// Supported model matching `name` by short name or API id, ignoring
+/// case. Used internally, where API ids come back from the provider and
+/// from saved sessions.
 pub fn canonical_model(name: &str) -> Option<&'static Model> {
     SUPPORTED_MODELS
         .iter()
-        .find(|m| m.name.eq_ignore_ascii_case(name))
+        .find(|m| m.name.eq_ignore_ascii_case(name) || m.api_id.eq_ignore_ascii_case(name))
 }
 
-/// Human-readable rejection message for an unsupported model id, or
-/// `None` when the slug is in [`SUPPORTED_MODELS`]. Used by the CLI
-/// validator and the `/model <name>` handler so the failure mode is
-/// the same in both places.
+/// Supported model matching a name the user typed: a short name, or
+/// `claude` / `gpt` for that provider's default model.
+pub fn selectable_model(name: &str) -> Option<&'static Model> {
+    SUPPORTED_MODELS
+        .iter()
+        .find(|m| m.name.eq_ignore_ascii_case(name))
+        .or_else(|| {
+            PROVIDER_DEFAULTS
+                .iter()
+                .find(|(alias, _)| alias.eq_ignore_ascii_case(name))
+                .map(|(_, model)| lookup(model))
+        })
+}
+
+/// Error message for a model name the user typed, or `None` when it is
+/// accepted. Shared by `--model` and `/model`.
 pub fn model_support_error(name: &str) -> Option<String> {
-    if canonical_model(name).is_some() {
+    if selectable_model(name).is_some() {
         return None;
     }
-    let reason = match successor_of(name) {
-        Some(successor) => format!("has been replaced by `{}`", successor.name),
+    let reason = match canonical_model(name).or_else(|| successor_of(name)) {
+        Some(model) => format!("is not accepted; use `{}`", model.name),
         None => "is not supported".to_string(),
     };
     Some(format!(
@@ -654,19 +699,15 @@ pub fn model_support_error(name: &str) -> Option<String> {
     ))
 }
 
-/// Provider that owns this model id. The CLI rejects unknown slugs
-/// up front, so in normal use the name is always in the whitelist;
-/// the fallback to the default model's provider exists only for
-/// internal call sites that look up arbitrary strings.
+/// Provider of the model named `name`. An unknown name gets the default
+/// model's provider.
 pub fn provider_for(name: &str) -> Provider {
     lookup(name).provider
 }
 
-/// Look up metadata for a model by id. Matching is case-insensitive.
-/// Unsupported slugs return the default model — the same entry
-/// `--model` falls back to when the user does not pass the flag; the
-/// CLI rejects unknown ids up front so this fallback only fires from
-/// internal call sites that pass arbitrary strings.
+/// Model matching `name` by short name or API id, ignoring case. An
+/// unknown name gets the default model; user input is checked before it
+/// gets here, so only internal callers can hit that case.
 pub fn lookup(name: &str) -> &'static Model {
     canonical_model(name).unwrap_or(&SUPPORTED_MODELS[DEFAULT_MODEL_INDEX])
 }
@@ -836,11 +877,9 @@ mod tests {
 
     #[test]
     fn unknown_model_falls_back_without_panic() {
-        // Default fallback uses the application-default model's pricing
-        // ($2 / $10) and the Anthropic semantics branch (input_tokens
-        // is uncached).
+        // Falls back to the default model's prices ($4 / $20).
         let cost = cost_of("some-future-model", 1_000, 1_000, 0, 0);
-        approx(cost, 1_000.0 / 1e6 * 2.0 + 1_000.0 / 1e6 * 10.0);
+        approx(cost, 1_000.0 / 1e6 * 4.0 + 1_000.0 / 1e6 * 20.0);
     }
 
     #[test]
@@ -851,14 +890,14 @@ mod tests {
         assert_eq!(provider_for(CLAUDE_HAIKU), Provider::Anthropic);
         assert_eq!(provider_for(GPT_ASTRA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_SOL), Provider::OpenAI);
+        assert_eq!(provider_for(GPT_TERRA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_LUNA), Provider::OpenAI);
         // Case insensitivity covers an upper-cased `--model` argument.
         assert_eq!(
             provider_for(&CLAUDE_OPUS.to_uppercase()),
             Provider::Anthropic
         );
-        // Unsupported slugs fall back to the default model's provider
-        // (Anthropic, since the default is an Anthropic model).
+        // An unknown name gets the default model's provider.
         assert_eq!(provider_for("unknown-model"), Provider::Anthropic);
     }
 
@@ -880,15 +919,36 @@ mod tests {
                 CLAUDE_HAIKU,
                 GPT_ASTRA,
                 GPT_SOL,
+                GPT_TERRA,
                 GPT_LUNA,
             ]
         );
     }
 
     #[test]
+    fn typed_names_accept_short_names_and_provider_defaults_only() {
+        assert_eq!(
+            selectable_model("Claude-Opus").map(|m| m.name),
+            Some(CLAUDE_OPUS)
+        );
+        assert_eq!(
+            selectable_model("claude").map(|m| m.name),
+            Some(CLAUDE_OPUS)
+        );
+        assert_eq!(selectable_model("GPT").map(|m| m.name), Some(GPT_SOL));
+
+        // A versioned API id resolves internally but can't be typed.
+        let api_id = lookup(CLAUDE_OPUS).api_id;
+        assert_eq!(canonical_model(api_id).map(|m| m.name), Some(CLAUDE_OPUS));
+        assert!(selectable_model(api_id).is_none());
+        let err = model_support_error(api_id).expect("a versioned id is rejected");
+        assert!(err.contains(&format!("use `{CLAUDE_OPUS}`")));
+    }
+
+    #[test]
     fn default_model_is_the_cli_default() {
-        assert_eq!(Model::default().name, CLAUDE_SONNET);
-        assert_eq!(SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name, CLAUDE_SONNET);
+        assert_eq!(Model::default().name, CLAUDE_OPUS);
+        assert_eq!(SUPPORTED_MODELS[DEFAULT_MODEL_INDEX].name, CLAUDE_OPUS);
     }
 
     #[test]
@@ -969,8 +1029,10 @@ mod tests {
     fn openai_tiers_are_priced_cheapest_last() {
         let astra = lookup(GPT_ASTRA);
         let sol = lookup(GPT_SOL);
+        let terra = lookup(GPT_TERRA);
         let luna = lookup(GPT_LUNA);
         assert!(luna.prices.input_per_m < sol.prices.input_per_m);
+        assert!(luna.prices.input_per_m < terra.prices.input_per_m);
         assert!(sol.prices.input_per_m < astra.prices.input_per_m);
     }
 
@@ -1035,6 +1097,18 @@ mod tests {
             response_cost("claude-opus-5", CLAUDE_SONNET, 1_000_000, 0, 0, 0),
             5.0,
         );
+        // The provider reports the API id, not the short name.
+        approx(
+            response_cost(
+                lookup(CLAUDE_OPUS).api_id,
+                CLAUDE_SONNET,
+                1_000_000,
+                0,
+                0,
+                0,
+            ),
+            4.0,
+        );
         // An unknown model is priced as the configured one.
         approx(
             response_cost("claude-unknown", CLAUDE_SONNET, 1_000_000, 0, 0, 0),
@@ -1051,7 +1125,7 @@ mod tests {
         assert_eq!(resume_model(CLAUDE_OPUS).map(|m| m.name), Some(CLAUDE_OPUS));
         assert!(resume_model("claude-opus-4-8").is_none());
         for Retired {
-            name: retired,
+            id: retired,
             successor,
             ..
         } in RETIRED_MODELS
@@ -1060,8 +1134,8 @@ mod tests {
                 resume_model(&retired.to_uppercase()).map(|m| m.name),
                 Some(*successor)
             );
-            let err = model_support_error(retired).expect("a retired slug is not selectable");
-            assert!(err.contains(&format!("replaced by `{successor}`")));
+            let err = model_support_error(retired).expect("a retired id is not selectable");
+            assert!(err.contains(&format!("use `{successor}`")));
             assert!(
                 canonical_model(retired).is_none(),
                 "{retired} is still supported"
@@ -1102,6 +1176,7 @@ mod tests {
         // Pro on the OpenAI models: accepted.
         assert!(mode_support_error(GPT_ASTRA, Pro).is_none());
         assert!(mode_support_error(GPT_SOL, Pro).is_none());
+        assert!(mode_support_error(GPT_TERRA, Pro).is_none());
         assert!(mode_support_error(GPT_LUNA, Pro).is_none());
         // Pro elsewhere: rejected, and the message names the capable models.
         let err = mode_support_error(CLAUDE_OPUS, Pro)

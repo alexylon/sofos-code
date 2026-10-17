@@ -66,10 +66,7 @@ pub enum Job {
     /// User confirmed a choice inside the resume picker.
     ResumeSelected(Option<String>),
     /// User confirmed a choice inside the `/model` picker; `None` on
-    /// cancel. Carries the canonical `&'static str` slug from
-    /// [`crate::api::model_info::SUPPORTED_MODELS`] — model names are
-    /// fixed at compile time so the channel doesn't need to own a
-    /// freshly allocated `String` per pick.
+    /// cancel. Carries the model's short name.
     ModelSelected(Option<&'static str>),
     /// User confirmed a level inside the `/effort` picker; `None` on cancel.
     EffortSelected(Option<ReasoningEffort>),
@@ -88,7 +85,7 @@ pub enum Job {
 /// process.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelPickerEntry {
-    /// Model id sent on the wire and back through `Job::ModelSelected`.
+    /// Short model name, sent back through `Job::ModelSelected`.
     pub name: &'static str,
     /// Short blurb rendered next to the name.
     pub description: &'static str,

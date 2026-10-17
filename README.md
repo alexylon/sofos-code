@@ -180,8 +180,9 @@ sofos
 Use a different model:
 
 ```bash
-sofos --model gpt-6.1-sol
-sofos --model claude-opus-5-5 -e high
+sofos --model gpt-sol
+sofos --model claude-opus -e high
+sofos --model gpt          # OpenAI's default model
 ```
 
 Run one prompt and exit:
@@ -284,7 +285,7 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
     --api-key <KEY>          Anthropic API key. Overrides ANTHROPIC_API_KEY.
     --openai-api-key <KEY>   OpenAI API key. Overrides OPENAI_API_KEY.
     --morph-api-key <KEY>    Morph API key. Overrides MORPH_API_KEY.
-    --model <MODEL>          Model to use. Default: claude-sonnet-5-5.
+    --model <MODEL>          Model to use. Default: claude-opus.
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
     --max-tokens <N>         Maximum output tokens per response. Default: 64000.
 -e, --reasoning-effort <LV>  low, medium, high, xhigh, or max. Default: medium.
@@ -297,19 +298,20 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
 
 ## Models and reasoning effort
 
-Sofos supports these models, shown in `/model` picker order:
+Sofos supports these models, shown in `/model` picker order. You choose a model by its short name; Sofos sends the current version to the provider.
 
-| Model | Provider |
-|---|---|
-| `claude-fable-5-1` | Anthropic |
-| `claude-opus-5-5` | Anthropic |
-| `claude-sonnet-5-5` (default) | Anthropic |
-| `claude-haiku-5-5` | Anthropic |
-| `gpt-6-astra` | OpenAI |
-| `gpt-6.1-sol` | OpenAI |
-| `gpt-6-luna` | OpenAI |
+| Name | Current version | Provider |
+|---|---|---|
+| `claude-fable` | `claude-fable-5-1` | Anthropic |
+| `claude-opus` (default) | `claude-opus-5-5` | Anthropic |
+| `claude-sonnet` | `claude-sonnet-5-5` | Anthropic |
+| `claude-haiku` | `claude-haiku-5-5` | Anthropic |
+| `gpt-astra` | `gpt-6-astra` | OpenAI |
+| `gpt-sol` | `gpt-6.1-sol` | OpenAI |
+| `gpt-terra` | `gpt-5.6-terra` | OpenAI |
+| `gpt-luna` | `gpt-6-luna` | OpenAI |
 
-`--model <name>` accepts only the values above. Any other value is refused at startup and Sofos prints the supported list. The same list drives the `/model` picker, so the CLI and picker stay consistent.
+`--model` and `/model` accept only the short names above, plus `claude` (picks `claude-opus`) and `gpt` (picks `gpt-sol`). A versioned name or any other value is refused, and Sofos prints the supported list.
 
 Sofos exposes five reasoning levels:
 
@@ -324,15 +326,15 @@ Examples:
 ```bash
 sofos -e medium                       # Default balance.
 sofos -e high                         # More reasoning for hard tasks.
-sofos -e max --model claude-opus-5-5  # Highest Anthropic level.
-sofos -e max --model gpt-6.1-sol      # Highest OpenAI level.
+sofos -e max --model claude-opus      # Highest Anthropic level.
+sofos -e max --model gpt-sol          # Highest OpenAI level.
 ```
 
 Every supported model currently accepts all five levels.
 
 Provider mapping:
 
-- **OpenAI** sends `reasoning.effort` directly. On the OpenAI models (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
+- **OpenAI** sends `reasoning.effort` directly. On the OpenAI models, `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
 - **Claude** models all use adaptive thinking. The provider chooses the token budget from the effort level.
 
 Claude Fable 5.1, Claude Opus 5.5, and Claude Sonnet 5.5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.

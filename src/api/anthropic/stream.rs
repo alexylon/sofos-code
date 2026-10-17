@@ -229,13 +229,14 @@ where
                                     .get("from")
                                     .and_then(|f| f.get("model"))
                                     .and_then(|m| m.as_str())
-                                    .unwrap_or(model_name.as_str())
-                                    .to_string();
+                                    .unwrap_or(model_name.as_str());
+                                let declined_by =
+                                    crate::api::model_info::short_name_for(declined_by).to_string();
                                 let answered_by = if served_by.is_empty() {
                                     "another model".to_string()
                                 } else {
                                     model_name = served_by.to_string();
-                                    served_by.to_string()
+                                    crate::api::model_info::short_name_for(served_by).to_string()
                                 };
                                 println!(
                                     "\n{}",
