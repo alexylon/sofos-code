@@ -957,6 +957,33 @@ ask = []
         }
     }
 
+    /// An interrupt that arrives while the shell is still starting its
+    /// program must stop that program too, not just the shell.
+    #[test]
+    fn test_interrupt_during_shell_startup_stops_the_whole_command() {
+        use std::sync::atomic::AtomicBool;
+        use std::time::{Duration, Instant};
+
+        let (_temp, path) = test_support::workspace();
+        let mut executor = BashExecutor::new(path, false, false).unwrap();
+        executor.install_interrupt_flag(Arc::new(AtomicBool::new(true)));
+        executor
+            .session_allowed
+            .lock()
+            .unwrap()
+            .insert("Bash(sleep 30)".to_string());
+
+        let start = Instant::now();
+        let result = executor.execute("sleep 30");
+
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "interrupt did not stop the command within five seconds (took {:?})",
+            start.elapsed()
+        );
+        assert!(result.is_err(), "expected interrupted command to error");
+    }
+
     /// `git push` smuggled through tab / `$IFS` / backslash-newline must
     /// still be caught by the dangerous-git matcher.
     #[test]

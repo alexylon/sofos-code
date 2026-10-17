@@ -714,6 +714,8 @@ impl BashExecutor {
         let mut child = cmd
             .spawn()
             .map_err(|e| SofosError::ToolExecution(format!("Failed to execute command: {}", e)))?;
+        #[cfg(windows)]
+        let job = ProcessJob::for_child(&child);
 
         let stdout = child.stdout.take().ok_or_else(|| {
             SofosError::ToolExecution("Failed to capture command stdout".to_string())
@@ -779,7 +781,13 @@ impl BashExecutor {
         // and a `wait` failure would prevent the reader threads from
         // unblocking even though we have already moved on.
         if termination.is_some() || try_wait_error.is_some() {
-            terminate_child_tree(&mut child);
+            #[cfg(windows)]
+            let ended_by_job = job.as_ref().is_some_and(ProcessJob::terminate);
+            #[cfg(not(windows))]
+            let ended_by_job = false;
+            if !ended_by_job {
+                terminate_child_tree(&mut child);
+            }
         }
 
         let wait_result = child.wait();
@@ -1098,6 +1106,48 @@ fn terminate_child_tree(child: &mut Child) {
         }
     }
     let _ = child.kill();
+}
+
+/// Windows job holding a command and every process it starts. Ending the
+/// job stops them all, including one started while `taskkill` is walking
+/// the process tree, which `taskkill` alone can miss.
+#[cfg(windows)]
+struct ProcessJob(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl ProcessJob {
+    fn for_child(child: &Child) -> Option<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            tracing::warn!(
+                "could not create a job for the command; interrupts fall back to taskkill"
+            );
+            return None;
+        }
+        let job = ProcessJob(handle);
+        let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as _) };
+        if assigned == 0 {
+            tracing::warn!("could not add the command to a job; interrupts fall back to taskkill");
+            return None;
+        }
+        Some(job)
+    }
+
+    /// End every process in the job. Returns false if Windows refused.
+    fn terminate(&self) -> bool {
+        unsafe { windows_sys::Win32::System::JobObjects::TerminateJobObject(self.0, 1) != 0 }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
 }
 
 #[cfg(not(unix))]

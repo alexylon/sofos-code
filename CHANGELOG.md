@@ -4,6 +4,10 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Interrupting a command on Windows now stops everything it started.** A program the command had just launched could survive the interrupt and keep running, so Sofos waited for it to finish before returning.
+
 ## [0.5.0] - 2026-10-17
 
 ### Changed
