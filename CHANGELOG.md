@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
 ### Changed
 
 - **Models are chosen by short name, and every model moves to its latest version.** `--model` and `/model` now take names without a version: `claude-fable`, `claude-opus`, `claude-sonnet`, `claude-haiku`, `gpt-astra`, `gpt-sol`, `gpt-terra`, and `gpt-luna`. `claude` and `gpt` pick `claude-opus` and `gpt-sol`. Sofos sends the current version to the provider: Claude Fable 5.1, Opus 5.5, Sonnet 5.5, and Haiku 5.5, and GPT-6 Astra, GPT-6.1 Sol, GPT-5.6 Terra, and GPT-6 Luna. The startup banner shows the version in use. A versioned name is refused with the short name to use instead.
