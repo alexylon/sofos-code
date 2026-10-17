@@ -564,11 +564,10 @@ It contains:
 - per-model output-token ceilings;
 - auto-compaction thresholds;
 - supported reasoning-effort levels;
-- pro-mode support (the GPT-5.6 family);
+- pro-mode support (the OpenAI models);
 - refusal-fallback support, for the models whose safety classifiers can decline a request;
-- adaptive-thinking support;
 - server-side compaction support;
-- token pricing, and the per-response cost arithmetic that applies it.
+- token pricing, including the higher rates some models charge for long prompts, and the per-response cost arithmetic that applies it.
 
 Rules:
 

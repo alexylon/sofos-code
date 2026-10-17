@@ -180,8 +180,8 @@ sofos
 Use a different model:
 
 ```bash
-sofos --model gpt-5.6-sol
-sofos --model claude-opus-5 -e high
+sofos --model gpt-6.1-sol
+sofos --model claude-opus-5-5 -e high
 ```
 
 Run one prompt and exit:
@@ -215,8 +215,8 @@ sofos --resume
 | `/compact` | Compact older context to reduce token usage. |
 | `/effort` | Open the reasoning-effort picker. The picker lists only the levels supported by the active model. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
 | `/effort low\|medium\|high\|xhigh\|max` | Switch directly to a reasoning level. Unsupported levels print a clear error. |
-| `/mode` | Open the reasoning-mode picker. `standard` and `pro`; `pro` is disabled outside the GPT-5.6 family. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
-| `/mode standard\|pro` | Switch reasoning mode. `pro` is accepted only on the GPT-5.6 models; other models print a clear error. |
+| `/mode` | Open the reasoning-mode picker. `standard` and `pro`; `pro` is disabled on the Anthropic models. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. |
+| `/mode standard\|pro` | Switch reasoning mode. `pro` is accepted only on the OpenAI models; other models print a clear error. |
 | `/model` | Open the model picker. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Models this session cannot switch to are greyed out and skipped: the other provider's models, because the API client is fixed at startup, and any model that rejects the active reasoning effort, reasoning mode, or output-token ceiling. Type `/model <name>` to see the reason a particular model is unavailable. |
 | `/model <name>` | Switch directly to a model on the active provider. To switch provider, restart Sofos with `--model <name>`. |
 | `/permissions` | Open the permission preset picker. The presets are `read-only`, `sandboxed-ask`, `sandboxed-retry`, `sandboxed-strict`, and `unsandboxed`. Use **Up / Down** to select, **Enter** to switch, and **Esc** to cancel. Where sandboxing is unavailable, such as Windows, the `sandboxed-*` presets are shown but disabled. |
@@ -284,14 +284,14 @@ Supported formats are JPEG, PNG, GIF, and WebP. Local images are limited to 20 M
     --api-key <KEY>          Anthropic API key. Overrides ANTHROPIC_API_KEY.
     --openai-api-key <KEY>   OpenAI API key. Overrides OPENAI_API_KEY.
     --morph-api-key <KEY>    Morph API key. Overrides MORPH_API_KEY.
-    --model <MODEL>          Model to use. Default: claude-sonnet-5.
+    --model <MODEL>          Model to use. Default: claude-sonnet-5-5.
     --morph-model <MODEL>    Morph model to use. Default: morph-v3-fast.
     --max-tokens <N>         Maximum output tokens per response. Default: 64000.
 -e, --reasoning-effort <LV>  low, medium, high, xhigh, or max. Default: medium.
-    --reasoning-mode <MODE>  standard or pro (GPT-5.6 only). Default: standard.
+    --reasoning-mode <MODE>  standard or pro (OpenAI only). Default: standard.
 ```
 
-`--max-tokens` must be greater than `16384` when reasoning effort is enabled, and must not exceed the chosen model's own output limit — 64000 tokens on Claude Haiku 4.5, 128000 on every other supported model. Both limits are checked at startup and when switching model with `/model`. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
+`--max-tokens` must be at least 16 and must not exceed the chosen model's own output limit — 128000 tokens on every supported model. The limit is checked at startup and when switching model with `/model`. The hidden, deprecated `--thinking-budget` flag still parses for backwards compatibility, but it has no effect and is intentionally omitted from the CLI help.
 
 ---
 
@@ -301,13 +301,13 @@ Sofos supports these models, shown in `/model` picker order:
 
 | Model | Provider |
 |---|---|
-| `claude-fable-5` | Anthropic |
-| `claude-opus-5` | Anthropic |
-| `claude-sonnet-5` (default) | Anthropic |
-| `claude-haiku-4-5` | Anthropic |
-| `gpt-5.6-sol` | OpenAI |
-| `gpt-5.6-terra` | OpenAI |
-| `gpt-5.6-luna` | OpenAI |
+| `claude-fable-5-1` | Anthropic |
+| `claude-opus-5-5` | Anthropic |
+| `claude-sonnet-5-5` (default) | Anthropic |
+| `claude-haiku-5-5` | Anthropic |
+| `gpt-6-astra` | OpenAI |
+| `gpt-6.1-sol` | OpenAI |
+| `gpt-6-luna` | OpenAI |
 
 `--model <name>` accepts only the values above. Any other value is refused at startup and Sofos prints the supported list. The same list drives the `/model` picker, so the CLI and picker stay consistent.
 
@@ -324,28 +324,18 @@ Examples:
 ```bash
 sofos -e medium                       # Default balance.
 sofos -e high                         # More reasoning for hard tasks.
-sofos -e max --model claude-opus-5    # Highest Anthropic adaptive level.
-sofos -e max --model gpt-5.6-sol      # Highest level on the GPT-5.6 family.
-sofos -e high --model claude-haiku-4-5 # Highest level on Haiku 4.5.
+sofos -e max --model claude-opus-5-5  # Highest Anthropic level.
+sofos -e max --model gpt-6.1-sol      # Highest OpenAI level.
 ```
 
-Support matrix:
-
-| Effort | Fable 5 | Opus 5 | Sonnet 5 | Haiku 4.5 | GPT-5.6 (sol/terra/luna) |
-|---|:---:|:---:|:---:|:---:|:---:|
-| `low` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `medium` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `high` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `xhigh` | ✓ | ✓ | ✓ | ✗ | ✓ |
-| `max` | ✓ | ✓ | ✓ | ✗ | ✓ |
+Every supported model currently accepts all five levels.
 
 Provider mapping:
 
-- **OpenAI** sends `reasoning.effort` directly. On the **GPT-5.6** models (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
-- **Claude Fable 5, Opus 5, and Sonnet 5** use adaptive thinking. The provider chooses the token budget from the effort level.
-- **Claude Haiku 4.5** uses fixed legacy thinking budgets for `low`, `medium`, and `high`.
+- **OpenAI** sends `reasoning.effort` directly. On the OpenAI models (`gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna`), `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
+- **Claude** models all use adaptive thinking. The provider chooses the token budget from the effort level.
 
-Claude Fable 5 and Claude Opus 5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.
+Claude Fable 5.1, Claude Opus 5.5, and Claude Sonnet 5.5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.
 
 On the Anthropic models, Sofos asks for a readable summary of the model's reasoning and prints it under a dimmed `Thinking:` heading while the answer is being prepared. Asking for the summary does not change what a conversation costs: these models carry their reasoning between turns either way, and Anthropic bills it the same whether the summary is returned or withheld.
 
