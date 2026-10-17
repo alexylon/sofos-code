@@ -47,34 +47,16 @@ impl<'a> RequestBuilder<'a> {
 
     pub fn build(self) -> CreateMessageRequest {
         let is_anthropic = matches!(self.client, Anthropic(_));
-        let adaptive =
-            is_anthropic && crate::api::anthropic::requires_adaptive_thinking(self.model);
 
-        // Adaptive-thinking models take `thinking: adaptive` +
-        // `output_config.effort`; some of them outright reject the
-        // legacy `enabled` shape, and others accept it but Anthropic
-        // recommends adaptive. Non-adaptive Anthropic models still take
-        // the manual `budget_tokens` shape. On adaptive models we always
-        // send `thinking: adaptive`: dropping it would 400 the next turn
-        // if the conversation history already contains echoed thinking
-        // blocks from an earlier turn (Anthropic rejects requests
-        // carrying thinking blocks without a matching top-level thinking
-        // config). The level is sent in `output_config.effort`.
-        let (thinking_config, output_config) = if is_anthropic && adaptive {
-            let effort = crate::api::anthropic::effort_label(self.reasoning_effort);
+        // Always send `thinking: adaptive` to Anthropic. Once the history
+        // holds thinking from earlier turns, a request without it is
+        // rejected.
+        let (thinking_config, output_config) = if is_anthropic {
+            let effort = self.reasoning_effort.as_label();
             (
                 Some(crate::api::Thinking::adaptive()),
                 Some(crate::api::OutputConfig::with_effort(effort)),
             )
-        } else if is_anthropic {
-            // Non-adaptive Anthropic models take the legacy
-            // `{type: "enabled", budget_tokens}` shape.
-            // The per-tier mapping lives in `crate::api::anthropic` so
-            // the startup validation in `repl/mod.rs` can reference the
-            // same `LEGACY_THINKING_BUDGET_HIGH` ceiling without
-            // duplicating the values.
-            let budget = crate::api::anthropic::legacy_thinking_budget(self.reasoning_effort);
-            (Some(crate::api::Thinking::enabled(budget)), None)
         } else {
             (None, None)
         };
@@ -90,7 +72,7 @@ impl<'a> RequestBuilder<'a> {
                 ReasoningEffort::XHigh => crate::api::Reasoning::with_effort("xhigh"),
                 ReasoningEffort::Max => crate::api::Reasoning::with_effort("max"),
             };
-            // `mode: "pro"` on the GPT-5.6 family; standard omits the
+            // `mode: "pro"` on the OpenAI models; standard omits the
             // field. Startup and `/mode` validation guarantee `pro`
             // only reaches a pro-capable model.
             reasoning.mode = self.reasoning_mode.wire_value().map(str::to_string);
@@ -112,12 +94,7 @@ impl<'a> RequestBuilder<'a> {
             if info.supports_server_compaction {
                 Some(crate::api::ContextManagement {
                     edits: vec![crate::api::ContextEdit::Compact20260112 {
-                        // Clamp to Anthropic's documented floor. No
-                        // model in the registry today drops below it
-                        // (the smallest-window model sits at 170K and
-                        // doesn't carry `supports_server_compaction`
-                        // anyway), but a future small-window addition
-                        // would otherwise 400 the request.
+                        // Anthropic rejects a trigger below this floor.
                         trigger: Some(crate::api::CompactionTrigger::InputTokens {
                             value: info
                                 .auto_compact_at()
@@ -642,59 +619,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_anthropic_thinking_budget_scales_with_effort() {
-        // On non-adaptive Anthropic models,
-        // `/effort low|medium|high` used to all collapse to the same
-        // `thinking_budget`. Verify each tier now produces a strictly
-        // larger budget so the slider has a visible effect.
+    fn openai_requests_skip_server_compaction() {
         let conv = ConversationHistory::new();
-        let budget_for = |effort| {
-            let req = RequestBuilder::new(
-                &anthropic_client(),
-                crate::api::model_info::CLAUDE_HAIKU,
-                65_536,
-                &conv,
-                one_regular_tool(),
-                effort,
-                "s1",
-            )
-            .build();
-            let thinking = req.thinking.expect("legacy Anthropic enables thinking");
-            assert!(
-                thinking.display.is_none(),
-                "the legacy shape returns the reasoning in full and takes no display setting"
-            );
-            thinking
-                .budget_tokens
-                .expect("legacy thinking carries budget_tokens")
-        };
-
-        let low = budget_for(ReasoningEffort::Low);
-        let medium = budget_for(ReasoningEffort::Medium);
-        let high = budget_for(ReasoningEffort::High);
-
-        assert!(low < medium, "Medium ({medium}) must exceed Low ({low})");
-        assert!(medium < high, "High ({high}) must exceed Medium ({medium})");
-    }
-
-    #[test]
-    fn unsupported_models_skip_server_compaction() {
-        let conv = ConversationHistory::new();
-        let haiku_req = RequestBuilder::new(
-            &anthropic_client(),
-            crate::api::model_info::CLAUDE_HAIKU,
-            8192,
-            &conv,
-            one_regular_tool(),
-            ReasoningEffort::Medium,
-            "s1",
-        )
-        .build();
-        assert!(
-            haiku_req.context_management.is_none(),
-            "this model isn't on Anthropic's compaction-supported list"
-        );
-
         let openai_req = RequestBuilder::new(
             &openai_client(),
             crate::api::model_info::GPT_SOL,

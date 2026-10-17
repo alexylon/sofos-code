@@ -154,36 +154,30 @@ impl Repl {
         // current Repl untouched.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
-                // The saved model is about to override `--model` further
-                // down, so refuse the resume if that override would land
-                // on a slug the application no longer supports. The
-                // resumed session would otherwise send an unrecognised
-                // model id on the wire and fail at request time. This
-                // runs before the provider comparison because an
-                // unknown slug reports the default model's provider,
-                // which would otherwise blame a provider mismatch and
-                // tell the user to re-launch with a model that no
-                // longer exists.
-                if crate::api::model_info::canonical_model(saved_model).is_none() {
+                // A replaced model resumes on its replacement, so the checks
+                // below use that. An unknown model is refused first, since
+                // it would otherwise be reported as a provider mismatch.
+                let Some(resumed) = crate::api::model_info::resume_model(saved_model) else {
                     return Err(SofosError::Config(format!(
                         "Session was saved under model '{}', which is no longer supported. \
                          Supported models: {}.",
                         saved_model,
                         crate::api::model_info::supported_models_label()
                     )));
-                }
-                let saved_provider = provider_of(saved_model);
+                };
+                let resumed_model = resumed.name;
+                let saved_provider = provider_of(resumed_model);
                 let current_provider = self.client.provider_name();
                 if saved_provider != current_provider {
                     return Err(SofosError::Config(format!(
                         "Session was saved under model '{}' ({}), but the current client is {}. \
                          Re-launch with `--model {}` to resume.",
-                        saved_model, saved_provider, current_provider, saved_model
+                        saved_model, saved_provider, current_provider, resumed_model
                     )));
                 }
-                if saved_model != self.model_config.model {
+                if resumed_model != self.model_config.model {
                     if let Some(msg) = crate::api::model_info::effort_support_error(
-                        saved_model,
+                        resumed_model,
                         self.model_config.reasoning_effort,
                     ) {
                         return Err(SofosError::Config(format!(
@@ -194,7 +188,7 @@ impl Repl {
                     // The saved model replaces the one startup checked,
                     // so its own output ceiling has to be checked too.
                     if let Some(msg) = crate::api::model_info::max_tokens_support_error(
-                        saved_model,
+                        resumed_model,
                         self.model_config.max_tokens,
                     ) {
                         return Err(SofosError::Config(format!(
@@ -235,12 +229,11 @@ impl Repl {
             session.token_counters.total_cache_creation_tokens;
         self.session_state.peak_single_turn_input_tokens =
             session.token_counters.peak_single_turn_input_tokens;
-        // Files written before per-response pricing carry no total, so
-        // fall back to the old behaviour for them: price the restored
-        // counters once at the saved model's rates.
+        // Files from before per-response pricing have no saved total, so
+        // price their token totals in one go.
         self.session_state.total_cost = session.token_counters.total_cost.unwrap_or_else(|| {
-            let priced_as = session.model.as_deref().unwrap_or(&self.model_config.model);
-            crate::api::model_info::lookup(priced_as).turn_cost(
+            crate::api::model_info::session_totals_cost(
+                session.model.as_deref().unwrap_or(&self.model_config.model),
                 session.token_counters.total_input_tokens,
                 session.token_counters.total_output_tokens,
                 session.token_counters.total_cache_read_tokens,
@@ -257,18 +250,34 @@ impl Repl {
         // and the wire payload uses the spelling the provider expects.
         if let Some(saved_model) = session.model.as_deref() {
             if !saved_model.is_empty() {
-                let canonical = crate::api::model_info::canonical_model(saved_model)
+                let canonical = crate::api::model_info::resume_model(saved_model)
                     .map(|c| c.name.to_string())
                     .unwrap_or_else(|| saved_model.to_string());
-                if canonical != self.model_config.model {
+                if !canonical.eq_ignore_ascii_case(saved_model) {
+                    let instead = if canonical != self.model_config.model {
+                        format!(" instead of '{}'", self.model_config.model)
+                    } else {
+                        String::new()
+                    };
+                    println!(
+                        "{} session was saved under model '{}', which has been replaced; continuing with '{}'{}",
+                        "Note:".dimmed(),
+                        saved_model,
+                        canonical,
+                        instead
+                    );
+                } else if canonical != self.model_config.model {
                     println!(
                         "{} session was saved under model '{}'; continuing with that instead of '{}'",
                         "Note:".dimmed(),
                         canonical,
                         self.model_config.model
                     );
-                    self.model_config.model = canonical;
                 }
+                self.session_state
+                    .conversation
+                    .apply_model_limits(&canonical);
+                self.model_config.model = canonical;
             }
         }
 

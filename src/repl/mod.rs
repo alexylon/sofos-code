@@ -177,44 +177,20 @@ impl Repl {
             tracing::info!("loaded custom instructions");
         }
 
-        // Validate that `max_tokens` leaves room for the largest legacy
-        // thinking budget we might send. The budget is picked per-effort
-        // in `request_builder` (Low=1024, Medium=5120, High=16384), so
-        // the invariant we need is `max_tokens > HIGH`. We check
-        // unconditionally rather than probing the model id, because the
-        // model can be swapped mid-session via `/model` and we don't
-        // want a runtime 400.
-        if config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH {
-            return Err(SofosError::Config(format!(
-                "max_tokens ({}) must exceed the legacy thinking-budget ceiling ({}). \
-                 Use a higher --max-tokens.",
-                config.max_tokens,
-                crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
-            )));
-        }
-
-        // Reject `(model, effort)` pairs the active model won't
-        // accept, e.g. `xhigh` on a model that tops out at `high`.
-        // Catching it here turns a runtime 400 into a clear startup
-        // error.
+        // Catch unsupported settings here, with a clear message, rather
+        // than as a failed request later.
         if let Some(msg) =
             crate::api::model_info::effort_support_error(&config.model, config.reasoning_effort)
         {
             return Err(SofosError::Config(msg));
         }
 
-        // Reject `pro` mode on models that don't support it (everything
-        // outside the GPT-5.6 family), mirroring the effort gate above.
         if let Some(msg) =
             crate::api::model_info::mode_support_error(&config.model, config.reasoning_mode)
         {
             return Err(SofosError::Config(msg));
         }
 
-        // Reject a `--max-tokens` the active model cannot produce. The
-        // ceilings differ per model, so this one is checked against the
-        // chosen model rather than unconditionally like the legacy
-        // thinking-budget floor above.
         if let Some(msg) =
             crate::api::model_info::max_tokens_support_error(&config.model, config.max_tokens)
         {
@@ -226,10 +202,7 @@ impl Repl {
 
         let mut conversation =
             ConversationHistory::with_features(has_morph, has_code_search, custom_instructions);
-        conversation.set_max_context_tokens(crate::config::max_context_tokens_for(&config.model));
-        conversation.set_auto_compact_token_limit(crate::config::auto_compact_token_limit_for(
-            &config.model,
-        ));
+        conversation.apply_model_limits(&config.model);
 
         // Every mode gets a startup preamble so the assistant knows from
         // turn 1 which tier rules and platform caveats apply, not just
@@ -340,24 +313,9 @@ impl Repl {
     /// Snapshot of the user-facing state displayed in the TUI status line.
     pub fn status_snapshot(&self) -> tui::event::StatusSnapshot {
         let effort = self.model_config.reasoning_effort;
-        let reasoning = if self.uses_adaptive_thinking() {
-            // Adaptive models pick their own budget; showing a fixed
-            // token count would be misleading, so render the
-            // `output_config.effort` value we actually send instead.
-            format!("effort: {}", crate::api::anthropic::effort_label(effort))
-        } else if matches!(self.client, Anthropic(_)) {
-            // The legacy non-adaptive shape's `budget_tokens` comes
-            // from the effort tier (mapping in `request_builder`).
-            // Show the value we actually send so the status line
-            // matches reality.
-            let budget = crate::api::anthropic::legacy_thinking_budget(effort);
-            format!("thinking: {} tok", budget)
-        } else {
-            format!("effort: {}", effort.as_label())
-        };
+        let reasoning = format!("effort: {}", effort.as_label());
 
-        // Only the GPT-5.6 family has a switchable standard/pro mode; on
-        // every other model the status line omits the field.
+        // Hide the mode on models without a pro option.
         let reasoning_mode = crate::api::model_info::supports_pro_mode(&self.model_config.model)
             .then_some(self.model_config.reasoning_mode);
 
@@ -454,29 +412,13 @@ impl Repl {
         Ok(())
     }
 
-    /// True when the active model uses adaptive thinking.
-    fn uses_adaptive_thinking(&self) -> bool {
-        matches!(self.client, Anthropic(_))
-            && crate::api::anthropic::requires_adaptive_thinking(&self.model_config.model)
-    }
-
-    /// Print the reasoning-state line shared by the `/effort` paths.
-    /// Three flavours: adaptive effort, Anthropic manual budget, OpenAI
-    /// reasoning effort.
     fn print_reasoning_state(&self) {
         let effort = self.model_config.reasoning_effort;
-        if self.uses_adaptive_thinking() {
+        if matches!(self.client, Anthropic(_)) {
             println!(
                 "\n{} {}\n",
                 "Adaptive thinking effort:".bright_green(),
-                crate::api::anthropic::effort_label(effort)
-            );
-        } else if matches!(self.client, Anthropic(_)) {
-            let budget = crate::api::anthropic::legacy_thinking_budget(effort);
-            println!(
-                "\n{} (budget: {} tokens)\n",
-                "Extended thinking: enabled".bright_green(),
-                budget
+                effort.as_label()
             );
         } else {
             println!(
@@ -493,23 +435,6 @@ impl Repl {
         {
             println!();
             UI::print_error(&msg);
-            println!();
-            return;
-        }
-        // Mirror the startup gate: legacy Anthropic thinking needs
-        // max_tokens above the budget ceiling.
-        if matches!(self.client, Anthropic(_))
-            && !self.uses_adaptive_thinking()
-            && self.model_config.max_tokens <= crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
-        {
-            println!();
-            UI::print_error(&format!(
-                "Cannot enable extended thinking on the legacy budget — max_tokens \
-                 ({}) must exceed {}. Relaunch with a higher --max-tokens or pick a \
-                 lower effort.",
-                self.model_config.max_tokens,
-                crate::api::anthropic::LEGACY_THINKING_BUDGET_HIGH
-            ));
             println!();
             return;
         }
@@ -625,10 +550,7 @@ impl Repl {
         self.model_config.model = choice.name.to_string();
         self.session_state
             .conversation
-            .set_max_context_tokens(crate::config::max_context_tokens_for(choice.name));
-        self.session_state
-            .conversation
-            .set_auto_compact_token_limit(crate::config::auto_compact_token_limit_for(choice.name));
+            .apply_model_limits(choice.name);
         println!(
             "\n{} {}\n",
             "Model:".bright_green(),

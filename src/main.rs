@@ -187,23 +187,11 @@ fn main() -> Result<()> {
             "Reasoning effort:".bright_green(),
             reasoning_effort.as_label()
         ));
-    } else if crate::api::anthropic::requires_adaptive_thinking(&cli.model) {
-        // Adaptive-thinking models pick their own budget; advertising
-        // a token count would be a lie.
-        // Surface the `output_config.effort` we actually send.
+    } else {
         startup_banner.push_str(&format!(
             "{} {}\n",
             "Adaptive thinking effort:".bright_green(),
-            crate::api::anthropic::effort_label(reasoning_effort)
-        ));
-    } else {
-        // Show the per-effort tier budget so the startup banner matches
-        // what hits the API.
-        let budget = crate::api::anthropic::legacy_thinking_budget(reasoning_effort);
-        startup_banner.push_str(&format!(
-            "{} (budget: {} tokens)\n",
-            "Extended thinking: enabled".bright_green(),
-            budget
+            reasoning_effort.as_label()
         ));
     }
 

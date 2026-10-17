@@ -77,8 +77,9 @@ impl ResponseHandler {
         peak_single_turn_input: &mut u32,
         total_cost: &mut f64,
     ) {
-        let priced_as = crate::api::model_info::pricing_model(served_by, configured);
-        *total_cost += crate::api::model_info::lookup(priced_as).turn_cost(
+        *total_cost += crate::api::model_info::response_cost(
+            served_by,
+            configured,
             usage.input_tokens,
             usage.output_tokens,
             usage.cache_read_input_tokens.unwrap_or(0),

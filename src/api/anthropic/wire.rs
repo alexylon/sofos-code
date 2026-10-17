@@ -1,9 +1,7 @@
 //! Request transformation and per-model wire-format helpers for the
 //! Anthropic Messages API. Strips OpenAI-only fields off the
 //! [`CreateMessageRequest`] before serialisation, picks the right
-//! `anthropic-beta` token for the target model, and exposes the
-//! public reasoning-effort helpers that downstream code uses to
-//! configure thinking budgets.
+//! `anthropic-beta` token for the target model.
 
 use crate::api::types::*;
 
@@ -39,7 +37,10 @@ pub(super) const BETA_SERVER_SIDE_FALLBACK: &str = "server-side-fallback-2026-07
 /// support nothing extra get the single universal token rather than
 /// relying on Anthropic ignoring unknown ones.
 pub(super) fn anthropic_beta_for(model: &str) -> String {
-    let info = crate::api::model_info::lookup(model);
+    beta_header_for(crate::api::model_info::lookup(model))
+}
+
+pub(super) fn beta_header_for(info: &crate::api::model_info::Model) -> String {
     let mut tokens = vec![BETA_TOKEN_EFFICIENT];
     if info.supports_server_compaction {
         tokens.push(BETA_COMPACT);
@@ -50,55 +51,10 @@ pub(super) fn anthropic_beta_for(model: &str) -> String {
     tokens.join(",")
 }
 
-/// Legacy `thinking.budget_tokens` values used by models that don't
-/// accept the adaptive `output_config` reasoning request shape.
-/// `Low` / `Medium` / `High` map to these three constants.
-pub const LEGACY_THINKING_BUDGET_LOW: u32 = 1024;
-pub const LEGACY_THINKING_BUDGET_MEDIUM: u32 = 5120;
-pub const LEGACY_THINKING_BUDGET_HIGH: u32 = 16384;
-
 /// Default trigger floor for server-side compaction. Below this the
 /// model probably hasn't earned compaction yet, and triggering early
 /// would waste a compaction round-trip on a still-small history.
 pub const COMPACTION_TRIGGER_FLOOR: u32 = 50_000;
-
-/// Map a reasoning effort tier to its legacy `thinking.budget_tokens`
-/// value. Used by request_builder when the target model doesn't speak
-/// adaptive thinking.
-pub fn legacy_thinking_budget(effort: ReasoningEffort) -> u32 {
-    match effort {
-        ReasoningEffort::Low => LEGACY_THINKING_BUDGET_LOW,
-        ReasoningEffort::Medium => LEGACY_THINKING_BUDGET_MEDIUM,
-        // Legacy-thinking models only expose budget tiers up to High.
-        // `XHigh` and `Max` are adaptive-only rungs that upstream
-        // validation refuses to pair with a legacy model, so this
-        // branch is unreachable in practice; clamp defensively to the
-        // highest legal budget.
-        ReasoningEffort::High | ReasoningEffort::XHigh | ReasoningEffort::Max => {
-            LEGACY_THINKING_BUDGET_HIGH
-        }
-    }
-}
-
-/// Maps a reasoning-effort level to the `output_config.effort` label
-/// for adaptive-thinking requests.
-pub fn effort_label(effort: ReasoningEffort) -> &'static str {
-    match effort {
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-        ReasoningEffort::XHigh => "xhigh",
-        ReasoningEffort::Max => "max",
-    }
-}
-
-/// True for models that speak the adaptive `output_config.thinking`
-/// reasoning request shape. Thin wrapper over the model-info table
-/// so a new model's adaptive-thinking opt-in is one entry in
-/// [`crate::api::model_info::lookup`] rather than a code change here.
-pub fn requires_adaptive_thinking(model: &str) -> bool {
-    crate::api::model_info::lookup(model).requires_adaptive_thinking
-}
 
 /// Strip OpenAI-only fields and tools off `request` before it goes
 /// out on the wire to Anthropic, and run [`sanitize_messages_for_anthropic`]

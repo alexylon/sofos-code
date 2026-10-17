@@ -16,6 +16,13 @@ impl ConversationHistory {
         self.config.max_context_tokens = n;
     }
 
+    /// Set the trim and auto-compact limits for `model`. Call this on
+    /// every model change.
+    pub fn apply_model_limits(&mut self, model: &str) {
+        self.set_max_context_tokens(crate::config::max_context_tokens_for(model));
+        self.set_auto_compact_token_limit(crate::config::auto_compact_token_limit_for(model));
+    }
+
     pub fn estimate_tokens(text: &str) -> usize {
         // Conservative: 1 token per 3.5 chars (accounts for code/JSON being token-heavy)
         (text.len() as f64 / 3.5).ceil() as usize

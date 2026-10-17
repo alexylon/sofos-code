@@ -16,10 +16,6 @@
 
 use crate::api::{ReasoningEffort, ReasoningMode};
 
-/// Fraction of the base input price charged for tokens served from the
-/// provider prompt cache. Anthropic and OpenAI both publish this at 10%
-/// across the current families, so one constant covers both.
-const CACHE_READ_RATE: f64 = 0.10;
 /// Multiplier on the base input price for tokens written to a 5-minute
 /// Anthropic cache breakpoint. OpenAI has no creation charge. The
 /// 1-hour breakpoint bills at 2x, not 1.25x, so the estimate
@@ -42,6 +38,26 @@ impl Provider {
             Provider::OpenAI => "OpenAI",
         }
     }
+}
+
+/// Prices in US dollars per million tokens.
+#[derive(Debug, Clone, Copy)]
+pub struct Prices {
+    /// Input not served from the cache.
+    pub input_per_m: f64,
+    /// Input served from the cache. Listed per model because the
+    /// discount varies.
+    pub cache_read_per_m: f64,
+    /// Output, including hidden reasoning tokens.
+    pub output_per_m: f64,
+}
+
+/// Higher prices a model charges once one prompt exceeds
+/// `above_tokens`.
+#[derive(Debug, Clone, Copy)]
+pub struct LongPromptPrices {
+    pub above_tokens: u32,
+    pub prices: Prices,
 }
 
 /// A model the application knows about. Carries everything any other
@@ -70,13 +86,6 @@ pub struct Model {
     /// context_window)`. When `None`, falls back to 90% of
     /// `context_window`.
     pub auto_compact_token_limit: Option<u32>,
-    /// True for Anthropic models that use the `thinking: adaptive`
-    /// shape with `output_config.effort` rather than the legacy
-    /// `{type: "enabled", budget_tokens}` shape. Some adaptive models
-    /// reject the legacy shape outright; others accept both, but
-    /// Anthropic recommends adaptive, so the request builder opts in
-    /// wherever this flag is set.
-    pub requires_adaptive_thinking: bool,
     /// True for Anthropic models that support the server-side
     /// compaction beta (`compact-2026-01-12`). When set, the request
     /// builder enables Anthropic's automatic compaction instead of
@@ -92,15 +101,12 @@ pub struct Model {
     /// which lets Anthropic answer a declined request on another model
     /// instead of returning the refusal.
     pub supports_refusal_fallback: bool,
-    /// True for models that accept OpenAI's `reasoning.mode: "pro"` (the
-    /// GPT-5.6 family). Startup validation and the `/mode` handler reject
-    /// `Pro` on any model without this capability.
+    /// True for models that accept `reasoning.mode: "pro"`. Startup and
+    /// `/mode` reject `pro` on every other model.
     pub supports_pro_mode: bool,
-    /// Per-million-token USD price for non-cached input.
-    pub price_input_per_m: f64,
-    /// Per-million-token USD price for output (including hidden
-    /// reasoning tokens on OpenAI reasoning models).
-    pub price_output_per_m: f64,
+    pub prices: Prices,
+    /// Prices for long prompts, on models that charge more for them.
+    pub long_prompt: Option<LongPromptPrices>,
 }
 
 impl Model {
@@ -136,15 +142,55 @@ impl Model {
         cache_read_tokens: u32,
         cache_creation_tokens: u32,
     ) -> f64 {
+        let prompt_tokens = match self.provider {
+            Provider::OpenAI => input_tokens,
+            Provider::Anthropic => input_tokens
+                .saturating_add(cache_read_tokens)
+                .saturating_add(cache_creation_tokens),
+        };
+        let prices = match self.long_prompt {
+            Some(long) if prompt_tokens > long.above_tokens => long.prices,
+            _ => self.prices,
+        };
+        self.cost_at(
+            prices,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        )
+    }
+
+    fn cost_at(
+        &self,
+        prices: Prices,
+        input_tokens: u32,
+        output_tokens: u32,
+        cache_read_tokens: u32,
+        cache_creation_tokens: u32,
+    ) -> f64 {
         let uncached = match self.provider {
             Provider::OpenAI => input_tokens.saturating_sub(cache_read_tokens),
             Provider::Anthropic => input_tokens,
         };
         let per_million = |tokens: u32, price: f64| (tokens as f64 / 1_000_000.0) * price;
-        per_million(uncached, self.price_input_per_m)
-            + per_million(cache_read_tokens, self.price_input_per_m) * CACHE_READ_RATE
-            + per_million(cache_creation_tokens, self.price_input_per_m) * CACHE_CREATION_RATE
-            + per_million(output_tokens, self.price_output_per_m)
+        per_million(uncached, prices.input_per_m)
+            + per_million(cache_read_tokens, prices.cache_read_per_m)
+            + per_million(cache_creation_tokens, prices.input_per_m) * CACHE_CREATION_RATE
+            + per_million(output_tokens, prices.output_per_m)
+    }
+
+    /// Error message if this model doesn't accept `effort`.
+    pub fn effort_support_error(&self, effort: ReasoningEffort) -> Option<String> {
+        if self.supported_efforts.contains(&effort) {
+            return None;
+        }
+        Some(format!(
+            "Model `{}` does not accept reasoning effort `{}`. Supported levels: {}.",
+            self.name,
+            effort.as_label(),
+            self.supported_efforts_label(),
+        ))
     }
 
     /// Comma-separated lowercase labels of every effort level this
@@ -195,13 +241,13 @@ const _: () = assert!(DEFAULT_MODEL_INDEX < SUPPORTED_MODELS.len());
 /// constants, so changing what a model is called is a one-line edit to
 /// the value here. The identifiers are deliberately version-free for
 /// the same reason: a rename never touches an identifier or its uses.
-pub const CLAUDE_FABLE: &str = "claude-fable-5";
-pub const CLAUDE_OPUS: &str = "claude-opus-5";
-pub const CLAUDE_SONNET: &str = "claude-sonnet-5";
-pub const CLAUDE_HAIKU: &str = "claude-haiku-4-5";
-pub const GPT_SOL: &str = "gpt-5.6-sol";
-pub const GPT_TERRA: &str = "gpt-5.6-terra";
-pub const GPT_LUNA: &str = "gpt-5.6-luna";
+pub const CLAUDE_FABLE: &str = "claude-fable-5-1";
+pub const CLAUDE_OPUS: &str = "claude-opus-5-5";
+pub const CLAUDE_SONNET: &str = "claude-sonnet-5-5";
+pub const CLAUDE_HAIKU: &str = "claude-haiku-5-5";
+pub const GPT_ASTRA: &str = "gpt-6-astra";
+pub const GPT_SOL: &str = "gpt-6.1-sol";
+pub const GPT_LUNA: &str = "gpt-6-luna";
 
 /// Every model the application accepts on `--model`, in the order they
 /// appear in the `/model` picker. The strongest models come first; the
@@ -216,7 +262,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         context_window: 1_000_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: true,
         supports_server_compaction: true,
         supports_refusal_fallback: true,
         supported_efforts: &[
@@ -227,8 +272,12 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: false,
-        price_input_per_m: 10.0,
-        price_output_per_m: 50.0,
+        prices: Prices {
+            input_per_m: 10.0,
+            cache_read_per_m: 0.25,
+            output_per_m: 50.0,
+        },
+        long_prompt: None,
     },
     Model {
         name: CLAUDE_OPUS,
@@ -237,7 +286,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         context_window: 1_000_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: true,
         supports_server_compaction: true,
         supports_refusal_fallback: true,
         supported_efforts: &[
@@ -248,8 +296,12 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: false,
-        price_input_per_m: 5.0,
-        price_output_per_m: 25.0,
+        prices: Prices {
+            input_per_m: 4.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 20.0,
+        },
+        long_prompt: None,
     },
     Model {
         name: CLAUDE_SONNET,
@@ -258,7 +310,32 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         context_window: 1_000_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: true,
+        supports_server_compaction: true,
+        supports_refusal_fallback: true,
+        supported_efforts: &[
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::XHigh,
+            ReasoningEffort::Max,
+        ],
+        supports_pro_mode: false,
+        prices: Prices {
+            input_per_m: 2.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 10.0,
+        },
+        long_prompt: None,
+    },
+    Model {
+        name: CLAUDE_HAIKU,
+        description: "Fastest, cheapest Anthropic model - 1M context",
+        provider: Provider::Anthropic,
+        context_window: 1_000_000,
+        max_output_tokens: 128_000,
+        // Compacting below 100K keeps most prompts off the long-prompt
+        // prices.
+        auto_compact_token_limit: Some(80_000),
         supports_server_compaction: true,
         supports_refusal_fallback: false,
         supported_efforts: &[
@@ -269,36 +346,27 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: false,
-        price_input_per_m: 3.0,
-        price_output_per_m: 15.0,
+        prices: Prices {
+            input_per_m: 0.10,
+            cache_read_per_m: 0.01,
+            output_per_m: 0.50,
+        },
+        long_prompt: Some(LongPromptPrices {
+            above_tokens: 100_000,
+            prices: Prices {
+                input_per_m: 0.50,
+                cache_read_per_m: 0.05,
+                output_per_m: 2.50,
+            },
+        }),
     },
     Model {
-        name: CLAUDE_HAIKU,
-        description: "Fastest, cheapest Anthropic model - 200k context",
-        provider: Provider::Anthropic,
-        context_window: 200_000,
-        max_output_tokens: 64_000,
-        auto_compact_token_limit: Some(170_000),
-        requires_adaptive_thinking: false,
-        supports_server_compaction: false,
-        supports_refusal_fallback: false,
-        supported_efforts: &[
-            ReasoningEffort::Low,
-            ReasoningEffort::Medium,
-            ReasoningEffort::High,
-        ],
-        supports_pro_mode: false,
-        price_input_per_m: 1.0,
-        price_output_per_m: 5.0,
-    },
-    Model {
-        name: GPT_SOL,
+        name: GPT_ASTRA,
         description: "OpenAI frontier model for complex professional work",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supports_refusal_fallback: false,
         supported_efforts: &[
@@ -309,17 +377,27 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: true,
-        price_input_per_m: 5.0,
-        price_output_per_m: 30.0,
+        prices: Prices {
+            input_per_m: 10.0,
+            cache_read_per_m: 1.0,
+            output_per_m: 50.0,
+        },
+        long_prompt: Some(LongPromptPrices {
+            above_tokens: 272_000,
+            prices: Prices {
+                input_per_m: 20.0,
+                cache_read_per_m: 2.0,
+                output_per_m: 75.0,
+            },
+        }),
     },
     Model {
-        name: GPT_TERRA,
+        name: GPT_SOL,
         description: "Balanced OpenAI model - intelligence at mid-tier cost",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supports_refusal_fallback: false,
         supported_efforts: &[
@@ -330,8 +408,19 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: true,
-        price_input_per_m: 2.5,
-        price_output_per_m: 15.0,
+        prices: Prices {
+            input_per_m: 2.0,
+            cache_read_per_m: 0.10,
+            output_per_m: 10.0,
+        },
+        long_prompt: Some(LongPromptPrices {
+            above_tokens: 272_000,
+            prices: Prices {
+                input_per_m: 4.0,
+                cache_read_per_m: 0.20,
+                output_per_m: 15.0,
+            },
+        }),
     },
     Model {
         name: GPT_LUNA,
@@ -340,7 +429,6 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         context_window: 1_050_000,
         max_output_tokens: 128_000,
         auto_compact_token_limit: Some(250_000),
-        requires_adaptive_thinking: false,
         supports_server_compaction: false,
         supports_refusal_fallback: false,
         supported_efforts: &[
@@ -351,8 +439,19 @@ pub const SUPPORTED_MODELS: &[Model] = &[
             ReasoningEffort::Max,
         ],
         supports_pro_mode: true,
-        price_input_per_m: 1.0,
-        price_output_per_m: 6.0,
+        prices: Prices {
+            input_per_m: 0.10,
+            cache_read_per_m: 0.01,
+            output_per_m: 0.50,
+        },
+        long_prompt: Some(LongPromptPrices {
+            above_tokens: 272_000,
+            prices: Prices {
+                input_per_m: 0.20,
+                cache_read_per_m: 0.02,
+                output_per_m: 0.75,
+            },
+        }),
     },
 ];
 
@@ -365,6 +464,165 @@ pub fn supported_models_label() -> String {
         .map(|m| m.name)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// A model name Sofos used to accept.
+struct Retired {
+    name: &'static str,
+    /// The model that replaced it. Saved sessions resume on this one.
+    successor: &'static str,
+    /// Prices Sofos used for it while it was supported.
+    prices: Prices,
+}
+
+const RETIRED_MODELS: &[Retired] = &[
+    Retired {
+        name: "claude-fable-5",
+        successor: CLAUDE_FABLE,
+        prices: Prices {
+            input_per_m: 10.0,
+            cache_read_per_m: 1.0,
+            output_per_m: 50.0,
+        },
+    },
+    Retired {
+        name: "claude-opus-5",
+        successor: CLAUDE_OPUS,
+        prices: Prices {
+            input_per_m: 5.0,
+            cache_read_per_m: 0.50,
+            output_per_m: 25.0,
+        },
+    },
+    Retired {
+        name: "claude-sonnet-5",
+        successor: CLAUDE_SONNET,
+        prices: Prices {
+            input_per_m: 3.0,
+            cache_read_per_m: 0.30,
+            output_per_m: 15.0,
+        },
+    },
+    Retired {
+        name: "claude-haiku-4-5",
+        successor: CLAUDE_HAIKU,
+        prices: Prices {
+            input_per_m: 1.0,
+            cache_read_per_m: 0.10,
+            output_per_m: 5.0,
+        },
+    },
+    Retired {
+        name: "gpt-5.6-sol",
+        successor: GPT_ASTRA,
+        prices: Prices {
+            input_per_m: 5.0,
+            cache_read_per_m: 0.50,
+            output_per_m: 30.0,
+        },
+    },
+    Retired {
+        name: "gpt-5.6-terra",
+        successor: GPT_SOL,
+        prices: Prices {
+            input_per_m: 2.5,
+            cache_read_per_m: 0.25,
+            output_per_m: 15.0,
+        },
+    },
+    Retired {
+        name: "gpt-5.6-luna",
+        successor: GPT_LUNA,
+        prices: Prices {
+            input_per_m: 1.0,
+            cache_read_per_m: 0.10,
+            output_per_m: 6.0,
+        },
+    },
+];
+
+/// Model a saved session resumes on: the saved model if it is still
+/// supported, otherwise its replacement.
+pub fn resume_model(name: &str) -> Option<&'static Model> {
+    canonical_model(name).or_else(|| successor_of(name))
+}
+
+fn retired(name: &str) -> Option<&'static Retired> {
+    RETIRED_MODELS
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(name))
+}
+
+/// Replacement for a retired model name.
+fn successor_of(name: &str) -> Option<&'static Model> {
+    retired(name).and_then(|r| canonical_model(r.successor))
+}
+
+/// Old prices for a retired model name, paired with its replacement,
+/// which tells the cost code how that provider counts tokens.
+fn retired_rates(name: &str) -> Option<(&'static Model, Prices)> {
+    let r = retired(name)?;
+    Some((canonical_model(r.successor)?, r.prices))
+}
+
+/// Cost in US dollars of one response. `served_by` differs from
+/// `configured` when Anthropic answers a declined request on another
+/// model. A retired model uses its old prices. An unknown model is
+/// priced as the configured one, so that turn's estimate is approximate.
+pub fn response_cost(
+    served_by: &str,
+    configured: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read_tokens: u32,
+    cache_creation_tokens: u32,
+) -> f64 {
+    if let Some(model) = canonical_model(served_by) {
+        return model.turn_cost(
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        );
+    }
+    if let Some((model, prices)) = retired_rates(served_by) {
+        return model.cost_at(
+            prices,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+        );
+    }
+    lookup(configured).turn_cost(
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
+}
+
+/// Cost of a whole session's token totals under `name`. The totals
+/// span many prompts, so long-prompt prices never apply. A retired
+/// model uses its old prices.
+pub fn session_totals_cost(
+    name: &str,
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read_tokens: u32,
+    cache_creation_tokens: u32,
+) -> f64 {
+    let (model, prices) = retired_rates(name).unwrap_or_else(|| {
+        let model = lookup(name);
+        (model, model.prices)
+    });
+    model.cost_at(
+        prices,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
 }
 
 /// Canonical entry for `name` when the slug (case-insensitively)
@@ -384,9 +642,14 @@ pub fn model_support_error(name: &str) -> Option<String> {
     if canonical_model(name).is_some() {
         return None;
     }
+    let reason = match successor_of(name) {
+        Some(successor) => format!("has been replaced by `{}`", successor.name),
+        None => "is not supported".to_string(),
+    };
     Some(format!(
-        "Model `{}` is not supported. Available models: {}.",
+        "Model `{}` {}. Available models: {}.",
         name,
+        reason,
         supported_models_label()
     ))
 }
@@ -415,28 +678,7 @@ pub fn lookup(name: &str) -> &'static Model {
 /// Surfaced to the user from the startup validator and the `/effort`
 /// handler so the failure mode is the same in both places.
 pub fn effort_support_error(name: &str, effort: ReasoningEffort) -> Option<String> {
-    let info = lookup(name);
-    if info.supported_efforts.contains(&effort) {
-        return None;
-    }
-    Some(format!(
-        "Model `{}` does not accept reasoning effort `{}`. Supported levels: {}.",
-        name,
-        effort.as_label(),
-        info.supported_efforts_label(),
-    ))
-}
-
-/// Model whose rates should price a response. Anthropic can answer a
-/// declined request on a model outside [`SUPPORTED_MODELS`], and there
-/// are no prices on file for one of those, so the configured model
-/// stands in and the estimate is approximate for that turn.
-pub fn pricing_model<'a>(served_by: &'a str, configured: &'a str) -> &'a str {
-    if canonical_model(served_by).is_some() {
-        served_by
-    } else {
-        configured
-    }
+    lookup(name).effort_support_error(effort)
 }
 
 /// Human-readable rejection message when `max_tokens` asks for more
@@ -510,26 +752,17 @@ mod tests {
 
     #[test]
     fn openai_cost_uses_full_rate_when_no_cache() {
-        // 100k input @ $5/M, 5k output @ $30/M, no cache.
+        // 100k input @ $2/M, 5k output @ $10/M, no cache.
         let cost = cost_of(crate::api::model_info::GPT_SOL, 100_000, 5_000, 0, 0);
-        approx(cost, 100_000.0 / 1e6 * 5.0 + 5_000.0 / 1e6 * 30.0);
+        approx(cost, 100_000.0 / 1e6 * 2.0 + 5_000.0 / 1e6 * 10.0);
     }
 
     #[test]
-    fn openai_cost_discounts_cache_reads_at_10pct() {
+    fn openai_cost_bills_cache_reads_at_the_cached_rate() {
         let cost = cost_of(crate::api::model_info::GPT_SOL, 100_000, 5_000, 75_000, 0);
-        approx(cost, 0.1625 + 0.15);
-    }
-
-    #[test]
-    fn openai_cost_3x_lower_than_pre_fix_at_75pct_hit_input_only() {
-        let pre_fix_input = 100_000.0 / 1e6 * 5.0;
-        let post_fix_input = cost_of(crate::api::model_info::GPT_SOL, 100_000, 0, 75_000, 0);
-        let ratio = pre_fix_input / post_fix_input;
-        assert!(
-            (2.9..=3.2).contains(&ratio),
-            "expected pre/post ratio ≈3x at 75% hit, got {:.2}x",
-            ratio
+        approx(
+            cost,
+            25_000.0 / 1e6 * 2.0 + 75_000.0 / 1e6 * 0.10 + 5_000.0 / 1e6 * 10.0,
         );
     }
 
@@ -542,28 +775,72 @@ mod tests {
             75_000,
             0,
         );
-        approx(cost, 0.1625 + 0.125);
+        approx(
+            cost,
+            25_000.0 / 1e6 * 4.0 + 75_000.0 / 1e6 * 0.20 + 5_000.0 / 1e6 * 20.0,
+        );
     }
 
     #[test]
     fn anthropic_cost_charges_creation_at_125pct() {
         let cost = cost_of(crate::api::model_info::CLAUDE_OPUS, 0, 0, 0, 50_000);
-        approx(cost, 50_000.0 / 1e6 * 5.0 * 1.25);
+        approx(cost, 50_000.0 / 1e6 * 4.0 * 1.25);
     }
 
     #[test]
     fn cache_hit_does_not_underflow_when_read_exceeds_input() {
         let cost = cost_of(crate::api::model_info::GPT_SOL, 50_000, 0, 100_000, 0);
-        approx(cost, 100_000.0 / 1e6 * 5.0 * 0.10);
+        approx(cost, 100_000.0 / 1e6 * 0.10);
+    }
+
+    #[test]
+    fn fable_bills_cache_reads_at_its_own_rate() {
+        let cost = cost_of(crate::api::model_info::CLAUDE_FABLE, 0, 0, 100_000, 0);
+        approx(cost, 100_000.0 / 1e6 * 0.25);
+    }
+
+    #[test]
+    fn anthropic_long_prompt_counts_cached_tokens_toward_the_threshold() {
+        // 20k uncached + 90k cached = 110k, past Haiku's 100k cut-off.
+        let cost = cost_of(
+            crate::api::model_info::CLAUDE_HAIKU,
+            20_000,
+            1_000,
+            90_000,
+            0,
+        );
+        approx(
+            cost,
+            20_000.0 / 1e6 * 0.50 + 90_000.0 / 1e6 * 0.05 + 1_000.0 / 1e6 * 2.50,
+        );
+
+        // Exactly at the cut-off stays on standard prices.
+        let cost = cost_of(
+            crate::api::model_info::CLAUDE_HAIKU,
+            10_000,
+            1_000,
+            90_000,
+            0,
+        );
+        approx(
+            cost,
+            10_000.0 / 1e6 * 0.10 + 90_000.0 / 1e6 * 0.01 + 1_000.0 / 1e6 * 0.50,
+        );
+    }
+
+    #[test]
+    fn openai_long_prompt_bills_at_the_higher_rate_card() {
+        let cost = cost_of(crate::api::model_info::GPT_SOL, 300_000, 1_000, 0, 0);
+        approx(cost, 300_000.0 / 1e6 * 4.0 + 1_000.0 / 1e6 * 15.0);
     }
 
     #[test]
     fn unknown_model_falls_back_without_panic() {
         // Default fallback uses the application-default model's pricing
-        // ($3 / $15) and the Anthropic semantics branch (input_tokens
+        // ($2 / $10) and the Anthropic semantics branch (input_tokens
         // is uncached).
         let cost = cost_of("some-future-model", 1_000, 1_000, 0, 0);
-        approx(cost, 1_000.0 / 1e6 * 3.0 + 1_000.0 / 1e6 * 15.0);
+        approx(cost, 1_000.0 / 1e6 * 2.0 + 1_000.0 / 1e6 * 10.0);
     }
 
     #[test]
@@ -572,8 +849,8 @@ mod tests {
         assert_eq!(provider_for(CLAUDE_OPUS), Provider::Anthropic);
         assert_eq!(provider_for(CLAUDE_SONNET), Provider::Anthropic);
         assert_eq!(provider_for(CLAUDE_HAIKU), Provider::Anthropic);
+        assert_eq!(provider_for(GPT_ASTRA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_SOL), Provider::OpenAI);
-        assert_eq!(provider_for(GPT_TERRA), Provider::OpenAI);
         assert_eq!(provider_for(GPT_LUNA), Provider::OpenAI);
         // Case insensitivity covers an upper-cased `--model` argument.
         assert_eq!(
@@ -601,8 +878,8 @@ mod tests {
                 CLAUDE_OPUS,
                 CLAUDE_SONNET,
                 CLAUDE_HAIKU,
+                GPT_ASTRA,
                 GPT_SOL,
-                GPT_TERRA,
                 GPT_LUNA,
             ]
         );
@@ -644,20 +921,7 @@ mod tests {
     fn flagship_has_1m_context_and_server_compaction() {
         let info = lookup(CLAUDE_FABLE);
         assert_eq!(info.context_window, 1_000_000);
-        assert!(info.requires_adaptive_thinking);
         assert!(info.supports_server_compaction);
-    }
-
-    #[test]
-    fn anthropic_adaptive_models_match_their_lookup_flag() {
-        for slug in [CLAUDE_FABLE, CLAUDE_OPUS, CLAUDE_SONNET] {
-            assert!(
-                lookup(slug).requires_adaptive_thinking,
-                "{slug} should use adaptive thinking"
-            );
-        }
-        // The fastest model stays on the legacy `budget_tokens` shape.
-        assert!(!lookup(CLAUDE_HAIKU).requires_adaptive_thinking);
     }
 
     #[test]
@@ -668,7 +932,7 @@ mod tests {
         // model values rather than a phantom fallback shape.
         let info = lookup("some-future-model-2099");
         assert_eq!(info.name, Model::default().name);
-        assert_eq!(info.price_input_per_m, Model::default().price_input_per_m);
+        assert_eq!(info.prices.input_per_m, Model::default().prices.input_per_m);
     }
 
     #[test]
@@ -703,11 +967,11 @@ mod tests {
 
     #[test]
     fn openai_tiers_are_priced_cheapest_last() {
+        let astra = lookup(GPT_ASTRA);
         let sol = lookup(GPT_SOL);
-        let terra = lookup(GPT_TERRA);
         let luna = lookup(GPT_LUNA);
-        assert!(luna.price_input_per_m < terra.price_input_per_m);
-        assert!(terra.price_input_per_m < sol.price_input_per_m);
+        assert!(luna.prices.input_per_m < sol.prices.input_per_m);
+        assert!(sol.prices.input_per_m < astra.prices.input_per_m);
     }
 
     #[test]
@@ -741,7 +1005,7 @@ mod tests {
 
     #[test]
     fn anthropic_adaptive_models_advertise_server_compaction() {
-        for slug in [CLAUDE_FABLE, CLAUDE_OPUS, CLAUDE_SONNET] {
+        for slug in [CLAUDE_FABLE, CLAUDE_OPUS, CLAUDE_SONNET, CLAUDE_HAIKU] {
             assert!(
                 lookup(slug).supports_server_compaction,
                 "{slug} should opt into server-side compaction"
@@ -750,85 +1014,98 @@ mod tests {
     }
 
     #[test]
-    fn fastest_model_does_not_advertise_server_compaction() {
-        // The fastest model isn't on Anthropic's compaction-supported
-        // list, so the request builder must not send the beta header
-        // for it.
-        assert!(!lookup(CLAUDE_HAIKU).supports_server_compaction);
-    }
-
-    #[test]
     fn effort_support_matches_provider_matrix() {
         use ReasoningEffort::*;
 
-        let supports = |slug: &str, e: ReasoningEffort| effort_support_error(slug, e).is_none();
-
-        // Basic tiers are universal across every supported model.
         for m in SUPPORTED_MODELS {
-            for e in [Low, Medium, High] {
-                assert!(supports(m.name, e), "{} should accept {e:?}", m.name);
+            for e in [Low, Medium, High, XHigh, Max] {
+                assert!(
+                    effort_support_error(m.name, e).is_none(),
+                    "{} should accept {e:?}",
+                    m.name
+                );
             }
         }
+    }
 
-        // `xhigh` and `max`: every model except the fastest Anthropic
-        // one, which tops out at `high`.
-        for slug in [
-            CLAUDE_FABLE,
-            CLAUDE_OPUS,
-            CLAUDE_SONNET,
-            GPT_SOL,
-            GPT_TERRA,
-            GPT_LUNA,
-        ] {
-            assert!(supports(slug, XHigh), "{slug} should accept xhigh");
-            assert!(supports(slug, Max), "{slug} should accept max");
+    #[test]
+    fn response_cost_prices_the_model_that_answered() {
+        // A retired model uses its old prices.
+        approx(
+            response_cost("claude-opus-5", CLAUDE_SONNET, 1_000_000, 0, 0, 0),
+            5.0,
+        );
+        // An unknown model is priced as the configured one.
+        approx(
+            response_cost("claude-unknown", CLAUDE_SONNET, 1_000_000, 0, 0, 0),
+            2.0,
+        );
+        approx(
+            session_totals_cost("claude-haiku-4-5", 1_000_000, 0, 0, 0),
+            1.0,
+        );
+    }
+
+    #[test]
+    fn resume_model_maps_retired_slugs_to_their_successors() {
+        assert_eq!(resume_model(CLAUDE_OPUS).map(|m| m.name), Some(CLAUDE_OPUS));
+        assert!(resume_model("claude-opus-4-8").is_none());
+        for Retired {
+            name: retired,
+            successor,
+            ..
+        } in RETIRED_MODELS
+        {
+            assert_eq!(
+                resume_model(&retired.to_uppercase()).map(|m| m.name),
+                Some(*successor)
+            );
+            let err = model_support_error(retired).expect("a retired slug is not selectable");
+            assert!(err.contains(&format!("replaced by `{successor}`")));
+            assert!(
+                canonical_model(retired).is_none(),
+                "{retired} is still supported"
+            );
+            assert!(
+                canonical_model(successor).is_some(),
+                "{retired} must map to a supported model"
+            );
         }
-        assert!(!supports(CLAUDE_HAIKU, XHigh));
-        assert!(!supports(CLAUDE_HAIKU, Max));
     }
 
     #[test]
     fn effort_support_error_lists_supported_levels_for_the_model() {
-        // The fastest Anthropic model stops at `high`, so both extra
-        // rungs are rejected and neither may appear in the list the
-        // error offers as alternatives.
-        for rejected in [ReasoningEffort::XHigh, ReasoningEffort::Max] {
-            let err = effort_support_error(CLAUDE_HAIKU, rejected)
-                .expect("effort above the model's ceiling should be rejected");
-            assert!(err.contains(CLAUDE_HAIKU));
-            assert!(err.contains(&format!("`{}`", rejected.as_label())));
-            let listed = err
-                .split("Supported levels: ")
-                .nth(1)
-                .expect("error message lists supported levels");
-            for label in ["low", "medium", "high"] {
-                assert!(listed.contains(label), "expected {label} in {listed}");
-            }
-            assert!(!listed.contains("xhigh"));
-            assert!(!listed.contains("max"));
-        }
-
-        // Supported combinations: no error.
-        assert!(effort_support_error(CLAUDE_OPUS, ReasoningEffort::Max).is_none());
-        assert!(effort_support_error(CLAUDE_SONNET, ReasoningEffort::XHigh).is_none());
-        assert!(effort_support_error(GPT_SOL, ReasoningEffort::XHigh).is_none());
-        assert!(effort_support_error(CLAUDE_HAIKU, ReasoningEffort::High).is_none());
+        let capped = Model {
+            supported_efforts: &[
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ],
+            ..*lookup(CLAUDE_HAIKU)
+        };
+        let err = capped
+            .effort_support_error(ReasoningEffort::Max)
+            .expect("effort above the model's ceiling should be rejected");
+        assert!(err.contains(CLAUDE_HAIKU));
+        assert!(err.contains("`max`"));
+        assert!(err.ends_with("Supported levels: low, medium, high."));
+        assert!(capped.effort_support_error(ReasoningEffort::High).is_none());
     }
 
     #[test]
-    fn pro_mode_only_supported_on_gpt_5_6_family() {
+    fn pro_mode_only_supported_on_openai_models() {
         use ReasoningMode::{Pro, Standard};
         // Standard is accepted by every model.
         for m in SUPPORTED_MODELS {
             assert!(mode_support_error(m.name, Standard).is_none());
         }
-        // Pro on the GPT-5.6 family: accepted.
+        // Pro on the OpenAI models: accepted.
+        assert!(mode_support_error(GPT_ASTRA, Pro).is_none());
         assert!(mode_support_error(GPT_SOL, Pro).is_none());
-        assert!(mode_support_error(GPT_TERRA, Pro).is_none());
         assert!(mode_support_error(GPT_LUNA, Pro).is_none());
         // Pro elsewhere: rejected, and the message names the capable models.
         let err = mode_support_error(CLAUDE_OPUS, Pro)
-            .expect("pro on a non-5.6 model should be rejected");
+            .expect("pro on an Anthropic model should be rejected");
         assert!(err.contains(CLAUDE_OPUS));
         assert!(err.contains(GPT_SOL));
         // The capability helper agrees with the table.

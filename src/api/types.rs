@@ -244,23 +244,12 @@ pub enum ContentBlock {
 pub struct Thinking {
     #[serde(rename = "type")]
     pub thinking_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub budget_tokens: Option<u32>,
-    /// How much of the reasoning the model returns. Omitted on the
-    /// legacy shape, which always returns the reasoning in full.
+    /// How much of the reasoning the model returns.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
 }
 
 impl Thinking {
-    pub fn enabled(budget_tokens: u32) -> Self {
-        Self {
-            thinking_type: "enabled".to_string(),
-            budget_tokens: Some(budget_tokens),
-            display: None,
-        }
-    }
-
     /// Adaptive-thinking models let the server pick the budget based on
     /// the prompt; the caller expresses intent via
     /// [`OutputConfig::effort`] on the request instead of a token count.
@@ -271,7 +260,6 @@ impl Thinking {
     pub fn adaptive() -> Self {
         Self {
             thinking_type: "adaptive".to_string(),
-            budget_tokens: None,
             display: Some("summarized".to_string()),
         }
     }
@@ -298,7 +286,7 @@ pub struct Reasoning {
     /// Omitted from the request body when `None` rather than sent as null.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// `Some("pro")` selects OpenAI's GPT-5.6 pro reasoning path.
+    /// `Some("pro")` selects OpenAI's pro reasoning path.
     /// Omitted for standard mode, which is the API default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -369,7 +357,7 @@ impl std::str::FromStr for ReasoningEffort {
     }
 }
 
-/// Standard vs Pro reasoning for OpenAI's GPT-5.6 family. `Pro` asks the
+/// Standard vs Pro reasoning for the OpenAI models. `Pro` asks the
 /// model to do additional work before returning a single answer —
 /// higher quality at higher latency and token cost. It is sent in the
 /// `reasoning.mode` field and is independent of [`ReasoningEffort`].

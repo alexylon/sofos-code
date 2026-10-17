@@ -133,8 +133,8 @@ pub struct SessionState {
     /// this at 0.
     pub total_cache_creation_tokens: u32,
     /// Largest input-token count observed on any single API call this
-    /// session. Recorded as a session statistic; no supported model
-    /// prices off it today.
+    /// session. Shown as a statistic only; pricing uses each response's
+    /// own size.
     ///
     /// All five counters above, and the running cost below, are
     /// persisted through
@@ -182,8 +182,9 @@ impl SessionState {
     /// is the model that produced it, which is not always the model the
     /// session is configured with.
     pub fn add_usage(&mut self, usage: &crate::api::Usage, served_by: &str, configured: &str) {
-        let priced_as = crate::api::model_info::pricing_model(served_by, configured);
-        self.total_cost += crate::api::model_info::lookup(priced_as).turn_cost(
+        self.total_cost += crate::api::model_info::response_cost(
+            served_by,
+            configured,
             usage.input_tokens,
             usage.output_tokens,
             usage.cache_read_input_tokens.unwrap_or(0),

@@ -14,19 +14,15 @@ pub mod stream;
 pub mod wire;
 
 pub use client::AnthropicClient;
-pub use wire::{
-    COMPACTION_TRIGGER_FLOOR, LEGACY_THINKING_BUDGET_HIGH, effort_label, legacy_thinking_budget,
-    requires_adaptive_thinking,
-};
+pub use wire::COMPACTION_TRIGGER_FLOOR;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::api::anthropic::stream::parse_stream;
     use crate::api::anthropic::wire::{
-        BETA_COMPACT, BETA_SERVER_SIDE_FALLBACK, BETA_TOKEN_EFFICIENT, LEGACY_THINKING_BUDGET_LOW,
-        LEGACY_THINKING_BUDGET_MEDIUM, anthropic_beta_for, prepare_request,
-        sanitize_messages_for_anthropic,
+        BETA_COMPACT, BETA_SERVER_SIDE_FALLBACK, BETA_TOKEN_EFFICIENT, anthropic_beta_for,
+        beta_header_for, prepare_request, sanitize_messages_for_anthropic,
     };
     use crate::api::types::*;
     use std::sync::Arc;
@@ -39,60 +35,28 @@ mod tests {
     }
 
     #[test]
-    fn test_thinking_serialization() {
-        let thinking = Thinking::enabled(5120);
-        assert_eq!(thinking.thinking_type, "enabled");
-        assert_eq!(thinking.budget_tokens, Some(5120));
-
-        let json = serde_json::to_value(&thinking).unwrap();
-        assert_eq!(json["type"], "enabled");
-        assert_eq!(json["budget_tokens"], 5120);
-        // The legacy shape returns the reasoning in full and has no
-        // display setting to send.
-        assert!(json.get("display").is_none());
-    }
-
-    #[test]
     fn test_adaptive_thinking_serialization() {
         let thinking = Thinking::adaptive();
         let json = serde_json::to_value(&thinking).unwrap();
         assert_eq!(json["type"], "adaptive");
-        // `budget_tokens` must be omitted for adaptive — adaptive models reject it.
-        assert!(json.get("budget_tokens").is_none());
         // Without this the models return thinking blocks with no text.
         assert_eq!(json["display"], "summarized");
     }
 
     #[test]
-    fn requires_adaptive_thinking_covers_supported_anthropic_models() {
-        // Some adaptive models require the adaptive shape (the legacy
-        // shape 400s); others accept both but Anthropic recommends
-        // adaptive, so sofos opts them in too. The fastest model stays
-        // on the legacy `budget_tokens` shape.
-        assert!(requires_adaptive_thinking(
-            crate::api::model_info::CLAUDE_OPUS
-        ));
-        assert!(requires_adaptive_thinking(
-            crate::api::model_info::CLAUDE_SONNET
-        ));
-        assert!(!requires_adaptive_thinking(
-            crate::api::model_info::CLAUDE_HAIKU
-        ));
-    }
-
-    #[test]
-    fn anthropic_beta_for_gates_compaction_to_supported_models() {
-        // A compaction-supported model ships both betas.
+    fn anthropic_beta_for_adds_compaction_on_supported_models() {
         let with_compact = anthropic_beta_for(crate::api::model_info::CLAUDE_OPUS);
         assert!(with_compact.contains(BETA_TOKEN_EFFICIENT));
         assert!(with_compact.contains(BETA_COMPACT));
 
-        // A model that isn't on the list only sends the universal
-        // beta, so we don't depend on Anthropic's "ignore unknown beta
-        // tokens" policy if validation ever tightens.
-        let without = anthropic_beta_for(crate::api::model_info::CLAUDE_HAIKU);
-        assert!(without.contains(BETA_TOKEN_EFFICIENT));
-        assert!(!without.contains(BETA_COMPACT));
+        // Without compaction support only the base beta is sent, rather
+        // than relying on Anthropic to ignore unknown ones.
+        let without = beta_header_for(&crate::api::model_info::Model {
+            supports_server_compaction: false,
+            supports_refusal_fallback: false,
+            ..*crate::api::model_info::lookup(crate::api::model_info::CLAUDE_HAIKU)
+        });
+        assert_eq!(without, BETA_TOKEN_EFFICIENT);
     }
 
     #[test]
@@ -135,48 +99,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_thinking_budget_helper_scales_with_effort() {
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::Low),
-            LEGACY_THINKING_BUDGET_LOW
-        );
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::Medium),
-            LEGACY_THINKING_BUDGET_MEDIUM
-        );
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::High),
-            LEGACY_THINKING_BUDGET_HIGH
-        );
-        // `XHigh` and `Max` are adaptive-only rungs; legacy models
-        // clamp them to the highest budget they expose.
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::XHigh),
-            LEGACY_THINKING_BUDGET_HIGH
-        );
-        assert_eq!(
-            legacy_thinking_budget(ReasoningEffort::Max),
-            LEGACY_THINKING_BUDGET_HIGH
-        );
-        // Compile-time guard: the three tier values must stay strictly
-        // increasing. Runtime `assert!` would be a tautology on consts
-        // (clippy::assertions_on_constants), so check at const-eval time.
-        const _: () = {
-            assert!(LEGACY_THINKING_BUDGET_LOW < LEGACY_THINKING_BUDGET_MEDIUM);
-            assert!(LEGACY_THINKING_BUDGET_MEDIUM < LEGACY_THINKING_BUDGET_HIGH);
-        };
-    }
-
-    #[test]
-    fn effort_label_maps_reasoning_levels() {
-        assert_eq!(effort_label(ReasoningEffort::Low), "low");
-        assert_eq!(effort_label(ReasoningEffort::Medium), "medium");
-        assert_eq!(effort_label(ReasoningEffort::High), "high");
-        assert_eq!(effort_label(ReasoningEffort::XHigh), "xhigh");
-        assert_eq!(effort_label(ReasoningEffort::Max), "max");
-    }
-
-    #[test]
     fn adaptive_request_sends_output_config_and_omits_budget() {
         let request = CreateMessageRequest {
             model: crate::api::model_info::CLAUDE_OPUS.to_string(),
@@ -195,33 +117,8 @@ mod tests {
 
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["thinking"]["type"], "adaptive");
-        assert!(json["thinking"].get("budget_tokens").is_none());
         assert_eq!(json["thinking"]["display"], "summarized");
         assert_eq!(json["output_config"]["effort"], "high");
-    }
-
-    #[test]
-    fn test_request_with_thinking() {
-        let thinking = Some(Thinking::enabled(3000));
-        let request = CreateMessageRequest {
-            model: crate::api::model_info::CLAUDE_SONNET.to_string(),
-            max_tokens: 8192,
-            messages: vec![],
-            system: None,
-            tools: None,
-            stream: None,
-            thinking,
-            output_config: None,
-            reasoning: None,
-            prompt_cache_key: None,
-            context_management: None,
-            fallbacks: None,
-        };
-
-        let json = serde_json::to_value(&request).unwrap();
-        assert!(json["thinking"].is_object());
-        assert_eq!(json["thinking"]["type"], "enabled");
-        assert_eq!(json["thinking"]["budget_tokens"], 3000);
     }
 
     #[test]

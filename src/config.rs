@@ -5,7 +5,7 @@
 /// carries config values that the rest of the crate actually reads.
 ///
 /// Per-model knowledge (context window, auto-compact trigger,
-/// pricing, adaptive-thinking flag) lives in
+/// pricing) lives in
 /// [`crate::api::model_info::lookup`] instead of in this struct.
 /// `set_max_context_tokens` and `set_auto_compact_token_limit` on
 /// [`crate::repl::conversation::ConversationHistory`] populate the
@@ -93,9 +93,7 @@ impl ModelConfig {
                 choice.name
             ));
         }
-        if let Some(msg) =
-            crate::api::model_info::effort_support_error(choice.name, self.reasoning_effort)
-        {
+        if let Some(msg) = choice.effort_support_error(self.reasoning_effort) {
             return Some(format!(
                 "{} Run `/effort <level>` to pick a supported level before switching.",
                 msg
@@ -836,9 +834,13 @@ mod tests {
         assert!(blocked.contains("Re-launch"));
 
         // An effort the target model does not accept.
+        let capped = crate::api::model_info::Model {
+            supported_efforts: &[ReasoningEffort::Low, ReasoningEffort::High],
+            ..*lookup(CLAUDE_HAIKU)
+        };
         let blocked = config(CLAUDE_SONNET, ReasoningEffort::Max, DEFAULT_MAX_TOKENS)
-            .switch_blocker(lookup(CLAUDE_HAIKU))
-            .expect("the fastest model does not accept max effort");
+            .switch_blocker(&capped)
+            .expect("a model without max effort is unreachable at max");
         assert!(blocked.contains("/effort"));
 
         // A ceiling above what the target model can produce.

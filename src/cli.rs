@@ -8,11 +8,13 @@ use clap::Parser;
 /// goes.
 pub const THINKING_BUDGET_DEFAULT: u32 = 5120;
 
-/// Default output-token ceiling. One value serves every model, so it is
-/// held at or below the smallest ceiling in the model table — currently
-/// Claude Haiku 4.5. A test in `api::model_info` fails if a future model
-/// entry drops below it.
+/// Default output-token limit. It serves every model, so it must stay
+/// at or below the smallest model limit; a test enforces this.
 pub const DEFAULT_MAX_TOKENS: u32 = 64_000;
+
+/// Smallest `--max-tokens` accepted. It is OpenAI's minimum, applied to
+/// both providers so the flag behaves the same everywhere.
+pub const MIN_MAX_TOKENS: u32 = 16;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -49,18 +51,19 @@ pub struct Cli {
     #[arg(long, default_value = "morph-v3-fast")]
     pub morph_model: String,
 
-    /// Maximum output tokens per API response. Thinking counts toward
-    /// this ceiling alongside the answer, so a high reasoning effort
-    /// needs room for both. Must stay above 16384 and within the chosen
-    /// model's own output limit; both are checked at startup.
-    #[arg(long, default_value_t = DEFAULT_MAX_TOKENS)]
+    /// Maximum output tokens per response. Thinking counts toward this
+    /// limit alongside the answer. Must be at least [`MIN_MAX_TOKENS`]
+    /// and within the chosen model's own limit.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_MAX_TOKENS,
+        value_parser = clap::value_parser!(u32).range(MIN_MAX_TOKENS as i64..)
+    )]
     pub max_tokens: u32,
 
     /// Reasoning effort: low, medium, high, xhigh, max. Default
-    /// `medium`. `xhigh` is accepted by every model except the fastest
-    /// Anthropic one; `max` is accepted by Anthropic adaptive models
-    /// and the newest OpenAI models. Sofos refuses to start with an
-    /// unsupported `(model, effort)` pair.
+    /// `medium`. Sofos refuses to start if the model doesn't accept the
+    /// chosen level.
     //
     // Parsed as a raw `String` here, then validated and converted in
     // `main`, so the per-model rejection and the parse-failure
@@ -72,23 +75,18 @@ pub struct Cli {
     pub reasoning_effort: String,
 
     /// Reasoning mode: standard or pro. Default `standard`. `pro` asks
-    /// OpenAI's GPT-5.6 models to do additional work before answering
-    /// (higher quality, higher latency and cost) and is accepted only
-    /// by that family; every other model rejects it at startup. This is
-    /// independent of `--reasoning-effort`.
+    /// the OpenAI models to do extra work before answering, for better
+    /// quality at higher latency and cost. Other models reject it at
+    /// startup. Independent of `--reasoning-effort`.
     //
     // Parsed as a raw `String` here, then validated and converted in
     // `main`, mirroring `--reasoning-effort`.
     #[arg(long, default_value = "standard")]
     pub reasoning_mode: String,
 
-    /// Deprecated. The flag has no effect on any path: legacy Anthropic
-    /// uses a fixed per-tier budget (Low=1024, Medium=5120, High=16384),
-    /// adaptive Anthropic uses `output_config.effort`, and
-    /// OpenAI uses `reasoning.effort`. The flag still parses so older
-    /// scripts don't break; `main.rs` warns at startup when a non-default
-    /// value is supplied. Hidden from `--help`. Will be removed in a
-    /// future release. Use `--reasoning-effort` to control thinking depth.
+    /// Deprecated and has no effect; use `--reasoning-effort` instead.
+    /// Still parsed so older scripts don't break, with a warning when a
+    /// non-default value is passed. Hidden from `--help`.
     #[arg(long, default_value_t = THINKING_BUDGET_DEFAULT, hide = true)]
     pub thinking_budget: u32,
 
