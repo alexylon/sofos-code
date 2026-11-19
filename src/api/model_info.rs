@@ -501,6 +501,35 @@ pub fn api_id_for(name: &str) -> &str {
     canonical_model(name).map_or(name, |m| m.api_id)
 }
 
+/// Version shown next to a model's short name wherever Sofos displays
+/// the model: the parts of its API id that aren't in the short name,
+/// joined with dots. Empty for a name that isn't a supported model.
+pub fn version_label(name: &str) -> String {
+    let Some(model) = canonical_model(name) else {
+        return String::new();
+    };
+
+    let name_parts: Vec<&str> = model.name.split('-').collect();
+
+    model
+        .api_id
+        .split('-')
+        .filter(|part| !name_parts.contains(part))
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Widths of the name and version columns when every supported model is
+/// listed one per row, as the `/model` pickers do.
+pub fn listing_column_widths() -> (usize, usize) {
+    SUPPORTED_MODELS.iter().fold((0, 0), |(name, version), m| {
+        (
+            name.max(m.name.chars().count()),
+            version.max(version_label(m.name).chars().count()),
+        )
+    })
+}
+
 /// Short name for a model name or API id, or `name` unchanged when it
 /// isn't a supported model.
 pub fn short_name_for(name: &str) -> &str {
@@ -982,6 +1011,49 @@ mod tests {
         assert!(selectable_model(api_id).is_none());
         let err = model_support_error(api_id).expect("a versioned id is rejected");
         assert!(err.contains(&format!("use `{CLAUDE_OPUS}`")));
+    }
+
+    #[test]
+    fn every_model_has_a_numeric_version_taken_from_its_api_id() {
+        for m in SUPPORTED_MODELS {
+            // A digit in the short name would be filtered out of the
+            // version too, so short names carry none.
+            assert!(
+                !m.name.chars().any(|c| c.is_ascii_digit()),
+                "{}: short names have no version",
+                m.name
+            );
+
+            // One to three short numbers, so a dated or tagged API id
+            // fails here instead of showing as a long version.
+            let version = version_label(m.name);
+            let numbers: Vec<&str> = version.split('.').collect();
+            assert!(
+                (1..=3).contains(&numbers.len())
+                    && numbers.iter().all(
+                        |n| (1..=2).contains(&n.len()) && n.chars().all(|c| c.is_ascii_digit())
+                    ),
+                "{}: version {version:?} is not a short version number",
+                m.name
+            );
+        }
+
+        assert_eq!(version_label("some-future-model"), "");
+    }
+
+    #[test]
+    fn listing_column_widths_fit_the_widest_name_and_version() {
+        let (name_width, version_width) = listing_column_widths();
+        for m in SUPPORTED_MODELS {
+            assert!(m.name.chars().count() <= name_width);
+            assert!(version_label(m.name).chars().count() <= version_width);
+        }
+
+        assert!(
+            SUPPORTED_MODELS
+                .iter()
+                .any(|m| m.name.chars().count() == name_width)
+        );
     }
 
     #[test]

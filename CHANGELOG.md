@@ -8,6 +8,7 @@ All notable changes to Sofos are documented in this file.
 
 - **`claude-fable`, `gpt-astra`, `gpt-sol`, and `gpt-terra` move to their latest versions.** Sofos now sends Claude Fable 5.2, GPT-6.2 Astra, GPT-6.2 Sol, and GPT-6.1 Terra. Saved sessions on the previous versions resume on the new ones.
 - **The cost estimate uses the new prices.** Claude Fable 5.2 is $8 / $40 per million tokens, GPT-6.2 Astra $8 / $40, and GPT-6.1 Terra $1 / $5, each with cheaper cached input. GPT-6.2 Sol keeps GPT-6.1 Sol's prices. Costs already recorded in saved sessions don't change.
+- **The `/model` picker, the status line, the startup banner, and the message after switching models show each model's version**, such as `claude-opus 5.5`.
 
 ### Fixed
 

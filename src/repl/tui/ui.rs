@@ -12,6 +12,7 @@ use super::app::{
 };
 use super::inline_terminal::Frame;
 use super::slash_popup::{MAX_VISIBLE_ROWS as SLASH_POPUP_MAX_ROWS, SlashPopup};
+use crate::api::model_info;
 use crate::config::{PermissionPreset, SandboxMode};
 use crate::tools::utils::ConfirmationType;
 
@@ -360,12 +361,23 @@ fn draw_hint(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
-    frame.render_widget(Paragraph::new(Line::from(status_spans(app))), area);
+    frame.render_widget(Paragraph::new(status_line(app, area.width)), area);
+}
+
+/// Status line for a terminal `width` columns wide. The model version is
+/// dropped first when the whole line doesn't fit.
+fn status_line(app: &App, width: u16) -> Line<'_> {
+    let line = Line::from(status_spans(app, true));
+    if line.width() <= usize::from(width) {
+        return line;
+    }
+
+    Line::from(status_spans(app, false))
 }
 
 /// Build the status-line spans. Split out from [`draw_status`] so the
 /// label/value styling can be asserted in tests without a live terminal.
-fn status_spans(app: &App) -> Vec<Span<'_>> {
+fn status_spans(app: &App, show_version: bool) -> Vec<Span<'_>> {
     // Fall back to the model name we already know if the worker hasn't
     // pushed a full snapshot yet (e.g. very first frame).
     // `app.mode()` is honest before the first snapshot too (it falls back to
@@ -418,10 +430,18 @@ fn status_spans(app: &App) -> Vec<Span<'_>> {
     let mut spans: Vec<Span> = vec![
         Span::styled(" model: ", label_style),
         Span::styled(model, value_style),
+    ];
+
+    let version = model_info::version_label(model);
+    if show_version && !version.is_empty() {
+        spans.push(Span::styled(format!(" {version}"), value_style));
+    }
+
+    spans.extend([
         sep(),
         Span::styled("permissions: ", label_style),
         Span::styled(preset.label(), mode_style),
-    ];
+    ]);
 
     if !reasoning.is_empty() {
         // `reasoning` arrives as a "label: value" string (e.g. "effort:
@@ -823,6 +843,8 @@ fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
     let (scroll, visible) =
         picker_visible_window(popup.height, picker.cursor, picker.entries.len());
 
+    let (name_width, version_width) = model_info::listing_column_widths();
+
     let items: Vec<ListItem> = picker
         .entries
         .iter()
@@ -839,8 +861,9 @@ fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
             // Three style tiers: selected/available, plain/available,
             // and disabled (always rendered dim regardless of cursor —
             // the cursor cannot land on a disabled row anyway).
-            let (name_style, desc_style) = if !entry.is_available {
+            let (name_style, version_style, desc_style) = if !entry.is_available {
                 (
+                    Style::default().fg(Color::DarkGray),
                     Style::default().fg(Color::DarkGray),
                     Style::default().fg(Color::DarkGray),
                 )
@@ -849,16 +872,28 @@ fn draw_model_picker(frame: &mut Frame, area: Rect, picker: &ModelPicker) {
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
+                    Style::default().fg(SLASH_POPUP_DESC_FG),
                     Style::default().fg(ACCENT),
                 )
             } else {
                 (
                     Style::default().fg(Color::Gray),
                     Style::default().fg(SLASH_POPUP_DESC_FG),
+                    Style::default().fg(SLASH_POPUP_DESC_FG),
                 )
             };
-            let mut spans: Vec<Span> =
-                vec![Span::raw(marker), Span::styled(entry.name, name_style)];
+            let mut spans: Vec<Span> = vec![
+                Span::raw(marker),
+                Span::styled(format!("{:<name_width$}", entry.name), name_style),
+                Span::raw("  "),
+                Span::styled(
+                    format!("{:<version_width$}", model_info::version_label(entry.name)),
+                    version_style,
+                ),
+            ];
+
+            // Tags go before the description so a narrow popup clips the
+            // description, not the tag.
             if entry.is_current {
                 spans.push(Span::styled(
                     "  (current)",
@@ -1114,7 +1149,7 @@ mod tests {
             cache_read_tokens: 5,
             cache_creation_tokens: 3,
         });
-        let spans = status_spans(&a);
+        let spans = status_spans(&a, true);
         let fg = |content: &str| {
             spans
                 .iter()
@@ -1142,11 +1177,31 @@ mod tests {
 
         // Plain values share one bright colour, not the old dim one.
         assert_eq!(fg(crate::api::model_info::GPT_SOL), Some(STATUS_VAL));
+
+        // The model's version is part of the model value.
+        let version = model_info::version_label(model_info::GPT_SOL);
+        assert_eq!(fg(&format!(" {version}")), Some(STATUS_VAL));
         assert_eq!(fg("high"), Some(STATUS_VAL));
         assert_eq!(fg("10↑ 20↓"), Some(STATUS_VAL));
 
         // `pro` keeps its own distinct colour.
         assert_eq!(fg("pro"), Some(PRO_MODE_FG));
+    }
+
+    #[test]
+    fn status_line_drops_the_model_version_when_it_does_not_fit() {
+        let a = App::new(model_info::CLAUDE_SONNET.into());
+        let version = model_info::version_label(model_info::CLAUDE_SONNET);
+        let version_span = format!(" {version}");
+        let shows_version = |line: &Line| line.spans.iter().any(|s| s.content == version_span);
+
+        let full_width = Line::from(status_spans(&a, true)).width();
+        let wide = u16::try_from(full_width).expect("status line fits in u16");
+        assert!(shows_version(&status_line(&a, wide)));
+
+        let narrow = status_line(&a, wide - 1);
+        assert!(!shows_version(&narrow));
+        assert!(narrow.spans.iter().any(|s| s.content == "permissions: "));
     }
 
     #[test]

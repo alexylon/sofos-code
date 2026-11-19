@@ -181,7 +181,7 @@ fn main() -> Result<()> {
         "{} {} {}\n",
         "Model:".bright_green(),
         cli.model,
-        format!("({})", model_info.api_id).dimmed()
+        crate::api::model_info::version_label(&cli.model).dimmed()
     ));
 
     if matches!(client, LlmClient::OpenAI(_)) {

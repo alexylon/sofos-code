@@ -533,9 +533,10 @@ impl Repl {
 
         if choice.name == self.model_config.model {
             println!(
-                "\n{} already active: {}\n",
+                "\n{} already active: {} {}\n",
                 "Model:".dimmed(),
-                choice.name.bright_green()
+                choice.name.bright_green(),
+                crate::api::model_info::version_label(choice.name).dimmed()
             );
             return;
         }
@@ -552,9 +553,10 @@ impl Repl {
             .conversation
             .apply_model_limits(choice.name);
         println!(
-            "\n{} {}\n",
+            "\n{} {} {}\n",
             "Model:".bright_green(),
-            choice.name.bright_white()
+            choice.name.bright_white(),
+            crate::api::model_info::version_label(choice.name).dimmed()
         );
     }
 
@@ -565,11 +567,15 @@ impl Repl {
     pub fn handle_model_picker_fallback(&self) {
         println!();
         println!(
-            "{} {}",
+            "{} {} {}",
             "Current model:".bright_green(),
-            self.model_config.model.bright_white()
+            self.model_config.model.bright_white(),
+            crate::api::model_info::version_label(&self.model_config.model).dimmed()
         );
         println!("{}", "Available models:".bright_cyan());
+
+        let (name_width, version_width) = crate::api::model_info::listing_column_widths();
+
         for choice in crate::api::model_info::SUPPORTED_MODELS {
             let marker = if choice.name == self.model_config.model {
                 "❯"
@@ -578,16 +584,22 @@ impl Repl {
             };
             // Pad before colouring: the escape codes would otherwise
             // count toward the field width and stagger the column.
-            let name = format!("{:<20}", choice.name);
+            let name = format!("{:<name_width$}", choice.name);
             let name = if self.model_config.switch_blocker(choice).is_none() {
                 name.bright_white()
             } else {
                 name.dimmed()
             };
+
+            let version = format!(
+                "{:<version_width$}",
+                crate::api::model_info::version_label(choice.name)
+            );
             println!(
-                "  {} {} {}",
+                "  {} {}  {}  {}",
                 marker.bright_green(),
                 name,
+                version.dimmed(),
                 choice.description.dimmed()
             );
         }
