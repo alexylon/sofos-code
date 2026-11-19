@@ -4,6 +4,8 @@ All notable changes to Sofos are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-11-19
+
 ### Changed
 
 - **`claude-fable`, `gpt-astra`, `gpt-sol`, and `gpt-terra` move to their latest versions.** Sofos now sends Claude Fable 5.2, GPT-6.2 Astra, GPT-6.2 Sol, and GPT-6.1 Terra. Saved sessions on the previous versions resume on the new ones.
