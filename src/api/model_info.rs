@@ -246,7 +246,7 @@ const PROVIDER_DEFAULTS: &[(&str, &str)] = &[("claude", CLAUDE_OPUS), ("gpt", GP
 pub const SUPPORTED_MODELS: &[Model] = &[
     Model {
         name: CLAUDE_FABLE,
-        api_id: "claude-fable-5-1",
+        api_id: "claude-fable-5-2",
         description: "Anthropic's most capable model - demanding reasoning, 1M context",
         provider: Provider::Anthropic,
         context_window: 1_000_000,
@@ -263,9 +263,9 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         ],
         supports_pro_mode: false,
         prices: Prices {
-            input_per_m: 10.0,
-            cache_read_per_m: 0.25,
-            output_per_m: 50.0,
+            input_per_m: 8.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 40.0,
         },
         long_prompt: None,
     },
@@ -355,7 +355,7 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: GPT_ASTRA,
-        api_id: "gpt-6-astra",
+        api_id: "gpt-6.2-astra",
         description: "OpenAI frontier model for complex professional work",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -372,22 +372,22 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         ],
         supports_pro_mode: true,
         prices: Prices {
-            input_per_m: 10.0,
-            cache_read_per_m: 1.0,
-            output_per_m: 50.0,
+            input_per_m: 8.0,
+            cache_read_per_m: 0.40,
+            output_per_m: 40.0,
         },
         long_prompt: Some(LongPromptPrices {
             above_tokens: 272_000,
             prices: Prices {
-                input_per_m: 20.0,
-                cache_read_per_m: 2.0,
-                output_per_m: 75.0,
+                input_per_m: 16.0,
+                cache_read_per_m: 0.80,
+                output_per_m: 60.0,
             },
         }),
     },
     Model {
         name: GPT_SOL,
-        api_id: "gpt-6.1-sol",
+        api_id: "gpt-6.2-sol",
         description: "Balanced OpenAI model - intelligence at mid-tier cost",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
@@ -419,8 +419,8 @@ pub const SUPPORTED_MODELS: &[Model] = &[
     },
     Model {
         name: GPT_TERRA,
-        api_id: "gpt-5.6-terra",
-        description: "Previous-generation mid-tier OpenAI model",
+        api_id: "gpt-6.1-terra",
+        description: "Fast, efficient OpenAI model - visual reasoning and writing",
         provider: Provider::OpenAI,
         context_window: 1_050_000,
         max_output_tokens: 128_000,
@@ -436,16 +436,16 @@ pub const SUPPORTED_MODELS: &[Model] = &[
         ],
         supports_pro_mode: true,
         prices: Prices {
-            input_per_m: 2.0,
-            cache_read_per_m: 0.20,
-            output_per_m: 12.0,
+            input_per_m: 1.0,
+            cache_read_per_m: 0.05,
+            output_per_m: 5.0,
         },
         long_prompt: Some(LongPromptPrices {
             above_tokens: 272_000,
             prices: Prices {
-                input_per_m: 4.0,
-                cache_read_per_m: 0.40,
-                output_per_m: 18.0,
+                input_per_m: 2.0,
+                cache_read_per_m: 0.10,
+                output_per_m: 7.50,
             },
         }),
     },
@@ -513,7 +513,9 @@ struct Retired {
     id: &'static str,
     /// The model that replaced it. Saved sessions resume on this one.
     successor: &'static str,
-    /// Prices Sofos used for it while it was supported.
+    /// Provider's prices for it. Used for responses it still answers,
+    /// such as a refusal fallback, and for sessions saved without a
+    /// running cost total.
     prices: Prices,
 }
 
@@ -524,6 +526,15 @@ const RETIRED_MODELS: &[Retired] = &[
         prices: Prices {
             input_per_m: 10.0,
             cache_read_per_m: 1.0,
+            output_per_m: 50.0,
+        },
+    },
+    Retired {
+        id: "claude-fable-5-1",
+        successor: CLAUDE_FABLE,
+        prices: Prices {
+            input_per_m: 10.0,
+            cache_read_per_m: 0.25,
             output_per_m: 50.0,
         },
     },
@@ -540,9 +551,9 @@ const RETIRED_MODELS: &[Retired] = &[
         id: "claude-sonnet-5",
         successor: CLAUDE_SONNET,
         prices: Prices {
-            input_per_m: 3.0,
-            cache_read_per_m: 0.30,
-            output_per_m: 15.0,
+            input_per_m: 2.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 10.0,
         },
     },
     Retired {
@@ -564,8 +575,36 @@ const RETIRED_MODELS: &[Retired] = &[
         },
     },
     Retired {
+        id: "gpt-6-astra",
+        successor: GPT_ASTRA,
+        prices: Prices {
+            input_per_m: 10.0,
+            cache_read_per_m: 1.0,
+            output_per_m: 50.0,
+        },
+    },
+    Retired {
+        id: "gpt-6.1-sol",
+        successor: GPT_SOL,
+        prices: Prices {
+            input_per_m: 2.0,
+            cache_read_per_m: 0.10,
+            output_per_m: 10.0,
+        },
+    },
+    Retired {
+        id: "gpt-5.6-terra",
+        successor: GPT_TERRA,
+        prices: Prices {
+            input_per_m: 2.0,
+            cache_read_per_m: 0.20,
+            output_per_m: 12.0,
+        },
+    },
+    Retired {
         id: "gpt-5.6-luna",
         successor: GPT_LUNA,
+        // Only sessions saved before OpenAI's price cut reach this entry.
         prices: Prices {
             input_per_m: 1.0,
             cache_read_per_m: 0.10,
@@ -837,7 +876,7 @@ mod tests {
     #[test]
     fn fable_bills_cache_reads_at_its_own_rate() {
         let cost = cost_of(crate::api::model_info::CLAUDE_FABLE, 0, 0, 100_000, 0);
-        approx(cost, 100_000.0 / 1e6 * 0.25);
+        approx(cost, 100_000.0 / 1e6 * 0.20);
     }
 
     #[test]

@@ -302,13 +302,13 @@ Sofos supports these models, shown in `/model` picker order. You choose a model 
 
 | Name | Current version | Provider |
 |---|---|---|
-| `claude-fable` | `claude-fable-5-1` | Anthropic |
+| `claude-fable` | `claude-fable-5-2` | Anthropic |
 | `claude-opus` (default) | `claude-opus-5-5` | Anthropic |
 | `claude-sonnet` | `claude-sonnet-5-5` | Anthropic |
 | `claude-haiku` | `claude-haiku-5-5` | Anthropic |
-| `gpt-astra` | `gpt-6-astra` | OpenAI |
-| `gpt-sol` | `gpt-6.1-sol` | OpenAI |
-| `gpt-terra` | `gpt-5.6-terra` | OpenAI |
+| `gpt-astra` | `gpt-6.2-astra` | OpenAI |
+| `gpt-sol` | `gpt-6.2-sol` | OpenAI |
+| `gpt-terra` | `gpt-6.1-terra` | OpenAI |
 | `gpt-luna` | `gpt-6-luna` | OpenAI |
 
 `--model` and `/model` accept only the short names above, plus `claude` (picks `claude-opus`) and `gpt` (picks `gpt-sol`). A versioned name or any other value is refused, and Sofos prints the supported list.
@@ -337,7 +337,7 @@ Provider mapping:
 - **OpenAI** sends `reasoning.effort` directly. On the OpenAI models, `--reasoning-mode pro` (or `/mode pro`) additionally sends `reasoning.mode: "pro"` — the model does extra work before answering, trading latency and tokens for quality. `standard` is the default and omits the field. Mode is independent of effort.
 - **Claude** models all use adaptive thinking. The provider chooses the token budget from the effort level.
 
-Claude Fable 5.1, Claude Opus 5.5, and Claude Sonnet 5.5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.
+Claude Fable 5.2, Claude Opus 5.5, and Claude Sonnet 5.5 run safety classifiers that can decline a request. On those models Sofos asks Anthropic to answer a declined request on a substitute model rather than returning the refusal, and prints a bright notice naming the model that answered. If the substitute declines too, the turn ends with the reason shown.
 
 On the Anthropic models, Sofos asks for a readable summary of the model's reasoning and prints it under a dimmed `Thinking:` heading while the answer is being prepared. Asking for the summary does not change what a conversation costs: these models carry their reasoning between turns either way, and Anthropic bills it the same whether the summary is returned or withheld.
 
